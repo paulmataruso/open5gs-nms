@@ -1,0 +1,198 @@
+logger:
+  file:
+    path: /var/log/open5gs/scp.log
+#  level: info   # fatal|error|warn|info(default)|debug|trace
+
+global:
+  max:
+    ue: 1024  # The number of UE can be increased depending on memory size.
+#    peer: 64
+
+scp:
+  sbi:
+    server:
+      - address: 127.0.0.200
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+
+################################################################################
+# SCP Info
+################################################################################
+#  o SCP port number(s) WITHOUT SCP Domain
+#   - If no SCP port information is present in ScpInfo or
+#     in ScpDomainInfo for a specific SCP domain,
+#     the HTTP client shall use the default HTTP port number,
+#     i.e. TCP port 80 for "http" URIs or TCP port 443
+#     for "https" URIs as specified in IETF RFC 7540 [9]
+#     when sending a request to the SCP within the specific SCP domain.
+#  info:
+#    port:
+#      http: 7777
+#      https: 8888
+#
+#  o SCP port number(s) WITH SCP Domain
+#   - If this attribute is present,
+#     it has precedence over the scpPorts attribute of ScpInfo.
+#  info:
+#    domain:
+#      - name: SCP_Domain_1
+#        fqdn: scp.localdomain
+#        port:
+#          http: 7777
+#          https: 8888
+#
+#  o Complex Example
+#  info:
+#    port:
+#      http: 7777
+#      https: 8888
+#    domain:
+#      - name: SCP_Domain_1
+#        fqdn: scp.hplmndomain
+#        port:
+#          http: 3333
+#          https: 4444
+#      - name: SCP_Domain_2
+#        fqdn: scp.vplmndomain
+#        port:
+#          http: 5555
+#          https: 6666
+#
+################################################################################
+# SBI Server
+################################################################################
+#  o Bind to the address on the eth0 and advertise as open5gs-scp.svc.local
+#  sbi:
+#    server:
+#      - dev:eth0
+#        advertise: open5gs-scp.svc.local
+#
+#  o Specify a custom port number 7777 while binding to the given address
+#  sbi:
+#    server:
+#      - address: scp.localdomain
+#        port: 7777
+#
+#  o Bind to 127.0.0.200 and advertise as open5gs-scp.svc.local
+#  sbi:
+#    server:
+#      - address: 127.0.0.200
+#        port: 7777
+#        advertise: open5gs-scp.svc.local
+#
+#  o Bind to port 7777 but advertise with a different port number 8888
+#  sbi:
+#    server:
+#      - address: 127.0.0.200
+#        port: 7777
+#        advertise: open5gs-scp.svc.local:8888
+#
+################################################################################
+# SBI Client
+################################################################################
+#  o Direct Communication with NRF
+#  sbi:
+#    client:
+#      nrf:
+#        - uri: http://127.0.0.10:7777
+#
+#  o Indirect Communication by Delegating to Next-SCP
+#  sbi:
+#    client:
+#      scp:
+#        - uri: http://127.0.0.200:7777
+#
+#  o Indirect Communication without Delegation
+#  sbi:
+#    client:
+#      nrf:
+#        - uri: http://127.0.0.10:7777
+#      scp:
+#        - uri: http://127.0.0.200:7777
+#      delegated:
+#        scp:
+#          next: no   # Do not delegate to SCP for next-hop
+#
+#  o Indirect Communication with Delegation
+#  sbi:
+#    client:
+#      nrf:
+#        - uri: http://127.0.0.10:7777
+#      scp:
+#        - uri: http://127.0.0.200:7777
+#      delegated:
+#        scp:
+#          next: yes  # Delegate to SCP for next-hop communications
+#
+#  o Default delegation: all communications are delegated to the Next-SCP
+#  sbi:
+#    client:
+#      nrf:
+#        - uri: http://127.0.0.10:7777
+#      scp:
+#        - uri: http://127.0.0.200:7777
+#      # No 'delegated' section; defaults to AUTO delegation
+#
+################################################################################
+# HTTPS scheme with TLS
+################################################################################
+#  o Set as default if not individually set
+#  default:
+#    tls:
+#      server:
+#        scheme: https
+#        private_key: /etc/open5gs/tls/scp.key
+#        cert: /etc/open5gs/tls/scp.crt
+#      client:
+#        scheme: https
+#        cacert: /etc/open5gs/tls/ca.crt
+#  sbi:
+#    server:
+#      - address: scp.localdomain
+#    client:
+#      nrf:
+#        - uri: https://nrf.localdomain
+#
+#  o Enable SSL key logging for Wireshark
+#    - This configuration allows capturing SSL/TLS session keys
+#      for debugging or analysis purposes using Wireshark.
+#  default:
+#    tls:
+#      server:
+#        scheme: https
+#        private_key: /etc/open5gs/tls/scp.key
+#        cert: /etc/open5gs/tls/scp.crt
+#        sslkeylogfile: /var/log/open5gs/tls/scp-server-sslkeylog.log
+#      client:
+#        scheme: https
+#        cacert: /etc/open5gs/tls/ca.crt
+#        client_sslkeylogfile: /var/log/open5gs/tls/scp-client-sslkeylog.log
+#  sbi:
+#    server:
+#      - address: scp.localdomain
+#    client:
+#      nrf:
+#        - uri: https://nrf.localdomain
+#
+#  o Add client TLS verification
+#  default:
+#    tls:
+#      server:
+#        scheme: https
+#        private_key: /etc/open5gs/tls/scp.key
+#        cert: /etc/open5gs/tls/scp.crt
+#        verify_client: true
+#        verify_client_cacert: /etc/open5gs/tls/ca.crt
+#      client:
+#        scheme: https
+#        cacert: /etc/open5gs/tls/ca.crt
+#        client_private_key: /etc/open5gs/tls/scp.key
+#        client_cert: /etc/open5gs/tls/scp.crt
+#  sbi:
+#    server:
+#      - address: scp.localdomain
+#    client:
+#      nrf:
+#        - uri: https://nrf.localdomain

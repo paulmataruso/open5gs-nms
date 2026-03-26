@@ -1,0 +1,47 @@
+{
+  "name": "open5gs-nms-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.21.1",
+    "axios": "^1.6.4",
+    "zustand": "^4.4.7",
+    "recharts": "^2.10.3",
+    "lucide-react": "^0.303.0",
+    "clsx": "^2.1.0",
+    "react-hot-toast": "^2.4.1",
+    "@monaco-editor/react": "^4.6.0",
+    "yaml": "^2.3.4",
+    "jointjs": "^3.7.0",
+    "backbone": "^1.4.1",
+    "jquery": "^3.7.1",
+    "lodash": "^4.17.21"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.16",
+    "postcss": "^8.4.33",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.11",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.17.0",
+    "@typescript-eslint/parser": "^6.17.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.5",
+    "@types/backbone": "^1.4.15",
+    "@types/jquery": "^3.5.16",
+    "@types/lodash": "^4.14.202"
+  }
+}

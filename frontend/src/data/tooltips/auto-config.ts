@@ -1,0 +1,21 @@
+// Auto-Config Tooltips
+export const AUTO_CONFIG_TOOLTIPS = {
+  network_name: "Operator name displayed to users. Shown on UE during network registration and in device settings. Keep concise (max 63 chars)",
+  mcc: "Mobile Country Code - 3 digits. Identifies the country. Examples: 001=test, 310-316=USA, 234=UK, 262=Germany, 460=China",
+  mnc: "Mobile Network Code - 2-3 digits. Identifies your operator within the country. Must be unique or coordinated with other operators",
+  ue_ip_pool: "IPv4 address pool for all UEs in CIDR notation (e.g., 10.45.0.0/16). Size appropriately for expected peak concurrent users",
+  dns_primary: "Primary DNS server provided to UEs. Used for hostname resolution. Common choices: 8.8.8.8 (Google), 1.1.1.1 (Cloudflare)",
+  dns_secondary: "Secondary DNS server. Backup if primary unreachable. Recommended to use different provider than primary for redundancy",
+  amf_address: "AMF NGAP server IP for gNodeB connections. Must be reachable by 5G base stations over N2 interface",
+  upf_address: "UPF GTP-U address for user plane traffic. Receives data tunnels from gNodeB and forwards to internet/DN",
+  mme_address: "MME S1-AP server IP for eNodeB connections. Must be reachable by 4G base stations over S1-MME interface",
+  s1mme_ip: "MME S1-MME interface IP address. eNodeBs connect to this IP for control plane signaling (UE attach, bearer setup, paging). SCTP port 36412.",
+  sgwu_gtpu_ip: "SGW-U GTP-U server IP for S1-U interface. Receives user plane data tunnels from eNodeBs. UDP port 2152.",
+  amf_ngap_ip: "AMF NGAP server IP for N2 interface. gNodeBs connect here for 5G control plane (registration, session management). SCTP port 38412.",
+  upf_gtpu_ip: "UPF GTP-U server IP for N3 interface. Receives user plane data from gNodeBs. Also handles N9 (UPF-to-UPF) forwarding.",
+  session_pool_ipv4_subnet: "IPv4 address pool for UE PDU sessions in CIDR notation (e.g., 10.45.0.0/16). UPF assigns IPs from this range. Size for concurrent users.",
+  session_pool_ipv4_gateway: "IPv4 gateway for UE session pool. Typically first usable IP in subnet. Used as default route by UEs for internet traffic.",
+  session_pool_ipv6_subnet: "IPv6 address pool for UE sessions in CIDR notation (e.g., 2001:db8:cafe::/48). Used for IPv6 PDU sessions.",
+  session_pool_ipv6_gateway: "IPv6 gateway for UE session pool. First IP in subnet. Default route for IPv6 traffic from UEs.",
+  nat_interface: "Network interface name for NAT masquerading. Default: ogstun. Corresponds to TUN/TAP interface created by UPF for UE traffic.",
+};

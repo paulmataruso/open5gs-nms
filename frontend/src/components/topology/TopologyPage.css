@@ -1,0 +1,47 @@
+/* JointJS Topology Styles */
+
+/* Import JointJS default styles */
+@import 'jointjs/dist/joint.css';
+
+/* Custom overrides for dark theme */
+.joint-paper {
+  background-color: #0a0f1a !important;
+  transform: scale(0.5); /* Scale down to 50% to fit screen */
+  transform-origin: top left;
+}
+
+.joint-element {
+  cursor: default;
+}
+
+.joint-link {
+  cursor: default;
+}
+
+/* Text labels */
+.joint-element text {
+  font-family: system-ui, -apple-system, sans-serif;
+  user-select: none;
+}
+
+/* Remove default JointJS tools/handles (we don't want interactive editing) */
+.joint-link .tool-remove,
+.joint-link .link-tools,
+.joint-element .element-tools {
+  display: none;
+}
+
+/* Animated flowing lines for active interfaces */
+@keyframes flow {
+  from {
+    stroke-dashoffset: 20;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.interface-active {
+  stroke-dasharray: 10 10;
+  animation: flow 1s linear infinite;
+}

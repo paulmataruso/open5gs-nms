@@ -1,0 +1,38 @@
+# Git
+.git/
+.gitignore
+.github/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Development
+node_modules/
+npm-debug.log
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary
+*.tmp
+*.bak
+*~
+
+# Logs
+logs/
+*.log

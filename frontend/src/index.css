@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #1e293b transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: #1e293b;
+    border-radius: 3px;
+  }
+  body {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  .nms-card {
+    @apply bg-nms-surface border border-nms-border rounded-lg p-4;
+  }
+  .nms-btn {
+    @apply px-4 py-2 rounded-md font-medium text-sm transition-all duration-150 
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .nms-btn-primary {
+    @apply nms-btn bg-nms-accent text-white hover:bg-nms-accent-dim active:scale-[0.98];
+  }
+  .nms-btn-danger {
+    @apply nms-btn bg-nms-red/20 text-nms-red border border-nms-red/30 
+           hover:bg-nms-red/30 active:scale-[0.98];
+  }
+  .nms-btn-ghost {
+    @apply nms-btn bg-transparent text-nms-text-dim hover:bg-nms-surface-2 
+           hover:text-nms-text active:scale-[0.98];
+  }
+  .nms-input {
+    @apply w-full bg-nms-bg border border-nms-border rounded-md px-3 py-2 text-sm
+           text-nms-text placeholder-nms-text-dim/50 
+           focus:outline-none focus:ring-1 focus:ring-nms-accent focus:border-nms-accent
+           transition-colors;
+  }
+  .nms-label {
+    @apply block text-xs font-medium text-nms-text-dim uppercase tracking-wider mb-1;
+  }
+  .status-dot {
+    @apply w-2.5 h-2.5 rounded-full;
+  }
+  .status-dot-active {
+    @apply status-dot bg-nms-green shadow-[0_0_6px_rgba(16,185,129,0.5)];
+  }
+  .status-dot-inactive {
+    @apply status-dot bg-nms-red shadow-[0_0_6px_rgba(239,68,68,0.5)];
+  }
+}
+
+.react-flow__node {
+  border-radius: 8px !important;
+}
+
+.react-flow__edge-path {
+  stroke-width: 2 !important;
+}
+
+.react-flow__background {
+  background-color: #0a0e1a !important;
+}
+
+/* Tooltip animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.15s ease-out;
+}

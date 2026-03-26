@@ -1,0 +1,26 @@
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npx tsc
+
+FROM node:20-alpine
+
+# Alpine uses apk instead of apt-get, and has better networking
+# But we don't need these packages since systemctl is bind-mounted
+# RUN apk add --no-cache dbus curl iproute2
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+COPY --from=builder /app/dist ./dist
+
+RUN mkdir -p /var/log/open5gs-nms
+
+ENV NODE_ENV=production
+EXPOSE 3001 3002
+
+CMD ["node", "dist/index.js"]
