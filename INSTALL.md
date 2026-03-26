@@ -145,7 +145,7 @@ sudo systemctl restart systemd-resolved
 cd /opt
 
 # Clone the repository
-sudo git clone https://github.com/YOUR_ORG/open5gs-nms.git
+sudo git clone https://github.com/paulmataruso/open5gs-nms
 
 # Set ownership
 sudo chown -R $USER:$USER open5gs-nms
