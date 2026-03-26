@@ -70,8 +70,15 @@ apt install -y mongodb-org
 sudo systemctl enable mongod
 sudo systemctl start mongod
 
-# Verify MongoDB is running
+# Verify MongoDB is running, if not see below
 sudo systemctl status mongod
+
+#MongoDB AVX Workaround
+Starting with MongoDB 5.0, MongoDB needs AVX support on your CPU. If your machine does not have AVX you can do one of two things:
+In this root folder of this repo, is a folder called "mongo_docker". Just run the docker compose file(docker compose up -d" instead of installing docker to your machine then skip to the install open5gs section
+You can also find an older version of mongoDB that does not need AVX and install it, you will also need to find a copy of libssl that works with it. I reccommned just going
+the docker route. It is much easier to setup, but it is not secure.
+
 ```
 
 ### 1. Install Open5GS
