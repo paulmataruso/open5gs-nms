@@ -98,7 +98,7 @@ For large-scale deployments (100+ subscribers):
 | **Docker Engine** | 24.0+ | Container runtime |
 | **Docker Compose** | v2.20+ | Multi-container orchestration |
 | **Open5GS** | 2.7.0+ | 5G/4G core network |
-| **MongoDB** | 6.0+ | Subscriber database |
+| **MongoDB** | 4.4+ | Subscriber database |
 | **systemd** | 245+ | Service management |
 | **bash** | 4.0+ | Shell scripts |
 | **iptables** | 1.8+ | NAT configuration (optional) |
