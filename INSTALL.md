@@ -75,9 +75,10 @@ sudo systemctl status mongod
 
 #MongoDB AVX Workaround
 Starting with MongoDB 5.0, MongoDB needs AVX support on your CPU. If your machine does not have AVX you can do one of two things:
-In this root folder of this repo, is a folder called "mongo_docker". Just run the docker compose file(docker compose up -d) instead of installing docker to your machine then skip to the install open5gs section
-You can also find an older version of mongoDB that does not need AVX and install it, you will also need to find a copy of libssl that works with it. I reccommned just going
+In this root folder of this repo, is a folder called "mongo_docker". Just run the docker compose file(docker compose -f docker-compose-basic.yaml up -d) instead of installing docker to your machine then skip to the install open5gs section. You can also find an older version of mongoDB that does not need AVX and install it, you will also need to find a copy of libssl that works with it. I reccommned just going
 the docker route. It is much easier to setup, but it is not secure.
+
+If you would like to be able to direct edit the mongoDB documents, run "docker-compose-mongoexp.yaml" instead of "docker-compose-basic.yaml". This will present Mongo Express on http://<host-ip>:8081/
 
 ```
 
