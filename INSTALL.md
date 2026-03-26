@@ -47,6 +47,33 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ## Prerequisites
 
+### 2. Install MongoDB
+
+```bash
+# Install MongoDB
+sudo apt update
+sudo apt install gnupg
+
+#Install mongoDB repo key
+curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+
+#Add mongoDB repo to system
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+
+#Update packages
+sudo apt update
+
+#Install MongoDB
+apt install -y mongodb-org
+
+# Enable and start MongoDB
+sudo systemctl enable mongod
+sudo systemctl start mongod
+
+# Verify MongoDB is running
+sudo systemctl status mongod
+```
+
 ### 1. Install Open5GS
 
 ```bash
@@ -68,20 +95,6 @@ sudo systemctl enable open5gs-upfd
 sudo systemctl start open5gs-nrfd
 sudo systemctl start open5gs-amfd
 # ... (or use systemctl start open5gs-* for all)
-```
-
-### 2. Install MongoDB
-
-```bash
-# Install MongoDB 6.0+
-sudo apt install -y mongodb-org
-
-# Enable and start MongoDB
-sudo systemctl enable mongod
-sudo systemctl start mongod
-
-# Verify MongoDB is running
-sudo systemctl status mongod
 ```
 
 ### 3. Install Docker
