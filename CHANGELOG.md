@@ -157,12 +157,21 @@ See [GitHub Issues](https://github.com/YOUR_ORG/open5gs-nms/issues) for planned 
 - HTTPS/WSS support
 - Multi-user support with roles
 - Enhanced backup scheduling
+- Multi-host deployment support
+- Supporting open5gs running on docker
 
 **Medium Priority:**
 - Prometheus metrics integration
-- Email/Slack notifications
 - Git-based configuration versioning
-- Multi-host deployment support
+- Osmocom-CNI Module
+
+**Long Term:**
+- Create new webUI module to configure all components of the Osmocom-CNI stack
+- Be able to manage 5G roaming via GUI(Add, deploy H-PLMN and V-PLMN)
+- Manage via webUI the ".3gppnetwork.org" DNS components.
+- Enable and configure Sg interface towards external MSC for SMS over Sg via webUI
+- Enable easy Static IP for UE without NAT. Most likely via OSPF/BGP BIRD/FRR/etc
+
 
 ---
 
