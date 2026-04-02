@@ -147,7 +147,7 @@ sudo apt update && sudo apt install -y \
   build-essential git meson ninja-build pkg-config cmake \
   libglib2.0-dev libgnutls28-dev libgcrypt-dev libidn11-dev \
   libmongoc-dev libbson-dev libyaml-dev libmicrohttpd-dev \
-  libnghttp2-dev libsctp-dev lksctp-tools libssl-dev \
+  libnghttp2-dev libsctp-dev lksctp-tools flex bison libssl-dev \
   libtalloc-dev libcurl4-openssl-dev uuid-dev liblz4-dev
 
 # Clone repository
