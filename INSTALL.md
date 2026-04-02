@@ -47,6 +47,24 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ## Prerequisites
 
+### 1. Install Docker
+
+```bash
+# Install Docker using the official script
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Add current user to docker group (logout/login required)
+sudo usermod -aG docker $USER
+
+# Install Docker Compose v2
+sudo apt install -y docker-compose-plugin
+
+# Verify installation
+docker --version
+docker compose version
+```
+
 ### 2. Install MongoDB
 
 ```bash
@@ -82,9 +100,11 @@ If you would like to be able to direct edit the mongoDB documents, run "docker-c
 
 ```
 
-### 1. Install Open5GS
+### 3. Install Open5GS
 
 ```bash
+#Please note, if you use mongodb on docker, you will need to ether build open5gs from source or install mongodb on the host(even know we wont use it) to get open5gs to install via apt
+
 # Add Open5GS PPA repository
 sudo add-apt-repository ppa:open5gs/latest
 sudo apt update
@@ -103,24 +123,6 @@ sudo systemctl enable open5gs-upfd
 sudo systemctl start open5gs-nrfd
 sudo systemctl start open5gs-amfd
 # ... (or use systemctl start open5gs-* for all)
-```
-
-### 3. Install Docker
-
-```bash
-# Install Docker using the official script
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# Add current user to docker group (logout/login required)
-sudo usermod -aG docker $USER
-
-# Install Docker Compose v2
-sudo apt install -y docker-compose-plugin
-
-# Verify installation
-docker --version
-docker compose version
 ```
 
 ### 4. Configure DNS Resolution
