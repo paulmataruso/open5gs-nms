@@ -1,4 +1,4 @@
-# Installation Guide - Open5GS NMS
+# Installation Guide — Open5GS NMS
 
 Complete step-by-step installation instructions for deploying the Open5GS Network Management System.
 
@@ -19,6 +19,7 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 ## System Requirements
 
 ### Tested Platform
+
 - **Operating System:** Ubuntu 24.04 LTS (x86_64)
 - **Kernel:** Linux 5.15+ recommended
 
@@ -26,22 +27,23 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 **Minimum:**
 - CPU: 2 cores
-- RAM: 4GB
-- Disk: 20GB free space
+- RAM: 4 GB
+- Disk: 20 GB free space
 
 **Recommended:**
 - CPU: 4 cores
-- RAM: 8GB
-- Disk: 50GB free space (for logs and backups)
+- RAM: 8 GB
+- Disk: 50 GB free space (for logs and backups)
 
 ### Network Requirements
+
 - Static IP address or DHCP reservation recommended
 - DNS resolution must be working
 - Internet access for Docker builds (npm registry)
 - Open ports:
-  - 8888/tcp - NMS web interface
-  - 3001/tcp - Backend API (internal, proxied by nginx)
-  - 3002/tcp - WebSocket (internal, proxied by nginx)
+  - `8888/tcp` — NMS web interface
+  - `3001/tcp` — Backend API (internal, proxied by nginx)
+  - `3002/tcp` — WebSocket (internal, proxied by nginx)
 
 ---
 
@@ -54,7 +56,7 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 curl -fsSL https://get.docker.com -o get-docker.sh
 sudo sh get-docker.sh
 
-# Add current user to docker group (logout/login required)
+# Add current user to the docker group (logout/login required)
 sudo usermod -aG docker $USER
 
 # Install Docker Compose v2
@@ -68,42 +70,46 @@ docker compose version
 ### 2. Install MongoDB
 
 ```bash
-# Install MongoDB
+# Install prerequisites
 sudo apt update
-sudo apt install gnupg
+sudo apt install -y gnupg
 
-#Install mongoDB repo key
-curl -fsSL https://pgp.mongodb.com/server-8.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+# Add MongoDB repo key
+curl -fsSL https://pgp.mongodb.com/server-8.0.asc | \
+  sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
 
-#Add mongoDB repo to system
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+# Add MongoDB repo to system
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] \
+  https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" | \
+  sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
 
-#Update packages
+# Update packages and install
 sudo apt update
-
-#Install MongoDB
-apt install -y mongodb-org
+sudo apt install -y mongodb-org
 
 # Enable and start MongoDB
 sudo systemctl enable mongod
 sudo systemctl start mongod
 
-# Verify MongoDB is running, if not see below
+# Verify MongoDB is running
 sudo systemctl status mongod
-
-#MongoDB AVX Workaround
-Starting with MongoDB 5.0, MongoDB needs AVX support on your CPU. If your machine does not have AVX you can do one of two things:
-In this root folder of this repo, is a folder called "mongo_docker". Just run the docker compose file(docker compose -f docker-compose-basic.yaml up -d) instead of installing docker to your machine then skip to the install open5gs section. You can also find an older version of mongoDB that does not need AVX and install it, you will also need to find a copy of libssl that works with it. I reccommned just going
-the docker route. It is much easier to setup, but it is not secure.
-
-If you would like to be able to direct edit the mongoDB documents, run "docker-compose-mongoexp.yaml" instead of "docker-compose-basic.yaml". This will present Mongo Express on http://<host-ip>:8081/
-
 ```
+
+> **MongoDB AVX Workaround**
+>
+> Starting with MongoDB 5.0, AVX CPU support is required. If your machine does not have AVX, you have two options:
+>
+> - **Recommended:** Use the included Docker Compose file. In the root of this repo is a `mongo_docker/` folder — run `docker compose -f docker-compose-basic.yaml up -d`, then skip to the [Install Open5GS](#3-install-open5gs) section. To enable direct document editing via Mongo Express, use `docker-compose-mongoexp.yaml` instead, which exposes Mongo Express at `http://<host-ip>:8081/`.
+>
+> - **Alternative:** Find and install an older version of MongoDB that does not require AVX (you will also need a compatible version of `libssl`).
+>
+> **Note:** If you use MongoDB in Docker, you will need to build Open5GS from source. This is because `apt` hangs on the MongoDB install step. As a workaround, you can install any version of MongoDB on the host and then disable the service — this satisfies the dependency check and allows `apt` to install Open5GS without errors.
 
 ### 3. Install Open5GS
 
 ```bash
-#Please note, if you use mongodb on docker, you will need to ether build open5gs from source or install mongodb on the host(even know we wont use it) to get open5gs to install via apt
+# Note: If MongoDB is running in Docker, either build Open5GS from source,
+# or install MongoDB on the host (then disable it) to avoid apt dependency errors.
 
 # Add Open5GS PPA repository
 sudo add-apt-repository ppa:open5gs/latest
@@ -112,33 +118,71 @@ sudo apt update
 # Install all Open5GS components
 sudo apt install -y open5gs
 
-# Enable and start services
+# Enable services
 sudo systemctl enable open5gs-nrfd
 sudo systemctl enable open5gs-amfd
 sudo systemctl enable open5gs-smfd
 sudo systemctl enable open5gs-upfd
-# ... (enable all 16 services)
+# ... (repeat for all 16 services, or use the service_control.sh script below)
 
 # Start services
 sudo systemctl start open5gs-nrfd
 sudo systemctl start open5gs-amfd
-# ... (or use systemctl start open5gs-* for all)
+# ... (or start all with: sudo systemctl start open5gs-*)
+```
+
+> **Quick Service Control**
+>
+> A helper script is included in the project folder:
+> ```bash
+> chmod +x service_control.sh
+> ./service_control.sh start|stop|restart
+> ```
+
+#### Building Open5GS from Source
+
+```bash
+# Install build dependencies
+sudo apt update && sudo apt install -y \
+  build-essential git meson ninja-build pkg-config cmake \
+  libglib2.0-dev libgnutls28-dev libgcrypt-dev libidn11-dev \
+  libmongoc-dev libbson-dev libyaml-dev libmicrohttpd-dev \
+  libnghttp2-dev libsctp-dev lksctp-tools libssl-dev \
+  libtalloc-dev libcurl4-openssl-dev uuid-dev liblz4-dev
+
+# Clone repository
+git clone https://github.com/open5gs/open5gs
+cd open5gs
+
+# Configure and build
+meson setup build \
+  --prefix=/usr \
+  --sysconfdir=/etc \
+  --localstatedir=/var
+
+ninja -C build
+sudo ninja -C build install
+sudo ldconfig
+
+# Verify installation
+ls /usr/bin/open5gs-*
+ls /etc/open5gs/*
 ```
 
 ### 4. Configure DNS Resolution
 
-If you're on a fresh Ubuntu install, ensure DNS is working:
+If you are on a fresh Ubuntu install, verify DNS is working:
 
 ```bash
 # Test DNS resolution
 nslookup registry.npmjs.org
 
-# If DNS fails, fix it:
+# If DNS fails, add nameservers manually:
 sudo nano /etc/resolv.conf
-# Add these lines:
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-nameserver 1.1.1.1
+# Add:
+# nameserver 8.8.8.8
+# nameserver 8.8.4.4
+# nameserver 1.1.1.1
 
 # Restart systemd-resolved
 sudo systemctl restart systemd-resolved
@@ -151,32 +195,23 @@ sudo systemctl restart systemd-resolved
 ### Step 1: Clone the Repository
 
 ```bash
-# Navigate to installation directory
 cd /opt
-
-# Clone the repository
 sudo git clone https://github.com/paulmataruso/open5gs-nms
-
-# Set ownership
 sudo chown -R $USER:$USER open5gs-nms
-
-# Navigate into directory
 cd open5gs-nms
 ```
 
 ### Step 2: Configure Environment (Optional)
 
-The default configuration works for most deployments. If you need custom settings:
+The default configuration works for most deployments. To customize settings:
 
 ```bash
-# Copy example environment file
 cp .env.example .env
-
-# Edit configuration
 nano .env
 ```
 
-**Default values (usually don't need changing):**
+**Default values (usually do not need changing):**
+
 ```bash
 NODE_ENV=production
 PORT=3001
@@ -192,28 +227,26 @@ HOST_SYSTEMCTL_PATH=/usr/bin/systemctl
 ### Step 3: Create Backup Directories
 
 ```bash
-# Create backup directories
 sudo mkdir -p /etc/open5gs/backups/config
 sudo mkdir -p /etc/open5gs/backups/mongodb
-
-# Set permissions
 sudo chmod 755 /etc/open5gs/backups
 ```
 
 ### Step 4: Build and Deploy
 
 ```bash
-# Build Docker images (this may take 5-10 minutes)
+# Build Docker images (this may take 5–10 minutes)
 docker compose build --no-cache
 
 # Start all services
 docker compose up -d
 
-# View logs to ensure everything started correctly
+# View logs to confirm everything started correctly
 docker compose logs -f
 ```
 
 **Expected output:**
+
 ```
 open5gs-nms-nginx     | ... nginx started
 open5gs-nms-backend   | ... Server listening on port 3001
@@ -229,14 +262,12 @@ Press `Ctrl+C` to exit log view.
 # Allow NMS web interface
 sudo ufw allow 8888/tcp
 
-# If using UFW firewall, ensure DNS is allowed
+# Allow DNS (if needed)
 sudo ufw allow 53/udp
 sudo ufw allow 53/tcp
 
-# Reload firewall
+# Reload and verify
 sudo ufw reload
-
-# Check firewall status
 sudo ufw status
 ```
 
@@ -246,50 +277,49 @@ sudo ufw status
 
 ### Access the Web Interface
 
-1. Open your browser and navigate to:
-   ```
-   http://YOUR_SERVER_IP:8888
-   ```
+Open your browser and navigate to:
 
-2. You should see the Open5GS NMS dashboard
+```
+http://YOUR_SERVER_IP:8888
+```
+
+You should see the Open5GS NMS dashboard.
 
 ### Initial Configuration Wizard (Optional)
 
 For quick setup of a basic 4G/5G network:
 
-1. Click **"Auto Config"** in the sidebar
+1. Click **Auto Config** in the sidebar.
 2. Enter your network parameters:
    - PLMN ID (MCC/MNC)
    - Control plane IP addresses
    - User plane IP addresses
    - Session pool subnets
-3. Preview the configuration changes
-4. Click **"Apply Configuration"**
+3. Preview the configuration changes.
+4. Click **Apply Configuration**.
 
 ### Create Your First Subscriber
 
-1. Navigate to **"Subscribers"** page
-2. Click **"Add Subscriber"** or use the **"SIM Generator"**
-3. For SIM Generator:
-   - Select country (MCC)
-   - Enter MNC
-   - Set number of SIMs to generate
-   - **Check "Auto-provision to Open5GS database"** to add them automatically
-   - Click **"Generate SIM Data"**
-4. For manual creation:
-   - Enter IMSI (15 digits)
-   - Generate or enter K and OPc keys (32 hex characters each)
-   - Configure AMBR, slices, and sessions
-   - Click **"Create"**
+1. Navigate to the **Subscribers** page.
+2. Click **Add Subscriber**, or use the **SIM Generator**:
+   - Select country (MCC) and enter MNC.
+   - Set the number of SIMs to generate.
+   - Check **Auto-provision to Open5GS database** to add them automatically.
+   - Click **Generate SIM Data**.
+3. For manual creation:
+   - Enter IMSI (15 digits).
+   - Generate or enter K and OPc keys (32 hex characters each).
+   - Configure AMBR, slices, and sessions.
+   - Click **Create**.
 
 ### Configure Network Topology
 
-The network topology will automatically display once your services are configured and running.
+The network topology will automatically populate once your services are configured and running.
 
-1. Navigate to **"Topology"** page
-2. View your network function status
-3. Green indicators = active services
-4. Red indicators = inactive services
+1. Navigate to the **Topology** page.
+2. View your network function status.
+   - **Green** = service active
+   - **Red** = service inactive
 
 ---
 
@@ -298,14 +328,16 @@ The network topology will automatically display once your services are configure
 ### Check Docker Containers
 
 ```bash
-# View running containers
 docker compose ps
+```
 
-# Expected output (all should be "Up"):
-# NAME                    STATUS
-# open5gs-nms-nginx       Up
-# open5gs-nms-backend     Up (healthy)
-# open5gs-nms-frontend    Up (healthy)
+**Expected output (all should show "Up"):**
+
+```
+NAME                    STATUS
+open5gs-nms-nginx       Up
+open5gs-nms-backend     Up (healthy)
+open5gs-nms-frontend    Up (healthy)
 ```
 
 ### Health Check
@@ -313,46 +345,40 @@ docker compose ps
 ```bash
 # Backend API health check
 curl http://localhost:3001/api/health
-
-# Expected response:
-# {"status":"ok","timestamp":"2026-03-23T..."}
+# Expected: {"status":"ok","timestamp":"2026-..."}
 
 # Frontend check
 curl http://localhost:8080
-
-# Should return HTML
+# Expected: HTML response
 ```
 
 ### Verify Open5GS Services
 
 In the NMS web interface:
 
-1. Navigate to **"Services"** page
-2. All 16 services should show status
-3. Check that critical services are **active** (green):
-   - NRF (required for 5G)
-   - AMF, SMF, UPF (5G core)
-   - MME, HSS, SGW-C, SGW-U (4G core)
+1. Navigate to the **Services** page.
+2. All 16 services should display their status.
+3. Verify that critical services are **active** (green): NRF, AMF, SMF, UPF (5G core) and MME, HSS, SGW-C, SGW-U (4G core).
 
-Or via command line:
+Or via the command line:
 
 ```bash
 # Check all Open5GS services
 systemctl status open5gs-*
 
-# Check specific service
+# Check a specific service
 systemctl status open5gs-amfd
 ```
 
 ### Test Configuration Management
 
-1. Navigate to **"Configuration"** → **"5G Core"** → **"NRF"**
-2. Make a small change (e.g., change log level)
-3. Click **"Apply Configuration"**
+1. Navigate to **Configuration** → **5G Core** → **NRF**.
+2. Make a small change (e.g., change the log level).
+3. Click **Apply Configuration**.
 4. Verify:
-   - Backup was created
-   - Service restarted successfully
-   - Change appears in `/etc/open5gs/nrf.yaml`
+   - A backup was created.
+   - The service restarted successfully.
+   - The change appears in `/etc/open5gs/nrf.yaml`.
 
 ---
 
@@ -363,12 +389,13 @@ systemctl status open5gs-amfd
 **Error:** `npm error code EAI_AGAIN`
 
 **Solution:**
+
 ```bash
-# Fix host DNS first
+# Fix host DNS
 sudo nano /etc/resolv.conf
 # Add: nameserver 8.8.8.8
 
-# The docker-compose.yml already uses network: host for builds
+# The docker-compose.yml already uses network: host for builds.
 # Just rebuild:
 docker compose build --no-cache
 ```
@@ -376,64 +403,68 @@ docker compose build --no-cache
 ### Backend Container Won't Start
 
 **Check logs:**
+
 ```bash
 docker compose logs backend
 ```
 
-**Common issues:**
+**Common causes:**
 
-1. **MongoDB not accessible:**
-   ```bash
-   sudo systemctl status mongod
-   sudo systemctl start mongod
-   ```
+- **MongoDB not accessible:**
+  ```bash
+  sudo systemctl status mongod
+  sudo systemctl start mongod
+  ```
 
-2. **Permission denied on /etc/open5gs:**
-   ```bash
-   ls -la /etc/open5gs
-   sudo chmod 755 /etc/open5gs
-   ```
+- **Permission denied on `/etc/open5gs`:**
+  ```bash
+  ls -la /etc/open5gs
+  sudo chmod 755 /etc/open5gs
+  ```
 
-3. **systemctl not accessible:**
-   ```bash
-   # Verify privileged mode in docker-compose.yml
-   docker inspect open5gs-nms-backend | grep Privileged
-   # Should show: "Privileged": true
-   ```
+- **`systemctl` not accessible from container:**
+  ```bash
+  # Verify privileged mode
+  docker inspect open5gs-nms-backend | grep Privileged
+  # Expected: "Privileged": true
+  ```
 
 ### Can't Access Web Interface
 
-1. **Check nginx is running:**
+1. Confirm nginx is running:
    ```bash
    docker compose ps nginx
    docker compose logs nginx
    ```
 
-2. **Verify port 8888 is not blocked:**
+2. Verify port 8888 is open:
    ```bash
    sudo ufw status
    sudo ufw allow 8888/tcp
    ```
 
-3. **Check if something else is using port 8888:**
+3. Check for port conflicts:
    ```bash
    sudo netstat -tlnp | grep 8888
    ```
 
 ### Services Won't Restart
 
-**Check backend has proper permissions:**
+**Verify backend container privileges:**
+
 ```bash
 docker inspect open5gs-nms-backend | grep -E 'Privileged|PidMode'
 ```
 
-**Should show:**
+**Expected:**
+
 ```
 "Privileged": true,
 "PidMode": "host",
 ```
 
-**Test systemctl from container:**
+**Test `systemctl` from inside the container:**
+
 ```bash
 docker exec open5gs-nms-backend systemctl status open5gs-nrfd
 ```
@@ -445,9 +476,7 @@ docker exec open5gs-nms-backend systemctl status open5gs-nrfd
    tail -f /opt/open5gs-nms/logs/audit/*.log
    ```
 
-2. **Verify YAML syntax:**
-   - Use the text editor mode to check for syntax errors
-   - Look for the validation errors in the preview
+2. **Verify YAML syntax:** Use the text editor mode to check for syntax errors and review the validation output in the preview pane.
 
 3. **Check service logs:**
    ```bash
@@ -460,62 +489,36 @@ docker exec open5gs-nms-backend systemctl status open5gs-nrfd
 
 ### Recommended Actions
 
-1. **Create a Backup:**
-   - Navigate to **Backup** page
-   - Click **"Create Backup"**
-   - Verify backup was created in `/etc/open5gs/backups/`
+1. **Create a Backup** — Navigate to the **Backup** page, click **Create Backup**, and verify the backup was created in `/etc/open5gs/backups/`.
 
-2. **Review Configuration:**
-   - Check each network function configuration
-   - Verify PLMN IDs, IP addresses, ports
-   - Ensure TAI/TAC lists are correct
+2. **Review Configuration** — Check each network function configuration. Verify PLMN IDs, IP addresses, ports, and TAI/TAC lists.
 
-3. **Set Up Monitoring:**
-   - Enable real-time log streaming for critical services
-   - Monitor the Dashboard for service health
+3. **Set Up Monitoring** — Enable real-time log streaming for critical services and monitor the Dashboard for service health.
 
-4. **Configure NAT/Routing:**
-   - If using UPF for internet access, configure NAT:
-     ```bash
-     sudo sysctl -w net.ipv4.ip_forward=1
-     sudo sysctl -w net.ipv6.conf.all.forwarding=1
-     sudo iptables -t nat -A POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE
-     ```
+4. **Configure NAT/Routing** — If using UPF for internet access:
+   ```bash
+   sudo sysctl -w net.ipv4.ip_forward=1
+   sudo sysctl -w net.ipv6.conf.all.forwarding=1
+   sudo iptables -t nat -A POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE
+   ```
 
-5. **Test with UE:**
-   - Provision a subscriber
-   - Connect a UE (phone or modem)
-   - Verify registration in logs
-   - Check active sessions in topology
+5. **Test with a UE** — Provision a subscriber, connect a UE (phone or modem), verify registration in the logs, and check active sessions in the topology view.
 
 ### Production Deployment
 
-For production use, consider:
+For production use, consider the following:
 
-1. **Enable HTTPS:**
-   - Set up SSL certificates (Let's Encrypt)
-   - Configure nginx SSL termination
-   - See [Deployment Guide](docs/deployment.md)
-
-2. **Regular Backups:**
-   - Set up automated backup cron jobs
-   - Store backups off-site
-
-3. **Monitoring:**
-   - Set up external monitoring (Prometheus, Grafana)
-   - Configure alerts for service failures
-
-4. **Security:**
-   - Restrict NMS access to management network only
-   - Consider VPN or firewall rules
-   - Plan for authentication implementation
+- **Enable HTTPS** — Set up SSL certificates (e.g., Let's Encrypt) and configure nginx SSL termination. See [Deployment Guide](docs/deployment.md).
+- **Regular Backups** — Automate backup jobs via cron and store copies off-site.
+- **Monitoring** — Set up external monitoring (Prometheus, Grafana) and configure alerts for service failures.
+- **Security** — Restrict NMS access to the management network only, consider a VPN or strict firewall rules, and plan for authentication implementation.
 
 ### Getting Help
 
 - **Documentation:** [README.md](../README.md), [docs/](../docs/)
 - **Troubleshooting:** [docs/troubleshooting.md](docs/troubleshooting.md)
-- **GitHub Issues:** https://github.com/YOUR_ORG/open5gs-nms/issues
-- **Discussions:** https://github.com/YOUR_ORG/open5gs-nms/discussions
+- **GitHub Issues:** https://github.com/paulmataruso/open5gs-nms/issues
+- **Discussions:** https://github.com/paulmataruso/open5gs-nms/discussions
 
 ---
 
@@ -524,8 +527,9 @@ For production use, consider:
 To completely remove the NMS:
 
 ```bash
-# Stop and remove containers
 cd /opt/open5gs-nms
+
+# Stop and remove containers and volumes
 docker compose down -v
 
 # Remove images
@@ -538,7 +542,7 @@ sudo rm -rf /opt/open5gs-nms
 sudo rm -rf /etc/open5gs/backups
 ```
 
-**Note:** This does NOT remove Open5GS itself or MongoDB.
+> **Note:** This does **not** remove Open5GS itself or MongoDB.
 
 ---
 
