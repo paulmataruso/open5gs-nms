@@ -167,6 +167,11 @@ sudo ldconfig
 # Verify installation
 ls /usr/bin/open5gs-*
 ls /etc/open5gs/*
+
+# Create systemd service files for open5gs and start the services.
+chmod +x ./generate_open5gs_systemd.sh
+./generate_open5gs_systemd.sh
+./service_control.sh start
 ```
 
 ### 4. Configure DNS Resolution
