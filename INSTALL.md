@@ -151,7 +151,10 @@ sudo apt update && sudo apt install -y \
   libtalloc-dev libcurl4-openssl-dev uuid-dev liblz4-dev
 
 # Clone repository
+If you have not already cloned the github repo then
 git clone https://github.com/open5gs/open5gs
+
+Otherwise we can move to the project folder.
 cd open5gs
 
 # Configure and build
