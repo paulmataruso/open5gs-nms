@@ -7,7 +7,7 @@
 [![React](https://img.shields.io/badge/React-18.2-61DAFB.svg)](https://reactjs.org/)
 
 Web-based management system for Open5GS 5G Core and 4G EPC networks. Provides complete configuration management, real-time monitoring, subscriber provisioning, and network visualization through an intuitive interface. Please be aware this project is 90% AI coded. This project was not designed with security in mind. It was just a project for my personal Open5gs servers to make my life easier. Use at your own risk. If the project gains
-more interest I will focus on getting auth and security more nailed down.
+more interest I will focus on getting auth and security more nailed down. If you find any issuies please let me know. I will fix them as fast as I can. 
 
 ---
 
@@ -122,7 +122,7 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_ORG/open5gs-nms.git
+git clone https://github.com/paulmataruso/open5gs-nms
 cd open5gs-nms
 
 # Build and start all services
@@ -288,7 +288,7 @@ We welcome contributions! Whether it's bug reports, feature requests, or code co
 
 ```bash
 # Clone repository
-git clone https://github.com/YOUR_ORG/open5gs-nms.git
+git clone https://github.com/paulmataruso/open5gs-nms
 cd open5gs-nms
 
 # Backend development
