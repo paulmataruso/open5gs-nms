@@ -7,7 +7,7 @@
 [![React](https://img.shields.io/badge/React-18.2-61DAFB.svg)](https://reactjs.org/)
 
 Web-based management system for Open5GS 5G Core and 4G EPC networks. Provides complete configuration management, real-time monitoring, subscriber provisioning, and network visualization through an intuitive interface. Please be aware this project is 90% AI coded. This project was not designed with security in mind. It was just a project for my personal Open5gs servers to make my life easier. Use at your own risk. If the project gains
-more interest I will focus on getting auth and security more nailed down. If you find any issuies please let me know. I will fix them as fast as I can. 
+more interest I will focus on getting auth and security more nailed down. If you find any issues please let me know. I will fix them as fast as I can. 
 
 ---
 
