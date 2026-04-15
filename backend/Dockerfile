@@ -9,13 +9,20 @@ RUN npx tsc
 
 FROM node:20-bookworm-slim
 
-# Install nsenter, ca-certificates, Docker CLI, and MongoDB database tools
+# Install nsenter, ca-certificates, Docker CLI (latest), and MongoDB database tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     util-linux \
     curl \
     gnupg \
     ca-certificates \
-    docker.io \
+    lsb-release \
+    # Install Docker CLI from official Docker repository
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    # Install MongoDB tools
     && curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-7.0.gpg \
     && echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/debian bookworm/mongodb-org/7.0 main" > /etc/apt/sources.list.d/mongodb-org-7.0.list \
     && apt-get update && apt-get install -y --no-install-recommends \
