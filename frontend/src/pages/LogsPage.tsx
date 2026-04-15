@@ -1,19 +1,46 @@
-import { useState, useMemo } from 'react';
-import { RotateCw, Trash2, CheckSquare, Square, Circle } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { RotateCw, Trash2, CheckSquare, Square, Circle, Server, Box } from 'lucide-react';
 import { useLogStream, LogEntry } from '../hooks/useLogStream';
+import axios from 'axios';
 
 const ALL_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 
 export const LogsPage: React.FC = () => {
+  const [logSource, setLogSource] = useState<'open5gs' | 'docker'>('open5gs');
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
+  const [dockerContainers, setDockerContainers] = useState<string[]>([]);
   const [maxLines, setMaxLines] = useState(1000);
   const [autoScroll, setAutoScroll] = useState(true);
   const [paused, setPaused] = useState(false);
+
+  // Fetch Docker containers when source is docker
+  useEffect(() => {
+    if (logSource === 'docker') {
+      const API_URL = import.meta.env.VITE_API_URL || '/api';
+      axios.get(`${API_URL}/docker/containers`)
+        .then(res => {
+          setDockerContainers(res.data.containers || []);
+        })
+        .catch(err => {
+          console.error('Failed to fetch Docker containers:', err);
+          setDockerContainers([]);
+        });
+    }
+  }, [logSource]);
+
+  // Clear selection when switching sources
+  useEffect(() => {
+    setSelectedServices(new Set());
+  }, [logSource]);
+
+  // Determine available services based on source
+  const availableServices = logSource === 'docker' ? dockerContainers : ALL_SERVICES;
 
   // Memoize services array to prevent re-subscription on every render
   const servicesArray = useMemo(() => Array.from(selectedServices), [selectedServices]);
 
   const { logs, connected, clearLogs, logContainerRef } = useLogStream({
+    source: logSource,
     services: servicesArray,
     maxLines,
     autoScroll,
@@ -30,10 +57,15 @@ export const LogsPage: React.FC = () => {
     setSelectedServices(newSelected);
   };
 
-  const selectAllServices = () => setSelectedServices(new Set(ALL_SERVICES));
+  const selectAllServices = () => setSelectedServices(new Set(availableServices));
   const deselectAllServices = () => setSelectedServices(new Set());
 
   const getServiceColor = (service: string) => {
+    // Different colors for Docker vs Open5GS
+    if (logSource === 'docker') {
+      return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30';
+    }
+    
     // Cycle through some accent colors for service badges
     const colors = [
       'bg-blue-500/10 text-blue-400 border-blue-500/30',
@@ -121,11 +153,45 @@ export const LogsPage: React.FC = () => {
 
       {/* Sticky Footer - Filters */}
       <div className="border-t border-nms-border bg-nms-surface p-4">
+        {/* Log Source Selector */}
+        <div className="mb-3">
+          <label className="nms-label mb-2">Log Source</label>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setLogSource('open5gs')}
+              className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
+                logSource === 'open5gs'
+                  ? 'bg-nms-accent text-white'
+                  : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
+              }`}
+            >
+              <Server className="w-4 h-4" />
+              Open5GS Services
+            </button>
+            <button
+              onClick={() => setLogSource('docker')}
+              className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
+                logSource === 'docker'
+                  ? 'bg-nms-accent text-white'
+                  : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
+              }`}
+            >
+              <Box className="w-4 h-4" />
+              Docker Containers
+            </button>
+          </div>
+        </div>
+
         {/* Services */}
         <div className="mb-3">
-          <label className="nms-label mb-2">Services</label>
+          <label className="nms-label mb-2">
+            {logSource === 'docker' ? 'Containers' : 'Services'}
+            {logSource === 'docker' && dockerContainers.length === 0 && (
+              <span className="ml-2 text-xs text-nms-text-dim">(Loading...)</span>
+            )}
+          </label>
           <div className="flex flex-wrap gap-2">
-            {ALL_SERVICES.map((service) => {
+            {availableServices.map((service) => {
               const isSelected = selectedServices.has(service);
               return (
                 <button
@@ -138,7 +204,7 @@ export const LogsPage: React.FC = () => {
                   }`}
                 >
                   {isSelected ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
-                  <span className="font-mono uppercase">{service}</span>
+                  <span className="font-mono">{logSource === 'docker' ? service : service.toUpperCase()}</span>
                 </button>
               );
             })}
@@ -149,10 +215,10 @@ export const LogsPage: React.FC = () => {
         <div className="flex items-center justify-between gap-4">
           <div className="flex gap-2">
             <button onClick={selectAllServices} className="nms-btn-ghost text-xs">
-              All Services
+              {logSource === 'docker' ? 'All Containers' : 'All Services'}
             </button>
             <button onClick={deselectAllServices} className="nms-btn-ghost text-xs">
-              Clear Services
+              {logSource === 'docker' ? 'Clear Containers' : 'Clear Services'}
             </button>
           </div>
 

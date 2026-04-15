@@ -1,9 +1,74 @@
-# Open5GS NMS v1.0 - Changelog
+# Open5GS NMS - Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.0] - 2026-04-14
+
+### Added - Docker Container Logging
+
+#### Docker Log Streaming
+- **Docker Container Log Viewing** - View logs from NMS Docker containers in real-time
+  - New "Log Source" toggle in Unified Logs page (Open5GS | Docker)
+  - Stream logs from all 3 NMS containers (backend, frontend, nginx)
+  - Real-time log streaming via WebSocket with same features as Open5GS logs
+  - Automatic container discovery and listing
+
+#### Enhanced Logging Configuration
+- **Verbose Docker Logging** - Enhanced terminal output when running `docker compose up`
+  - Increased log rotation limits (50MB per file, 5 rotation files)
+  - Timestamped log entries for better debugging
+  - Container labels for log identification
+
+#### Backend Enhancements
+- **Docker Log Executor** - New infrastructure layer for Docker command execution
+  - Stream logs from containers using `docker logs -f --timestamps`
+  - Parse Docker log format (ISO 8601 timestamps)
+  - List NMS containers dynamically
+
+- **Docker Log Streaming Use Case** - Application layer orchestration
+  - Get recent logs from multiple containers
+  - Unified log entry format across Open5GS and Docker sources
+  - Clean Architecture implementation with dependency injection
+
+- **WebSocket Log Handler Enhancement** - Extended to support multiple log sources
+  - Source parameter ('open5gs' | 'docker') in WebSocket messages
+  - Dual stream support (can stream both Open5GS and Docker simultaneously)
+  - Backward compatible with existing Open5GS log streaming
+
+- **REST API** - New Docker endpoints
+  - `GET /api/docker/containers` - List all NMS containers
+  - `GET /api/docker/logs/:container` - Get recent logs from specific container
+
+#### Frontend Enhancements
+- **Enhanced Logs Page UI**
+  - New "Log Source" selector with Open5GS and Docker options
+  - Dynamic service/container list based on selected source
+  - Color-coded log badges (cyan for Docker containers)
+  - Adaptive button labels ("All Containers" vs "All Services")
+  - Loading indicator when fetching container list
+
+- **useLogStream Hook Enhancement**
+  - New `source` parameter to specify log source
+  - Automatic subscription management for different sources
+  - Seamless switching between Open5GS and Docker logs
+
+#### Infrastructure
+- **Docker Socket Mount** - Backend container now mounts Docker socket (read-only)
+  - Enables Docker CLI commands from within backend container
+  - Maintains security with read-only access
+
+### Technical Details
+- Clean Architecture implementation across all new code
+- Follows existing TypeScript coding patterns and conventions
+- Full type safety with interfaces for domain layer
+- Dependency injection for all use cases
+- Comprehensive error handling and logging
+- Non-breaking changes (backward compatible with v1.0)
+
+---
 
 ## [1.0.0] - 2026-03-23
 

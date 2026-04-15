@@ -43,3 +43,6 @@ coverage/
 # Production data (should not be in repo)
 /backups/
 /data/
+
+# Internal documentation (keep local)
+GIT_PUSH_COMMANDS.md

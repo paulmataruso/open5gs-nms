@@ -653,6 +653,64 @@ Apply auto-configuration.
 
 ---
 
+## Docker Endpoints
+
+### GET /api/docker/containers
+
+List all NMS Docker containers.
+
+**Response:**
+```json
+{
+  "success": true,
+  "containers": [
+    "open5gs-nms-backend",
+    "open5gs-nms-frontend",
+    "open5gs-nms-nginx"
+  ]
+}
+```
+
+---
+
+### GET /api/docker/logs/:container
+
+Get recent logs from a specific container.
+
+**Parameters:**
+- `container` - Container name (e.g., `open5gs-nms-backend`)
+
+**Query Parameters:**
+- `limit` (optional) - Number of recent lines (default: 100, max: 1000)
+
+**Example:**
+```
+GET /api/docker/logs/open5gs-nms-backend?limit=200
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "logs": [
+    {
+      "timestamp": "2026-04-14T14:30:45.123456789Z",
+      "container": "open5gs-nms-backend",
+      "stream": "stdout",
+      "message": "Starting Open5GS NMS Backend"
+    },
+    {
+      "timestamp": "2026-04-14T14:30:46.234567890Z",
+      "container": "open5gs-nms-backend",
+      "stream": "stdout",
+      "message": "MongoDB connected"
+    }
+  ]
+}
+```
+
+---
+
 ## Health Check
 
 ### GET /api/health
@@ -701,15 +759,39 @@ Connect to: `ws://YOUR_SERVER:3002` (or `ws://YOUR_SERVER:8888/ws` through nginx
 ```json
 {
   "type": "subscribe_logs",
-  "service": "open5gs-amfd"
+  "source": "open5gs" | "docker",
+  "services": ["nrf", "amf"] // or container names for Docker
 }
 ```
 
 **Server → Client:**
 ```json
 {
-  "type": "log_line",
-  "line": "2026-03-23 14:30:45.123 [INFO] AMF started"
+  "type": "log_entry",
+  "source": "open5gs" | "docker",
+  "log": {
+    "timestamp": "2026-04-14T14:30:45.123Z",
+    "service": "nrf", // or container name
+    "message": "[info] NRF started"
+  }
+}
+```
+
+**Get Recent Logs:**
+```json
+// Client → Server
+{
+  "type": "get_recent_logs",
+  "source": "open5gs" | "docker",
+  "services": ["nrf", "amf"],
+  "limit": 100
+}
+
+// Server → Client
+{
+  "type": "recent_logs",
+  "source": "open5gs" | "docker",
+  "logs": [...]
 }
 ```
 

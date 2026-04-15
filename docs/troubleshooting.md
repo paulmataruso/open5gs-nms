@@ -884,6 +884,141 @@ mongodump --db=open5gs --out=/tmp/test_backup
 
 ---
 
+## Docker Logging Issues
+
+### Docker Container Logs Not Showing in UI
+
+**Symptom:**
+- Switch to "Docker Containers" log source
+- Container list is empty or containers don't appear
+
+**Diagnosis:**
+```bash
+# Check if containers are running
+docker compose ps
+
+# Verify container names match filter
+docker ps --filter "name=open5gs-nms"
+
+# Check if backend can access Docker socket
+docker exec open5gs-nms-backend docker ps
+```
+
+**Solution:**
+```bash
+# Ensure Docker socket is mounted
+# Check docker-compose.yml for backend service:
+# volumes:
+#   - /var/run/docker.sock:/var/run/docker.sock:ro
+
+# Restart backend container
+docker compose restart backend
+
+# Verify socket permissions
+ls -la /var/run/docker.sock
+# Should be accessible by docker group
+
+# If permission denied, ensure container can access socket
+sudo chmod 666 /var/run/docker.sock  # Temporary fix
+# OR add backend container to docker group (preferred)
+```
+
+---
+
+### Docker Logs Stream Disconnects Frequently
+
+**Symptom:**
+- Docker container logs stop streaming after a few seconds
+- Connection drops repeatedly
+
+**Diagnosis:**
+```bash
+# Check backend logs for docker process errors
+docker compose logs backend | grep -i "docker logs"
+
+# Check if docker logs command is timing out
+docker logs -f --tail 10 open5gs-nms-backend
+# If this hangs or fails, docker daemon may have issues
+```
+
+**Solution:**
+```bash
+# Restart Docker daemon
+sudo systemctl restart docker
+
+# Reduce log verbosity if logs are overwhelming
+# Edit docker-compose.yml logging section:
+# logging:
+#   options:
+#     max-size: "10m"  # Reduce from 50m
+
+# Clear old container logs
+docker compose down
+docker system prune -a --volumes  # WARNING: removes unused data
+docker compose up -d
+```
+
+---
+
+### Verbose Docker Logging Not Working
+
+**Symptom:**
+- `docker compose up` output doesn't show timestamps
+- Logs are not verbose enough
+
+**Solution:**
+```bash
+# Verify logging configuration in docker-compose.yml
+# Each service should have:
+# logging:
+#   driver: "json-file"
+#   options:
+#     max-size: "50m"
+#     max-file: "5"
+#     labels: "service,container"
+
+# Rebuild containers with new logging config
+docker compose down
+docker compose up --build
+
+# View logs with timestamps
+docker compose logs -f --timestamps
+
+# Or view specific container
+docker logs -f --timestamps open5gs-nms-backend
+```
+
+---
+
+### Docker Socket Permission Denied
+
+**Symptom:**
+```
+Error: Cannot connect to the Docker daemon at unix:///var/run/docker.sock
+permission denied
+```
+
+**Solution:**
+```bash
+# Option 1: Add current user to docker group (host level)
+sudo usermod -aG docker $USER
+# Logout and login for changes to take effect
+
+# Option 2: Ensure backend container mounts socket correctly
+# In docker-compose.yml:
+# volumes:
+#   - /var/run/docker.sock:/var/run/docker.sock:ro
+
+# Option 3: Temporary permission fix (not recommended for production)
+sudo chmod 666 /var/run/docker.sock
+
+# Verify socket is accessible
+ls -la /var/run/docker.sock
+# Should show: srw-rw---- 1 root docker
+```
+
+---
+
 ## Getting More Help
 
 ### Collecting Diagnostic Information

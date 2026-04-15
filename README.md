@@ -87,10 +87,12 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 ![Auto-Configuration Wizard](docs/screenshots/auto-config-wizard.png)
 
 ### Real-Time Logging
+- **Dual Log Sources** - Stream logs from Open5GS services OR Docker containers
 - **Live Log Streaming** - Tail logs from any service via WebSocket
-- **Service Filtering** - View logs from individual network functions
-- **Color-Coded Levels** - ERROR (red), WARN (yellow), INFO (blue)
+- **Docker Container Logs** - View backend, frontend, and nginx container logs
+- **Service Filtering** - Multi-select services or containers to monitor
 - **Auto-Scroll Control** - Pause and resume log streaming
+- **Verbose Terminal Output** - Enhanced Docker logging with timestamps (50MB rotation, 5 files)
 
 ![Real-Time Log Viewer](docs/screenshots/logs-viewer.png)
 

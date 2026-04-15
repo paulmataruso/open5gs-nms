@@ -665,6 +665,37 @@ import { FieldWithTooltip } from '../common/FieldsWithTooltips';
 />
 ```
 
+### Debugging Docker Log Streaming
+
+**Testing Docker Integration:**
+```bash
+# From host - verify containers are running
+docker compose ps
+
+# From backend container - verify docker access
+docker exec open5gs-nms-backend docker ps
+
+# Test docker logs command
+docker exec open5gs-nms-backend docker logs --tail 10 open5gs-nms-nginx
+
+# Check backend logs for Docker executor
+docker compose logs backend | grep -i docker
+```
+
+**Testing in UI:**
+1. Open Logs page
+2. Click "Docker Containers" button
+3. Check browser console for container list API call
+4. Select a container and verify WebSocket messages:
+```javascript
+// Browser console should show:
+{
+  type: 'log_entry',
+  source: 'docker',
+  log: { timestamp, service, message }
+}
+```
+
 ### Running Full Stack Locally
 
 ```bash

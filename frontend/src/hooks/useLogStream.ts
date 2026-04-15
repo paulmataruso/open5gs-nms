@@ -7,6 +7,7 @@ export interface LogEntry {
 }
 
 interface UseLogStreamOptions {
+  source: 'open5gs' | 'docker';
   services: string[];
   maxLines: number;
   autoScroll: boolean;
@@ -19,7 +20,7 @@ export const useLogStream = (options: UseLogStreamOptions) => {
   const wsRef = useRef<WebSocket | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
-  const { services, maxLines, autoScroll, paused } = options;
+  const { services, maxLines, autoScroll, paused, source } = options;
 
   // Connect to WebSocket
   useEffect(() => {
@@ -80,22 +81,24 @@ export const useLogStream = (options: UseLogStreamOptions) => {
         return;
       }
 
-      // Subscribe
+      // Subscribe with source
       wsRef.current?.send(JSON.stringify({
         type: 'subscribe_logs',
+        source,
         services,
       }));
 
       // Request recent logs
       wsRef.current?.send(JSON.stringify({
         type: 'get_recent_logs',
+        source,
         services,
         limit: 100,
       }));
     }, 300); // 300ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [services]);
+  }, [services, source]);
 
   // Auto-scroll
   useEffect(() => {

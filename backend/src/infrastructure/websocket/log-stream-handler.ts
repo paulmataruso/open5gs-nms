@@ -2,8 +2,10 @@ import { WebSocket } from 'ws';
 import pino from 'pino';
 import { spawn, ChildProcess } from 'child_process';
 import { LogStreamingUseCase, LogEntry } from '../../application/use-cases/log-streaming';
+import { DockerLogStreamingUseCase } from '../../application/use-cases/docker-log-streaming';
 
 interface LogStreamSubscription {
+  source: 'open5gs' | 'docker';
   services: Set<string>;
   processes: Map<string, ChildProcess>;
 }
@@ -13,6 +15,7 @@ export class LogStreamHandler {
 
   constructor(
     private readonly logStreamingUseCase: LogStreamingUseCase,
+    private readonly dockerLogStreamingUseCase: DockerLogStreamingUseCase,
     private readonly logger: pino.Logger,
   ) {}
 
@@ -42,36 +45,51 @@ export class LogStreamHandler {
   private handleMessage(ws: WebSocket, message: any): void {
     switch (message.type) {
       case 'subscribe_logs':
-        this.subscribe(ws, message.services || []);
+        this.subscribe(ws, message.source || 'open5gs', message.services || []);
         break;
       case 'unsubscribe_logs':
         this.unsubscribe(ws);
         break;
       case 'get_recent_logs':
-        this.sendRecentLogs(ws, message.services || [], message.limit || 100);
+        this.sendRecentLogs(ws, message.source || 'open5gs', message.services || [], message.limit || 100);
         break;
       default:
         this.logger.warn({ type: message.type }, 'Unknown message type');
     }
   }
 
-  private async sendRecentLogs(ws: WebSocket, services: string[], limit: number): Promise<void> {
+  private async sendRecentLogs(ws: WebSocket, source: 'open5gs' | 'docker', services: string[], limit: number): Promise<void> {
     try {
-      const logs = await this.logStreamingUseCase.getRecentLogs(services, limit);
+      let logs: any[];
+      
+      if (source === 'docker') {
+        const dockerLogs = await this.dockerLogStreamingUseCase.getRecentLogs(services, limit);
+        // Convert Docker log format to unified log format
+        logs = dockerLogs.map(log => ({
+          timestamp: log.timestamp,
+          service: log.container,
+          message: `[${log.stream}] ${log.message}`,
+        }));
+      } else {
+        logs = await this.logStreamingUseCase.getRecentLogs(services, limit);
+      }
+      
       ws.send(JSON.stringify({
         type: 'recent_logs',
+        source,
         logs,
       }));
     } catch (err) {
-      this.logger.error({ err: String(err) }, 'Failed to send recent logs');
+      this.logger.error({ err: String(err), source }, 'Failed to send recent logs');
     }
   }
 
-  private subscribe(ws: WebSocket, services: string[]): void {
+  private subscribe(ws: WebSocket, source: 'open5gs' | 'docker', services: string[]): void {
     // Unsubscribe existing streams
     this.unsubscribe(ws);
 
     const subscription: LogStreamSubscription = {
+      source,
       services: new Set(services),
       processes: new Map(),
     };
@@ -80,12 +98,16 @@ export class LogStreamHandler {
 
     // Start streaming for each service
     for (const service of services) {
-      this.startServiceStream(ws, service, subscription);
+      if (source === 'docker') {
+        this.startDockerStream(ws, service, subscription);
+      } else {
+        this.startServiceStream(ws, service, subscription);
+      }
     }
 
     // Only log if services array is not empty
     if (services.length > 0) {
-      this.logger.debug({ services }, 'Log stream subscription started');
+      this.logger.debug({ source, services }, 'Log stream subscription started');
     }
   }
 
@@ -111,6 +133,7 @@ export class LogStreamHandler {
         if (logEntry && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: 'log_entry',
+            source: 'open5gs',
             log: logEntry,
           }));
         }
@@ -171,16 +194,90 @@ export class LogStreamHandler {
     }
   }
 
+  private startDockerStream(ws: WebSocket, container: string, subscription: LogStreamSubscription): void {
+    const process = this.dockerLogStreamingUseCase.streamLogs(container, 0);
+
+    subscription.processes.set(container, process);
+
+    // Handle both stdout and stderr
+    const handleData = (stream: 'stdout' | 'stderr') => (data: Buffer) => {
+      const lines = data.toString().split('\n').filter(line => line.trim());
+
+      for (const line of lines) {
+        const logEntry = this.parseDockerLogLine(line, container, stream);
+
+        if (logEntry && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'log_entry',
+            source: 'docker',
+            log: {
+              timestamp: logEntry.timestamp,
+              service: logEntry.container,
+              message: `[${logEntry.stream}] ${logEntry.message}`,
+            },
+          }));
+        }
+      }
+    };
+
+    if (process.stdout) {
+      process.stdout.on('data', handleData('stdout'));
+    }
+    if (process.stderr) {
+      process.stderr.on('data', handleData('stderr'));
+    }
+
+    process.on('close', (code) => {
+      if (code !== 0 && code !== null) {
+        this.logger.warn({ container, code }, 'docker logs process closed with error');
+      }
+      subscription.processes.delete(container);
+    });
+
+    process.on('error', (err) => {
+      this.logger.error({ container, err: String(err) }, 'docker logs process error');
+      subscription.processes.delete(container);
+    });
+  }
+
+  private parseDockerLogLine(
+    line: string,
+    container: string,
+    stream: 'stdout' | 'stderr',
+  ): { timestamp: string; container: string; stream: string; message: string } | null {
+    if (!line.trim()) return null;
+
+    // Docker log format with timestamps: "2024-03-23T14:30:45.123456789Z message"
+    const match = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+(.*)$/);
+
+    if (match) {
+      return {
+        timestamp: match[1],
+        container,
+        stream,
+        message: match[2],
+      };
+    }
+
+    // Fallback if no timestamp
+    return {
+      timestamp: new Date().toISOString(),
+      container,
+      stream,
+      message: line,
+    };
+  }
+
   private unsubscribe(ws: WebSocket): void {
     const subscription = this.subscriptions.get(ws);
     if (!subscription) return;
 
-    // Kill all tail processes
+    // Kill all tail/docker processes
     for (const [service, process] of subscription.processes) {
       try {
         process.kill();
       } catch (err) {
-        this.logger.error({ service, err: String(err) }, 'Failed to kill tail process');
+        this.logger.error({ service, err: String(err) }, 'Failed to kill process');
       }
     }
 

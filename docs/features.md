@@ -379,36 +379,94 @@ Creates complete configuration for:
 
 ## Real-Time Logging
 
-Stream logs from any Open5GS service in real-time.
+Stream logs from Open5GS services and Docker containers in real-time.
+
+### Log Sources
+
+**Open5GS Services:**
+- Stream logs from any of the 16 Open5GS network functions
+- Reads from `/var/log/open5gs/*.log` files
+- Uses `tail -f` for real-time streaming
+
+**Docker Containers:**
+- Stream logs from NMS Docker containers (backend, frontend, nginx)
+- Uses `docker logs -f --timestamps` for real-time streaming
+- Automatic container discovery
 
 ### Features
 
-**Service Selection:**
-- Dropdown to select any of 16 services
+**Log Source Toggle:**
+- Switch between "Open5GS Services" and "Docker Containers"
+- Separate service/container selection for each source
+- Seamless switching without reconnection
+
+**Service/Container Selection:**
+- Dropdown to select any of 16 services (Open5GS mode)
+- Automatic container list (Docker mode)
+- Multi-select capability
 - Switch between services without stopping stream
 
 **Log Display:**
 - Timestamped entries
 - Monospace font for readability
-- Color-coded log levels:
-  - Red = ERROR
-  - Yellow = WARN
-  - Blue = INFO
-  - White = DEBUG
+- Color-coded service badges:
+  - Blue/Green/Purple/Pink for Open5GS services
+  - Cyan for Docker containers
+- Stream indicator ([stdout] or [stderr] for Docker logs)
 
 **Controls:**
 - Auto-scroll toggle (pause/resume)
 - Clear logs button
-- Download logs as text file
-- Search/filter (planned)
+- Max lines selector (100/500/1000/2000)
+- Pause streaming without disconnecting
+
+### Docker Logging Features
+
+**Verbose Terminal Output:**
+- Enhanced logging when running `docker compose up`
+- Timestamps on all log entries
+- Increased log rotation (50MB per file, 5 files)
+- Container labels for identification
+
+**Container Discovery:**
+- Automatically detects all NMS containers
+- Filters by `open5gs-nms` prefix
+- Real-time container list updates
+
+**Log Format:**
+- ISO 8601 timestamps (e.g., `2026-04-14T14:30:45.123456789Z`)
+- Stream indicator (stdout/stderr)
+- Container name prefix
 
 ### Technical Details
 
 Uses WebSocket for log streaming:
-- Backend runs `journalctl -f` for selected service
+- Backend runs `journalctl -f` (Open5GS) or `docker logs -f` (Docker)
 - Streams output line-by-line
 - Efficient (only sends new lines)
 - Survives page refresh
+- Source-aware message routing
+
+**WebSocket Protocol:**
+```javascript
+// Subscribe to logs
+{
+  type: 'subscribe_logs',
+  source: 'open5gs' | 'docker',
+  services: ['nrf', 'amf'] // or container names
+}
+
+// Receive log entry
+{
+  type: 'log_entry',
+  source: 'open5gs' | 'docker',
+  log: {
+    timestamp: '2026-04-14T14:30:45.123Z',
+    service: 'nrf', // or container name
+    message: '[info] NRF started'
+  }
+}
+```
 
 ---
 

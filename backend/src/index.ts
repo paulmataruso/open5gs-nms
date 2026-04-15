@@ -21,6 +21,8 @@ import { BackupRestoreUseCase } from './application/use-cases/backup-restore';
 import { RestoreDefaultsUseCase } from './application/use-cases/restore-defaults';
 import { AutoConfigUseCase } from './application/use-cases/auto-config';
 import { LogStreamingUseCase } from './application/use-cases/log-streaming';
+import { DockerLogStreamingUseCase } from './application/use-cases/docker-log-streaming';
+import { DockerLogExecutor } from './infrastructure/docker/docker-log-executor';
 import { LogStreamHandler } from './infrastructure/websocket/log-stream-handler';
 import { createConfigRouter } from './interfaces/rest/config-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
@@ -32,6 +34,7 @@ import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
+import { createDockerRouter } from './interfaces/rest/docker-controller';
 
 async function main() {
   // Load configuration
@@ -131,6 +134,8 @@ async function main() {
     config.backupPath,
   );
   const logStreamingUseCase = new LogStreamingUseCase(hostExecutor, logger);
+  const dockerLogExecutor = new DockerLogExecutor(logger);
+  const dockerLogStreamingUseCase = new DockerLogStreamingUseCase(dockerLogExecutor, logger);
   const activeSessionsUseCase = new ActiveSessionsUseCase(
     hostExecutor,
     configRepo,
@@ -143,7 +148,11 @@ async function main() {
   );
 
   // Initialize log streaming WebSocket handler
-  const logStreamHandler = new LogStreamHandler(logStreamingUseCase, logger);
+  const logStreamHandler = new LogStreamHandler(
+    logStreamingUseCase,
+    dockerLogStreamingUseCase,
+    logger,
+  );
   wss.on('connection', (ws) => {
     logStreamHandler.handleConnection(ws);
   });
@@ -204,6 +213,7 @@ async function main() {
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
   app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase));
   app.use('/api/suci', createSuciRouter(suciManagementUseCase, logger));
+  app.use('/api/docker', createDockerRouter(dockerLogStreamingUseCase, logger));
 
   // Error handler
   app.use(
