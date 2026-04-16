@@ -25,7 +25,9 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const s1uActive = interfaceStatus?.s1u?.active || false;
   const s1uEnodebs = interfaceStatus?.s1u?.connectedEnodebs || [];
   
-  const activeUEs = interfaceStatus?.activeUEs || [];
+  const activeUEs4G = interfaceStatus?.activeUEs4G || [];
+  const activeUEs5G = interfaceStatus?.activeUEs5G || [];
+  const activeUEs = [...activeUEs4G, ...activeUEs5G]; // Combined 4G + 5G sessions
 
   return (
     <div className="p-6 max-w-7xl mx-auto">

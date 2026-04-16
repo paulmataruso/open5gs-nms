@@ -10,6 +10,7 @@ import { configApi, serviceApi, subscriberApi, interfaceApi } from '../api';
 
 // Interface status types
 export interface InterfaceStatus {
+  // 4G Interfaces
   s1mme: {
     active: boolean;
     connectedEnodebs: string[];
@@ -18,7 +19,21 @@ export interface InterfaceStatus {
     active: boolean;
     connectedEnodebs: string[];
   };
-  activeUEs: Array<{  // NEW: Active UE sessions with positive correlation
+  // 5G Interfaces
+  n2: {
+    active: boolean;
+    connectedGnodebs: string[];
+  };
+  n3: {
+    active: boolean;
+    connectedGnodebs: string[];
+  };
+  // Separated Active Sessions
+  activeUEs4G: Array<{
+    ip: string;
+    imsi: string;
+  }>;
+  activeUEs5G: Array<{
     ip: string;
     imsi: string;
   }>;

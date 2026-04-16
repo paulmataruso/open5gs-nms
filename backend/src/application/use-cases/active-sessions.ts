@@ -137,6 +137,29 @@ export class ActiveSessionsUseCase {
   }
 
   /**
+   * Determine if a UE IP is connected via 5G based on actual interface usage
+   * Checks if the IP appears in N3 conntrack (5G) vs S1-U conntrack (4G)
+   */
+  private async is5GConnection(ueIP: string): Promise<boolean> {
+    try {
+      // Check if IP appears in N3 conntrack (GTP-U port 2152 from gNodeB)
+      const n3Check = await this.hostExecutor.executeCommand('bash', [
+        '-c',
+        `conntrack -L -p udp --dport 2152 -s ${ueIP} 2>/dev/null | grep -q ${ueIP} && echo "found" || echo "not_found"`
+      ]);
+      
+      const isOnN3 = n3Check.stdout.trim() === 'found';
+      
+      console.log(`[Connection Check] UE ${ueIP}: N3=${isOnN3 ? 'YES' : 'NO'}`);
+      
+      return isOnN3;
+    } catch (error) {
+      console.error(`[Connection Check] Error checking UE ${ueIP}:`, error);
+      return false;
+    }
+  }
+
+  /**
    * Get active UEs with positive correlation:
    * - IP must exist in conntrack (active traffic)
    * - IP must exist in MongoDB subscriber database (valid subscriber)
@@ -184,5 +207,33 @@ export class ActiveSessionsUseCase {
     }
     
     return activeUEs;
+  }
+
+  /**
+   * PLACEHOLDER: Currently returns all active UEs
+   * TODO: Implement proper 5G detection once we determine the correct method
+   */
+  async getActive5GUEs(): Promise<ActiveUE[]> {
+    const allActiveUEs = await this.getActiveUEs();
+    
+    if (allActiveUEs.length > 0) {
+      console.log(`[Active Sessions] ✓ ${allActiveUEs.length} active UE(s) shown in 5G box (PLACEHOLDER - showing all UEs)`);
+    }
+    
+    return allActiveUEs;
+  }
+
+  /**
+   * PLACEHOLDER: Currently returns all active UEs
+   * TODO: Implement proper 4G detection once we determine the correct method
+   */
+  async getActive4GUEs(): Promise<ActiveUE[]> {
+    const allActiveUEs = await this.getActiveUEs();
+    
+    if (allActiveUEs.length > 0) {
+      console.log(`[Active Sessions] ✓ ${allActiveUEs.length} active UE(s) shown in 4G box (PLACEHOLDER - showing all UEs)`);
+    }
+    
+    return allActiveUEs;
   }
 }

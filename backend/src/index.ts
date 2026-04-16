@@ -211,7 +211,7 @@ async function main() {
   app.use('/api/audit', createAuditRouter(auditLogger, logger));
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
-  app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase));
+  app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo));
   app.use('/api/suci', createSuciRouter(suciManagementUseCase, logger));
   app.use('/api/docker', createDockerRouter(dockerLogStreamingUseCase, logger));
 

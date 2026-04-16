@@ -758,8 +758,9 @@ export function TopologyPage(): JSX.Element {
     // ACTIVE SESSIONS BOX (NEW - UE IP + IMSI)
     // ========================================
     
-    // Get active UEs from interface status
-    const activeUEs = interfaceStatus?.activeUEs || [];
+    // Get active UEs from interface status - SEPARATED BY GENERATION
+    const activeUEs4G = interfaceStatus?.activeUEs4G || [];
+    const activeUEs5G = interfaceStatus?.activeUEs5G || [];
     
     // Main box with gradient background - SCALED UP
     const activeSessionsBox = new shapes.standard.Rectangle({
@@ -818,7 +819,7 @@ export function TopologyPage(): JSX.Element {
       attrs: {
         body: { fill: 'transparent', stroke: 'none' },
         label: {
-          text: 'Active UE Sessions',
+          text: 'Active 4G UE Sessions',
           fill: '#e2e8f0',
           fontSize: 16,
           fontWeight: 'bold',
@@ -831,7 +832,7 @@ export function TopologyPage(): JSX.Element {
     sessionsTitle.addTo(jointGraph);
     
     // Count badge
-    if (activeUEs.length > 0) {
+    if (activeUEs4G.length > 0) {
       const ueCountBadge = new shapes.standard.Circle({
         position: { x: 968, y: 1258 },
         size: { width: 30, height: 30 },
@@ -842,7 +843,7 @@ export function TopologyPage(): JSX.Element {
             strokeWidth: 1.5,
           },
           label: {
-            text: String(activeUEs.length),
+            text: String(activeUEs4G.length),
             fill: '#ffffff',
             fontSize: 14,
             fontWeight: 'bold',
@@ -854,8 +855,8 @@ export function TopologyPage(): JSX.Element {
     }
     
     // Render UE list or empty state
-    if (activeUEs.length > 0) {
-      activeUEs.forEach((ue, index) => {
+    if (activeUEs4G.length > 0) {
+      activeUEs4G.forEach((ue, index) => {
         // Session card background
         const sessionCard = new shapes.standard.Rectangle({
           position: { x: 765, y: 1308 + (index * 56) },
@@ -956,7 +957,7 @@ export function TopologyPage(): JSX.Element {
     }
     
     // Purple dashed connection line from Connected Radios to Active Sessions
-    const hasActiveSessions = activeUEs.length > 0;
+    const hasActiveSessions = activeUEs4G.length > 0;
     const sessionLink = new shapes.standard.Link({
       source: { x: 625, y: 1425 },  // Right edge of Connected Radios (scaled, adjusted for new x position)
       target: { x: 750, y: 1425 },  // Left edge of Active Sessions (scaled)
@@ -977,6 +978,539 @@ export function TopologyPage(): JSX.Element {
       z: 5,
     });
     sessionLink.addTo(jointGraph);
+
+    // ========================================
+    // 5G RADIO NETWORK STATUS BOX (N2 and N3)
+    // ========================================
+    
+    // Check if N2 interface is active
+    const n2Active = interfaceStatus?.n2?.active || false;
+    const n2ConnectedGnodebs = interfaceStatus?.n2?.connectedGnodebs || [];
+    
+    // Check if N3 interface is active
+    const n3Active = interfaceStatus?.n3?.active || false;
+    const n3ConnectedGnodebs = interfaceStatus?.n3?.connectedGnodebs || [];
+    
+    // Main box - 100px to the left of Active 5G Sessions box
+    const fiveGRadioBox = new shapes.standard.Rectangle({
+      position: { x: 1925, y: 150 },
+      size: { width: 250, height: 350 },
+      attrs: {
+        body: {
+          fill: {
+            type: 'linearGradient',
+            stops: [
+              { offset: '0%', color: 'rgba(30, 41, 59, 0.7)' },
+              { offset: '100%', color: 'rgba(15, 23, 42, 0.7)' }
+            ],
+            attrs: { x1: '0%', y1: '0%', x2: '0%', y2: '100%' }
+          },
+          stroke: '#475569',
+          strokeWidth: 2,
+          rx: 8,
+          ry: 8,
+          filter: { name: 'dropShadow', args: { dx: 2, dy: 2, blur: 6, color: 'rgba(0,0,0,0.3)' } },
+        },
+        label: { text: '' },
+      },
+      z: 10,
+    });
+    fiveGRadioBox.addTo(jointGraph);
+    
+    // Header bar (blue tint for 5G)
+    const fiveGRadioHeader = new shapes.standard.Rectangle({
+      position: { x: 1925, y: 150 },
+      size: { width: 250, height: 42 },
+      attrs: {
+        body: {
+          fill: {
+            type: 'linearGradient',
+            stops: [
+              { offset: '0%', color: 'rgba(59, 130, 246, 0.3)' },
+              { offset: '100%', color: 'rgba(37, 99, 235, 0.3)' }
+            ],
+            attrs: { x1: '0%', y1: '0%', x2: '0%', y2: '100%' }
+          },
+          stroke: 'none',
+          rx: 8,
+          ry: 8,
+        },
+        label: { text: '' },
+      },
+      z: 11,
+    });
+    fiveGRadioHeader.addTo(jointGraph);
+    
+    // Title
+    const fiveGRadioTitle = new shapes.standard.TextBlock({
+      position: { x: 1940, y: 158 },
+      size: { width: 180, height: 30 },
+      attrs: {
+        body: { fill: 'transparent', stroke: 'none' },
+        label: {
+          text: '5G Radio Network Status',
+          fill: '#e2e8f0',
+          fontSize: 16,
+          fontWeight: 'bold',
+          textAnchor: 'start',
+          refX: 5,
+        },
+      },
+      z: 12,
+    });
+    fiveGRadioTitle.addTo(jointGraph);
+    
+    // Count badge
+    const totalFiveGRadios = n2ConnectedGnodebs.length + n3ConnectedGnodebs.length;
+    if (totalFiveGRadios > 0) {
+      const fiveGCountBadge = new shapes.standard.Circle({
+        position: { x: 2143, y: 158 },
+        size: { width: 30, height: 30 },
+        attrs: {
+          body: {
+            fill: '#3b82f6',
+            stroke: '#2563eb',
+            strokeWidth: 1.5,
+          },
+          label: {
+            text: String(totalFiveGRadios),
+            fill: '#ffffff',
+            fontSize: 14,
+            fontWeight: 'bold',
+          },
+        },
+        z: 12,
+      });
+      fiveGCountBadge.addTo(jointGraph);
+    }
+    
+    // N2 Section
+    const n2Label = new shapes.standard.TextBlock({
+      position: { x: 1940, y: 208 },
+      size: { width: 220, height: 24 },
+      attrs: {
+        body: { fill: 'transparent', stroke: 'none' },
+        label: {
+          text: 'N2',
+          fill: '#94a3b8',
+          fontSize: 14,
+          fontWeight: '600',
+          textAnchor: 'start',
+          refX: 5,
+        },
+      },
+      z: 11,
+    });
+    n2Label.addTo(jointGraph);
+    
+    // Status indicator for N2
+    const n2StatusBadge = new shapes.standard.Rectangle({
+      position: { x: 2127, y: 208 },
+      size: { width: 44, height: 22 },
+      attrs: {
+        body: {
+          fill: n2Active ? 'rgba(96, 165, 250, 0.2)' : 'rgba(100, 116, 139, 0.2)',
+          stroke: n2Active ? '#60a5fa' : '#64748b',
+          strokeWidth: 1,
+          rx: 8,
+          ry: 8,
+        },
+        label: {
+          text: n2Active ? 'ON' : 'OFF',
+          fill: n2Active ? '#60a5fa' : '#64748b',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
+      },
+      z: 11,
+    });
+    n2StatusBadge.addTo(jointGraph);
+    
+    // N2 IP list
+    if (n2Active && n2ConnectedGnodebs.length > 0) {
+      n2ConnectedGnodebs.forEach((ip, index) => {
+        const ipText = new shapes.standard.TextBlock({
+          position: { x: 1945, y: 240 + (index * 26) },
+          size: { width: 220, height: 26 },
+          attrs: {
+            body: { fill: 'transparent', stroke: 'none' },
+            label: {
+              text: `◆ ${ip}`,
+              fill: '#60a5fa',
+              fontSize: 15,
+              fontFamily: 'monospace',
+              textAnchor: 'start',
+              refX: 5,
+            },
+          },
+          z: 11,
+        });
+        ipText.addTo(jointGraph);
+      });
+    } else {
+      const noN2Text = new shapes.standard.TextBlock({
+        position: { x: 1945, y: 240 },
+        size: { width: 220, height: 26 },
+        attrs: {
+          body: { fill: 'transparent', stroke: 'none' },
+          label: {
+            text: '— No connections',
+            fill: '#475569',
+            fontSize: 14,
+            fontStyle: 'italic',
+            textAnchor: 'start',
+            refX: 5,
+          },
+        },
+        z: 11,
+      });
+      noN2Text.addTo(jointGraph);
+    }
+    
+    // Divider line between N2 and N3
+    const n3YStart = n2Active && n2ConnectedGnodebs.length > 0 
+      ? 240 + (n2ConnectedGnodebs.length * 26) + 18
+      : 240 + 26 + 18;
+    
+    const n2n3DividerLine = new shapes.standard.Rectangle({
+      position: { x: 1940, y: n3YStart },
+      size: { width: 220, height: 1 },
+      attrs: {
+        body: {
+          fill: '#334155',
+          stroke: 'none',
+        },
+        label: { text: '' },
+      },
+      z: 11,
+    });
+    n2n3DividerLine.addTo(jointGraph);
+    
+    // N3 Section
+    const n3Label = new shapes.standard.TextBlock({
+      position: { x: 1940, y: n3YStart + 10 },
+      size: { width: 220, height: 24 },
+      attrs: {
+        body: { fill: 'transparent', stroke: 'none' },
+        label: {
+          text: 'N3',
+          fill: '#94a3b8',
+          fontSize: 14,
+          fontWeight: '600',
+          textAnchor: 'start',
+          refX: 5,
+        },
+      },
+      z: 11,
+    });
+    n3Label.addTo(jointGraph);
+    
+    // Status indicator for N3
+    const n3StatusBadge = new shapes.standard.Rectangle({
+      position: { x: 2127, y: n3YStart + 10 },
+      size: { width: 44, height: 22 },
+      attrs: {
+        body: {
+          fill: n3Active ? 'rgba(234, 179, 8, 0.2)' : 'rgba(100, 116, 139, 0.2)',
+          stroke: n3Active ? '#eab308' : '#64748b',
+          strokeWidth: 1,
+          rx: 8,
+          ry: 8,
+        },
+        label: {
+          text: n3Active ? 'ON' : 'OFF',
+          fill: n3Active ? '#eab308' : '#64748b',
+          fontSize: 11,
+          fontWeight: 'bold',
+        },
+      },
+      z: 11,
+    });
+    n3StatusBadge.addTo(jointGraph);
+    
+    // N3 IP list
+    if (n3Active && n3ConnectedGnodebs.length > 0) {
+      n3ConnectedGnodebs.forEach((ip, index) => {
+        const ipText = new shapes.standard.TextBlock({
+          position: { x: 1945, y: n3YStart + 42 + (index * 26) },
+          size: { width: 220, height: 26 },
+          attrs: {
+            body: { fill: 'transparent', stroke: 'none' },
+            label: {
+              text: `◆ ${ip}`,
+              fill: '#fbbf24',
+              fontSize: 15,
+              fontFamily: 'monospace',
+              textAnchor: 'start',
+              refX: 5,
+            },
+          },
+          z: 11,
+        });
+        ipText.addTo(jointGraph);
+      });
+    } else {
+      const noN3Text = new shapes.standard.TextBlock({
+        position: { x: 1945, y: n3YStart + 42 },
+        size: { width: 220, height: 26 },
+        attrs: {
+          body: { fill: 'transparent', stroke: 'none' },
+          label: {
+            text: '— No connections',
+            fill: '#475569',
+            fontSize: 14,
+            fontStyle: 'italic',
+            textAnchor: 'start',
+            refX: 5,
+          },
+        },
+        z: 11,
+      });
+      noN3Text.addTo(jointGraph);
+    }
+
+    // ========================================
+    // PURPLE LINE BETWEEN 5G BOXES
+    // ========================================
+    
+    // Horizontal purple line connecting the two 5G boxes (centered vertically)
+    const fiveGBoxesLink = new shapes.standard.Link({
+      source: { x: 2175, y: 325 },  // Right edge of Radio Network box (middle)
+      target: { x: 2275, y: 325 },  // Left edge of Active Sessions box (middle)
+      vertices: [],  // Straight horizontal line
+      attrs: {
+        line: {
+          stroke: '#a855f7',  // Purple
+          strokeWidth: 2,
+          strokeDasharray: '10,10',  // Animated dashed
+          targetMarker: {
+            type: 'path',
+            d: 'M 10 -5 0 0 10 5 z',
+            fill: '#a855f7',
+          },
+          class: 'interface-active',
+        },
+      },
+      z: 5,
+    });
+    fiveGBoxesLink.addTo(jointGraph);
+
+    // ========================================
+    // ACTIVE 5G UE SESSIONS BOX
+    // ========================================
+    
+    // Main box - Bottom at (2400, 500), centered on gNodeB
+    const active5GSessionsBox = new shapes.standard.Rectangle({
+      position: { x: 2275, y: 150 },  // Centered at x=2400, bottom at y=500 (500-350=150)
+      size: { width: 250, height: 350 },
+      attrs: {
+        body: {
+          fill: {
+            type: 'linearGradient',
+            stops: [
+              { offset: '0%', color: 'rgba(30, 41, 59, 0.7)' },
+              { offset: '100%', color: 'rgba(15, 23, 42, 0.7)' }
+            ],
+            attrs: { x1: '0%', y1: '0%', x2: '0%', y2: '100%' }
+          },
+          stroke: '#475569',
+          strokeWidth: 2,
+          rx: 8,
+          ry: 8,
+          filter: { name: 'dropShadow', args: { dx: 2, dy: 2, blur: 6, color: 'rgba(0,0,0,0.3)' } },
+        },
+        label: { text: '' },
+      },
+      z: 10,
+    });
+    active5GSessionsBox.addTo(jointGraph);
+    
+    // Header bar
+    const sessions5GHeader = new shapes.standard.Rectangle({
+      position: { x: 2275, y: 150 },
+      size: { width: 250, height: 42 },
+      attrs: {
+        body: {
+          fill: {
+            type: 'linearGradient',
+            stops: [
+              { offset: '0%', color: 'rgba(6, 182, 212, 0.2)' },
+              { offset: '100%', color: 'rgba(8, 145, 178, 0.2)' }
+            ],
+            attrs: { x1: '0%', y1: '0%', x2: '0%', y2: '100%' }
+          },
+          stroke: 'none',
+          rx: 8,
+          ry: 8,
+        },
+        label: { text: '' },
+      },
+      z: 11,
+    });
+    sessions5GHeader.addTo(jointGraph);
+    
+    // Title
+    const sessions5GTitle = new shapes.standard.TextBlock({
+      position: { x: 2290, y: 158 },
+      size: { width: 180, height: 30 },
+      attrs: {
+        body: { fill: 'transparent', stroke: 'none' },
+        label: {
+          text: 'Active 5G UE Sessions',
+          fill: '#e2e8f0',
+          fontSize: 16,
+          fontWeight: 'bold',
+          textAnchor: 'start',
+          refX: 5,
+        },
+      },
+      z: 12,
+    });
+    sessions5GTitle.addTo(jointGraph);
+    
+    // Count badge
+    if (activeUEs5G.length > 0) {
+      const ue5GCountBadge = new shapes.standard.Circle({
+        position: { x: 2493, y: 158 },
+        size: { width: 30, height: 30 },
+        attrs: {
+          body: {
+            fill: '#06b6d4',
+            stroke: '#0891b2',
+            strokeWidth: 1.5,
+          },
+          label: {
+            text: String(activeUEs5G.length),
+            fill: '#ffffff',
+            fontSize: 14,
+            fontWeight: 'bold',
+          },
+        },
+        z: 12,
+      });
+      ue5GCountBadge.addTo(jointGraph);
+    }
+    
+    // Render 5G UE list or empty state
+    if (activeUEs5G.length > 0) {
+      activeUEs5G.forEach((ue, index) => {
+        const sessionCard = new shapes.standard.Rectangle({
+          position: { x: 2290, y: 208 + (index * 56) },
+          size: { width: 220, height: 52 },
+          attrs: {
+            body: {
+              fill: 'rgba(6, 182, 212, 0.05)',
+              stroke: '#0e7490',
+              strokeWidth: 1,
+              strokeDasharray: '2,2',
+              rx: 4,
+              ry: 4,
+            },
+            label: { text: '' },
+          },
+          z: 11,
+        });
+        sessionCard.addTo(jointGraph);
+        
+        const ipText = new shapes.standard.TextBlock({
+          position: { x: 2297, y: 214 + (index * 56) },
+          size: { width: 210, height: 22 },
+          attrs: {
+            body: { fill: 'transparent', stroke: 'none' },
+            label: {
+              text: `◆ ${ue.ip}`,
+              fill: '#22d3ee',
+              fontSize: 15,
+              fontWeight: '600',
+              fontFamily: 'monospace',
+              textAnchor: 'start',
+              refX: 5,
+            },
+          },
+          z: 12,
+        });
+        ipText.addTo(jointGraph);
+        
+        const imsiText = new shapes.standard.TextBlock({
+          position: { x: 2297, y: 237 + (index * 56) },
+          size: { width: 210, height: 20 },
+          attrs: {
+            body: { fill: 'transparent', stroke: 'none' },
+            label: {
+              text: `  IMSI: ${ue.imsi}`,
+              fill: '#67e8f9',
+              fontSize: 12,
+              fontFamily: 'monospace',
+              textAnchor: 'start',
+              refX: 5,
+            },
+          },
+          z: 12,
+        });
+        imsiText.addTo(jointGraph);
+      });
+    } else {
+      const emptyIcon = new shapes.standard.Circle({
+        position: { x: 2385, y: 230 },
+        size: { width: 36, height: 36 },
+        attrs: {
+          body: {
+            fill: 'rgba(100, 116, 139, 0.1)',
+            stroke: '#475569',
+            strokeWidth: 2,
+            strokeDasharray: '3,3',
+          },
+          label: {
+            text: '○',
+            fill: '#475569',
+            fontSize: 24,
+          },
+        },
+        z: 11,
+      });
+      emptyIcon.addTo(jointGraph);
+      
+      const no5GSessionsText = new shapes.standard.TextBlock({
+        position: { x: 2290, y: 275 },
+        size: { width: 220, height: 24 },
+        attrs: {
+          body: { fill: 'transparent', stroke: 'none' },
+          label: {
+            text: 'No active sessions',
+            fill: '#475569',
+            fontSize: 14,
+            fontStyle: 'italic',
+            textAnchor: 'middle',
+            refX: '50%',
+          },
+        },
+        z: 11,
+      });
+      no5GSessionsText.addTo(jointGraph);
+    }
+
+    // Purple vertical line from box to gNodeB (100% vertical at x=2400)
+    const hasActive5GSessions = activeUEs5G.length > 0;
+    const fiveGSessionLink = new shapes.standard.Link({
+      source: { x: 2400, y: 500 },  // Bottom center of Active 5G Sessions box
+      target: { id: 'gnb' },         // gNodeB (centered at x=2400)
+      vertices: [],
+      attrs: {
+        line: {
+          stroke: hasActive5GSessions ? '#a855f7' : '#475569',
+          strokeWidth: 2,
+          strokeDasharray: hasActive5GSessions ? '10,10' : '5,5',
+          targetMarker: {
+            type: 'path',
+            d: 'M 10 -5 0 0 10 5 z',
+            fill: hasActive5GSessions ? '#a855f7' : '#475569',
+          },
+          class: hasActive5GSessions ? 'interface-active' : '',
+        },
+      },
+      z: 5,
+    });
+    fiveGSessionLink.addTo(jointGraph);
 
     // ========================================
     // CONNECTIONS - Manual routing
@@ -1242,11 +1776,13 @@ export function TopologyPage(): JSX.Element {
         line: {
           stroke: '#eab308',  // YELLOW
           strokeWidth: 2,
+          strokeDasharray: n3Active ? '10,10' : '0',  // Animate if N3 active
           targetMarker: {
             type: 'path',
             d: 'M 10 -5 0 0 10 5 z',
             fill: '#eab308',
           },
+          class: n3Active ? 'interface-active' : '',
         },
       },
       labels: [{
@@ -1446,11 +1982,13 @@ export function TopologyPage(): JSX.Element {
         line: {
           stroke: '#ec4899',  // pink
           strokeWidth: 2.5,
+          strokeDasharray: n2Active ? '10,10' : '0',  // Animate if N2 active
           targetMarker: {
             type: 'path',
             d: 'M 10 -5 0 0 10 5 z',
             fill: '#ec4899',
           },
+          class: n2Active ? 'interface-active' : '',
         },
       },
       labels: [{
