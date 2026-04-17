@@ -5,6 +5,7 @@ import { ValidateConfigUseCase } from '../../application/use-cases/validate-conf
 import { ApplyConfigUseCase } from '../../application/use-cases/apply-config';
 import { TopologyUseCase } from '../../application/use-cases/topology';
 import { ServiceMonitorUseCase } from '../../application/use-cases/service-monitor';
+import { SyncSDUseCase } from '../../application/use-cases/sync-sd-usecase';
 
 export function createConfigRouter(
   loadConfigUseCase: LoadConfigUseCase,
@@ -12,6 +13,7 @@ export function createConfigRouter(
   applyConfigUseCase: ApplyConfigUseCase,
   topologyUseCase: TopologyUseCase,
   serviceMonitorUseCase: ServiceMonitorUseCase,
+  syncSDUseCase: SyncSDUseCase,
   logger: pino.Logger,
 ): Router {
   const router = Router();
@@ -125,6 +127,32 @@ export function createConfigRouter(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ err: msg }, 'Apply failed');
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  router.post('/sync-sd', async (req: Request, res: Response) => {
+    try {
+      const { sd, sst } = req.body;
+      
+      if (!sd || typeof sd !== 'string') {
+        res.status(400).json({ success: false, error: 'SD value is required' });
+        return;
+      }
+      
+      logger.info({ sd, sst }, 'Syncing SD across SMF and subscribers');
+      const result = await syncSDUseCase.execute(sd, sst);
+      
+      if (result.success) {
+        logger.info(result.updated, 'SD sync completed successfully');
+        res.json({ success: true, data: result.updated });
+      } else {
+        logger.error({ error: result.error }, 'SD sync failed');
+        res.status(500).json({ success: false, error: result.error });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err: msg }, 'SD sync failed with exception');
       res.status(500).json({ success: false, error: msg });
     }
   });

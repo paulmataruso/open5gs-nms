@@ -100,4 +100,31 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
         : 0,
     }));
   }
+
+  async updateSDForAll(sd: string, sst?: number): Promise<number> {
+    // Build the filter - optionally match SST
+    const filter = sst ? { 'slice.sst': sst } : {};
+
+    // Update all matching slice entries
+    // If SST is specified, only update slices with that SST
+    // Otherwise, update all slices
+    const result = await this.collection.updateMany(
+      filter,
+      {
+        $set: {
+          'slice.$[elem].sd': sd,
+        },
+      },
+      {
+        arrayFilters: sst ? [{ 'elem.sst': sst }] : [{}],
+      },
+    );
+
+    this.logger.info(
+      { matched: result.matchedCount, modified: result.modifiedCount, sd, sst },
+      'Updated SD for subscribers',
+    );
+
+    return result.modifiedCount;
+  }
 }

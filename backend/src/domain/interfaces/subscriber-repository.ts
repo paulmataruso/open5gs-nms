@@ -8,4 +8,5 @@ export interface ISubscriberRepository {
   delete(imsi: string): Promise<void>;
   count(): Promise<number>;
   search(query: string, skip?: number, limit?: number): Promise<SubscriberListItem[]>;
+  updateSDForAll(sd: string, sst?: number): Promise<number>;
 }

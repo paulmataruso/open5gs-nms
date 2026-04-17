@@ -29,6 +29,8 @@ export const configApi = {
     api.post<{ success: boolean; data: ApplyResult }>('/config/apply', configs).then((r) => r.data.data),
   getTopology: () =>
     api.get<{ success: boolean; data: TopologyGraph }>('/config/topology/graph').then((r) => r.data.data),
+  syncSD: (sd: string, sst?: number) =>
+    api.post<{ success: boolean; data: { smf_slices: number; subscribers: number } }>('/config/sync-sd', { sd, sst }).then((r) => r.data),
 };
 
 // ── Services ──

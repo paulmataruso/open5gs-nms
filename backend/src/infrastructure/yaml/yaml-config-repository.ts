@@ -402,7 +402,7 @@ export class YamlConfigRepository implements IConfigRepository {
   /**
    * Recursively convert numeric strings to actual numbers
    * This ensures js-yaml doesn't add quotes around numbers
-   * EXCEPT for MCC/MNC which must remain strings to preserve leading zeros
+   * EXCEPT for MCC/MNC/SD which must remain strings to preserve leading zeros
    */
   private ensureNumericTypes(obj: any, parentKey?: string): any {
     if (obj === null || obj === undefined) {
@@ -416,8 +416,8 @@ export class YamlConfigRepository implements IConfigRepository {
     if (typeof obj === 'object') {
       const result: any = {};
       for (const [key, value] of Object.entries(obj)) {
-        // NEVER convert mcc or mnc fields - they must stay as strings
-        if (key === 'mcc' || key === 'mnc') {
+        // NEVER convert mcc, mnc, or sd fields - they must stay as strings
+        if (key === 'mcc' || key === 'mnc' || key === 'sd') {
           result[key] = value; // Keep as-is (string)
         } else {
           result[key] = this.ensureNumericTypes(value, key);
@@ -426,8 +426,8 @@ export class YamlConfigRepository implements IConfigRepository {
       return result;
     }
 
-    // Skip conversion if parent key is mcc or mnc
-    if (parentKey === 'mcc' || parentKey === 'mnc') {
+    // Skip conversion if parent key is mcc, mnc, or sd
+    if (parentKey === 'mcc' || parentKey === 'mnc' || parentKey === 'sd') {
       return obj;
     }
 
@@ -443,16 +443,18 @@ export class YamlConfigRepository implements IConfigRepository {
   }
 
   /**
-   * Fix MCC/MNC values by reading from raw YAML text
+   * Fix MCC/MNC/SD values by reading from raw YAML text
    * This preserves leading zeros that the YAML parser strips
    */
   private fixMccMncFromRawYaml(rawYaml: string, doc: any): any {
-    // Find all mcc/mnc values in raw YAML with regex
+    // Find all mcc/mnc/sd values in raw YAML with regex
     const mccMatches = rawYaml.matchAll(/^\s*(mcc):\s*(\d+)\s*$/gm);
     const mncMatches = rawYaml.matchAll(/^\s*(mnc):\s*(\d+)\s*$/gm);
+    const sdMatches = rawYaml.matchAll(/^\s*(sd):\s*([0-9a-fA-F]+)\s*$/gm);
     
     const mccValues: string[] = [];
     const mncValues: string[] = [];
+    const sdValues: string[] = [];
     
     for (const match of mccMatches) {
       mccValues.push(match[2]); // Capture the numeric value as string
@@ -462,20 +464,24 @@ export class YamlConfigRepository implements IConfigRepository {
       mncValues.push(match[2]); // Capture the numeric value as string
     }
     
-    // Now recursively fix the doc by replacing mcc/mnc with raw values
-    return this.replaceMccMncValues(doc, mccValues, mncValues, { mccIndex: 0, mncIndex: 0 });
+    for (const match of sdMatches) {
+      sdValues.push(match[2]); // Capture the hex value as string
+    }
+    
+    // Now recursively fix the doc by replacing mcc/mnc/sd with raw values
+    return this.replaceMccMncValues(doc, mccValues, mncValues, sdValues, { mccIndex: 0, mncIndex: 0, sdIndex: 0 });
   }
 
   /**
-   * Recursively replace MCC/MNC values with raw string values from YAML
+   * Recursively replace MCC/MNC/SD values with raw string values from YAML
    */
-  private replaceMccMncValues(obj: any, mccValues: string[], mncValues: string[], indices: { mccIndex: number; mncIndex: number }): any {
+  private replaceMccMncValues(obj: any, mccValues: string[], mncValues: string[], sdValues: string[], indices: { mccIndex: number; mncIndex: number; sdIndex: number }): any {
     if (obj === null || obj === undefined || typeof obj !== 'object') {
       return obj;
     }
 
     if (Array.isArray(obj)) {
-      return obj.map(item => this.replaceMccMncValues(item, mccValues, mncValues, indices));
+      return obj.map(item => this.replaceMccMncValues(item, mccValues, mncValues, sdValues, indices));
     }
 
     const result: any = {};
@@ -484,8 +490,10 @@ export class YamlConfigRepository implements IConfigRepository {
         result[key] = mccValues[indices.mccIndex++];
       } else if (key === 'mnc' && indices.mncIndex < mncValues.length) {
         result[key] = mncValues[indices.mncIndex++];
+      } else if (key === 'sd' && indices.sdIndex < sdValues.length) {
+        result[key] = sdValues[indices.sdIndex++];
       } else {
-        result[key] = this.replaceMccMncValues(value, mccValues, mncValues, indices);
+        result[key] = this.replaceMccMncValues(value, mccValues, mncValues, sdValues, indices);
       }
     }
     return result;

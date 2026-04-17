@@ -148,6 +148,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
   const sbiServer = amf.sbi?.server?.[0] || { address: '127.0.0.5', port: 7777 };
   const scpUri = amf.sbi?.client?.scp?.[0]?.uri || '';
   const ngapServer = amf.ngap?.server?.[0] || { address: '10.0.1.175' };
+  const [syncingSD, setSyncingSD] = useState(false);
 
   const updateAmf = (partial: any): void => {
     onChange({ ...configs, amf: { ...fullYaml, amf: { ...amf, ...partial } } });
@@ -155,6 +156,44 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
 
   const updateLogger = (logger: any): void => {
     onChange({ ...configs, amf: { ...fullYaml, logger } });
+  };
+
+  const handleSyncSD = async () => {
+    const sd = amf.plmn_support?.[0]?.s_nssai?.[0]?.sd;
+    const sst = amf.plmn_support?.[0]?.s_nssai?.[0]?.sst;
+
+    if (!sd) {
+      toast.error('No SD value found in AMF PLMN Support configuration');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Sync SD value "${sd}" to:\n\n` +
+      `✓ SMF s_nssai configuration\n` +
+      `✓ All subscribers in database\n\n` +
+      `This will update all slices${sst ? ` with SST=${sst}` : ''}.\n\n` +
+      `Continue?`
+    );
+
+    if (!confirmed) return;
+
+    setSyncingSD(true);
+    try {
+      const result = await configApi.syncSD(sd, sst);
+      if (result.success) {
+        toast.success(
+          `✅ SD synced successfully!\n` +
+          `SMF slices: ${result.data.smf_slices}\n` +
+          `Subscribers: ${result.data.subscribers}`
+        );
+      } else {
+        toast.error('SD sync failed');
+      }
+    } catch (error) {
+      toast.error(`SD sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSyncingSD(false);
+    }
   };
 
   return (
@@ -189,9 +228,9 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                 };
                 updateAmf({ guami: [...amf.guami, newEntry] });
               }}
-              className="nms-btn-ghost text-xs flex items-center gap-1"
+className="nms-btn-ghost text-xs flex items-center gap-1"
             >
-              <Plus className="w-3.5 h-3.5" /> Add PLMN
+              <Plus className="w-3.5 h-3.5" /> Add PLMN with Slice
             </button>
           </div>
           {amf.guami.map((g: any, i: number) => (
@@ -285,18 +324,33 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         <div>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold font-display text-nms-accent">PLMN Support</h3>
-            <button
-              onClick={() => {
-                const newEntry = {
-                  plmn_id: { mcc: '001', mnc: '01' },
-                  s_nssai: [{ sst: 1 }],
-                };
-                updateAmf({ plmn_support: [...amf.plmn_support, newEntry] });
-              }}
-              className="nms-btn-ghost text-xs flex items-center gap-1"
-            >
-              <Plus className="w-3.5 h-3.5" /> Add PLMN
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleSyncSD}
+                disabled={syncingSD || !amf.plmn_support?.[0]?.s_nssai?.[0]?.sd}
+                className="nms-btn-primary text-xs flex items-center gap-1"
+                title="Sync SD value to SMF and all subscribers"
+              >
+                {syncingSD ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                {syncingSD ? 'Syncing...' : 'Sync SD'}
+              </button>
+              <button
+                onClick={() => {
+                  const newEntry = {
+                    plmn_id: { mcc: '001', mnc: '01' },
+                    s_nssai: [{ sst: 1 }],
+                  };
+                  updateAmf({ plmn_support: [...amf.plmn_support, newEntry] });
+                }}
+                className="nms-btn-ghost text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add PLMN
+              </button>
+            </div>
           </div>
           {amf.plmn_support.map((p: any, i: number) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
@@ -312,7 +366,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   <X className="w-4 h-4" />
                 </button>
               )}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <FieldWithTooltip label="MCC" value={p.plmn_id.mcc} onChange={(v) => {
                   const updated = [...amf.plmn_support];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
@@ -323,11 +377,48 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateAmf({ plmn_support: updated });
                 }} tooltip={AMF_TOOLTIPS.plmn_mnc} />
-                <FieldWithTooltip label="SST" type="number" value={p.s_nssai?.[0]?.sst || 1} onChange={(v) => {
-                  const updated = [...amf.plmn_support];
-                  updated[i] = { ...updated[i], s_nssai: [{ sst: parseInt(v) || 1 }] };
-                  updateAmf({ plmn_support: updated });
-                }} placeholder="1" tooltip={AMF_TOOLTIPS.plmn_sst} />
+              </div>
+              <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2 mt-3">S-NSSAI (Network Slice Selection Assistance Info)</div>
+              <div className="grid grid-cols-2 gap-4">
+                <FieldWithTooltip 
+                  label="SST (Slice/Service Type)" 
+                  type="number" 
+                  value={p.s_nssai?.[0]?.sst || 1} 
+                  onChange={(v) => {
+                    const updated = [...amf.plmn_support];
+                    const currentSd = updated[i].s_nssai?.[0]?.sd;
+                    updated[i] = { 
+                      ...updated[i], 
+                      s_nssai: [{ 
+                        sst: parseInt(v) || 1,
+                        ...(currentSd ? { sd: currentSd } : {})
+                      }] 
+                    };
+                    updateAmf({ plmn_support: updated });
+                  }} 
+                  placeholder="1" 
+                  tooltip={AMF_TOOLTIPS.plmn_sst} 
+                />
+                <FieldWithTooltip 
+                  label="SD (Slice Differentiator)" 
+                  value={p.s_nssai?.[0]?.sd || ''} 
+                  onChange={(v) => {
+                    const updated = [...amf.plmn_support];
+                    const currentSst = updated[i].s_nssai?.[0]?.sst || 1;
+                    const cleanedSd = v.replace(/[^0-9a-fA-F]/g, '').slice(0, 6);
+                    updated[i] = { 
+                      ...updated[i], 
+                      s_nssai: [{ 
+                        sst: currentSst,
+                        ...(cleanedSd ? { sd: cleanedSd } : {})
+                      }] 
+                    };
+                    updateAmf({ plmn_support: updated });
+                  }} 
+                  placeholder="010203 (optional)" 
+                  tooltip={AMF_TOOLTIPS.plmn_sd}
+                  mono={true}
+                />
               </div>
             </div>
           ))}
@@ -576,6 +667,128 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               }} tooltip={i === 0 ? SMF_TOOLTIPS.dns_primary : SMF_TOOLTIPS.dns_secondary} />
             ))}
           </div>
+        </div>
+      )}
+
+      {/* S-NSSAI Configuration */}
+      {smf.s_nssai && smf.s_nssai.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold font-display text-nms-accent">S-NSSAI (Network Slice Configuration)</h3>
+            <button
+              onClick={() => {
+                const newSlice = { sst: 1, dnn: ['internet'] };
+                updateSmf({ s_nssai: [...smf.s_nssai, newSlice] });
+              }}
+              className="nms-btn-ghost text-xs flex items-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Slice
+            </button>
+          </div>
+          {smf.s_nssai.map((slice: any, i: number) => (
+            <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-3">
+              {smf.s_nssai.length > 1 && (
+                <button
+                  onClick={() => {
+                    const updated = smf.s_nssai.filter((_: any, idx: number) => idx !== i);
+                    updateSmf({ s_nssai: updated });
+                  }}
+                  className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
+                  title="Remove Slice"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+              
+              <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">Slice {i + 1}</div>
+              
+              <div className="grid grid-cols-2 gap-4 mb-3">
+                <FieldWithTooltip
+                  label="SST (Slice/Service Type)"
+                  type="number"
+                  value={slice.sst || 1}
+                  onChange={(v) => {
+                    const updated = [...smf.s_nssai];
+                    updated[i] = { ...updated[i], sst: parseInt(v) || 1 };
+                    updateSmf({ s_nssai: updated });
+                  }}
+                  placeholder="1"
+                  tooltip={SMF_TOOLTIPS.s_nssai_sst}
+                />
+                <FieldWithTooltip
+                  label="SD (Slice Differentiator)"
+                  value={slice.sd || ''}
+                  onChange={(v) => {
+                    const updated = [...smf.s_nssai];
+                    const cleanedSd = v.replace(/[^0-9a-fA-F]/g, '').slice(0, 6);
+                    updated[i] = {
+                      ...updated[i],
+                      ...(cleanedSd ? { sd: cleanedSd } : { sd: undefined })
+                    };
+                    // Remove sd property if empty
+                    if (!cleanedSd && updated[i].sd !== undefined) {
+                      const { sd, ...rest } = updated[i];
+                      updated[i] = rest;
+                    }
+                    updateSmf({ s_nssai: updated });
+                  }}
+                  placeholder="010203 (optional)"
+                  tooltip={SMF_TOOLTIPS.s_nssai_sd}
+                  mono={true}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-nms-text uppercase tracking-wider mb-2 block">
+                  DNN (Data Network Names)
+                </label>
+                <div className="space-y-2">
+                  {(slice.dnn || []).map((dnn: string, dnnIdx: number) => (
+                    <div key={dnnIdx} className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        className="nms-input flex-1 font-mono text-xs"
+                        value={dnn}
+                        onChange={(e) => {
+                          const updated = [...smf.s_nssai];
+                          const updatedDnn = [...(updated[i].dnn || [])];
+                          updatedDnn[dnnIdx] = e.target.value;
+                          updated[i] = { ...updated[i], dnn: updatedDnn };
+                          updateSmf({ s_nssai: updated });
+                        }}
+                        placeholder="internet"
+                      />
+                      {(slice.dnn || []).length > 1 && (
+                        <button
+                          onClick={() => {
+                            const updated = [...smf.s_nssai];
+                            const updatedDnn = (updated[i].dnn || []).filter((_: string, idx: number) => idx !== dnnIdx);
+                            updated[i] = { ...updated[i], dnn: updatedDnn };
+                            updateSmf({ s_nssai: updated });
+                          }}
+                          className="text-nms-text-dim hover:text-nms-red transition-colors"
+                          title="Remove DNN"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => {
+                      const updated = [...smf.s_nssai];
+                      const currentDnn = updated[i].dnn || [];
+                      updated[i] = { ...updated[i], dnn: [...currentDnn, 'internet'] };
+                      updateSmf({ s_nssai: updated });
+                    }}
+                    className="nms-btn-ghost text-xs w-full flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add DNN
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

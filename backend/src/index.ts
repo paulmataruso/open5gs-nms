@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import rateLimit from 'express-rate-limit';
 import { WebSocketServer } from 'ws';
 import pino from 'pino';
 import { loadAppConfig } from './config';
@@ -33,6 +32,7 @@ import { createAuditRouter } from './interfaces/rest/audit-controller';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
+import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
 
@@ -146,6 +146,11 @@ async function main() {
     configRepo,
     logger,
   );
+  const syncSDUseCase = new SyncSDUseCase(
+    configRepo,
+    subscriberRepo,
+    logger,
+  );
 
   // Initialize log streaming WebSocket handler
   const logStreamHandler = new LogStreamHandler(
@@ -171,14 +176,6 @@ async function main() {
   app.use(compression());
   app.use(express.json({ limit: '10mb' }));
 
-  // Rate limiting
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // limit each IP to 100 requests per windowMs
-    message: 'Too many requests from this IP, please try again later.',
-  });
-  app.use('/api/', limiter);
-
   // Health check
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -197,6 +194,7 @@ async function main() {
       applyConfigUseCase,
       topologyUseCase,
       serviceMonitorUseCase,
+      syncSDUseCase,
       logger,
     ),
   );
