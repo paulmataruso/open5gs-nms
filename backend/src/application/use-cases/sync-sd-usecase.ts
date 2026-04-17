@@ -57,10 +57,11 @@ export class SyncSDUseCase {
   private async updateSmfSlices(sd: string, sst?: number): Promise<number> {
     // Load current SMF configuration
     const smfConfig = await this.configRepo.loadSmf();
-    const smf = (smfConfig as any).smf;
+    const rawYaml = (smfConfig as any).rawYaml;
+    const smf = rawYaml?.smf;
 
     if (!smf?.s_nssai || !Array.isArray(smf.s_nssai)) {
-      this.logger.warn('No s_nssai array found in SMF config');
+      this.logger.warn({ smf, hasSNssai: !!smf?.s_nssai }, 'No s_nssai array found in SMF config');
       return 0;
     }
 

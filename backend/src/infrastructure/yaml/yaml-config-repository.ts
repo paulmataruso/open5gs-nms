@@ -249,14 +249,30 @@ export class YamlConfigRepository implements IConfigRepository {
       forceQuotes: false,
     });
     
-    // Post-process: Remove quotes from MCC/MNC values
+    // Post-process: Remove quotes from MCC/MNC/SD values at ANY indentation level
     // This allows "010" to become 010 (unquoted) in YAML
     // Open5GS correctly reads unquoted 010 as string "010" preserving leading zero
-    let finalContent = content.replace(/^(\s*)(mcc|mnc):\s+["']?(\d+)["']?$/gm, '$1$2: $3');
+    // We need multiple passes to catch different quote styles and formats
+    let finalContent = content;
+    
+    // Pass 1: Remove double quotes (ASCII and Unicode) around hex values for mcc/mnc/sd
+    finalContent = finalContent.replace(/(^\s*)(mcc|mnc|sd):\s+["“”]([0-9a-fA-F]+)["“”](\s*)$/gm, '$1$2: $3$4');
+    
+    // Pass 2: Remove single quotes (ASCII and Unicode) around hex values for mcc/mnc/sd  
+    finalContent = finalContent.replace(/(^\s*)(mcc|mnc|sd):\s+['‘’]([0-9a-fA-F]+)['‘’](\s*)$/gm, '$1$2: $3$4');
+    
+    // Pass 3: Normalize spacing for already-unquoted values
+    finalContent = finalContent.replace(/(^\s*)(mcc|mnc|sd):\s+([0-9a-fA-F]+)(\s*)$/gm, '$1$2: $3$4');
     
     // Post-process: Remove empty objects and null values for client key
     // Convert 'client: {}' to 'client:' and 'client: null' to 'client:'
     finalContent = finalContent.replace(/^(\s*)(client):\s*(\{\}|null)\s*$/gm, '$1$2:');
+    
+    // DEBUG: Log SD lines to verify quote removal
+    const sdLines = finalContent.split('\n').filter(line => line.match(/^\s*sd:/));
+    if (sdLines.length > 0) {
+      this.logger.info({ service, sdLines }, 'SD lines in final YAML');
+    }
     
     // DEBUG: Log the YAML we're writing
     this.logger.info({ service, yamlPreview: finalContent.substring(0, 300) }, 'Writing YAML content');
