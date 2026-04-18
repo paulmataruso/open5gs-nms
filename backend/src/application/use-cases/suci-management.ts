@@ -145,13 +145,35 @@ export class SuciManagementUseCase {
 
   private async extractPublicKey(scheme: number, keyPath: string): Promise<string> {
     if (scheme === 1) {
-      // X25519: extract raw 32-byte public key as hex
-      const result = await this.hostExecutor.executeCommand('sh', ['-c', `openssl pkey -in ${keyPath} -text_pub -noout | grep -v "^X25519\\|^pub" | tr -d "\\n: "`]);
-      return result.stdout.trim().toLowerCase();
+      // X25519: extract public key from text output
+      // Output format:
+      // pub:
+      //     e4:21:68:6f:6f:b2:d7:0e:3f:a2:8d:94:04:94:09:
+      //     56:86:c3:17:9f:ef:53:51:46:67:a6:ed:10:6b:8a:
+      //     7d:3d
+      const result = await this.hostExecutor.executeCommand('sh', ['-c', 
+        `openssl pkey -in ${keyPath} -text | grep -A 3 "^pub:" | tail -n +2 | tr -d "\\n: "`
+      ]);
+      const pubKey = result.stdout.trim().toLowerCase();
+      if (!pubKey || pubKey.length !== 64) {
+        this.logger.warn({ keyPath, pubKey, length: pubKey.length }, 'X25519 public key extraction failed or invalid length (expected 64 hex chars)');
+      }
+      return pubKey;
     } else {
-      // secp256r1: extract compressed public key (33 bytes) as hex
-      const result = await this.hostExecutor.executeCommand('sh', ['-c', `openssl ec -in ${keyPath} -conv_form compressed -pubout -outform DER 2>/dev/null | tail -c 33 | xxd -p | tr -d '\\n'`]);
-      return result.stdout.trim().toLowerCase();
+      // secp256r1: extract public key from text output
+      // Output format:
+      // pub:
+      //     02:0f:67:c7:91:1b:81:dc:fd:68:03:7e:92:61:22:
+      //     83:bc:b4:de:d1:10:4f:f6:a3:61:e8:3a:20:37:f5:
+      //     93:b2:ca
+      const result = await this.hostExecutor.executeCommand('sh', ['-c', 
+        `openssl ec -in ${keyPath} -conv_form compressed -text 2>/dev/null | grep -A 3 "^pub:" | tail -n +2 | tr -d "\\n: "`
+      ]);
+      const pubKey = result.stdout.trim().toLowerCase();
+      if (!pubKey || pubKey.length !== 66) {
+        this.logger.warn({ keyPath, pubKey, length: pubKey.length }, 'secp256r1 public key extraction failed or invalid length (expected 66 hex chars)');
+      }
+      return pubKey;
     }
   }
 

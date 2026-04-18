@@ -33,6 +33,7 @@ import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
+import { AutoAssignIPsUseCase } from './application/use-cases/auto-assign-ips-usecase';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
 
@@ -151,6 +152,11 @@ async function main() {
     subscriberRepo,
     logger,
   );
+  const autoAssignIPsUseCase = new AutoAssignIPsUseCase(
+    subscriberRepo,
+    configRepo,
+    logger,
+  );
 
   // Initialize log streaming WebSocket handler
   const logStreamHandler = new LogStreamHandler(
@@ -204,7 +210,7 @@ async function main() {
   );
   app.use(
     '/api/subscribers',
-    createSubscriberRouter(subscriberManagementUseCase, logger),
+    createSubscriberRouter(subscriberManagementUseCase, autoAssignIPsUseCase, logger),
   );
   app.use('/api/audit', createAuditRouter(auditLogger, logger));
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));

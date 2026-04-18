@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Shield } from 'lucide-react';
+import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Shield, Network, List } from 'lucide-react';
 import { useSubscriberStore, useSuciStore } from '../../stores';
 import { subscriberApi } from '../../api';
 import type { Subscriber, SubscriberListItem, SubscriberSession } from '../../types';
@@ -162,6 +162,109 @@ function generateICCID(mcc: string, issuer: string, accountNumber?: string): str
   const checksum = (10 - (sum % 10)) % 10;
   
   return partial + checksum;
+}
+
+// IP Assignments Modal Component
+function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
+  const [assignments, setAssignments] = useState<Array<{ imsi: string; ipv4: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const result = await subscriberApi.getIPAssignments();
+        if (result.success) {
+          setAssignments(result.data);
+        }
+      } catch (error) {
+        toast.error('Failed to load IP assignments');
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  const filteredAssignments = assignments.filter(a => 
+    a.imsi.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    a.ipv4.includes(searchTerm)
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="nms-card max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold font-display">IP Address Assignments</h3>
+            <p className="text-sm text-nms-text-dim mt-1">
+              {assignments.length} subscriber{assignments.length !== 1 ? 's' : ''} with assigned IPs
+            </p>
+          </div>
+          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-nms-text-dim" />
+          <input 
+            className="nms-input pl-10" 
+            placeholder="Search IMSI or IP address..." 
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+          />
+        </div>
+
+        <div className="overflow-y-auto flex-1">
+          {loading ? (
+            <div className="text-center py-12 text-nms-text-dim">
+              Loading IP assignments...
+            </div>
+          ) : filteredAssignments.length === 0 ? (
+            <div className="text-center py-12 text-nms-text-dim">
+              {searchTerm ? 'No matching assignments found' : 'No IP assignments found'}
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-nms-surface-1 border-b border-nms-border">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IMSI</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IPv4 Address</th>
+                  <th className="text-right px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredAssignments.map(a => (
+                  <tr key={a.imsi} className="border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors">
+                    <td className="px-4 py-3 font-mono text-xs">{a.imsi}</td>
+                    <td className="px-4 py-3 font-mono text-sm text-nms-accent">{a.ipv4}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard.writeText(a.ipv4);
+                          toast.success('IP copied to clipboard');
+                        }}
+                        className="text-nms-text-dim hover:text-nms-accent text-xs flex items-center gap-1 ml-auto"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-nms-border flex justify-end">
+          <button onClick={onClose} className="nms-btn-ghost">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Decode ICCID for display
@@ -1393,6 +1496,8 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
   const [editSub, setEditSub] = useState<Subscriber|null>(null);
   const [si, setSi] = useState('');
   const [showGenerator, setShowGenerator] = useState(false);
+  const [showIPAssignments, setShowIPAssignments] = useState(false);
+  const [assigningIPs, setAssigningIPs] = useState(false);
 
   // Handle navigation from other pages (e.g., RAN page)
   useEffect(() => {
@@ -1411,6 +1516,40 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
   useEffect(() => { fetch(); }, [fetch]);
 
+  const handleAutoAssignIPs = async () => {
+    const confirmed = window.confirm(
+      'Auto-assign IPv4 addresses to all subscribers?\n\n' +
+      'This will:\n' +
+      '• Read the IP pool from UPF Session Pool configuration\n' +
+      '• Assign sequential IPs to subscribers without IPs\n' +
+      '• Skip subscribers that already have IPs assigned\n\n' +
+      'Continue?'
+    );
+
+    if (!confirmed) return;
+
+    setAssigningIPs(true);
+    try {
+      const result = await subscriberApi.autoAssignIPs();
+      if (result.success) {
+        const { assigned, skipped, failed, ipPool } = result.data;
+        toast.success(
+          `✅ IP Assignment Complete!\n` +
+          `Pool: ${ipPool}\n` +
+          `Assigned: ${assigned} | Skipped: ${skipped}${failed > 0 ? ` | Failed: ${failed}` : ''}`,
+          { duration: 5000 }
+        );
+        fetch(); // Refresh subscriber list
+      } else {
+        toast.error('IP assignment failed');
+      }
+    } catch (error) {
+      toast.error(`Failed to assign IPs: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setAssigningIPs(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -1419,6 +1558,21 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
           <p className="text-sm text-nms-text-dim mt-1">{total} provisioned</p>
         </div>
         <div className="flex gap-3">
+          <button 
+            onClick={() => setShowIPAssignments(true)} 
+            className="nms-btn-ghost flex items-center gap-2"
+            title="View IP address assignments"
+          >
+            <List className="w-4 h-4" /> IP Assignments
+          </button>
+          <button 
+            onClick={handleAutoAssignIPs} 
+            disabled={assigningIPs}
+            className="nms-btn-secondary flex items-center gap-2"
+            title="Auto-assign IPv4 addresses from UPF pool"
+          >
+            <Network className="w-4 h-4" /> {assigningIPs ? 'Assigning...' : 'Auto-Assign IPs'}
+          </button>
           <button onClick={() => setShowGenerator(true)} className="nms-btn-ghost flex items-center gap-2">
             <CreditCard className="w-4 h-4" /> SIM Generator
           </button>
@@ -1443,6 +1597,8 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
           onClose={() => setShowGenerator(false)}
         />
       )}
+
+      {showIPAssignments && <IPAssignmentsModal onClose={() => setShowIPAssignments(false)} />}
 
       {showForm && (
         <SubForm 

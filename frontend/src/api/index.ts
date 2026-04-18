@@ -60,6 +60,10 @@ export const subscriberApi = {
     api.put(`/subscribers/${imsi}`, subscriber).then((r) => r.data),
   delete: (imsi: string) =>
     api.delete(`/subscribers/${imsi}`).then((r) => r.data),
+  autoAssignIPs: () =>
+    api.post<{ success: boolean; data: { assigned: number; skipped: number; failed: number; ipPool: string; errors?: string[] } }>('/subscribers/auto-assign-ips').then((r) => r.data),
+  getIPAssignments: () =>
+    api.get<{ success: boolean; data: Array<{ imsi: string; ipv4: string }> }>('/subscribers/ip-assignments').then((r) => r.data),
 };
 
 // ── Audit ──

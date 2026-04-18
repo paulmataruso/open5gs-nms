@@ -127,4 +127,22 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
 
     return result.modifiedCount;
   }
+
+  async findAllFull(): Promise<Subscriber[]> {
+    const docs = await this.collection.find({}).toArray();
+    return docs as unknown as Subscriber[];
+  }
+
+  async assignIPv4(imsi: string, ipv4: string): Promise<void> {
+    // Assign IPv4 to the first session of the first slice
+    await this.collection.updateOne(
+      { imsi },
+      {
+        $set: {
+          'slice.0.session.0.ue.ipv4': ipv4,
+        },
+      },
+    );
+    this.logger.info({ imsi, ipv4 }, 'Assigned IPv4 to subscriber');
+  }
 }
