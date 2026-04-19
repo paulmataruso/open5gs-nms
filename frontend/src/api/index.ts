@@ -129,6 +129,25 @@ export const authApi = {
       .then((r) => r.data.data.user),
 };
 
+// ── Users ──
+export const usersApi = {
+  list: (): Promise<AuthUser[]> =>
+    api
+      .get<{ success: boolean; data: { users: AuthUser[] } }>('/users')
+      .then((r) => r.data.data.users),
+
+  create: (username: string, password: string): Promise<AuthUser> =>
+    api
+      .post<{ success: boolean; data: { user: AuthUser } }>('/users', { username, password })
+      .then((r) => r.data.data.user),
+
+  changePassword: (id: string, password: string): Promise<void> =>
+    api.put(`/users/${id}/password`, { password }).then(() => undefined),
+
+  delete: (id: string): Promise<void> =>
+    api.delete(`/users/${id}`).then(() => undefined),
+};
+
 export interface PlmnConfig {
   mcc: string;
   mnc: string;

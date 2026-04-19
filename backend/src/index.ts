@@ -29,6 +29,8 @@ import { AuthLoginUseCase } from './application/use-cases/auth-login';
 import { AuthLogoutUseCase } from './application/use-cases/auth-logout';
 import { createAuthRouter } from './interfaces/rest/auth-controller';
 import { createAuthMiddleware } from './interfaces/rest/middleware/auth-middleware';
+import { UserManagementUseCase } from './application/use-cases/user-management';
+import { createUsersRouter } from './interfaces/rest/users-controller';
 import { createConfigRouter } from './interfaces/rest/config-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
 import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller';
@@ -85,6 +87,7 @@ async function main() {
   const lucia = createLucia(authRepo.getLuciaAdapter(), config.sessionMaxAge, config.isProduction);
   const authLoginUseCase = new AuthLoginUseCase(authRepo, lucia, logger);
   const authLogoutUseCase = new AuthLogoutUseCase(lucia, logger);
+  const userManagementUseCase = new UserManagementUseCase(authRepo, lucia, logger);
   const authMiddleware = createAuthMiddleware(lucia);
   logger.info({ dbPath: config.authDbPath }, 'Auth initialised');
 
@@ -213,6 +216,7 @@ async function main() {
   app.use('/api', authMiddleware);
 
   // API Routes
+  app.use('/api/users', createUsersRouter(userManagementUseCase, logger));
   app.use(
     '/api/config',
     createConfigRouter(

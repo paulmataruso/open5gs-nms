@@ -177,6 +177,24 @@ export class SqliteAuthRepository implements IAuthRepository {
       .run(Date.now(), userId);
   }
 
+  async updatePassword(userId: string, passwordHash: string): Promise<void> {
+    this.db
+      .prepare('UPDATE user SET password_hash = ? WHERE id = ?')
+      .run(passwordHash, userId);
+  }
+
+  async deleteUser(userId: string): Promise<void> {
+    // Sessions are deleted automatically via ON DELETE CASCADE
+    this.db.prepare('DELETE FROM user WHERE id = ?').run(userId);
+  }
+
+  async listUsers(): Promise<User[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM user ORDER BY created_at ASC')
+      .all() as UserRow[];
+    return rows.map((r) => this.rowToUser(r));
+  }
+
   async userCount(): Promise<number> {
     const row = this.db
       .prepare('SELECT COUNT(*) as count FROM user')

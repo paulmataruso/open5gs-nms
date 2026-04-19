@@ -9,7 +9,7 @@ export interface AuthUser {
   id: string;
   username: string;
   role: string;
-  createdAt: string;
+  createdAt: string | null;
   lastLoginAt: string | null;
 }
 
