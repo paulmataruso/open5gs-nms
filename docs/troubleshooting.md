@@ -6,16 +6,147 @@ Common issues and solutions for Open5GS NMS deployment and operation.
 
 ## Table of Contents
 
-1. [Installation Issues](#installation-issues)
-2. [Docker Issues](#docker-issues)
-3. [Backend Issues](#backend-issues)
-4. [Frontend Issues](#frontend-issues)
-5. [Configuration Issues](#configuration-issues)
-6. [Service Management Issues](#service-management-issues)
-7. [Network Issues](#network-issues)
-8. [Performance Issues](#performance-issues)
-9. [Database Issues](#database-issues)
-10. [Getting More Help](#getting-more-help)
+1. [Authentication Issues](#authentication-issues)
+2. [Installation Issues](#installation-issues)
+3. [Docker Issues](#docker-issues)
+4. [Backend Issues](#backend-issues)
+5. [Frontend Issues](#frontend-issues)
+6. [Configuration Issues](#configuration-issues)
+7. [Service Management Issues](#service-management-issues)
+8. [Network Issues](#network-issues)
+9. [Performance Issues](#performance-issues)
+10. [Database Issues](#database-issues)
+11. [Getting More Help](#getting-more-help)
+
+---
+
+## Authentication Issues
+
+### Login Page Keeps Reloading / Flashing
+
+**Symptom:** The login page rapidly reloads in a loop without stopping.
+
+**Cause:** Usually `COOKIE_SECURE=true` is set while the app is being served over plain HTTP. The browser silently discards `Secure` cookies over HTTP, so the session is never stored and every page load triggers a fresh auth check.
+
+**Solution:**
+```bash
+# Edit .env
+nano .env
+
+# Ensure this is set correctly:
+COOKIE_SECURE=false    # For HTTP deployments (default)
+COOKIE_SECURE=true     # Only if serving over HTTPS
+
+# Restart backend to pick up the change
+docker compose restart backend
+```
+
+---
+
+### Login Succeeds but Redirects Back to Login Page
+
+**Symptom:** You enter credentials, the backend logs show `Auth: login successful`, but the page immediately shows the login form again.
+
+**Cause:** Same as above — `COOKIE_SECURE=true` on an HTTP deployment. The session cookie is set in the response header but the browser throws it away.
+
+**Solution:** Set `COOKIE_SECURE=false` in `.env` and restart the backend.
+
+---
+
+### Forgot / Lost the Admin Password
+
+**Symptom:** Can't log in and don't know the password.
+
+**Solution — check logs first:**
+```bash
+# If this was a fresh deploy the password is in the logs
+docker logs open5gs-nms-backend 2>&1 | grep -A4 "FIRST RUN"
+```
+
+**Solution — reset the auth database:**
+```bash
+docker compose down
+rm -f ./data/auth.db
+
+# Optionally set a known password first:
+# Edit .env and set FIRST_RUN_PASSWORD=your-new-password
+
+docker compose up -d
+
+# If you didn't set FIRST_RUN_PASSWORD, grab the generated one:
+docker logs open5gs-nms-backend 2>&1 | grep -A4 "FIRST RUN"
+```
+
+> **Note:** Deleting `auth.db` only removes NMS user accounts and sessions. It does **not** affect Open5GS configuration files or the subscriber MongoDB database.
+
+---
+
+### API Returns 401 for All Requests
+
+**Symptom:** All API calls return `401 Unauthorized` even after logging in.
+
+**Causes and solutions:**
+
+1. **Session expired** — Sessions last 24 hours by default. Log in again, or increase `SESSION_MAX_AGE` in `.env`.
+
+2. **Cookie not being sent** — Verify `withCredentials: true` is set in the frontend axios client (it should be by default). Check browser DevTools → Network → Request Headers for the `Cookie` header.
+
+3. **auth.db missing or corrupt:**
+```bash
+# Check if the file exists
+ls -la ./data/auth.db
+
+# Check volume mount
+docker inspect open5gs-nms-backend | grep -A3 'app/data'
+
+# Recreate if necessary
+docker compose down
+rm -f ./data/auth.db
+docker compose up -d
+```
+
+4. **Backend restarted, old cookie still in browser** — Log out, clear browser cookies for this site, and log in again.
+
+---
+
+### Rate Limited on Login
+
+**Symptom:**
+```
+429 Too Many Requests
+{"error": "Too many login attempts, please try again later"}
+```
+
+**Cause:** More than 10 failed login attempts from your IP in the last 15 minutes.
+
+**Solution:** Wait 15 minutes, then try again with the correct credentials. If you're locked out and need immediate access, restart the backend container to reset the rate limiter:
+```bash
+docker compose restart backend
+```
+
+---
+
+### auth.db Permissions Error
+
+**Symptom:**
+```
+Error: SQLITE_CANTOPEN: unable to open database file
+```
+
+**Cause:** The `./data` directory doesn't exist on the host, or the container can't write to it.
+
+**Solution:**
+```bash
+# Create the data directory
+mkdir -p ./data
+chmod 755 ./data
+
+# Verify the volume mount in docker-compose.yml:
+# - ./data:/app/data
+
+# Restart
+docker compose restart backend
+```
 
 ---
 

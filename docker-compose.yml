@@ -40,6 +40,7 @@ services:
       - /lib/systemd:/lib/systemd:ro
       - /sys/fs/cgroup:/sys/fs/cgroup:ro
       - ./logs:/var/log/open5gs-nms
+      - ./data:/app/data
       - /etc/open5gs/backups/config:/etc/open5gs/backups/config
       - /etc/open5gs/backups/mongodb:/etc/open5gs/backups/mongodb
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -53,6 +54,11 @@ services:
       - LOG_LEVEL=info
       - WS_PORT=3002
       - HOST_SYSTEMCTL_PATH=/usr/bin/systemctl
+      # Auth
+      - AUTH_DB_PATH=/app/data/auth.db
+      - SESSION_MAX_AGE=86400
+      - FIRST_RUN_PASSWORD=${FIRST_RUN_PASSWORD:-}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s

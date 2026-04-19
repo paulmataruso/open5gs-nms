@@ -6,8 +6,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-20%20LTS-brightgreen.svg)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-18.2-61DAFB.svg)](https://reactjs.org/)
 
-Web-based management system for Open5GS 5G Core and 4G EPC networks. Provides complete configuration management, real-time monitoring, subscriber provisioning, and network visualization through an intuitive interface. Please be aware this project is 90% AI coded. This project was not designed with security in mind. It was just a project for my personal Open5gs servers to make my life easier. Use at your own risk. If the project gains
-more interest I will focus on getting auth and security more nailed down. If you find any issues please let me know. I will fix them as fast as I can. 
+Web-based management system for Open5GS 5G Core and 4G EPC networks. Provides complete configuration management, real-time monitoring, subscriber provisioning, and network visualization through an intuitive interface. Please be aware this project is heavily AI-assisted. If you find any issues please let me know — I will fix them as fast as I can.
 
 ---
 
@@ -21,12 +20,20 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **Real-Time Monitoring** - Live service status, logs, and active session tracking
 - **Safe Configuration** - Automatic backups, validation, and rollback on failure
 - **5G Privacy (SUCI)** - Home network key management for subscription concealment
+- **Authentication** - Session-based login protecting all pages and API endpoints
 
 ![Dashboard Overview](docs/screenshots/dashboard-overview.png)
 
 ---
 
 ## ✨ Key Features
+
+### Authentication
+- **Login required** — All pages and API endpoints are protected. A login form is shown automatically to unauthenticated users
+- **Session persistence** — Sessions survive page refresh (24-hour lifetime by default, configurable)
+- **Secure cookies** — HttpOnly, SameSite=lax; `Secure` flag enabled when behind HTTPS
+- **First-run setup** — Admin account created automatically on first deploy (see [First Login](#first-login))
+- **Brute force protection** — Login endpoint rate-limited to 10 attempts per 15 minutes per IP
 
 ### Configuration Management
 - **Dual Editor Modes** - Form-based editor with 150+ contextual tooltips OR Monaco YAML editor
@@ -55,59 +62,32 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Subscriber Management](docs/screenshots/subscribers-list.png)
 
-![SIM Generator with Auto-Provision](docs/screenshots/sim-generator-dialog.png)
-
 ### SUCI Key Management (5G Privacy)
 - **Keypair Generation** - Create X25519 (Profile A) or secp256r1 (Profile B) keys
 - **Public Key Display** - Hex format ready for eSIM provisioning (Simlessly, etc.)
 - **Automatic Configuration** - Updates UDM config with home network public key
 - **PKI Management** - Support for multiple PKI values (0-255)
 
-![SUCI Key Management](docs/screenshots/suci-key-management.png)
-
-*Key generation modal with public key display:*
-
-![SUCI Key Generation Modal](docs/screenshots/suci-generate-key-modal.png)
-
 ### Service Management
 - **Real-Time Monitoring** - WebSocket-based live service status updates
 - **Systemd Integration** - Start, stop, restart services directly from UI
 - **Bulk Operations** - Control all services at once
-- **Health Indicators** - Active/inactive status with uptime and resource usage
 - **Dependency Awareness** - Services restart in correct order (NRF first, then dependencies)
-
-![Service Management](docs/screenshots/services-status.png)
 
 ### Auto-Configuration Wizard
 - **One-Click Setup** - Generate all 16 NF configurations from minimal input
 - **Preview Changes** - YAML diff viewer shows exact changes before applying
 - **Optional NAT** - Configure iptables rules for UE internet access
-- **Smart Defaults** - Loads current Open5GS values as form defaults
-
-![Auto-Configuration Wizard](docs/screenshots/auto-config-wizard.png)
 
 ### Real-Time Logging
 - **Dual Log Sources** - Stream logs from Open5GS services OR Docker containers
 - **Live Log Streaming** - Tail logs from any service via WebSocket
-- **Docker Container Logs** - View backend, frontend, and nginx container logs
 - **Service Filtering** - Multi-select services or containers to monitor
-- **Auto-Scroll Control** - Pause and resume log streaming
-- **Verbose Terminal Output** - Enhanced Docker logging with timestamps (50MB rotation, 5 files)
-
-![Real-Time Log Viewer](docs/screenshots/logs-viewer.png)
 
 ### Backup & Restore
 - **Automatic Backups** - Created before every configuration change
-- **Configuration Backups** - All 16 YAML files timestamped
-- **MongoDB Backups** - Subscriber database dumps
 - **Selective Restore** - Restore config only, database only, or both
 - **Rollback Protection** - Automatic restore on service restart failure
-
-![Backup & Restore](docs/screenshots/backup-restore.png)
-
-*Restore confirmation modal:*
-
-![Restore Backup Modal](docs/screenshots/backup-restore-modal.png)
 
 ---
 
@@ -127,6 +107,10 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 git clone https://github.com/paulmataruso/open5gs-nms
 cd open5gs-nms
 
+# Configure environment (required — see Authentication section below)
+cp .env.example .env
+nano .env
+
 # Build and start all services
 docker compose up --build -d
 
@@ -134,9 +118,67 @@ docker compose up --build -d
 open http://YOUR_SERVER_IP:8888
 ```
 
-That's it! The NMS is now running and ready to manage your Open5GS deployment.
-
 For detailed installation instructions, see **[INSTALL.md](INSTALL.md)**.
+
+---
+
+## 🔐 Authentication
+
+### First Login
+
+On first startup, an admin account is created automatically.
+
+**Option A — Set your own password (recommended):**
+
+Add this to your `.env` before running `docker compose up`:
+
+```bash
+FIRST_RUN_PASSWORD=your-secure-password-here
+```
+
+Then log in with username `admin` and the password you set. Clear `FIRST_RUN_PASSWORD` from `.env` after your first login.
+
+**Option B — Auto-generated password:**
+
+Leave `FIRST_RUN_PASSWORD` empty. A random password is generated and printed once to the container logs:
+
+```bash
+docker logs open5gs-nms-backend 2>&1 | grep -A4 "FIRST RUN"
+```
+
+Expected output:
+```
+════════════════════════════════════════════════════
+  FIRST RUN — Admin account created
+  Username : admin
+  Password : Xk7mQ2pL9nRv4wYa
+  Change this password after first login!
+════════════════════════════════════════════════════
+```
+
+> **Missed the password?** Delete the auth database and restart:
+> ```bash
+> docker compose down && rm -f ./data/auth.db && docker compose up -d
+> ```
+
+### Auth Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FIRST_RUN_PASSWORD` | *(empty)* | Initial admin password. Auto-generated if empty. Clear after first login. |
+| `SESSION_MAX_AGE` | `86400` | Session lifetime in seconds (default: 24 hours) |
+| `COOKIE_SECURE` | `false` | Set to `true` **only** when serving over HTTPS. Setting this to `true` on plain HTTP silently breaks login. |
+| `AUTH_DB_PATH` | `/app/data/auth.db` | Path to SQLite auth database inside container. Must match the `./data:/app/data` volume mount. |
+
+### HTTPS Deployments
+
+When running behind HTTPS (nginx + SSL), set `COOKIE_SECURE=true` in `.env`:
+
+```bash
+COOKIE_SECURE=true
+```
+
+See **[docs/deployment.md](docs/deployment.md)** for full nginx SSL configuration.
 
 ---
 
@@ -165,7 +207,6 @@ For complete requirements, see **[docs/requirements.md](docs/requirements.md)**.
 
 ### Getting Started
 - **[Installation Guide](INSTALL.md)** - Step-by-step installation instructions
-- **[Quick Start Tutorial](docs/quickstart.md)** - Get up and running in 10 minutes
 - **[Configuration Guide](docs/configuration.md)** - Network function configuration reference
 
 ### User Guides
@@ -207,12 +248,13 @@ The Open5GS NMS follows a **Clean Architecture** pattern with clear separation o
 ┌─────────────────────────────────────────────────────────────┐
 │  Backend (Node.js 20 + TypeScript + Express)                │
 │  Clean Architecture: Domain → Application → Infrastructure   │
+│  Auth: Lucia v3 sessions → SQLite (auth.db)                 │
 │  Container: privileged, network_mode: host                   │
-└─────┬──────────┬──────────┬──────────────────────────────┬─┘
-      │          │          │                              │
-      ▼          ▼          ▼                              ▼
- /etc/open5gs  systemd   MongoDB                      /var/log
- (bind mount)  (via dbus) (host:27017)               (bind mount)
+└─────┬──────────┬──────────┬───────────┬──────────────────┬─┘
+      │          │          │           │                  │
+      ▼          ▼          ▼           ▼                  ▼
+ /etc/open5gs  systemd   MongoDB    auth.db           /var/log
+ (bind mount)  (via dbus) (host:27017) (./data volume) (bind mount)
 ```
 
 ### Technology Stack
@@ -224,6 +266,7 @@ The Open5GS NMS follows a **Clean Architecture** pattern with clear separation o
 
 **Backend:**
 - Node.js 20 LTS, TypeScript 5.3, Express 4.18
+- Lucia v3 (sessions), better-sqlite3 (auth DB), oslo (bcrypt)
 - Zod 3.22 (validation), MongoDB Native Driver 6.3
 - WebSocket (ws) 8.16, Pino 8.17 (logging)
 
@@ -241,44 +284,41 @@ For detailed architecture documentation, see **[ARCHITECTURE.md](ARCHITECTURE.md
 The NMS is configured through environment variables. Copy `.env.example` to `.env` and customize:
 
 ```bash
-# Backend
-PORT=3001                                          # Backend API port
-WS_PORT=3002                                       # WebSocket port
-MONGODB_URI=mongodb://127.0.0.1:27017/open5gs     # MongoDB connection
-CONFIG_PATH=/etc/open5gs                           # Open5GS config directory
-BACKUP_PATH=/etc/open5gs/backups/config            # Config backup location
-MONGO_BACKUP_PATH=/etc/open5gs/backups/mongodb     # MongoDB backup location
-LOG_LEVEL=info                                     # Log level (debug, info, warn, error)
+# Authentication (review before first deploy)
+FIRST_RUN_PASSWORD=your-password    # Initial admin password
+SESSION_MAX_AGE=86400               # Session lifetime in seconds
+COOKIE_SECURE=false                 # Set true only for HTTPS deployments
 
-# Frontend (built into image at build time)
-VITE_API_URL=                                      # Empty for relative URLs
-VITE_WS_URL=                                       # Empty for relative URLs
+# Backend
+PORT=3001
+WS_PORT=3002
+MONGODB_URI=mongodb://127.0.0.1:27017/open5gs
+CONFIG_PATH=/etc/open5gs
+LOG_LEVEL=info
+HOST_SYSTEMCTL_PATH=/usr/bin/systemctl
 ```
 
 Default values work for most deployments. For production, see **[docs/deployment.md](docs/deployment.md)**.
 
 ---
 
-## 🛡️ Security Considerations
+## 🛡️ Security
 
-### Current Security Model
+### What's protected
+- All API endpoints require a valid session cookie
+- Login is rate-limited (10 attempts / 15 min per IP)
+- Passwords are bcrypt-hashed
+- Session cookies are HttpOnly (not accessible to JavaScript)
+- Auth data is stored in a separate SQLite database — the Open5GS MongoDB is never touched for auth
 
-⚠️ **This is currently designed for trusted internal networks only.**
+### Production recommendations
 
-- **No Authentication** - No user login required
-- **No HTTPS/WSS** - HTTP and WebSocket only
-- **Privileged Container** - Backend requires elevated permissions for systemctl access
+1. **Enable HTTPS** — Configure nginx SSL termination (Let's Encrypt) and set `COOKIE_SECURE=true` in `.env`
+2. **Network restrictions** — Deploy behind a VPN or firewall for internet-exposed instances
+3. **Regular backups** — Automate backup jobs and store copies off-site
+4. **Monitoring** — Set up external monitoring (Prometheus, Grafana)
 
-### Production Recommendations
-
-For production deployments:
-
-1. **Enable HTTPS** - Use nginx SSL termination with Let's Encrypt certificates
-2. **Restrict Access** - Deploy behind VPN or firewall rules
-3. **Regular Backups** - Implement automated backup strategy
-4. **Monitoring** - Set up external monitoring (Prometheus, Grafana)
-
-See **[docs/deployment.md](docs/deployment.md)** for detailed security hardening.
+See **[docs/deployment.md](docs/deployment.md)** for detailed hardening guidance.
 
 ---
 
@@ -312,18 +352,17 @@ For detailed development instructions, see **[docs/development.md](docs/developm
 
 See **[CHANGELOG.md](CHANGELOG.md)** for a complete version history.
 
-### Latest Release: v1.0.0 (2026-03-23)
+### Latest Release: v1.2.0 (2026-04-18)
 
-**🎉 Initial Public Release**
+**🔐 Authentication**
+- Session-based login protecting all pages and API endpoints
+- HttpOnly cookie sessions via Lucia v3
+- SQLite auth database (separate from Open5GS MongoDB)
+- First-run admin account seeding
+- Login rate limiting and timing-safe bcrypt verification
 
-Complete network management system with:
-- All 16 network function configuration editors
-- Real-time topology visualization
-- Subscriber management with auto-provisioning
-- SUCI key management for 5G privacy
-- Safe configuration workflow with automatic backups
-- Real-time monitoring and log streaming
-- Comprehensive 150+ tooltip system
+### v1.1.0 (2026-04-14) — Docker Container Logging
+### v1.0.0 (2026-03-23) — Initial Public Release
 
 ---
 
@@ -336,6 +375,7 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 ## 🙏 Acknowledgments
 
 - **[Open5GS Project](https://open5gs.org/)** - The open-source 5G Core and EPC implementation
+- **[Lucia Auth](https://lucia-auth.com/)** - Session management library
 - **[JointJS](https://www.jointjs.com/)** - Professional diagramming library
 - **[React](https://reactjs.org/)** and **[TypeScript](https://www.typescriptlang.org/)** communities
 
@@ -345,15 +385,9 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 
 - **Documentation:** [docs/](docs/)
 - **Installation Issues:** [INSTALL.md](INSTALL.md) → [docs/troubleshooting.md](docs/troubleshooting.md)
-- **Bug Reports:** [GitHub Issues](https://github.com/YOUR_ORG/open5gs-nms/issues)
-- **Feature Requests:** [GitHub Issues](https://github.com/YOUR_ORG/open5gs-nms/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/YOUR_ORG/open5gs-nms/discussions)
-
----
-
-## ⭐ Star History
-
-If you find this project useful, please consider giving it a star on GitHub!
+- **Bug Reports:** [GitHub Issues](https://github.com/paulmataruso/open5gs-nms/issues)
+- **Feature Requests:** [GitHub Issues](https://github.com/paulmataruso/open5gs-nms/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/paulmataruso/open5gs-nms/discussions)
 
 ---
 

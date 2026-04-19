@@ -28,6 +28,7 @@ export function UdmEditor({ configs, onChange }: Props): JSX.Element {
   };
 
   const scpUri = udm.sbi?.client?.scp?.[0]?.uri || '';
+  const nrfUri = udm.sbi?.client?.nrf?.[0]?.uri || '';
 
   return (
     <div className="space-y-6">
@@ -63,6 +64,19 @@ export function UdmEditor({ configs, onChange }: Props): JSX.Element {
             value={scpUri}
             onChange={(e) => updateUdm({ sbi: { ...udm.sbi, client: { ...udm.sbi.client, scp: [{ uri: e.target.value }] } } })}
             placeholder="http://127.0.0.200:7777"
+          />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
+        <div>
+          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.nrf_uri}>NRF URI</LabelWithTooltip></label>
+          <input
+            className="nms-input font-mono text-xs"
+            value={nrfUri}
+            onChange={(e) => updateUdm({ sbi: { ...udm.sbi, client: { ...udm.sbi.client, nrf: [{ uri: e.target.value }] } } })}
+            placeholder="http://127.0.0.10:7777"
           />
         </div>
       </div>

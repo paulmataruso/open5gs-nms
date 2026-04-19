@@ -147,6 +147,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
   const amf = fullYaml.amf || {};
   const sbiServer = amf.sbi?.server?.[0] || { address: '127.0.0.5', port: 7777 };
   const scpUri = amf.sbi?.client?.scp?.[0]?.uri || '';
+  const nrfUri = amf.sbi?.client?.nrf?.[0]?.uri || '';
   const ngapServer = amf.ngap?.server?.[0] || { address: '10.0.1.175' };
   const [syncingSD, setSyncingSD] = useState(false);
 
@@ -212,6 +213,11 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
       </div>
 
       <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
+        <FieldWithTooltip label="NRF URI" value={nrfUri} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, client: { ...amf.sbi.client, nrf: [{ uri: v }] } } })} placeholder="http://127.0.0.10:7777" tooltip={COMMON_TOOLTIPS.nrf_uri} />
+      </div>
+
+      <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NGAP Server</h3>
         <FieldWithTooltip label="Address" value={ngapServer.address} onChange={(v) => updateAmf({ ngap: { server: [{ address: v }] } })} tooltip={AMF_TOOLTIPS.ngap_address} />
       </div>
@@ -224,7 +230,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               onClick={() => {
                 const newEntry = {
                   plmn_id: { mcc: '001', mnc: '01' },
-                  amf_id: { region: 2, set: 1 },
+                  amf_id: { region: 2, set: 1, pointer: 0 },
                 };
                 updateAmf({ guami: [...amf.guami, newEntry] });
               }}
@@ -247,7 +253,7 @@ className="nms-btn-ghost text-xs flex items-center gap-1"
                   <X className="w-4 h-4" />
                 </button>
               )}
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-5 gap-4">
                 <FieldWithTooltip label="MCC" value={g.plmn_id.mcc} onChange={(v) => {
                   const updated = [...amf.guami];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
@@ -258,9 +264,21 @@ className="nms-btn-ghost text-xs flex items-center gap-1"
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateAmf({ guami: updated });
                 }} tooltip={AMF_TOOLTIPS.guami_mnc} />
-                <div className="text-xs font-mono text-nms-text-dim mt-6">
-                  Region:{g.amf_id.region} Set:{g.amf_id.set}
-                </div>
+                <FieldWithTooltip label="Region" type="number" value={g.amf_id?.region ?? 2} onChange={(v) => {
+                  const updated = [...amf.guami];
+                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, region: v === '' ? '' : (parseInt(v) ?? 0) } };
+                  updateAmf({ guami: updated });
+                }} placeholder="2" tooltip={AMF_TOOLTIPS.guami_region} />
+                <FieldWithTooltip label="Set" type="number" value={g.amf_id?.set ?? 1} onChange={(v) => {
+                  const updated = [...amf.guami];
+                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, set: v === '' ? '' : (parseInt(v) ?? 0) } };
+                  updateAmf({ guami: updated });
+                }} placeholder="1" tooltip={AMF_TOOLTIPS.guami_set} />
+                <FieldWithTooltip label="Pointer" type="number" value={g.amf_id?.pointer ?? 0} onChange={(v) => {
+                  const updated = [...amf.guami];
+                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, pointer: v === '' ? '' : (parseInt(v) ?? 0) } };
+                  updateAmf({ guami: updated });
+                }} placeholder="0" tooltip={AMF_TOOLTIPS.guami_pointer} />
               </div>
             </div>
           ))}
@@ -591,6 +609,7 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
   }
   const sbiServer = smf.sbi.server[0] || { address: '127.0.0.4', port: 7777 };
   const scpUri = smf.sbi?.client?.scp?.[0]?.uri || '';
+  const nrfUri = smf.sbi?.client?.nrf?.[0]?.uri || '';
   const pfcpServer = smf.pfcp?.server?.[0] || { address: '127.0.0.4' };
   const upfAddress = smf.pfcp?.client?.upf?.[0]?.address || '';
   const gtpcServer = smf.gtpc?.server?.[0]?.address || '';
@@ -617,6 +636,11 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
         <FieldWithTooltip label="SCP URI" value={scpUri} onChange={(v) => updateSmf({ sbi: { ...smf.sbi, client: { ...smf.sbi.client, scp: [{ uri: v }] } } })} placeholder="http://127.0.0.200:7777" tooltip={COMMON_TOOLTIPS.scp_uri} />
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
+        <FieldWithTooltip label="NRF URI" value={nrfUri} onChange={(v) => updateSmf({ sbi: { ...smf.sbi, client: { ...smf.sbi.client, nrf: [{ uri: v }] } } })} placeholder="http://127.0.0.10:7777" tooltip={COMMON_TOOLTIPS.nrf_uri} />
       </div>
 
       <div>
@@ -875,6 +899,7 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
   }
   const server = ausf.sbi.server[0] || { address: '127.0.0.11', port: 7777 };
   const scpUri = ausf.sbi?.client?.scp?.[0]?.uri || '';
+  const nrfUri = ausf.sbi?.client?.nrf?.[0]?.uri || '';
 
   const updateAusf = (partial: any): void => {
     onChange({ ...configs, ausf: { ...fullYaml, ausf: { ...ausf, ...partial } } });
@@ -897,6 +922,11 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
         <FieldWithTooltip label="SCP URI" value={scpUri} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, client: { ...ausf.sbi.client, scp: [{ uri: v }] } } })} placeholder="http://127.0.0.200:7777" tooltip={COMMON_TOOLTIPS.scp_uri} />
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
+        <FieldWithTooltip label="NRF URI" value={nrfUri} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, client: { ...ausf.sbi.client, nrf: [{ uri: v }] } } })} placeholder="http://127.0.0.10:7777" tooltip={COMMON_TOOLTIPS.nrf_uri} />
       </div>
 
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />

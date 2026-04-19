@@ -23,6 +23,12 @@ import { LogStreamingUseCase } from './application/use-cases/log-streaming';
 import { DockerLogStreamingUseCase } from './application/use-cases/docker-log-streaming';
 import { DockerLogExecutor } from './infrastructure/docker/docker-log-executor';
 import { LogStreamHandler } from './infrastructure/websocket/log-stream-handler';
+import { SqliteAuthRepository, createLucia } from './infrastructure/auth/sqlite-auth-repository';
+import { seedAdminUser } from './infrastructure/auth/seed-admin';
+import { AuthLoginUseCase } from './application/use-cases/auth-login';
+import { AuthLogoutUseCase } from './application/use-cases/auth-logout';
+import { createAuthRouter } from './interfaces/rest/auth-controller';
+import { createAuthMiddleware } from './interfaces/rest/middleware/auth-middleware';
 import { createConfigRouter } from './interfaces/rest/config-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
 import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller';
@@ -72,6 +78,15 @@ async function main() {
   // Connect to MongoDB
   await subscriberRepo.connect();
   logger.info('MongoDB connected');
+
+  // ── Auth setup ──
+  const authRepo = new SqliteAuthRepository(config.authDbPath, logger);
+  await seedAdminUser(authRepo, config.firstRunPassword, logger);
+  const lucia = createLucia(authRepo.getLuciaAdapter(), config.sessionMaxAge, config.isProduction);
+  const authLoginUseCase = new AuthLoginUseCase(authRepo, lucia, logger);
+  const authLogoutUseCase = new AuthLogoutUseCase(lucia, logger);
+  const authMiddleware = createAuthMiddleware(lucia);
+  logger.info({ dbPath: config.authDbPath }, 'Auth initialised');
 
   // Ensure backup directories exist
   try {
@@ -182,7 +197,7 @@ async function main() {
   app.use(compression());
   app.use(express.json({ limit: '10mb' }));
 
-  // Health check
+  // Health check (public — no auth)
   app.get('/api/health', (_req, res) => {
     res.json({
       status: 'ok',
@@ -190,6 +205,12 @@ async function main() {
       wsConnections: wsBroadcaster.getConnectionCount(),
     });
   });
+
+  // Auth routes (public — login endpoint must be reachable before auth)
+  app.use('/api/auth', createAuthRouter(authLoginUseCase, authLogoutUseCase, logger));
+
+  // ── Auth middleware ── all routes below this line are protected
+  app.use('/api', authMiddleware);
 
   // API Routes
   app.use(

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { AuthUser } from '../contexts/AuthContext';
 import type {
   AllConfigs,
   ServiceStatus,
@@ -17,7 +18,27 @@ const api = axios.create({
   baseURL: `${API_URL}/api`,
   timeout: 60000, // 60 seconds for apply operations that restart all services
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true, // send session cookie on every request
 });
+
+// ── 401 interceptor ──
+// Only trigger a reload if the user was already authenticated (has a session cookie)
+// and the server rejects it mid-session. On initial load, 401 from /api/auth/me
+// is expected and handled gracefully by AuthContext — don't reload in that case.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (
+      error.response?.status === 401 &&
+      !error.config?.url?.includes('/auth/me') &&
+      !error.config?.url?.includes('/auth/login')
+    ) {
+      // Session expired mid-use — reload so AuthGuard shows login page
+      window.location.reload();
+    }
+    return Promise.reject(error);
+  },
+);
 
 // ── Config ──
 export const configApi = {
@@ -92,7 +113,22 @@ export const backupApi = {
     api.post<{ success: boolean; message: string; backupCreated: string }>('/backup/restore-defaults').then((r) => r.data),
 };
 
-// ── Auto Config ──
+// ── Auth ──
+export const authApi = {
+  login: (username: string, password: string): Promise<AuthUser> =>
+    api
+      .post<{ success: boolean; data: { user: AuthUser } }>('/auth/login', { username, password })
+      .then((r) => r.data.data.user),
+
+  logout: (): Promise<void> =>
+    api.post('/auth/logout').then(() => undefined),
+
+  me: (): Promise<AuthUser> =>
+    api
+      .get<{ success: boolean; data: { user: AuthUser } }>('/auth/me')
+      .then((r) => r.data.data.user),
+};
+
 export interface PlmnConfig {
   mcc: string;
   mnc: string;

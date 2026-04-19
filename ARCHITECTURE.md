@@ -606,15 +606,55 @@ Different YAML parsers based on requirements:
 
 ### Current Security Model
 
-⚠️ **Designed for trusted internal networks only**
+All API routes require a valid session. Unauthenticated requests receive a `401` response and the browser is redirected to the login page.
 
 **Security Layers:**
-1. **Network-Level** - Firewall rules, VPN access recommended
-2. **Application-Level** - Rate limiting, input validation
-3. **Container-Level** - Privileged mode required (systemctl access)
-4. **Data-Level** - MongoDB localhost-only, no external access
+1. **Auth layer** — Lucia v3 session management, HttpOnly cookies, bcrypt password hashing
+2. **Network-level** — Firewall rules, VPN access recommended for internet-exposed deployments
+3. **Application-level** — Rate limiting on login, Zod input validation
+4. **Container-level** — Privileged mode required (systemctl access)
+5. **Data-level** — MongoDB localhost-only; auth data in separate SQLite database
+
+### Auth Data Flow
+
+```
+POST /api/auth/login
+  └── Rate limiter (10 req/15min per IP)
+  └── Lookup user in auth.db (SQLite)
+  └── bcrypt.verify() — runs even on missing user (timing-safe)
+  └── Lucia.createSession() — stores session in auth.db
+  └── Set-Cookie: nms_session (HttpOnly, SameSite=lax)
+
+Every protected request
+  └── authMiddleware reads session cookie
+  └── Lucia.validateSession() — checks auth.db
+  └── If valid: attach req.user, call next()
+  └── If expired: clear cookie, return 401
+  └── If missing: return 401
+```
+
+### Auth Database
+
+The NMS maintains its own SQLite database (`auth.db`) completely separate from the Open5GS MongoDB instance:
+
+```
+auth.db
+├── user table     (id, username, password_hash, role, created_at, last_login_at)
+└── session table  (id, expires_at, user_id)
+```
+
+Persisted via Docker volume mount `./data:/app/data`.
 
 ### Security Measures
+
+**Authentication & Sessions:**
+- Lucia v3 session management with rolling expiry
+- HttpOnly cookies (inaccessible to JavaScript)
+- SameSite=lax (CSRF protection)
+- Secure flag controlled by `COOKIE_SECURE` env var (must be `true` for HTTPS)
+- bcrypt password hashing (cost factor 10)
+- Timing-safe login (prevents user enumeration)
+- Rate limiting on login endpoint (10 attempts/15min per IP)
 
 **Input Validation:**
 - Zod schema validation on all API inputs
@@ -624,29 +664,29 @@ Different YAML parsers based on requirements:
 **HTTP Security:**
 - Helmet middleware (security headers)
 - CORS configuration
-- Rate limiting (100 req/15min per IP)
+- Rate limiting (100 req/15min per IP on general routes)
 - Request size limits
 
 **Container Security:**
 - Read-only mounts where possible
-- Minimal container images (Alpine Linux)
+- Minimal container images (Debian Bookworm slim)
 - No unnecessary services running
 
 **Data Protection:**
 - Automatic backups before changes
 - Audit logging of all operations
 - Rollback capability
+- Auth data isolated from Open5GS data
 
 ### Security Limitations
 
-**No Authentication/Authorization:**
-- No user login system
-- No role-based access control (RBAC)
-- Single-user assumption
+**Single user only:**
+- No multi-user management UI in v1.2
+- No role-based access control (RBAC) — role field exists for future use
 
-**No Encryption:**
-- HTTP only (no HTTPS/WSS)
-- Unencrypted MongoDB connection
+**No Encryption in Transit by Default:**
+- HTTP only out of the box
+- Set `COOKIE_SECURE=true` and configure nginx SSL for HTTPS deployments
 
 **Privileged Container:**
 - Backend requires elevated permissions
@@ -655,9 +695,8 @@ Different YAML parsers based on requirements:
 ### Production Security Recommendations
 
 See **[docs/deployment.md](docs/deployment.md)** for:
-- SSL/TLS termination at nginx
+- SSL/TLS termination at nginx (set `COOKIE_SECURE=true` in `.env` when active)
 - VPN or firewall-based access control
-- External authentication (OAuth2, JWT)
 - MongoDB authentication
 - Regular security updates
 

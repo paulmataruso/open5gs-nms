@@ -13,12 +13,11 @@ import { LogsPage } from './pages/LogsPage';
 import { AutoConfigPage } from './pages/AutoConfigPage';
 import { SuciManagementPage } from './components/suci/SuciManagementPage';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useServiceStore } from './stores';
+import { AuthGuard } from './components/auth/AuthGuard';
 
 function App(): JSX.Element {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [subscriberToEdit, setSubscriberToEdit] = useState<string | undefined>(undefined);
-  const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
 
   const handleNavigateToSubscriber = (imsi: string) => {
     setSubscriberToEdit(imsi);
@@ -33,10 +32,6 @@ function App(): JSX.Element {
   }, [activeTab]);
 
   useWebSocket();
-
-  useEffect(() => {
-    fetchStatuses();
-  }, [fetchStatuses]);
 
   const renderPage = (): JSX.Element => {
     switch (activeTab) {
@@ -69,9 +64,11 @@ function App(): JSX.Element {
 
   return (
     <>
-      <Layout activeTab={activeTab} onTabChange={setActiveTab}>
-        {renderPage()}
-      </Layout>
+      <AuthGuard>
+        <Layout activeTab={activeTab} onTabChange={setActiveTab}>
+          {renderPage()}
+        </Layout>
+      </AuthGuard>
       <Toaster
         position="bottom-right"
         toastOptions={{

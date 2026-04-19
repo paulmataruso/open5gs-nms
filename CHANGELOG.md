@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-04-18
+
+### Added — Authentication
+
+#### Web UI Login
+- **Session-based authentication** — All pages and API endpoints now require login
+- **Login page** — Clean login form matching NMS dark theme, accessible at the root URL when unauthenticated
+- **Persistent sessions** — Sessions survive page refresh and browser restarts (24-hour default lifetime, configurable)
+- **Auto-logout on session expiry** — Page redirects to login when a session expires mid-use
+- **Logout button** — User avatar and logout button added to the bottom of the sidebar
+
+#### Backend Auth Infrastructure
+- **Lucia v3 session management** — HttpOnly cookie-based sessions with rolling expiry
+- **SQLite user/session database** — Separate from Open5GS MongoDB; stored at `/app/data/auth.db` in the container, persisted via Docker volume `./data:/app/data`
+- **bcrypt password hashing** — Cost factor 10 via `oslo/password`
+- **Timing-safe login** — bcrypt verify runs even on missing usernames to prevent user enumeration
+- **Rate limiting on login** — 10 attempts per 15 minutes per IP (uses existing `express-rate-limit` dependency)
+- **First-run admin seeding** — On first startup with no users, admin account is created automatically (see [First Login](#first-login))
+
+#### New API Endpoints
+- `POST /api/auth/login` — Authenticate and receive session cookie (public, rate-limited)
+- `POST /api/auth/logout` — Invalidate session and clear cookie (requires session)
+- `GET /api/auth/me` — Return current user info (requires session)
+- `GET /api/health` — Remains public (used by Docker healthcheck)
+
+#### New Environment Variables
+- `AUTH_DB_PATH` — Path to SQLite auth database inside container (default: `/app/data/auth.db`)
+- `SESSION_MAX_AGE` — Session lifetime in seconds (default: `86400` = 24 hours)
+- `FIRST_RUN_PASSWORD` — Set initial admin password on first deploy; if empty, a random password is printed to container logs
+- `COOKIE_SECURE` — Set to `true` only when serving over HTTPS; default `false` (plain HTTP deployments work out of the box)
+
+### Changed
+- `docker-compose.yml` — Added `./data:/app/data` volume mount for auth database persistence
+- `backend/Dockerfile` — Added `python3`, `make`, `g++` to builder stage for `better-sqlite3` native compilation; switched to `npm prune` pattern to carry compiled binary to runtime stage
+- All existing API routes now require a valid session cookie
+
+### Security
+- Session cookies are `HttpOnly` (not accessible to JavaScript)
+- `SameSite=lax` prevents CSRF on cross-site navigations
+- `Secure` flag controlled by `COOKIE_SECURE` env var — must be `true` when behind HTTPS
+- Login endpoint rate-limited to prevent brute force
+- Generic error message on failed login (never reveals which field was wrong)
+- Auth data kept entirely separate from Open5GS MongoDB
+
+### Removed
+- "No authentication" warning from README security section (auth is now implemented)
+
+---
+
 ## [1.1.0] - 2026-04-14
 
 ### Added - Docker Container Logging
@@ -205,8 +254,9 @@ This is the initial public release. Future upgrade instructions will be provided
 
 ## Known Limitations
 
-- No built-in authentication/authorization (local deployment only)
-- No HTTPS/WSS (nginx SSL termination recommended)
+- No multi-user management UI (add/remove users) — admin account only in v1.2
+- No password change UI — requires recreating the auth database
+- No HTTPS/WSS — nginx SSL termination recommended for internet-exposed deployments (set `COOKIE_SECURE=true`)
 - Single-host deployment only
 - js-yaml strips YAML comments on write operations
 - Requires privileged Docker container for systemctl access
@@ -218,9 +268,9 @@ This is the initial public release. Future upgrade instructions will be provided
 See [GitHub Issues](https://github.com/YOUR_ORG/open5gs-nms/issues) for planned features and enhancements.
 
 **High Priority:**
-- JWT/OAuth2 authentication
+- Multi-user management UI (add/remove users, change passwords)
+- Role-based access control (RBAC)
 - HTTPS/WSS support
-- Multi-user support with roles
 - Enhanced backup scheduling
 - Multi-host deployment support
 - Supporting open5gs running on docker

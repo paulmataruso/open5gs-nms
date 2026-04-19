@@ -42,13 +42,14 @@ Before deploying to production, verify:
 
 ### Security
 
-- [ ] **SSL/TLS enabled** for HTTPS access
+- [ ] **SSL/TLS enabled** for HTTPS access (set `COOKIE_SECURE=true` in `.env`)
 - [ ] **Firewall configured** with minimal open ports
 - [ ] **VPN or IP whitelist** for NMS access
 - [ ] **MongoDB authentication** enabled
+- [ ] **`FIRST_RUN_PASSWORD`** cleared from `.env` after first login
+- [ ] **Strong admin password** set (not the auto-generated default)
 - [ ] **Regular security updates** scheduled
 - [ ] **Audit logging** enabled and monitored
-- [ ] **Access control plan** documented
 
 ### Operations
 

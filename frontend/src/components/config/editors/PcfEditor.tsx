@@ -19,6 +19,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
   
   const server = pcf.sbi.server[0] || { address: '127.0.0.13', port: 7777 };
   const scpUri = pcf.sbi?.client?.scp?.[0]?.uri || '';
+  const nrfUri = pcf.sbi?.client?.nrf?.[0]?.uri || '';
 
   const updatePcf = (partial: any) => {
     onChange({ ...configs, pcf: { ...fullYaml, pcf: { ...pcf, ...partial } } });
@@ -77,6 +78,19 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
             value={scpUri}
             onChange={(e) => updatePcf({ sbi: { ...pcf.sbi, client: { ...pcf.sbi.client, scp: [{ uri: e.target.value }] } } })}
             placeholder="http://127.0.0.200:7777"
+          />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
+        <div>
+          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.nrf_uri}>NRF URI</LabelWithTooltip></label>
+          <input
+            className="nms-input font-mono text-xs"
+            value={nrfUri}
+            onChange={(e) => updatePcf({ sbi: { ...pcf.sbi, client: { ...pcf.sbi.client, nrf: [{ uri: e.target.value }] } } })}
+            placeholder="http://127.0.0.10:7777"
           />
         </div>
       </div>

@@ -209,16 +209,31 @@ sudo chown -R $USER:$USER open5gs-nms
 cd open5gs-nms
 ```
 
-### Step 2: Configure Environment (Optional)
+### Step 2: Configure Environment
 
-The default configuration works for most deployments. To customize settings:
+Copy the example file and review it before deploying:
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-**Default values (usually do not need changing):**
+**Authentication settings (review before first deploy):**
+
+```bash
+# Set a password for the initial admin account.
+# If left empty, a random password is generated and printed to container logs.
+FIRST_RUN_PASSWORD=your-secure-password-here
+
+# Session lifetime in seconds (default: 24 hours)
+SESSION_MAX_AGE=86400
+
+# Set to 'true' ONLY if you are serving over HTTPS.
+# Leave as 'false' for plain HTTP deployments — setting this wrong silently breaks login.
+COOKIE_SECURE=false
+```
+
+**Other settings (defaults work for most deployments):**
 
 ```bash
 NODE_ENV=production
@@ -282,6 +297,40 @@ sudo ufw status
 ---
 
 ## Post-Installation Configuration
+
+### First Login
+
+The NMS requires authentication. On first startup, an admin account is created automatically.
+
+**If you set `FIRST_RUN_PASSWORD` in your `.env`:**
+- Log in with username `admin` and the password you set.
+- Remove or clear `FIRST_RUN_PASSWORD` from `.env` after your first login.
+
+**If you left `FIRST_RUN_PASSWORD` empty:**
+- A random password is generated and printed **once** to the backend container logs.
+- Retrieve it before logging in:
+
+```bash
+docker logs open5gs-nms-backend 2>&1 | grep -A4 "FIRST RUN"
+```
+
+Expected output:
+```
+════════════════════════════════════════════════════
+  FIRST RUN — Admin account created
+  Username : admin
+  Password : Xk7mQ2pL9nRv4wYa
+  Change this password after first login!
+════════════════════════════════════════════════════
+```
+
+> **Note:** This password is only printed once. If you miss it, delete the auth database and restart:
+> ```bash
+> docker compose down
+> rm -f ./data/auth.db
+> docker compose up -d
+> docker logs open5gs-nms-backend 2>&1 | grep -A4 "FIRST RUN"
+> ```
 
 ### Access the Web Interface
 
@@ -516,10 +565,10 @@ docker exec open5gs-nms-backend systemctl status open5gs-nrfd
 
 For production use, consider the following:
 
-- **Enable HTTPS** — Set up SSL certificates (e.g., Let's Encrypt) and configure nginx SSL termination. See [Deployment Guide](docs/deployment.md).
+- **Enable HTTPS** — Set up SSL certificates (e.g., Let's Encrypt) and configure nginx SSL termination. Set `COOKIE_SECURE=true` in `.env` when HTTPS is active. See [Deployment Guide](docs/deployment.md).
 - **Regular Backups** — Automate backup jobs via cron and store copies off-site.
 - **Monitoring** — Set up external monitoring (Prometheus, Grafana) and configure alerts for service failures.
-- **Security** — Restrict NMS access to the management network only, consider a VPN or strict firewall rules, and plan for authentication implementation.
+- **Network Security** — Restrict NMS access to the management network or behind a VPN. The NMS requires login but network-level restrictions are still recommended for internet-exposed deployments.
 
 ### Getting Help
 

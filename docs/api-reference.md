@@ -12,9 +12,130 @@ All API endpoints are relative to: `http://YOUR_SERVER:3001/api` (or `/api` when
 
 ## Authentication
 
-**Current:** No authentication required (designed for trusted networks)
+All API endpoints except `GET /api/health` and `POST /api/auth/login` require a valid session cookie. Requests without a valid session receive `401 Unauthorized`.
 
-**Future:** JWT-based authentication planned
+Sessions are managed via an HttpOnly cookie named `nms_session`, set automatically on successful login.
+
+### POST /api/auth/login
+
+Authenticate and receive a session cookie.
+
+> **Rate limited:** 10 attempts per 15 minutes per IP address.
+
+**Request Body:**
+```json
+{
+  "username": "admin",
+  "password": "your-password"
+}
+```
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": "abc123",
+      "username": "admin",
+      "role": "admin",
+      "lastLoginAt": "2026-04-18T21:00:00.000Z"
+    }
+  }
+}
+```
+Also sets `Set-Cookie: nms_session=...; HttpOnly; SameSite=Lax; Path=/`
+
+**Error Response (401):**
+```json
+{
+  "success": false,
+  "error": "Invalid username or password"
+}
+```
+
+---
+
+### POST /api/auth/logout
+
+Invalidate the current session and clear the session cookie.
+
+**Requires:** Valid session cookie
+
+**Response (200):**
+```json
+{ "success": true }
+```
+Also clears the `nms_session` cookie.
+
+---
+
+### GET /api/auth/me
+
+Return information about the currently authenticated user.
+
+**Requires:** Valid session cookie
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": "abc123",
+      "username": "admin",
+      "role": "admin",
+      "createdAt": "2026-04-18T20:00:00.000Z",
+      "lastLoginAt": "2026-04-18T21:00:00.000Z"
+    }
+  }
+}
+```
+
+**Error Response (401):**
+```json
+{
+  "success": false,
+  "error": "Unauthorized"
+}
+```
+
+---
+
+### Using the API with curl
+
+To authenticate and make authenticated requests:
+
+```bash
+# 1. Login and save the session cookie
+curl -c cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your-password"}'
+
+# 2. Use the saved cookie for subsequent requests
+curl -b cookies.txt http://YOUR_SERVER:8888/api/config
+
+# 3. Logout
+curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/logout
+```
+
+### Using the API with JavaScript
+
+```javascript
+const client = axios.create({
+  baseURL: 'http://YOUR_SERVER:8888/api',
+  withCredentials: true, // required — sends session cookie automatically
+});
+
+// Login
+await client.post('/auth/login', { username: 'admin', password: 'your-password' });
+
+// All subsequent requests automatically include the session cookie
+const configs = await client.get('/config');
+
+// Logout
+await client.post('/auth/logout');
+```
 
 ---
 
@@ -811,8 +932,12 @@ Connect to: `ws://YOUR_SERVER:3002` (or `ws://YOUR_SERVER:8888/ws` through nginx
 
 ## Rate Limiting
 
-- **Limit:** 100 requests per 15 minutes per IP address
-- **Response when exceeded:**
+| Endpoint | Limit |
+|----------|-------|
+| `POST /api/auth/login` | 10 requests per 15 minutes per IP (failed attempts only) |
+| All other endpoints | 100 requests per 15 minutes per IP |
+
+**Response when exceeded:**
 ```json
 {
   "error": "Too many requests, please try again later"
@@ -826,16 +951,24 @@ Connect to: `ws://YOUR_SERVER:3002` (or `ws://YOUR_SERVER:8888/ws` through nginx
 ### cURL
 
 ```bash
-# Get all configs
-curl http://localhost:3001/api/config/all
+# Login and save session cookie
+curl -c cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your-password"}'
+
+# Get all configs (uses saved cookie)
+curl -b cookies.txt http://YOUR_SERVER:8888/api/config
 
 # Create subscriber
-curl -X POST http://localhost:3001/api/subscribers \
+curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/subscribers \
   -H "Content-Type: application/json" \
   -d '{"imsi":"001010000000001",...}'
 
 # Restart service
-curl -X POST http://localhost:3001/api/services/nrf/restart
+curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/services/nrf/restart
+
+# Logout
+curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/logout
 ```
 
 ### JavaScript (Axios)
@@ -844,11 +977,15 @@ curl -X POST http://localhost:3001/api/services/nrf/restart
 import axios from 'axios';
 
 const client = axios.create({
-  baseURL: 'http://localhost:3001/api'
+  baseURL: 'http://YOUR_SERVER:8888/api',
+  withCredentials: true, // required — sends session cookie automatically
 });
 
-// Get configs
-const configs = await client.get('/config/all');
+// Login
+await client.post('/auth/login', { username: 'admin', password: 'your-password' });
+
+// Get configs (session cookie sent automatically)
+const configs = await client.get('/config');
 
 // Create subscriber
 const subscriber = await client.post('/subscribers', {
@@ -858,6 +995,9 @@ const subscriber = await client.post('/subscribers', {
 
 // Restart service
 await client.post('/services/nrf/restart');
+
+// Logout
+await client.post('/auth/logout');
 ```
 
 ---

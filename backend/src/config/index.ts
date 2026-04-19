@@ -8,9 +8,16 @@ export interface AppConfig {
   logLevel: string;
   logDir: string;
   systemctlPath: string;
+  // Auth
+  authDbPath: string;
+  sessionMaxAge: number;
+  firstRunPassword: string | null;
+  isProduction: boolean;
 }
 
 export function loadAppConfig(): AppConfig {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   return {
     port: parseInt(process.env.PORT || '3001', 10),
     wsPort: parseInt(process.env.WS_PORT || '3002', 10),
@@ -21,5 +28,12 @@ export function loadAppConfig(): AppConfig {
     logLevel: process.env.LOG_LEVEL || 'info',
     logDir: process.env.LOG_DIR || '/var/log/open5gs-nms',
     systemctlPath: process.env.HOST_SYSTEMCTL_PATH || '/usr/bin/systemctl',
+    // Auth
+    authDbPath: process.env.AUTH_DB_PATH || '/app/data/auth.db',
+    sessionMaxAge: parseInt(process.env.SESSION_MAX_AGE || '86400', 10), // 24h default
+    firstRunPassword: process.env.FIRST_RUN_PASSWORD || null,
+    // Only set secure cookie flag when explicitly running behind HTTPS.
+    // NODE_ENV=production does NOT imply HTTPS — many deployments run HTTP internally.
+    isProduction: process.env.COOKIE_SECURE === 'true',
   };
 }

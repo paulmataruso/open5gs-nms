@@ -19,6 +19,7 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
   
   const server = bsf.sbi.server[0] || { address: '127.0.0.15', port: 7777 };
   const scpUri = bsf.sbi?.client?.scp?.[0]?.uri || '';
+  const nrfUri = bsf.sbi?.client?.nrf?.[0]?.uri || '';
 
   const updateBsf = (partial: any) => {
     onChange({ ...configs, bsf: { ...fullYaml, bsf: { ...bsf, ...partial } } });
@@ -62,6 +63,19 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
             value={scpUri}
             onChange={(e) => updateBsf({ sbi: { ...bsf.sbi, client: { ...bsf.sbi.client, scp: [{ uri: e.target.value }] } } })}
             placeholder="http://127.0.0.200:7777"
+          />
+        </div>
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
+        <div>
+          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.nrf_uri}>NRF URI</LabelWithTooltip></label>
+          <input
+            className="nms-input font-mono text-xs"
+            value={nrfUri}
+            onChange={(e) => updateBsf({ sbi: { ...bsf.sbi, client: { ...bsf.sbi.client, nrf: [{ uri: e.target.value }] } } })}
+            placeholder="http://127.0.0.10:7777"
           />
         </div>
       </div>
