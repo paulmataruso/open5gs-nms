@@ -95,6 +95,30 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
         </div>
       </div>
 
+      {/* Metrics Server */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_address}>Address</LabelWithTooltip></label>
+            <input
+              className="nms-input font-mono text-xs"
+              value={pcf.metrics?.server?.[0]?.address || ''}
+              onChange={(e) => updatePcf({ metrics: { server: [{ address: e.target.value, port: pcf.metrics?.server?.[0]?.port || 9090 }] } })}
+            />
+          </div>
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_port}>Port</LabelWithTooltip></label>
+            <input
+              type="number"
+              className="nms-input font-mono text-xs"
+              value={pcf.metrics?.server?.[0]?.port || 9090}
+              onChange={(e) => updatePcf({ metrics: { server: [{ address: pcf.metrics?.server?.[0]?.address || '', port: parseInt(e.target.value) || 9090 }] } })}
+            />
+          </div>
+        </div>
+      </div>
+
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
   );

@@ -55,6 +55,30 @@ export function HssEditor({ configs, onChange }: Props): JSX.Element {
         </div>
       </div>
 
+      {/* Metrics Server */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_address}>Address</LabelWithTooltip></label>
+            <input
+              className="nms-input font-mono text-xs"
+              value={hss.metrics?.server?.[0]?.address || ''}
+              onChange={(e) => updateHss({ metrics: { server: [{ address: e.target.value, port: hss.metrics?.server?.[0]?.port || 9090 }] } })}
+            />
+          </div>
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_port}>Port</LabelWithTooltip></label>
+            <input
+              type="number"
+              className="nms-input font-mono text-xs"
+              value={hss.metrics?.server?.[0]?.port || 9090}
+              onChange={(e) => updateHss({ metrics: { server: [{ address: hss.metrics?.server?.[0]?.address || '', port: parseInt(e.target.value) || 9090 }] } })}
+            />
+          </div>
+        </div>
+      </div>
+
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
   );

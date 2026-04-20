@@ -57,6 +57,22 @@ export interface MmeConfig {
     short?: string;
   };
   mme_name?: string;
+  sgsap?: {
+    client?: Array<{
+      address: string | string[];
+      local_address?: string | string[];
+      map?: {
+        tai: {
+          plmn_id: { mcc: string; mnc: string };
+          tac: number;
+        };
+        lai: {
+          plmn_id: { mcc: string; mnc: string };
+          lac: number;
+        };
+      };
+    }>;
+  };
   time?: {
     t3402?: { value: number };
     t3412?: { value: number };

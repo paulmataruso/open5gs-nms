@@ -9,6 +9,8 @@ export const COMMON_TOOLTIPS = {
   mongodb_uri: "MongoDB connection string. Format: mongodb://host:port/database. Used for persistent data storage",
   mcc: "Mobile Country Code - 3-digit country identifier per ITU-T E.212. Examples: 001=test, 310=USA, 234=UK, 262=Germany",
   mnc: "Mobile Network Code - 2 or 3-digit operator identifier. Identifies specific mobile network within a country",
+  metrics_address: "Prometheus metrics server bind address. Exposes performance and health metrics for monitoring",
+  metrics_port: "Metrics server port. Default: 9090. Scraped by Prometheus for monitoring and alerting",
 };
 
 // UPF (User Plane Function) Tooltips

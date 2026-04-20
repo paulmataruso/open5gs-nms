@@ -595,6 +595,26 @@ className="nms-btn-ghost text-xs flex items-center gap-1"
         </div>
       )}
 
+      {/* Metrics Server */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip 
+            label="Address" 
+            value={amf.metrics?.server?.[0]?.address || ''} 
+            onChange={(v) => updateAmf({ metrics: { server: [{ address: v, port: amf.metrics?.server?.[0]?.port || 9090 }] } })} 
+            tooltip={COMMON_TOOLTIPS.metrics_address} 
+          />
+          <FieldWithTooltip 
+            label="Port" 
+            type="number" 
+            value={amf.metrics?.server?.[0]?.port || 9090} 
+            onChange={(v) => updateAmf({ metrics: { server: [{ address: amf.metrics?.server?.[0]?.address || '', port: parseInt(v) || 9090 }] } })} 
+            tooltip={COMMON_TOOLTIPS.metrics_port} 
+          />
+        </div>
+      </div>
+
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
   );
@@ -826,6 +846,26 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         </div>
       </div>
 
+      {/* Metrics Server */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip 
+            label="Address" 
+            value={smf.metrics?.server?.[0]?.address || ''} 
+            onChange={(v) => updateSmf({ metrics: { server: [{ address: v, port: smf.metrics?.server?.[0]?.port || 9090 }] } })} 
+            tooltip={COMMON_TOOLTIPS.metrics_address} 
+          />
+          <FieldWithTooltip 
+            label="Port" 
+            type="number" 
+            value={smf.metrics?.server?.[0]?.port || 9090} 
+            onChange={(v) => updateSmf({ metrics: { server: [{ address: smf.metrics?.server?.[0]?.address || '', port: parseInt(v) || 9090 }] } })} 
+            tooltip={COMMON_TOOLTIPS.metrics_port} 
+          />
+        </div>
+      </div>
+
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
   );
@@ -884,6 +924,26 @@ function UpfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
           ))}
         </div>
       )}
+
+      {/* Metrics Server */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip 
+            label="Address" 
+            value={upf.metrics?.server?.[0]?.address || ''} 
+            onChange={(v) => updateUpf({ metrics: { server: [{ address: v, port: upf.metrics?.server?.[0]?.port || 9090 }] } })} 
+            tooltip={COMMON_TOOLTIPS.metrics_address} 
+          />
+          <FieldWithTooltip 
+            label="Port" 
+            type="number" 
+            value={upf.metrics?.server?.[0]?.port || 9090} 
+            onChange={(v) => updateUpf({ metrics: { server: [{ address: upf.metrics?.server?.[0]?.address || '', port: parseInt(v) || 9090 }] } })} 
+            tooltip={COMMON_TOOLTIPS.metrics_port} 
+          />
+        </div>
+      </div>
 
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>

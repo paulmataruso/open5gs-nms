@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-04-20
+
+### Fixed — MME SGs-AP Configuration
+
+#### Root Cause
+The `MmeEditor.tsx` component was broken in two ways that caused the MME to fail to start after applying config via the NMS:
+
+1. **Wrong `map` structure** — The editor was building `map` as an array (`map: [{ tai, lai }]`) but Open5GS MME expects `map` as a plain object (`map: { tai, lai }`). This produced invalid YAML that the MME config parser rejected at startup with a fatal assertion failure.
+
+2. **Broken JSX** — The component file had import statements and code fragments tangled inside JSX return blocks, with a dangling IIFE `{(() => { ); })()}` that would crash the React render entirely. The SGs-AP section was completely non-functional.
+
+#### Changes
+
+**`frontend/src/components/config/editors/MmeEditor.tsx`** — Full rewrite of the SGs-AP section:
+- `map` is now always a plain object `{ tai: {...}, lai: {...} }` matching Open5GS YAML spec
+- Added `defaultMap()` factory function returning the correct shape
+- Replaced broken `updateMappingField` with clean `updateMapField` helper
+- Added `hasRealMap` / `mapVal()` logic: TAI/LAI fields show grey placeholder text when no data has been saved yet, white text only when real values exist
+- Added inline yellow warning banner when a hostname (FQDN) is entered as the MSC/VLR address, explaining that Open5GS MME calls `getaddrinfo()` at startup and will abort with a fatal error if DNS cannot resolve the hostname at that moment
+
+**`backend/src/domain/entities/mme-config.ts`** — Added missing `sgsap` field to the `MmeConfig` TypeScript interface with correct shape (`map` as object, not array)
+
+**`frontend/src/data/tooltips/mme.ts`** — Updated `sgsap_server_address` tooltip to document the DNS-at-startup behaviour and recommend using IP addresses
+
+#### Behaviour Notes
+- Using an IP address (real or placeholder like `1.1.1.1`) for the MSC/VLR address: MME starts successfully, logs a warning if the address is unreachable — this is normal and expected
+- Using an unresolvable hostname: MME aborts at startup — this is Open5GS behaviour, not an NMS bug. The UI now warns the user before they apply
+
+---
+
 ## [1.2.0] - 2026-04-18
 
 ### Added — Authentication
