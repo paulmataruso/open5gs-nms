@@ -15,6 +15,7 @@ import {
   Key,
   LogOut,
   UserCog,
+  BarChart2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -35,6 +36,7 @@ const NAV_ITEMS = [
   { id: 'suci', label: 'SUCI Keys', icon: Key },
   { id: 'backup', label: 'Backup & Restore', icon: Database },
   { id: 'logs', label: 'Unified Logs', icon: ScrollText },
+  { id: 'metrics', label: 'Metrics', icon: BarChart2 },
   { id: 'users', label: 'User Management', icon: UserCog },
   { id: 'audit', label: 'Audit Log', icon: FileText },
 ];

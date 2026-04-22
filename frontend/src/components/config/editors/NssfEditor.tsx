@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, SbiClientSection } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -18,8 +18,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
   }
   
   const server = nssf.sbi.server[0] || { address: '127.0.0.14', port: 7777 };
-  const scpUri = nssf.sbi?.client?.scp?.[0]?.uri || '';
-  const nrfUri = nssf.sbi?.client?.nrf?.[0]?.uri || '';
+  const nsiClients = nssf.sbi?.client?.nsi || [];
 
   const updateNssf = (partial: any) => {
     onChange({ ...configs, nssf: { ...fullYaml, nssf: { ...nssf, ...partial } } });
@@ -54,36 +53,15 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
         </div>
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
-        <div>
-          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.scp_uri}>SCP URI</LabelWithTooltip></label>
-          <input
-            className="nms-input font-mono text-xs"
-            value={scpUri}
-            onChange={(e) => updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi.client, scp: [{ uri: e.target.value }] } } })}
-            placeholder="http://127.0.0.200:7777"
-          />
-        </div>
-      </div>
+      <SbiClientSection
+        client={nssf.sbi?.client}
+        onChange={(client) => updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi.client, ...client } } })}
+      />
 
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
-        <div>
-          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.nrf_uri}>NRF URI</LabelWithTooltip></label>
-          <input
-            className="nms-input font-mono text-xs"
-            value={nrfUri}
-            onChange={(e) => updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi.client, nrf: [{ uri: e.target.value }] } } })}
-            placeholder="http://127.0.0.10:7777"
-          />
-        </div>
-      </div>
-
-      {nssf.sbi?.client?.nsi && nssf.sbi.client.nsi.length > 0 && (
+      {nsiClients.length > 0 && (
         <div>
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NSI Clients</h3>
-          {nssf.sbi.client.nsi.map((n: any, i: number) => (
+          {nsiClients.map((n: any, i: number) => (
             <div key={i} className="grid grid-cols-2 gap-4 mb-2">
               <div>
                 <label className="nms-label">NSI URI</label>

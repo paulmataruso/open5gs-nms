@@ -534,6 +534,68 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         </div>
       )}
 
+      {/* Timer Configuration */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-1">Timer Configuration</h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          3GPP mobility timers. Leave blank to omit from config (Open5GS uses built-in defaults).
+          Values are in seconds.
+        </p>
+        <div className="grid grid-cols-3 gap-4">
+          <FieldWithTooltip
+            label="T3402 (seconds)"
+            type="number"
+            value={mme.time?.t3402?.value ?? ''}
+            onChange={(v) => {
+              const val = v === '' ? undefined : parseInt(v);
+              const updated: any = { ...mme.time };
+              if (val === undefined) {
+                delete updated.t3402;
+              } else {
+                updated.t3402 = { value: val };
+              }
+              updateMme({ time: Object.keys(updated).length ? updated : undefined });
+            }}
+            placeholder="720"
+            tooltip={(MME_TOOLTIPS as any).t3402}
+          />
+          <FieldWithTooltip
+            label="T3412 (seconds)"
+            type="number"
+            value={mme.time?.t3412?.value ?? ''}
+            onChange={(v) => {
+              const val = v === '' ? undefined : parseInt(v);
+              const updated: any = { ...mme.time };
+              if (val === undefined) {
+                delete updated.t3412;
+              } else {
+                updated.t3412 = { value: val };
+              }
+              updateMme({ time: Object.keys(updated).length ? updated : undefined });
+            }}
+            placeholder="3240"
+            tooltip={(MME_TOOLTIPS as any).t3412}
+          />
+          <FieldWithTooltip
+            label="T3423 (seconds)"
+            type="number"
+            value={mme.time?.t3423?.value ?? ''}
+            onChange={(v) => {
+              const val = v === '' ? undefined : parseInt(v);
+              const updated: any = { ...mme.time };
+              if (val === undefined) {
+                delete updated.t3423;
+              } else {
+                updated.t3423 = { value: val };
+              }
+              updateMme({ time: Object.keys(updated).length ? updated : undefined });
+            }}
+            placeholder="720"
+            tooltip={(MME_TOOLTIPS as any).t3423}
+          />
+        </div>
+      </div>
+
       {/* Metrics Server */}
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>

@@ -7,6 +7,7 @@ import { IWebSocketBroadcaster } from '../../domain/interfaces/websocket-broadca
 import { SERVICE_RESTART_ORDER, SERVICE_UNIT_MAP, ServiceName } from '../../domain/entities/service-status';
 import { AllConfigsDto, ApplyResultDto } from '../dto';
 import { ValidateConfigUseCase } from './validate-config';
+import { SyncPrometheusConfigUseCase } from './sync-prometheus-config';
 
 export class ApplyConfigUseCase {
   private readonly mutex = new Mutex();
@@ -19,6 +20,7 @@ export class ApplyConfigUseCase {
     private readonly validateUseCase: ValidateConfigUseCase,
     private readonly logger: pino.Logger,
     private readonly backupBasePath: string,
+    private readonly syncPrometheus: SyncPrometheusConfigUseCase,
   ) {}
 
   async execute(newConfigs: AllConfigsDto): Promise<ApplyResultDto> {
@@ -146,7 +148,16 @@ export class ApplyConfigUseCase {
           validationErrors: [],
           restartResults: [],
           rollback: true,
+          prometheusReloaded: false,
         };
+      }
+
+      // Step 4b: Sync Prometheus config and trigger live reload
+      const prometheusResult = await this.syncPrometheus.execute(newConfigs);
+      if (prometheusResult.reloaded) {
+        this.logger.info('Prometheus config synced and reloaded');
+      } else {
+        this.logger.warn({ error: prometheusResult.error }, 'Prometheus sync failed (non-fatal)');
       }
 
       // Step 5: Restart services in dependency order
@@ -253,6 +264,8 @@ export class ApplyConfigUseCase {
           validationErrors: [],
           restartResults,
           rollback: true,
+          prometheusReloaded: prometheusResult.reloaded,
+          prometheusReloadError: prometheusResult.error,
         };
       }
 
@@ -280,6 +293,8 @@ export class ApplyConfigUseCase {
         validationErrors: [],
         restartResults,
         rollback: false,
+        prometheusReloaded: prometheusResult.reloaded,
+        prometheusReloadError: prometheusResult.error,
       };
       } catch (err) {
         this.logger.error({ err: String(err), stack: err instanceof Error ? err.stack : undefined }, 'CRITICAL: Apply workflow crashed');

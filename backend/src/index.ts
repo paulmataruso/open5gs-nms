@@ -42,6 +42,7 @@ import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
 import { AutoAssignIPsUseCase } from './application/use-cases/auto-assign-ips-usecase';
+import { SyncPrometheusConfigUseCase } from './application/use-cases/sync-prometheus-config';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
 
@@ -108,6 +109,11 @@ async function main() {
   // Initialize use cases
   const loadConfigUseCase = new LoadConfigUseCase(configRepo, auditLogger, logger);
   const validateConfigUseCase = new ValidateConfigUseCase(configRepo, logger);
+  const syncPrometheusUseCase = new SyncPrometheusConfigUseCase(
+    config.prometheusConfigPath,
+    config.prometheusUrl,
+    logger,
+  );
   const applyConfigUseCase = new ApplyConfigUseCase(
     configRepo,
     hostExecutor,
@@ -116,6 +122,7 @@ async function main() {
     validateConfigUseCase,
     logger,
     config.backupPath,
+    syncPrometheusUseCase,
   );
   // FIXED: Correct parameter order for ServiceMonitorUseCase
   // constructor(hostExecutor, wsBroadcaster, auditLogger, logger)

@@ -1,0 +1,21 @@
+# Grafana datasource provisioning
+# Automatically wires Prometheus as the default datasource on first boot.
+# No manual setup needed in the Grafana UI.
+#
+# NOTE: If you change PROMETHEUS_PORT in .env from the default 9099,
+# update the url below to match and restart Grafana:
+#   docker compose restart grafana
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: open5gs-prometheus
+    url: http://127.0.0.1:9099
+    access: proxy
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+    editable: true

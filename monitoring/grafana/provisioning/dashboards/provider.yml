@@ -1,0 +1,16 @@
+# Grafana dashboard provider provisioning
+# Tells Grafana where to look for dashboard JSON files.
+# Dashboards dropped into monitoring/grafana/dashboards/ are
+# automatically loaded — no UI import needed.
+
+apiVersion: 1
+
+providers:
+  - name: open5gs
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

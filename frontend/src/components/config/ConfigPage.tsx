@@ -23,6 +23,7 @@ import { PcrfEditor } from './editors/PcrfEditor';
 import { SgwcEditor } from './editors/SgwcEditor';
 import { SgwuEditor } from './editors/SgwuEditor';
 import { MmeEditor } from './editors/MmeEditor';
+import { SbiClientSection } from './editors/SharedComponents';
 
 type Tab = 'nrf' | 'scp' | 'amf' | 'smf' | 'upf' | 'ausf' | 'udm' | 'udr' | 'pcf' | 'nssf' | 'bsf' | 'mme' | 'hss' | 'pcrf' | 'sgwc' | 'sgwu';
 
@@ -146,8 +147,6 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
   const fullYaml = configs.amf as any;
   const amf = fullYaml.amf || {};
   const sbiServer = amf.sbi?.server?.[0] || { address: '127.0.0.5', port: 7777 };
-  const scpUri = amf.sbi?.client?.scp?.[0]?.uri || '';
-  const nrfUri = amf.sbi?.client?.nrf?.[0]?.uri || '';
   const ngapServer = amf.ngap?.server?.[0] || { address: '10.0.1.175' };
   const [syncingSD, setSyncingSD] = useState(false);
 
@@ -207,15 +206,10 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         </div>
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
-        <FieldWithTooltip label="SCP URI" value={scpUri} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, client: { ...amf.sbi.client, scp: [{ uri: v }] } } })} placeholder="http://127.0.0.200:7777" tooltip={AMF_TOOLTIPS.scp_uri} />
-      </div>
-
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
-        <FieldWithTooltip label="NRF URI" value={nrfUri} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, client: { ...amf.sbi.client, nrf: [{ uri: v }] } } })} placeholder="http://127.0.0.10:7777" tooltip={COMMON_TOOLTIPS.nrf_uri} />
-      </div>
+      <SbiClientSection
+        client={amf.sbi?.client}
+        onChange={(client) => updateAmf({ sbi: { ...amf.sbi, client } })}
+      />
 
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NGAP Server</h3>
@@ -595,6 +589,51 @@ className="nms-btn-ghost text-xs flex items-center gap-1"
         </div>
       )}
 
+      {/* Timer Configuration */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-1">Timer Configuration</h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          5G NAS mobility timers. Leave blank to omit from config (Open5GS uses built-in defaults).
+          Values are in seconds.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip
+            label="T3502 (seconds)"
+            type="number"
+            value={amf.time?.t3502?.value ?? ''}
+            onChange={(v) => {
+              const val = v === '' ? undefined : parseInt(v);
+              const updated: any = { ...amf.time };
+              if (val === undefined) {
+                delete updated.t3502;
+              } else {
+                updated.t3502 = { value: val };
+              }
+              updateAmf({ time: Object.keys(updated).length ? updated : undefined });
+            }}
+            placeholder="720"
+            tooltip="T3502 timer (seconds). Controls how long a UE waits before re-attempting registration after a failed attempt. Default: 720s (12 minutes)."
+          />
+          <FieldWithTooltip
+            label="T3512 (seconds)"
+            type="number"
+            value={amf.time?.t3512?.value ?? ''}
+            onChange={(v) => {
+              const val = v === '' ? undefined : parseInt(v);
+              const updated: any = { ...amf.time };
+              if (val === undefined) {
+                delete updated.t3512;
+              } else {
+                updated.t3512 = { value: val };
+              }
+              updateAmf({ time: Object.keys(updated).length ? updated : undefined });
+            }}
+            placeholder="540"
+            tooltip="T3512 timer (seconds). Periodic Registration Update timer — how often an idle 5G UE checks in with the network. Default: 540s (9 minutes)."
+          />
+        </div>
+      </div>
+
       {/* Metrics Server */}
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
@@ -628,8 +667,6 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
     return <div className="text-nms-text-dim">Loading SMF configuration...</div>;
   }
   const sbiServer = smf.sbi.server[0] || { address: '127.0.0.4', port: 7777 };
-  const scpUri = smf.sbi?.client?.scp?.[0]?.uri || '';
-  const nrfUri = smf.sbi?.client?.nrf?.[0]?.uri || '';
   const pfcpServer = smf.pfcp?.server?.[0] || { address: '127.0.0.4' };
   const upfAddress = smf.pfcp?.client?.upf?.[0]?.address || '';
   const gtpcServer = smf.gtpc?.server?.[0]?.address || '';
@@ -653,15 +690,10 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         </div>
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
-        <FieldWithTooltip label="SCP URI" value={scpUri} onChange={(v) => updateSmf({ sbi: { ...smf.sbi, client: { ...smf.sbi.client, scp: [{ uri: v }] } } })} placeholder="http://127.0.0.200:7777" tooltip={COMMON_TOOLTIPS.scp_uri} />
-      </div>
-
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
-        <FieldWithTooltip label="NRF URI" value={nrfUri} onChange={(v) => updateSmf({ sbi: { ...smf.sbi, client: { ...smf.sbi.client, nrf: [{ uri: v }] } } })} placeholder="http://127.0.0.10:7777" tooltip={COMMON_TOOLTIPS.nrf_uri} />
-      </div>
+      <SbiClientSection
+        client={smf.sbi?.client}
+        onChange={(client) => updateSmf({ sbi: { ...smf.sbi, client } })}
+      />
 
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">PFCP</h3>
@@ -684,12 +716,12 @@ function SmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Session Pools</h3>
           {smf.session.map((sess: any, i: number) => (
             <div key={i} className="grid grid-cols-2 gap-4 mb-2">
-              <FieldWithTooltip label="Subnet" value={sess.subnet} onChange={(v) => {
+              <FieldWithTooltip label="Subnet" value={sess.subnet || ''} onChange={(v) => {
                 const updated = [...smf.session];
                 updated[i] = { ...updated[i], subnet: v };
                 updateSmf({ session: updated });
               }} tooltip={SMF_TOOLTIPS.session_subnet} />
-              <FieldWithTooltip label="Gateway" value={sess.gateway} onChange={(v) => {
+              <FieldWithTooltip label="Gateway" value={sess.gateway || ''} onChange={(v) => {
                 const updated = [...smf.session];
                 updated[i] = { ...updated[i], gateway: v };
                 updateSmf({ session: updated });
@@ -878,8 +910,8 @@ function UpfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
   if (!upf?.pfcp?.server || upf.pfcp.server.length === 0) {
     return <div className="text-nms-text-dim">Loading UPF configuration...</div>;
   }
-  const pfcpServer = upf.pfcp.server[0] || { address: '127.0.0.7', port: 8805 };
-  const gtpuServer = upf.gtpu?.server?.[0] || { address: '10.0.1.175', port: 2152 };
+  const pfcpServer = upf.pfcp.server[0] || { address: '127.0.0.7' };
+  const gtpuServer = upf.gtpu?.server?.[0] || { address: '10.0.1.175' };
 
   const updateUpf = (partial: any): void => {
     onChange({ ...configs, upf: { ...fullYaml, upf: { ...upf, ...partial } } });
@@ -895,14 +927,24 @@ function UpfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">PFCP Server</h3>
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip label="Address" value={pfcpServer.address} onChange={(v) => updateUpf({ pfcp: { server: [{ ...pfcpServer, address: v }] } })} tooltip={COMMON_TOOLTIPS.sbi_address} />
-          <FieldWithTooltip label="Port" type="number" value={pfcpServer.port || 8805} onChange={(v) => updateUpf({ pfcp: { server: [{ ...pfcpServer, port: parseInt(v) || 8805 }] } })} tooltip={COMMON_TOOLTIPS.sbi_port} />
+          <FieldWithTooltip label="Port" type="number" value={pfcpServer.port ?? ''} onChange={(v) => {
+            const updated = { ...pfcpServer, address: pfcpServer.address };
+            if (v !== '') updated.port = parseInt(v) || 8805;
+            else delete (updated as any).port;
+            updateUpf({ pfcp: { server: [updated] } });
+          }} placeholder="8805 (default)" tooltip={COMMON_TOOLTIPS.sbi_port} />
         </div>
       </div>
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">GTP-U Server</h3>
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip label="Address" value={gtpuServer.address} onChange={(v) => updateUpf({ gtpu: { server: [{ ...gtpuServer, address: v }] } })} tooltip={UPF_TOOLTIPS.gtpu_address} />
-          <FieldWithTooltip label="Port" type="number" value={gtpuServer.port || 2152} onChange={(v) => updateUpf({ gtpu: { server: [{ ...gtpuServer, port: parseInt(v) || 2152 }] } })} tooltip={UPF_TOOLTIPS.gtpu_port} />
+          <FieldWithTooltip label="Port" type="number" value={gtpuServer.port ?? ''} onChange={(v) => {
+            const updated = { ...gtpuServer, address: gtpuServer.address };
+            if (v !== '') updated.port = parseInt(v) || 2152;
+            else delete (updated as any).port;
+            updateUpf({ gtpu: { server: [updated] } });
+          }} placeholder="2152 (default)" tooltip={UPF_TOOLTIPS.gtpu_port} />
         </div>
       </div>
       {upf.session && upf.session.length > 0 && (
@@ -910,12 +952,12 @@ function UpfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Session Pools</h3>
           {upf.session.map((sess: any, i: number) => (
             <div key={i} className="grid grid-cols-2 gap-4 mb-2">
-              <FieldWithTooltip label="Subnet" value={sess.subnet} onChange={(v) => {
+              <FieldWithTooltip label="Subnet" value={sess.subnet || ''} onChange={(v) => {
                 const updated = [...upf.session];
                 updated[i] = { ...updated[i], subnet: v };
                 updateUpf({ session: updated });
               }} tooltip={UPF_TOOLTIPS.session_subnet} />
-              <FieldWithTooltip label="Gateway" value={sess.gateway} onChange={(v) => {
+              <FieldWithTooltip label="Gateway" value={sess.gateway || ''} onChange={(v) => {
                 const updated = [...upf.session];
                 updated[i] = { ...updated[i], gateway: v };
                 updateUpf({ session: updated });
@@ -958,8 +1000,6 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
     return <div className="text-nms-text-dim">Loading AUSF configuration...</div>;
   }
   const server = ausf.sbi.server[0] || { address: '127.0.0.11', port: 7777 };
-  const scpUri = ausf.sbi?.client?.scp?.[0]?.uri || '';
-  const nrfUri = ausf.sbi?.client?.nrf?.[0]?.uri || '';
 
   const updateAusf = (partial: any): void => {
     onChange({ ...configs, ausf: { ...fullYaml, ausf: { ...ausf, ...partial } } });
@@ -979,15 +1019,10 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
         </div>
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
-        <FieldWithTooltip label="SCP URI" value={scpUri} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, client: { ...ausf.sbi.client, scp: [{ uri: v }] } } })} placeholder="http://127.0.0.200:7777" tooltip={COMMON_TOOLTIPS.scp_uri} />
-      </div>
-
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
-        <FieldWithTooltip label="NRF URI" value={nrfUri} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, client: { ...ausf.sbi.client, nrf: [{ uri: v }] } } })} placeholder="http://127.0.0.10:7777" tooltip={COMMON_TOOLTIPS.nrf_uri} />
-      </div>
+      <SbiClientSection
+        client={ausf.sbi?.client}
+        onChange={(client) => updateAusf({ sbi: { ...ausf.sbi, client } })}
+      />
 
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
@@ -1187,6 +1222,18 @@ export function ConfigPage(): JSX.Element {
               {tab.toUpperCase()}
             </button>
           ))}
+        </div>
+
+        {/* SEPP notice */}
+        <div className="flex items-start gap-2 px-3 py-2 rounded bg-nms-surface-2/60 border border-nms-border text-xs text-nms-text-dim">
+          <span className="mt-0.5 shrink-0">ℹ️</span>
+          <span>
+            <strong className="text-nms-text">SEPP (sepp1/sepp2)</strong> configs are not managed by this UI as they require
+            TLS certificate paths and N32 peering config that vary per deployment.
+            Edit <span className="font-mono">/etc/open5gs/sepp1.yaml</span> and{' '}
+            <span className="font-mono">/etc/open5gs/sepp2.yaml</span> directly.
+            The NMS backup system includes SEPP files automatically.
+          </span>
         </div>
       </div>
 

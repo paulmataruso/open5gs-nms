@@ -44,5 +44,11 @@ coverage/
 /backups/
 /data/
 
+# Monitoring runtime data
+monitoring/prometheus_data/*
+!monitoring/prometheus_data/.gitkeep
+monitoring/grafana_data/*
+!monitoring/grafana_data/.gitkeep
+
 # Internal documentation (keep local)
 GIT_PUSH_COMMANDS.md

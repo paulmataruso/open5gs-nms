@@ -8,6 +8,12 @@ export interface AppConfig {
   logLevel: string;
   logDir: string;
   systemctlPath: string;
+  prometheusConfigPath: string;
+  prometheusUrl: string;
+  authDbPath: string;
+  sessionMaxAge: number;
+  firstRunPassword: string;
+  isProduction: boolean;
 }
 
 export function loadAppConfig(): AppConfig {
@@ -21,5 +27,11 @@ export function loadAppConfig(): AppConfig {
     logLevel: process.env.LOG_LEVEL || 'info',
     logDir: process.env.LOG_DIR || '/var/log/open5gs-nms',
     systemctlPath: process.env.HOST_SYSTEMCTL_PATH || '/usr/bin/systemctl',
+    prometheusConfigPath: process.env.PROMETHEUS_CONFIG_PATH || './monitoring/prometheus.yml',
+    prometheusUrl: process.env.PROMETHEUS_URL || `http://127.0.0.1:${process.env.PROMETHEUS_PORT || '9099'}`,
+    authDbPath: process.env.AUTH_DB_PATH || '/app/data/auth.db',
+    sessionMaxAge: parseInt(process.env.SESSION_MAX_AGE || '86400', 10),
+    firstRunPassword: process.env.FIRST_RUN_PASSWORD || '',
+    isProduction: process.env.NODE_ENV === 'production',
   };
 }

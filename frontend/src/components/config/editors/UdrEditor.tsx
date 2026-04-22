@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, SbiClientSection } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -18,8 +18,6 @@ export function UdrEditor({ configs, onChange }: Props): JSX.Element {
   }
   
   const server = udr.sbi.server[0] || { address: '127.0.0.20', port: 7777 };
-  const scpUri = udr.sbi?.client?.scp?.[0]?.uri || '';
-  const nrfUri = udr.sbi?.client?.nrf?.[0]?.uri || '';
 
   const updateUdr = (partial: any) => {
     onChange({ ...configs, udr: { ...fullYaml, udr: { ...udr, ...partial } } });
@@ -70,31 +68,10 @@ export function UdrEditor({ configs, onChange }: Props): JSX.Element {
         </div>
       </div>
 
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SCP Client</h3>
-        <div>
-          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.scp_uri}>SCP URI</LabelWithTooltip></label>
-          <input
-            className="nms-input font-mono text-xs"
-            value={scpUri}
-            onChange={(e) => updateUdr({ sbi: { ...udr.sbi, client: { ...udr.sbi.client, scp: [{ uri: e.target.value }] } } })}
-            placeholder="http://127.0.0.200:7777"
-          />
-        </div>
-      </div>
-
-      <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NRF Client</h3>
-        <div>
-          <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.nrf_uri}>NRF URI</LabelWithTooltip></label>
-          <input
-            className="nms-input font-mono text-xs"
-            value={nrfUri}
-            onChange={(e) => updateUdr({ sbi: { ...udr.sbi, client: { ...udr.sbi.client, nrf: [{ uri: e.target.value }] } } })}
-            placeholder="http://127.0.0.10:7777"
-          />
-        </div>
-      </div>
+      <SbiClientSection
+        client={udr.sbi?.client}
+        onChange={(client) => updateUdr({ sbi: { ...udr.sbi, client } })}
+      />
 
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>

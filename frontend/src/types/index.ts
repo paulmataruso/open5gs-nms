@@ -435,6 +435,8 @@ export interface ApplyResult {
   validationErrors: ValidationError[];
   restartResults: Array<{ service: string; success: boolean; error?: string }>;
   rollback: boolean;
+  prometheusReloaded?: boolean;
+  prometheusReloadError?: string;
 }
 
 // ── Audit ──

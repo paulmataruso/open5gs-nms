@@ -31,4 +31,14 @@ export const MME_TOOLTIPS = {
   
   // Mapping explanation
   sgsap_mapping_explanation: "TAI→LAI mapping tells the MSC/VLR: 'When a UE is in 4G TAI (MCC:001, MNC:01, TAC:4131), treat it as if it's in 2G/3G LAI (MCC:001, MNC:01, LAC:43691)'. This allows seamless fallback for voice calls.",
+
+  // Network name & MME identity
+  network_name_full: "Full network name broadcast to UEs in NAS messages. Shown on the device's network name display.",
+  network_name_short: "Short network name broadcast to UEs. Used when display space is limited.",
+  mme_name: "Identifies this MME instance. Used in Diameter S6a messages and logging.",
+
+  // 3GPP mobility timers
+  t3402: "T3402 timer (seconds). Controls how long a UE waits before re-attempting attach after a failed attempt. Default: 720s (12 minutes).",
+  t3412: "T3412 timer (seconds). Periodic TAU (Tracking Area Update) timer — how often an idle UE checks in with the network. Default: 3240s (54 minutes).",
+  t3423: "T3423 timer (seconds). IMSI detach timer for combined EPS/IMSI attach. Controls GPRS detach procedure timing. Default: 720s (12 minutes).",
 };

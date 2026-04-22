@@ -13,6 +13,9 @@ export interface AppConfig {
   sessionMaxAge: number;
   firstRunPassword: string | null;
   isProduction: boolean;
+  // Prometheus sync
+  prometheusConfigPath: string;
+  prometheusUrl: string;
 }
 
 export function loadAppConfig(): AppConfig {
@@ -35,5 +38,8 @@ export function loadAppConfig(): AppConfig {
     // Only set secure cookie flag when explicitly running behind HTTPS.
     // NODE_ENV=production does NOT imply HTTPS — many deployments run HTTP internally.
     isProduction: process.env.COOKIE_SECURE === 'true',
+    // Prometheus sync
+    prometheusConfigPath: process.env.PROMETHEUS_CONFIG_PATH || './monitoring/prometheus.yml',
+    prometheusUrl: process.env.PROMETHEUS_URL || `http://127.0.0.1:${process.env.PROMETHEUS_PORT || '9099'}`,
   };
 }

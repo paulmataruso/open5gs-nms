@@ -8,6 +8,11 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 1. [System Requirements](#system-requirements)
 2. [Prerequisites](#prerequisites)
+   - [1. Install Required System Packages](#1-install-required-system-packages)
+   - [2. Install Docker](#2-install-docker)
+   - [3. Install MongoDB](#3-install-mongodb)
+   - [4. Install Open5GS](#4-install-open5gs)
+   - [5. Configure DNS Resolution](#5-configure-dns-resolution)
 3. [Installation Steps](#installation-steps)
 4. [Post-Installation Configuration](#post-installation-configuration)
 5. [Verification](#verification)
@@ -49,7 +54,19 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ## Prerequisites
 
-### 1. Install Docker
+### 1. Install Required System Packages
+
+```bash
+sudo apt update
+sudo apt install -y iptables-persistent conntrack
+```
+
+- **`iptables-persistent`** — Saves and restores iptables NAT rules across reboots. Required if you configure UPF internet access (MASQUERADE rules). During install, answer **Yes** to both prompts to save current IPv4 and IPv6 rules.
+- **`conntrack`** — Connection tracking tools required by Open5GS UPF and SGW-U for GTP session management.
+
+---
+
+### 2. Install Docker
 
 ```bash
 # Install Docker using the official script
@@ -67,7 +84,7 @@ docker --version
 docker compose version
 ```
 
-### 2. Install MongoDB
+### 3. Install MongoDB
 
 ```bash
 # Install prerequisites
@@ -105,7 +122,7 @@ sudo systemctl status mongod
 >
 > **Note:** If you use MongoDB in Docker, you will need to build Open5GS from source. This is because `apt` hangs on the MongoDB install step. As a workaround, you can install any version of MongoDB on the host and then disable the service — this satisfies the dependency check and allows `apt` to install Open5GS without errors.
 
-### 3. Install Open5GS
+### 4. Install Open5GS
 
 ```bash
 # Note: If MongoDB is running in Docker, either build Open5GS from source,
@@ -177,7 +194,7 @@ chmod +x ./generate_open5gs_systemd.sh
 ./service_control.sh start
 ```
 
-### 4. Configure DNS Resolution
+### 5. Configure DNS Resolution
 
 If you are on a fresh Ubuntu install, verify DNS is working:
 

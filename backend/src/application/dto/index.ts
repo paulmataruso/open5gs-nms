@@ -389,6 +389,8 @@ export interface ApplyResultDto {
     error?: string;
   }>;
   rollback: boolean;
+  prometheusReloaded?: boolean;
+  prometheusReloadError?: string;
 }
 
 // ── Validation ──

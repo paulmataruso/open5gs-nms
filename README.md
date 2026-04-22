@@ -35,6 +35,20 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **First-run setup** — Admin account created automatically on first deploy (see [First Login](#first-login))
 - **Brute force protection** — Login endpoint rate-limited to 10 attempts per 15 minutes per IP
 
+### Metrics & Monitoring
+- **Prometheus Integration** — Prometheus scrape config auto-generated and live-reloaded on every config apply. No manual `prometheus.yml` editing needed
+- **Grafana Dashboards** — Pre-built Open5GS dashboard covering AMF, SMF, UPF, PCF, HSS, PCRF and process health. Grafana datasource auto-provisioned on first start
+- **Metrics Endpoints Page** — Dual-mode editor: table view for individual NF address/port editing, or direct Prometheus scrape config YAML editing. Both views stay in sync
+- **One-click access** — Prometheus and Grafana links directly in the Metrics page header
+
+![Metrics Endpoint Editor](docs/screenshots/metrics-endpoint-editor.png)
+
+![Metrics Scrape Config Editor](docs/screenshots/metrics-scrape-config.png)
+
+![Grafana Open5GS Dashboard](docs/screenshots/metrics-grafana.png)
+
+![Prometheus Targets](docs/screenshots/metrics-prometheus-targets.png)
+
 ### Configuration Management
 - **Dual Editor Modes** - Form-based editor with 150+ contextual tooltips OR Monaco YAML editor
 - **All 16 Network Functions** - Complete coverage: NRF, SCP, AMF, SMF, UPF, AUSF, UDM, UDR, PCF, NSSF, BSF (5G) + MME, HSS, PCRF, SGW-C, SGW-U (4G)
@@ -352,15 +366,17 @@ For detailed development instructions, see **[docs/development.md](docs/developm
 
 See **[CHANGELOG.md](CHANGELOG.md)** for a complete version history.
 
-### Latest Release: v1.2.0 (2026-04-18)
+### Latest Release: v1.3.0 (Unreleased — 2026-04-22)
 
-**🔐 Authentication**
-- Session-based login protecting all pages and API endpoints
-- HttpOnly cookie sessions via Lucia v3
-- SQLite auth database (separate from Open5GS MongoDB)
-- First-run admin account seeding
-- Login rate limiting and timing-safe bcrypt verification
+**📊 Metrics & Monitoring**
+- Prometheus + Grafana added to Docker Compose with auto-provisioned datasource and built-in Open5GS dashboard
+- New Metrics page with dual-mode editor (Endpoint table / Scrape Config YAML)
+- Prometheus `prometheus.yml` auto-regenerated and live-reloaded on every config apply
+- SBI Client mode selector on all 9 affected 5G NFs (SCP / NRF / Both)
+- AMF T3502/T3512 timer fields; UPF port injection fix; SEPP included in backup/restore
 
+### v1.2.1 (2026-04-20) — MME SGs-AP fix
+### v1.2.0 (2026-04-18) — Authentication
 ### v1.1.0 (2026-04-14) — Docker Container Logging
 ### v1.0.0 (2026-03-23) — Initial Public Release
 

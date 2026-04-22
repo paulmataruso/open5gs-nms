@@ -1,0 +1,3 @@
+# This file keeps the directory tracked by git.
+# Grafana state (dashboards, users, sessions) is written here at runtime.
+# Do not commit the contents of this directory.

@@ -170,7 +170,7 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async backupAll(backupDir: string): Promise<void> {
     await this.hostExecutor.createDirectory(backupDir);
-    const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+    const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2'];
     
     for (const service of allServices) {
       const srcPath = `${this.configPath}/${service}.yaml`;
@@ -184,7 +184,7 @@ export class YamlConfigRepository implements IConfigRepository {
   }
 
   async restoreBackup(backupDir: string): Promise<void> {
-    const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+    const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2'];
     
     for (const service of allServices) {
       const srcPath = `${backupDir}/${service}.yaml`;

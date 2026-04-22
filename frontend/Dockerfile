@@ -5,6 +5,8 @@ FROM node:20-bookworm-slim AS builder
 # - WebSocket connects to the nginx /ws path on the same host/port
 ARG VITE_API_URL=
 ARG VITE_WS_URL=
+ARG VITE_PROMETHEUS_PORT=9099
+ARG VITE_GRAFANA_PORT=3000
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
@@ -13,6 +15,8 @@ COPY . .
 
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_WS_URL=$VITE_WS_URL
+ENV VITE_PROMETHEUS_PORT=$VITE_PROMETHEUS_PORT
+ENV VITE_GRAFANA_PORT=$VITE_GRAFANA_PORT
 RUN npm run build
 
 FROM node:20-alpine

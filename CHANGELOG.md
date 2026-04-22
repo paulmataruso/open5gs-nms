@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 2026-04-22
+
+### Added
+
+#### Metrics Endpoints Page
+- New **Metrics** page (sidebar nav, `BarChart2` icon) for managing Prometheus scrape targets per NF
+- **Endpoint Editor mode** — table showing address and port per NF with inline editing and dirty-state highlighting
+- **Scrape Config Editor mode** — editable YAML textarea showing the full `prometheus.yml` scrape config; bidirectionally synced with the table so both views always reflect the same data
+- Mode toggle with explanatory banner; Scrape Config mode shows amber notice explaining that editing targets here updates the NF YAML `metrics.server` block — same as using the table
+- Apply button works identically in both modes; on apply: NF YAML is updated, affected services restart, `prometheus.yml` is regenerated and Prometheus is live-reloaded automatically
+- External links to Prometheus UI and Grafana directly from the Metrics page header
+
+#### Prometheus + Grafana Monitoring Stack
+- Prometheus added to Docker Compose on port `9099` (avoids conflict with Open5GS NFs which use `9090`)
+- Grafana added to Docker Compose on port `3000`
+- `monitoring-init` init container chowns data directories with correct UIDs before Prometheus and Grafana start
+- Grafana Prometheus datasource auto-provisioned; dashboard provider configured to watch `monitoring/grafana/dashboards/`
+- Built-in Open5GS Grafana dashboard (`open5gs.json`) covering AMF, SMF, UPF, PCF, HSS, PCRF, and process health panels
+- `PROMETHEUS_PORT`, `GRAFANA_PORT`, `GF_ADMIN_USER`, `GF_ADMIN_PASSWORD` added to `.env.example`
+
+#### Prometheus Auto-Sync on Apply
+- `SyncPrometheusConfigUseCase` — on every config apply, extracts metrics address/port from all 7 NFs, builds a fresh `prometheus.yml`, writes it in-place (preserves inode for bind mount), and POSTs to Prometheus `/-/reload`
+- `prometheusReloaded` / `prometheusReloadError` fields added to `ApplyResultDto`; frontend shows a toast on success or failure
+- Backend bind-mounts `./monitoring:/app/monitoring`; Prometheus bind-mounts `./monitoring:/etc/prometheus` (directory mount, not single-file, so both containers share the same inode)
+
+#### SBI Client Mode Selector
+- New shared `SbiClientSection` component replacing separate SCP/NRF fields across all 9 affected 5G NFs
+- Three-way mode toggle: **SCP** (indirect, recommended) / **NRF** (direct) / **Both** (with amber warning)
+- Mode detected from current YAML on load; URI values preserved in local state when switching modes so nothing is lost
+- Applies to: AMF, SMF, AUSF (inline editors), BSF, UDR, UDM, PCF, NSSF (standalone editors)
+- SCP editor unchanged (NRF-only is correct for SCP)
+- NSSF merges SBI client result with existing `nsi` key to preserve NSI client list
+
+#### AMF Timer Configuration
+- T3502 and T3512 fields added to AMF editor (same pattern as existing MME timers)
+- Fields show placeholder defaults (720s / 540s); only written to YAML if the user enters a value; cleared = omitted from YAML
+
+### Fixed
+
+- **SMF / UPF session fields** — `sess.gateway` and `sess.subnet` now default to `''` instead of `undefined`, preventing React controlled-input warnings when sessions have no gateway (valid for IPv6-only subnets)
+- **UPF PFCP/GTP-U port injection** — UPF editor no longer injects `port: 8805` or `port: 2152` when the original YAML had no port. Port fields show placeholder text; port is only written if the user explicitly enters one
+- **SEPP notice** — Info banner added below 4G EPC tab strip explaining that sepp1/sepp2 must be edited manually and why
+- **SEPP in backup/restore** — `sepp1` and `sepp2` added to service lists in `yaml-config-repository.ts` so SEPP files are included in every backup and restore operation
+- **Prometheus file write** — Changed from atomic rename (tmp file + rename) to direct `writeFile` overwrite to preserve inode on Linux bind mounts; fixes Prometheus `/-/reload` silently reading the old config
+- **Backend volume mount** — `./monitoring:/app/monitoring` added to backend in Docker Compose so the Prometheus sync use case can write the config file; Prometheus container changed from single-file to directory mount (`./monitoring:/etc/prometheus`) so both services share the same file
+
+### Changed
+
+- **Metrics Endpoints page** — Replaced static Prometheus snippet preview with full two-mode editor (Endpoint Editor / Scrape Config Editor)
+- All 9 affected 5G NF editors now use `SbiClientSection` instead of separate SCP and NRF input fields
+
+---
+
 ## [1.2.1] - 2026-04-20
 
 ### Fixed — MME SGs-AP Configuration

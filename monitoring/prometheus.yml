@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────
+# Prometheus configuration for Open5GS NMS
+#
+# All containers use network_mode: host, so Prometheus can reach
+# Open5GS NF metrics endpoints directly on 127.x.x.x addresses.
+#
+# Prometheus itself listens on port 9099 (set via --web.listen-address
+# in docker-compose.yml) to avoid clashing with the Open5GS NF
+# metrics servers which default to port 9090.
+#
+# Scrape targets mirror the defaults in /etc/open5gs/*.yaml.
+# If you change a metrics address/port via the NMS Metrics page,
+# update the corresponding target here and restart the prometheus
+# container:  docker compose restart prometheus
+# ─────────────────────────────────────────────────────────────
+
+global:
+  scrape_interval:     15s   # How often to scrape targets
+  evaluation_interval: 15s   # How often to evaluate rules
+  scrape_timeout:      10s
+
+# ── Alerting (placeholder — no rules configured yet) ─────────
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: []
+
+# ── Scrape configurations ─────────────────────────────────────
+scrape_configs:
+
+  # ── 5G Core ────────────────────────────────────────────────
+
+  - job_name: open5gs-amf
+    static_configs:
+      - targets: ['127.0.0.5:9090']
+        labels:
+          nf: amf
+          generation: 5g
+
+  - job_name: open5gs-smf
+    static_configs:
+      - targets: ['127.0.0.4:9090']
+        labels:
+          nf: smf
+          generation: 5g
+
+  - job_name: open5gs-upf
+    static_configs:
+      - targets: ['127.0.0.7:9090']
+        labels:
+          nf: upf
+          generation: 5g
+
+  - job_name: open5gs-pcf
+    static_configs:
+      - targets: ['127.0.0.13:9090']
+        labels:
+          nf: pcf
+          generation: 5g
+
+  # ── 4G EPC ─────────────────────────────────────────────────
+
+  - job_name: open5gs-mme
+    static_configs:
+      - targets: ['127.0.0.2:9090']
+        labels:
+          nf: mme
+          generation: 4g
+
+  - job_name: open5gs-hss
+    static_configs:
+      - targets: ['127.0.0.8:9090']
+        labels:
+          nf: hss
+          generation: 4g
+
+  - job_name: open5gs-pcrf
+    static_configs:
+      - targets: ['127.0.0.9:9090']
+        labels:
+          nf: pcrf
+          generation: 4g

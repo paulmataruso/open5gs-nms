@@ -13,6 +13,7 @@ import { LogsPage } from './pages/LogsPage';
 import { AutoConfigPage } from './pages/AutoConfigPage';
 import { SuciManagementPage } from './components/suci/SuciManagementPage';
 import { UserManagementPage } from './components/users/UserManagementPage';
+import { MetricsPage } from './components/metrics/MetricsPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 
@@ -58,6 +59,8 @@ function App(): JSX.Element {
         return <AutoConfigPage />;
       case 'suci':
         return <SuciManagementPage />;
+      case 'metrics':
+        return <MetricsPage />;
       case 'users':
         return <UserManagementPage />;
       default:

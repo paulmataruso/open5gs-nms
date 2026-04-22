@@ -98,6 +98,8 @@ The Open5GS NMS follows a **three-tier architecture** with clear separation betw
 | **Open5GS** | 5G/4G core network functions | Open5GS 2.7+ |
 | **MongoDB** | Subscriber data persistence | MongoDB 6.0+ |
 | **systemd** | Service lifecycle management | systemd (host) |
+| **Prometheus** | Metrics scraping and storage | Prometheus (port 9099) |
+| **Grafana** | Metrics dashboards and visualization | Grafana (port 3000) |
 
 ---
 
@@ -159,6 +161,7 @@ backend/src/
 │       ├── apply-config.ts          # Safe config apply with rollback
 │       ├── load-config.ts           # Load all NF configs
 │       ├── validate-config.ts       # Cross-service validation
+│       ├── sync-prometheus-config.ts # Regenerate prometheus.yml + live reload
 │       ├── subscriber-mgmt.ts       # CRUD operations
 │       ├── service-monitor.ts       # Service status polling
 │       ├── backup-restore.ts        # Backup/restore workflows
@@ -291,6 +294,9 @@ frontend/src/
 │   │
 │   ├── suci/            # SUCI key management
 │   │   └── SuciManagementPage.tsx
+│   │
+│   ├── metrics/         # Prometheus metrics endpoints page
+│   │   └── MetricsPage.tsx         # Dual-mode: endpoint table + scrape config YAML
 │   │
 │   ├── backup/          # Backup & restore
 │   │   └── BackupPage.tsx
@@ -737,6 +743,13 @@ See **[docs/deployment.md](docs/deployment.md)** for:
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Monitoring Stack
+
+- **Port 9099** — Prometheus (avoids conflict with Open5GS NFs on 9090)
+- **Port 3000** — Grafana
+
+**Prometheus Auto-Sync:** On every config apply, `SyncPrometheusConfigUseCase` reads the metrics address/port from all 7 NFs, writes a fresh `prometheus.yml` via direct `writeFile` (preserves inode for bind mount), then POSTs to `/-/reload`. The backend and Prometheus containers share the same `./monitoring` directory via bind mount.
+
 ### Network Architecture
 
 **Host Network Mode:**
@@ -749,6 +762,8 @@ See **[docs/deployment.md](docs/deployment.md)** for:
 - 8888 - nginx (frontend + API proxy)
 - 3001 - Backend REST API (internal)
 - 3002 - Backend WebSocket (internal)
+- 9099 - Prometheus (configurable via `PROMETHEUS_PORT`)
+- 3000 - Grafana (configurable via `GRAFANA_PORT`)
 - 27017 - MongoDB (localhost only)
 
 ### Volume Mounts

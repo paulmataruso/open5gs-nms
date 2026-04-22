@@ -44,6 +44,7 @@ services:
       - /etc/open5gs/backups/config:/etc/open5gs/backups/config
       - /etc/open5gs/backups/mongodb:/etc/open5gs/backups/mongodb
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./monitoring:/app/monitoring
     environment:
       - NODE_ENV=production
       - PORT=3001
@@ -59,6 +60,9 @@ services:
       - SESSION_MAX_AGE=86400
       - FIRST_RUN_PASSWORD=${FIRST_RUN_PASSWORD:-}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      # Prometheus sync
+      - PROMETHEUS_CONFIG_PATH=/app/monitoring/prometheus.yml
+      - PROMETHEUS_PORT=${PROMETHEUS_PORT:-9099}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s
@@ -82,6 +86,8 @@ services:
       args:
         - VITE_API_URL=
         - VITE_WS_URL=
+        - VITE_PROMETHEUS_PORT=${PROMETHEUS_PORT:-9099}
+        - VITE_GRAFANA_PORT=${GRAFANA_PORT:-3000}
     container_name: open5gs-nms-frontend
     restart: unless-stopped
     network_mode: host
@@ -96,3 +102,76 @@ services:
         labels: "service,container"
     labels:
       com.open5gs.nms.service: "frontend"
+
+  monitoring-init:
+    image: busybox:latest
+    container_name: open5gs-monitoring-init
+    restart: "no"
+    network_mode: host
+    user: root
+    command:
+      - /bin/sh
+      - -c
+      - |
+        chown -R 65534:65534 /prometheus_data
+        chown -R 472:472 /grafana_data
+        echo "Monitoring data directories initialised"
+    volumes:
+      - ./monitoring/prometheus_data:/prometheus_data
+      - ./monitoring/grafana_data:/grafana_data
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: open5gs-prometheus
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      monitoring-init:
+        condition: service_completed_successfully
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.listen-address=0.0.0.0:${PROMETHEUS_PORT:-9099}'
+      - '--web.enable-lifecycle'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./monitoring:/etc/prometheus
+      - ./monitoring/prometheus_data:/prometheus
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.open5gs.nms.service: "prometheus"
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: open5gs-grafana
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      monitoring-init:
+        condition: service_completed_successfully
+      prometheus:
+        condition: service_started
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-open5gs}
+      - GF_SERVER_HTTP_PORT=${GRAFANA_PORT:-3000}
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - ./monitoring/grafana_data:/var/lib/grafana
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    labels:
+      com.open5gs.nms.service: "grafana"
