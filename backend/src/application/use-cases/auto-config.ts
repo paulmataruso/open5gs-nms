@@ -367,39 +367,51 @@ export class AutoConfigUseCase {
 
       // Step 4: Configure NAT if requested
       if (input.configureNAT) {
-        this.logger.info('Configuring NAT with iptables');
+        this.logger.info('Configuring NAT with iptables (persistent)');
         const natInterface = input.natInterface || 'ogstun';
 
         try {
-          // Enable IP forwarding
-          await this.hostExecutor.executeCommand('sysctl', ['-w', 'net.ipv4.ip_forward=1']);
-          await this.hostExecutor.executeCommand('sysctl', ['-w', 'net.ipv6.conf.all.forwarding=1']);
-          await this.hostExecutor.executeCommand('sysctl', ['-p', '/etc/sysctl.conf']);
-          this.logger.info('Enabled IP forwarding');
+          // ── IP forwarding ─────────────────────────────────────────────────
+          // Write to sysctl.d so it persists across reboots
+          const sysctlContent = [
+            '# Open5GS UE internet access — written by NMS auto-config',
+            'net.ipv4.ip_forward=1',
+            'net.ipv6.conf.all.forwarding=1',
+          ].join('\n') + '\n';
 
-          // Configure IPv4 NAT
+          await this.hostExecutor.writeFile('/etc/sysctl.d/99-open5gs-nat.conf', sysctlContent);
+          await this.hostExecutor.executeCommand('sysctl', ['-p', '/etc/sysctl.d/99-open5gs-nat.conf']);
+          this.logger.info('Enabled IP forwarding (persistent via /etc/sysctl.d/99-open5gs-nat.conf)');
+
+          // ── iptables rules ─────────────────────────────────────────────────
+          // IPv4 MASQUERADE
           await this.hostExecutor.executeCommand('iptables', [
             '-t', 'nat', '-A', 'POSTROUTING',
             '-s', input.sessionPoolIPv4Subnet,
             '!', '-o', natInterface,
-            '-j', 'MASQUERADE'
+            '-j', 'MASQUERADE',
           ]);
           this.logger.info({ subnet: input.sessionPoolIPv4Subnet }, 'Configured IPv4 NAT');
 
-          // Configure IPv6 NAT
+          // IPv6 MASQUERADE
           await this.hostExecutor.executeCommand('ip6tables', [
             '-t', 'nat', '-A', 'POSTROUTING',
             '-s', input.sessionPoolIPv6Subnet,
             '!', '-o', natInterface,
-            '-j', 'MASQUERADE'
+            '-j', 'MASQUERADE',
           ]);
           this.logger.info({ subnet: input.sessionPoolIPv6Subnet }, 'Configured IPv6 NAT');
 
-          // Allow traffic from the tunnel interface
+          // Allow inbound from tunnel interface
           await this.hostExecutor.executeCommand('iptables', [
-            '-I', 'INPUT', '-i', natInterface, '-j', 'ACCEPT'
+            '-I', 'INPUT', '-i', natInterface, '-j', 'ACCEPT',
           ]);
           this.logger.info({ interface: natInterface }, 'Allowed traffic from tunnel interface');
+
+          // ── Persist iptables rules across reboots ─────────────────────────
+          // Requires iptables-persistent / netfilter-persistent (installed as prerequisite)
+          await this.hostExecutor.executeCommand('netfilter-persistent', ['save']);
+          this.logger.info('iptables rules saved (will survive reboot via netfilter-persistent)');
 
         } catch (err) {
           this.logger.error({ error: String(err) }, 'Failed to configure NAT');

@@ -9,52 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-#### Metrics Endpoints Page
-- New **Metrics** page (sidebar nav, `BarChart2` icon) for managing Prometheus scrape targets per NF
-- **Endpoint Editor mode** — table showing address and port per NF with inline editing and dirty-state highlighting
-- **Scrape Config Editor mode** — editable YAML textarea showing the full `prometheus.yml` scrape config; bidirectionally synced with the table so both views always reflect the same data
-- Mode toggle with explanatory banner; Scrape Config mode shows amber notice explaining that editing targets here updates the NF YAML `metrics.server` block — same as using the table
-- Apply button works identically in both modes; on apply: NF YAML is updated, affected services restart, `prometheus.yml` is regenerated and Prometheus is live-reloaded automatically
-- External links to Prometheus UI and Grafana directly from the Metrics page header
+#### RAN Network Page — 5G Section
+- New **5G NR** section on the RAN Network page with N2 and N3 interface cards, mirroring the existing 4G EPC layout
+- **N2 Interface card** — shows connected gNodeB IPs (SCTP port 38412, AMF-bound, sourced from `netstat`)
+- **N3 Interface card** — shows connected gNodeB transport IPs (GTP-U port 2152, UPF-bound, sourced from `tshark`)
+- Section headers with generation badges (`4G EPC` purple / `5G NR` teal) and divider lines
+- Refactored into a reusable `InterfaceCard` component — all four cards (S1-MME, S1-U, N2, N3) share the same component
+- **Generation column** added to the Active UE Sessions table — each session shows a `4G` or `5G` badge; header shows separate 4G/5G session counts
 
-#### Prometheus + Grafana Monitoring Stack
-- Prometheus added to Docker Compose on port `9099` (avoids conflict with Open5GS NFs which use `9090`)
-- Grafana added to Docker Compose on port `3000`
-- `monitoring-init` init container chowns data directories with correct UIDs before Prometheus and Grafana start
-- Grafana Prometheus datasource auto-provisioned; dashboard provider configured to watch `monitoring/grafana/dashboards/`
-- Built-in Open5GS Grafana dashboard (`open5gs.json`) covering AMF, SMF, UPF, PCF, HSS, PCRF, and process health panels
-- `PROMETHEUS_PORT`, `GRAFANA_PORT`, `GF_ADMIN_USER`, `GF_ADMIN_PASSWORD` added to `.env.example`
+#### 5G Active UE Session Detection (tshark-based)
+- `getActive5GUEs()` — fully replaced placeholder with real tshark-based detection:
+  1. Read UPF GTP-U IP from `upf.yaml` and verify it exists on a host interface
+  2. Auto-detect the network interface that owns that IP (`ip -4 addr show`)
+  3. Run `tshark -i <iface> -f "udp port 2152 and (host <upf-ip>)" -c 100 -a duration:3` (bounded: 100 packets or 3 seconds)
+  4. Parse `ip.src` — second comma-separated value is the inner GTP UE IP
+  5. For each unique UE IP, look up IMSI in MongoDB subscriber database
+  6. Only return UEs with positive correlation (IP in tshark AND IMSI in database)
+- `getActive4GUEs()` — conntrack-based (unchanged), but now deduplicates against the 5G list: any IMSI already detected via tshark is excluded so the same subscriber never appears in both boxes
+- `tshark` added to the backend Dockerfile runtime dependencies
+- `tshark` added to `INSTALL.md` system prerequisites
 
-#### Prometheus Auto-Sync on Apply
-- `SyncPrometheusConfigUseCase` — on every config apply, extracts metrics address/port from all 7 NFs, builds a fresh `prometheus.yml`, writes it in-place (preserves inode for bind mount), and POSTs to Prometheus `/-/reload`
-- `prometheusReloaded` / `prometheusReloadError` fields added to `ApplyResultDto`; frontend shows a toast on success or failure
-- Backend bind-mounts `./monitoring:/app/monitoring`; Prometheus bind-mounts `./monitoring:/etc/prometheus` (directory mount, not single-file, so both containers share the same inode)
+#### N3 Interface Status (tshark-based)
+- `checkN3()` replaced conntrack approach with tshark — captures GTP-U traffic on the UPF interface, extracts outer source IPs (first element of `ip.src`) as the gNodeB transport addresses
+- Interface auto-detected from UPF GTP-U IP — no hardcoded interface names
+- No longer filters out dual-mode radios from N3 card (a radio that does both 4G S1-U and 5G N3 is a genuine N3 connection and should appear in both cards)
 
-#### SBI Client Mode Selector
-- New shared `SbiClientSection` component replacing separate SCP/NRF fields across all 9 affected 5G NFs
-- Three-way mode toggle: **SCP** (indirect, recommended) / **NRF** (direct) / **Both** (with amber warning)
-- Mode detected from current YAML on load; URI values preserved in local state when switching modes so nothing is lost
-- Applies to: AMF, SMF, AUSF (inline editors), BSF, UDR, UDM, PCF, NSSF (standalone editors)
-- SCP editor unchanged (NRF-only is correct for SCP)
-- NSSF merges SBI client result with existing `nsi` key to preserve NSI client list
+#### S1-U Interface Status Fix
+- `checkS1U()` now filters conntrack to `dst=<sgwu-ip>` — only traffic destined for the SGW-U is 4G S1-U
+- SGW-U IP read from `sgwu.yaml` and verified against host interfaces (same pattern as all other IP verification)
+- Host IPs excluded from results — eliminates internal core-to-core traffic (e.g. UPF→SGW-U on the same server) appearing as fake eNodeBs
 
-#### AMF Timer Configuration
-- T3502 and T3512 fields added to AMF editor (same pattern as existing MME timers)
-- Fields show placeholder defaults (720s / 540s); only written to YAML if the user enters a value; cleared = omitted from YAML
+#### Configuration Editor Improvements
+- **AMF PLMN Support** — multi-slice S-NSSAI per PLMN: each PLMN block now has Add/Remove slice buttons; each slice has SST + optional SD side-by-side with left-border accent; explanatory note added
+- **SMF Info block** — new "SMF Info (Slice Selection)" section: add/remove info entries, slices within entries (SST + SD), and DNNs within slices; empty state shown when no `info` block exists with instructions
+- **NSSF NSI Clients** — full rewrite: flat list of URI+SST+SD entries (matching Open5GS docs), add/remove entries, SD live preview showing quoted output, proper empty state
+- **SD quoting** — `yaml-config-repository.ts` post-processing now correctly enforces `sd: "000001"` (double-quoted) for all NFs; MCC/MNC remain unquoted. Load path also handles reading back quoted SD values
+- `fixMccMncFromRawYaml` renamed to `fixMccMncSdFromRawYaml` and updated to match both bare and quoted SD patterns on read
+
+#### Auto-Config NAT Persistence
+- `auto-config.ts` NAT configuration now persists across reboots:
+  - IP forwarding written to `/etc/sysctl.d/99-open5gs-nat.conf` (read by kernel on boot) instead of ephemeral `sysctl -w`
+  - `netfilter-persistent save` called after setting iptables rules — saves to `/etc/iptables/rules.v4` and `rules.v6` which `iptables-persistent` restores on boot
 
 ### Fixed
 
-- **SMF / UPF session fields** — `sess.gateway` and `sess.subnet` now default to `''` instead of `undefined`, preventing React controlled-input warnings when sessions have no gateway (valid for IPv6-only subnets)
-- **UPF PFCP/GTP-U port injection** — UPF editor no longer injects `port: 8805` or `port: 2152` when the original YAML had no port. Port fields show placeholder text; port is only written if the user explicitly enters one
-- **SEPP notice** — Info banner added below 4G EPC tab strip explaining that sepp1/sepp2 must be edited manually and why
-- **SEPP in backup/restore** — `sepp1` and `sepp2` added to service lists in `yaml-config-repository.ts` so SEPP files are included in every backup and restore operation
-- **Prometheus file write** — Changed from atomic rename (tmp file + rename) to direct `writeFile` overwrite to preserve inode on Linux bind mounts; fixes Prometheus `/-/reload` silently reading the old config
-- **Backend volume mount** — `./monitoring:/app/monitoring` added to backend in Docker Compose so the Prometheus sync use case can write the config file; Prometheus container changed from single-file to directory mount (`./monitoring:/etc/prometheus`) so both services share the same file
+- **S1-U showing 5G core IPs** — old conntrack command had no IP binding, picked up all UDP/2152 traffic including internal UPF↔SGW-U traffic; now filtered to SGW-U destination only, with host IPs excluded
+- **N3 showing inactive** — old conntrack approach incorrectly filtered out gNodeB IPs that also appeared in S1-U results; tshark now used exclusively for N3 with no dual-mode filtering on the interface card
+- **4G/5G UE session deduplication** — same IMSI can no longer appear in both Active 4G and Active 5G session boxes; tshark (5G) takes priority, conntrack (4G) subtracts any already-claimed IMSIs
+- **SD values** — YAML output now correctly writes `sd: "000001"` with quotes; loading correctly strips quotes when reading back
+- **NSSF NSI SST-only entries** — old editor only showed SST, no SD field; now full URI+SST+SD per entry with add/remove
 
 ### Changed
 
-- **Metrics Endpoints page** — Replaced static Prometheus snippet preview with full two-mode editor (Endpoint Editor / Scrape Config Editor)
-- All 9 affected 5G NF editors now use `SbiClientSection` instead of separate SCP and NRF input fields
+- **RAN Network page** — restructured into labelled 4G/5G sections; `InterfaceCard` reusable component; Active UE Sessions table gains Generation column
+- **`getActive4GUEs()`** — now a true 4G-only result by subtracting 5G-confirmed IMSIs
+- **`checkS1U()`** — bound to SGW-U verified IP, host IPs excluded
+- **`checkN3()`** — replaced conntrack with tshark; no dual-mode filtering on interface card level
+- **`yaml-config-repository.ts`** — full rewrite to clean ASCII, split SD/MCC/MNC post-processing, SD always quoted on write
 
 ---
 

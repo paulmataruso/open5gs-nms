@@ -116,10 +116,10 @@ export class YamlConfigRepository implements IConfigRepository {
       this.loadUpf(),
       this.loadAusf(),
     ]);
-    
+
     const optionalServices = ['scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
     const optional: Partial<AllConfigs> = {};
-    
+
     for (const service of optionalServices) {
       try {
         const config = await this.loadGeneric(service);
@@ -128,42 +128,36 @@ export class YamlConfigRepository implements IConfigRepository {
         this.logger.debug({ service }, 'Optional service config not found');
       }
     }
-    
+
     return { nrf, amf, smf, upf, ausf, ...optional };
   }
 
   async saveNrf(config: NrfConfig): Promise<void> {
-    // Just save the raw YAML as-is from the frontend
     const raw = config.rawYaml as any;
     await this.saveRaw('nrf', raw);
   }
 
   async saveAmf(config: AmfConfig): Promise<void> {
-    // Just save the raw YAML as-is from the frontend
     const raw = config.rawYaml as any;
     await this.saveRaw('amf', raw);
   }
 
   async saveSmf(config: SmfConfig): Promise<void> {
-    // Just save the raw YAML as-is from the frontend
     const raw = config.rawYaml as any;
     await this.saveRaw('smf', raw);
   }
 
   async saveUpf(config: UpfConfig): Promise<void> {
-    // Just save the raw YAML as-is from the frontend
     const raw = config.rawYaml as any;
     await this.saveRaw('upf', raw);
   }
 
   async saveAusf(config: AusfConfig): Promise<void> {
-    // Just save the raw YAML as-is from the frontend
     const raw = config.rawYaml as any;
     await this.saveRaw('ausf', raw);
   }
 
   async saveGeneric(service: string, config: GenericServiceConfig): Promise<void> {
-    // Just save the raw YAML as-is from the frontend
     const raw = config.rawYaml as any;
     await this.saveRaw(service, raw);
   }
@@ -171,7 +165,7 @@ export class YamlConfigRepository implements IConfigRepository {
   async backupAll(backupDir: string): Promise<void> {
     await this.hostExecutor.createDirectory(backupDir);
     const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2'];
-    
+
     for (const service of allServices) {
       const srcPath = `${this.configPath}/${service}.yaml`;
       const destPath = `${backupDir}/${service}.yaml`;
@@ -185,7 +179,7 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async restoreBackup(backupDir: string): Promise<void> {
     const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2'];
-    
+
     for (const service of allServices) {
       const srcPath = `${backupDir}/${service}.yaml`;
       const destPath = `${this.configPath}/${service}.yaml`;
@@ -203,23 +197,19 @@ export class YamlConfigRepository implements IConfigRepository {
     return this.hostExecutor.readFile(filePath);
   }
 
-  // ── Private helpers ──
+  // ── Private helpers ──────────────────────────────────────────────────────────
+
   private async loadRaw(service: string): Promise<RawYamlDoc> {
     const filePath = `${this.configPath}/${service}.yaml`;
     try {
       const content = await this.hostExecutor.readFile(filePath);
-      
-      // Parse YAML - unfortunately js-yaml may interpret 010 as octal/decimal
+
+      // js-yaml may interpret bare 010 (MNC) as octal/decimal.
+      // Parse first, then restore MCC/MNC/SD from raw text.
       const doc = yaml.load(content) as RawYamlDoc;
-      
-      // Post-process: Fix MCC/MNC values by reading from raw text
-      // This preserves leading zeros like 010 that YAML parser may have stripped
-      const fixedDoc = this.fixMccMncFromRawYaml(content, doc);
-      
-      // Post-process: Convert null 'client' keys to empty objects
-      // This preserves 'client:' (no value) when round-tripping
+      const fixedDoc = this.fixMccMncSdFromRawYaml(content, doc);
       const cleanedDoc = this.preserveEmptyClient(fixedDoc);
-      
+
       this.rawCache[service] = cleanedDoc;
       return cleanedDoc;
     } catch (err) {
@@ -230,16 +220,16 @@ export class YamlConfigRepository implements IConfigRepository {
 
   private async saveRaw(service: string, doc: RawYamlDoc): Promise<void> {
     const filePath = `${this.configPath}/${service}.yaml`;
-    
-    // Deep convert all numeric strings to actual numbers (EXCEPT mcc/mnc)
+
+    // Keep mcc/mnc/sd as strings, convert everything else to proper numbers.
     let cleanDoc = this.ensureNumericTypes(doc);
-    
-    // Remove null values to avoid outputting 'client: null' etc.
     cleanDoc = this.removeNullValues(cleanDoc);
-    
-    // DEBUG: Log what we're about to save
-    this.logger.info({ service, doc: JSON.stringify(cleanDoc, null, 2).substring(0, 500) }, 'Saving config object');
-    
+
+    this.logger.info(
+      { service, doc: JSON.stringify(cleanDoc, null, 2).substring(0, 500) },
+      'Saving config object',
+    );
+
     const content = yaml.dump(cleanDoc, {
       indent: 2,
       lineWidth: 120,
@@ -248,140 +238,115 @@ export class YamlConfigRepository implements IConfigRepository {
       quotingType: '"',
       forceQuotes: false,
     });
-    
-    // Post-process: Remove quotes from MCC/MNC/SD values at ANY indentation level
-    // This allows "010" to become 010 (unquoted) in YAML
-    // Open5GS correctly reads unquoted 010 as string "010" preserving leading zero
-    // We need multiple passes to catch different quote styles and formats
+
     let finalContent = content;
-    
-    // Pass 1: Remove double quotes (ASCII and Unicode) around hex values for mcc/mnc/sd
-    finalContent = finalContent.replace(/(^\s*)(mcc|mnc|sd):\s+["“”]([0-9a-fA-F]+)["“”](\s*)$/gm, '$1$2: $3$4');
-    
-    // Pass 2: Remove single quotes (ASCII and Unicode) around hex values for mcc/mnc/sd  
-    finalContent = finalContent.replace(/(^\s*)(mcc|mnc|sd):\s+['‘’]([0-9a-fA-F]+)['‘’](\s*)$/gm, '$1$2: $3$4');
-    
-    // Pass 3: Normalize spacing for already-unquoted values
-    finalContent = finalContent.replace(/(^\s*)(mcc|mnc|sd):\s+([0-9a-fA-F]+)(\s*)$/gm, '$1$2: $3$4');
-    
-    // Post-process: Remove empty objects and null values for client key
-    // Convert 'client: {}' to 'client:' and 'client: null' to 'client:'
-    finalContent = finalContent.replace(/^(\s*)(client):\s*(\{\}|null)\s*$/gm, '$1$2:');
-    
-    // DEBUG: Log SD lines to verify quote removal
-    const sdLines = finalContent.split('\n').filter(line => line.match(/^\s*sd:/));
+
+    // ── MCC / MNC: always UNQUOTED ──────────────────────────────────────────
+    // Open5GS reads bare  010  as the string "010" (leading zero preserved).
+    // Strip any quotes (double or single, ASCII or curly) then normalise spacing.
+    finalContent = finalContent.replace(
+      /^(\s*)(mcc|mnc):\s+"([0-9a-fA-F]+)"\s*$/gm,
+      '$1$2: $3',
+    );
+    finalContent = finalContent.replace(
+      /^(\s*)(mcc|mnc):\s+'([0-9a-fA-F]+)'\s*$/gm,
+      '$1$2: $3',
+    );
+    // Normalise spacing for already-bare values
+    finalContent = finalContent.replace(
+      /^(\s*)(mcc|mnc):\s+([0-9a-fA-F]+)\s*$/gm,
+      '$1$2: $3',
+    );
+
+    // ── SD: always DOUBLE-QUOTED ─────────────────────────────────────────────
+    // Open5GS requires  sd: "000001"  (quoted hex string).
+    // Normalise any existing quotes to ASCII double, then enforce them.
+    finalContent = finalContent.replace(
+      /^(\s*)(sd):\s+"([0-9a-fA-F]+)"\s*$/gm,
+      '$1$2: "$3"',
+    );
+    finalContent = finalContent.replace(
+      /^(\s*)(sd):\s+'([0-9a-fA-F]+)'\s*$/gm,
+      '$1$2: "$3"',
+    );
+    // Bare unquoted sd value: add quotes
+    finalContent = finalContent.replace(
+      /^(\s*)(sd):\s+([0-9a-fA-F]+)\s*$/gm,
+      '$1$2: "$3"',
+    );
+
+    // ── client: {} / client: null → bare 'client:' ──────────────────────────
+    finalContent = finalContent.replace(
+      /^(\s*)(client):\s*(\{\}|null)\s*$/gm,
+      '$1$2:',
+    );
+
+    // Log SD lines so we can verify quoting in backend logs
+    const sdLines = finalContent.split('\n').filter(l => /^\s*sd:/.test(l));
     if (sdLines.length > 0) {
-      this.logger.info({ service, sdLines }, 'SD lines in final YAML');
+      this.logger.info({ service, sdLines }, 'SD lines written to YAML');
     }
-    
-    // DEBUG: Log the YAML we're writing
-    this.logger.info({ service, yamlPreview: finalContent.substring(0, 300) }, 'Writing YAML content');
-    
+
+    this.logger.info(
+      { service, yamlPreview: finalContent.substring(0, 300) },
+      'Writing YAML content',
+    );
+
     await this.hostExecutor.writeFile(filePath, finalContent);
     this.rawCache[service] = doc;
     this.logger.info({ service, filePath }, 'Config saved');
   }
 
-  // Parse SBI - handles both formats:
-  // 1. Direct: {addr: "127.0.0.1", port: 7777}
-  // 2. Server array: {server: [{address: "127.0.0.1", port: 7777}]}
+  // ── YAML parsers ────────────────────────────────────────────────────────────
+
   private parseSbi(raw: unknown): { addr: string | string[]; port: number } {
-    if (!raw || typeof raw !== 'object') {
-      return { addr: '127.0.0.1', port: 7777 };
-    }
-    
+    if (!raw || typeof raw !== 'object') return { addr: '127.0.0.1', port: 7777 };
     const obj = raw as Record<string, unknown>;
-    
-    // Check for server array format (Open5GS standard)
     if (obj.server && Array.isArray(obj.server) && obj.server.length > 0) {
-      const firstServer = obj.server[0] as Record<string, unknown>;
-      return {
-        addr: (firstServer.address as string) || '127.0.0.1',
-        port: (firstServer.port as number) || 7777,
-      };
+      const s = obj.server[0] as Record<string, unknown>;
+      return { addr: (s.address as string) || '127.0.0.1', port: (s.port as number) || 7777 };
     }
-    
-    // Fallback to direct addr/port format
-    return {
-      addr: (obj.addr as string | string[]) || '127.0.0.1',
-      port: (obj.port as number) || 7777,
-    };
+    return { addr: (obj.addr as string | string[]) || '127.0.0.1', port: (obj.port as number) || 7777 };
   }
 
   private parsePfcp(raw: unknown): { addr: string; port?: number } {
     if (!raw || typeof raw !== 'object') return { addr: '127.0.0.1' };
     const obj = raw as Record<string, unknown>;
-    
-    // Handle server array format
     if (obj.server && Array.isArray(obj.server) && obj.server.length > 0) {
-      const firstServer = obj.server[0] as Record<string, unknown>;
-      return {
-        addr: (firstServer.address as string) || '127.0.0.1',
-        port: firstServer.port as number | undefined,
-      };
+      const s = obj.server[0] as Record<string, unknown>;
+      return { addr: (s.address as string) || '127.0.0.1', port: s.port as number | undefined };
     }
-    
-    return {
-      addr: (obj.addr as string) || '127.0.0.1',
-      port: obj.port as number | undefined,
-    };
+    return { addr: (obj.addr as string) || '127.0.0.1', port: obj.port as number | undefined };
   }
 
   private parseGtpu(raw: unknown): { addr: string; port?: number } {
     if (!raw || typeof raw !== 'object') return { addr: '127.0.0.1' };
     const obj = raw as Record<string, unknown>;
-    
-    // Handle server array format
     if (obj.server && Array.isArray(obj.server) && obj.server.length > 0) {
-      const firstServer = obj.server[0] as Record<string, unknown>;
-      return {
-        addr: (firstServer.address as string) || '127.0.0.1',
-        port: firstServer.port as number | undefined,
-      };
+      const s = obj.server[0] as Record<string, unknown>;
+      return { addr: (s.address as string) || '127.0.0.1', port: s.port as number | undefined };
     }
-    
-    return {
-      addr: (obj.addr as string) || '127.0.0.1',
-      port: obj.port as number | undefined,
-    };
+    return { addr: (obj.addr as string) || '127.0.0.1', port: obj.port as number | undefined };
   }
 
   private parseAddrPort(raw: unknown): { addr: string | string[]; port?: number } {
     if (!raw || typeof raw !== 'object') return { addr: '127.0.0.1' };
     const obj = raw as Record<string, unknown>;
-    
-    // Handle server array format
     if (obj.server && Array.isArray(obj.server) && obj.server.length > 0) {
-      const firstServer = obj.server[0] as Record<string, unknown>;
-      return {
-        addr: (firstServer.address as string | string[]) || '127.0.0.1',
-        port: firstServer.port as number | undefined,
-      };
+      const s = obj.server[0] as Record<string, unknown>;
+      return { addr: (s.address as string | string[]) || '127.0.0.1', port: s.port as number | undefined };
     }
-    
-    return {
-      addr: (obj.addr as string | string[]) || '127.0.0.1',
-      port: obj.port as number | undefined,
-    };
+    return { addr: (obj.addr as string | string[]) || '127.0.0.1', port: obj.port as number | undefined };
   }
 
   private parseLogger(raw: unknown): { file?: string; level?: string } | undefined {
     if (!raw || typeof raw !== 'object') return undefined;
     const obj = raw as Record<string, unknown>;
-    
-    // Handle nested file object: {file: {path: "..."}}
     if (obj.file && typeof obj.file === 'object') {
-      const fileObj = obj.file as Record<string, unknown>;
-      return {
-        file: fileObj.path as string | undefined,
-        level: obj.level as string | undefined,
-      };
+      const f = obj.file as Record<string, unknown>;
+      return { file: f.path as string | undefined, level: obj.level as string | undefined };
     }
-    
-    return {
-      file: obj.file as string | undefined,
-      level: obj.level as string | undefined,
-    };
+    return { file: obj.file as string | undefined, level: obj.level as string | undefined };
   }
 
   private parseNrfRef(raw: unknown): { sbi: { addr: string | string[]; port?: number } } | undefined {
@@ -389,41 +354,27 @@ export class YamlConfigRepository implements IConfigRepository {
     const obj = raw as Record<string, unknown>;
     if (!obj.sbi) return undefined;
     const sbi = obj.sbi as Record<string, unknown>;
-    
-    // Handle server array format
     if (sbi.server && Array.isArray(sbi.server) && sbi.server.length > 0) {
-      const firstServer = sbi.server[0] as Record<string, unknown>;
-      return {
-        sbi: {
-          addr: (firstServer.address as string | string[]) || '127.0.0.1',
-          port: firstServer.port as number | undefined,
-        },
-      };
+      const s = sbi.server[0] as Record<string, unknown>;
+      return { sbi: { addr: (s.address as string | string[]) || '127.0.0.1', port: s.port as number | undefined } };
     }
-    
-    return {
-      sbi: {
-        addr: (sbi.addr as string | string[]) || '127.0.0.1',
-        port: sbi.port as number | undefined,
-      },
-    };
+    return { sbi: { addr: (sbi.addr as string | string[]) || '127.0.0.1', port: sbi.port as number | undefined } };
   }
 
   private resolveAddr(raw: unknown): string {
     if (typeof raw === 'string') return raw;
-    if (Array.isArray(raw)) return raw[0] as string || '127.0.0.1';
+    if (Array.isArray(raw)) return (raw[0] as string) || '127.0.0.1';
     return '127.0.0.1';
   }
 
+  // ── Type helpers ────────────────────────────────────────────────────────────
+
   /**
-   * Recursively convert numeric strings to actual numbers
-   * This ensures js-yaml doesn't add quotes around numbers
-   * EXCEPT for MCC/MNC/SD which must remain strings to preserve leading zeros
+   * Recursively convert numeric strings to actual numbers, EXCEPT mcc/mnc/sd
+   * which must remain strings to preserve leading zeros and quoted SD.
    */
   private ensureNumericTypes(obj: any, parentKey?: string): any {
-    if (obj === null || obj === undefined) {
-      return obj;
-    }
+    if (obj === null || obj === undefined) return obj;
 
     if (Array.isArray(obj)) {
       return obj.map(item => this.ensureNumericTypes(item, parentKey));
@@ -432,9 +383,8 @@ export class YamlConfigRepository implements IConfigRepository {
     if (typeof obj === 'object') {
       const result: any = {};
       for (const [key, value] of Object.entries(obj)) {
-        // NEVER convert mcc, mnc, or sd fields - they must stay as strings
         if (key === 'mcc' || key === 'mnc' || key === 'sd') {
-          result[key] = value; // Keep as-is (string)
+          result[key] = value; // preserve as string
         } else {
           result[key] = this.ensureNumericTypes(value, key);
         }
@@ -442,62 +392,47 @@ export class YamlConfigRepository implements IConfigRepository {
       return result;
     }
 
-    // Skip conversion if parent key is mcc, mnc, or sd
-    if (parentKey === 'mcc' || parentKey === 'mnc' || parentKey === 'sd') {
-      return obj;
-    }
+    if (parentKey === 'mcc' || parentKey === 'mnc' || parentKey === 'sd') return obj;
 
-    // Convert numeric strings to numbers
     if (typeof obj === 'string' && /^\d+(\.\d+)?$/.test(obj)) {
       const num = Number(obj);
-      if (!isNaN(num)) {
-        return num;
-      }
+      if (!isNaN(num)) return num;
     }
 
     return obj;
   }
 
   /**
-   * Fix MCC/MNC/SD values by reading from raw YAML text
-   * This preserves leading zeros that the YAML parser strips
+   * Read MCC/MNC/SD values from the raw YAML text to preserve leading zeros
+   * and strip any surrounding quotes that were present in the file.
    */
-  private fixMccMncFromRawYaml(rawYaml: string, doc: any): any {
-    // Find all mcc/mnc/sd values in raw YAML with regex
-    const mccMatches = rawYaml.matchAll(/^\s*(mcc):\s*(\d+)\s*$/gm);
-    const mncMatches = rawYaml.matchAll(/^\s*(mnc):\s*(\d+)\s*$/gm);
-    const sdMatches = rawYaml.matchAll(/^\s*(sd):\s*([0-9a-fA-F]+)\s*$/gm);
-    
+  private fixMccMncSdFromRawYaml(rawYaml: string, doc: any): any {
+    // Match bare values AND quoted values for sd (e.g. sd: "000001" or sd: 000001)
     const mccValues: string[] = [];
     const mncValues: string[] = [];
     const sdValues: string[] = [];
-    
-    for (const match of mccMatches) {
-      mccValues.push(match[2]); // Capture the numeric value as string
-    }
-    
-    for (const match of mncMatches) {
-      mncValues.push(match[2]); // Capture the numeric value as string
-    }
-    
-    for (const match of sdMatches) {
-      sdValues.push(match[2]); // Capture the hex value as string
-    }
-    
-    // Now recursively fix the doc by replacing mcc/mnc/sd with raw values
-    return this.replaceMccMncValues(doc, mccValues, mncValues, sdValues, { mccIndex: 0, mncIndex: 0, sdIndex: 0 });
+
+    for (const m of rawYaml.matchAll(/^\s*mcc:\s*(\d+)\s*$/gm)) mccValues.push(m[1]);
+    for (const m of rawYaml.matchAll(/^\s*mnc:\s*(\d+)\s*$/gm)) mncValues.push(m[1]);
+    // Match both  sd: 000001  and  sd: "000001"
+    for (const m of rawYaml.matchAll(/^\s*sd:\s*"?([0-9a-fA-F]+)"?\s*$/gm)) sdValues.push(m[1]);
+
+    return this.replaceMccMncSdValues(doc, mccValues, mncValues, sdValues, {
+      mccIndex: 0, mncIndex: 0, sdIndex: 0,
+    });
   }
 
-  /**
-   * Recursively replace MCC/MNC/SD values with raw string values from YAML
-   */
-  private replaceMccMncValues(obj: any, mccValues: string[], mncValues: string[], sdValues: string[], indices: { mccIndex: number; mncIndex: number; sdIndex: number }): any {
-    if (obj === null || obj === undefined || typeof obj !== 'object') {
-      return obj;
-    }
+  private replaceMccMncSdValues(
+    obj: any,
+    mccValues: string[],
+    mncValues: string[],
+    sdValues: string[],
+    indices: { mccIndex: number; mncIndex: number; sdIndex: number },
+  ): any {
+    if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
 
     if (Array.isArray(obj)) {
-      return obj.map(item => this.replaceMccMncValues(item, mccValues, mncValues, sdValues, indices));
+      return obj.map(item => this.replaceMccMncSdValues(item, mccValues, mncValues, sdValues, indices));
     }
 
     const result: any = {};
@@ -509,69 +444,42 @@ export class YamlConfigRepository implements IConfigRepository {
       } else if (key === 'sd' && indices.sdIndex < sdValues.length) {
         result[key] = sdValues[indices.sdIndex++];
       } else {
-        result[key] = this.replaceMccMncValues(value, mccValues, mncValues, sdValues, indices);
+        result[key] = this.replaceMccMncSdValues(value, mccValues, mncValues, sdValues, indices);
       }
     }
     return result;
   }
 
-  /**
-   * Convert null 'client' keys to empty objects when loading YAML
-   * This prevents 'client:' from becoming 'client: null' in round-trips
-   */
   private preserveEmptyClient(obj: any): any {
-    if (obj === null || obj === undefined || typeof obj !== 'object') {
-      return obj;
-    }
-
-    if (Array.isArray(obj)) {
-      return obj.map(item => this.preserveEmptyClient(item));
-    }
-
+    if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(item => this.preserveEmptyClient(item));
     const result: any = {};
     for (const [key, value] of Object.entries(obj)) {
-      if (key === 'client' && value === null) {
-        result[key] = {}; // Convert null to empty object
-      } else {
-        result[key] = this.preserveEmptyClient(value);
-      }
+      result[key] = key === 'client' && value === null ? {} : this.preserveEmptyClient(value);
     }
     return result;
   }
 
-  /**
-   * Recursively remove null values from objects
-   * This prevents YAML output like 'client: null'
-   * Special case: For 'client' key, convert null to empty object (will be post-processed)
-   */
   private removeNullValues(obj: any, parentKey?: string): any {
     if (obj === null || obj === undefined) {
-      // Special handling for 'client' key - convert to empty object
-      // Post-processing will convert 'client: {}' to 'client:'
-      if (parentKey === 'client') {
-        return {};
-      }
-      return undefined;
+      return parentKey === 'client' ? {} : undefined;
     }
 
     if (Array.isArray(obj)) {
-      return obj.map(item => this.removeNullValues(item, parentKey)).filter(item => item !== undefined);
+      return obj
+        .map(item => this.removeNullValues(item, parentKey))
+        .filter(item => item !== undefined);
     }
 
     if (typeof obj === 'object') {
       const result: any = {};
       for (const [key, value] of Object.entries(obj)) {
-        // Special case: preserve 'client' key even when null/undefined
         if (key === 'client' && (value === null || value === undefined)) {
-          result[key] = {}; // Will be post-processed to 'client:'
+          result[key] = {};
           continue;
         }
-        
         const cleaned = this.removeNullValues(value, key);
-        // Include if not null/undefined
-        if (cleaned !== null && cleaned !== undefined) {
-          result[key] = cleaned;
-        }
+        if (cleaned !== null && cleaned !== undefined) result[key] = cleaned;
       }
       return result;
     }
@@ -580,7 +488,6 @@ export class YamlConfigRepository implements IConfigRepository {
   }
 
   private serializeSbi(sbi: { addr: string | string[]; port?: number }): Record<string, unknown> {
-    // Always write back in server array format to match Open5GS standard
     return {
       server: [{
         address: Array.isArray(sbi.addr) ? sbi.addr[0] : sbi.addr,
@@ -589,27 +496,27 @@ export class YamlConfigRepository implements IConfigRepository {
     };
   }
 
-  // Load methods for all other services - cast to proper types
-  async loadScp() { return this.loadGeneric('scp') as any; }
-  async loadUdm() { return this.loadGeneric('udm') as any; }
-  async loadUdr() { return this.loadGeneric('udr') as any; }
-  async loadPcf() { return this.loadGeneric('pcf') as any; }
+  // ── Convenience loaders / savers ─────────────────────────────────────────────
+  async loadScp()  { return this.loadGeneric('scp')  as any; }
+  async loadUdm()  { return this.loadGeneric('udm')  as any; }
+  async loadUdr()  { return this.loadGeneric('udr')  as any; }
+  async loadPcf()  { return this.loadGeneric('pcf')  as any; }
   async loadNssf() { return this.loadGeneric('nssf') as any; }
-  async loadBsf() { return this.loadGeneric('bsf') as any; }
-  async loadMme() { return this.loadGeneric('mme') as any; }
-  async loadHss() { return this.loadGeneric('hss') as any; }
+  async loadBsf()  { return this.loadGeneric('bsf')  as any; }
+  async loadMme()  { return this.loadGeneric('mme')  as any; }
+  async loadHss()  { return this.loadGeneric('hss')  as any; }
   async loadPcrf() { return this.loadGeneric('pcrf') as any; }
   async loadSgwc() { return this.loadGeneric('sgwc') as any; }
   async loadSgwu() { return this.loadGeneric('sgwu') as any; }
 
-  async saveScp(config: any) { return this.saveGeneric('scp', config); }
-  async saveUdm(config: any) { return this.saveGeneric('udm', config); }
-  async saveUdr(config: any) { return this.saveGeneric('udr', config); }
-  async savePcf(config: any) { return this.saveGeneric('pcf', config); }
+  async saveScp(config: any)  { return this.saveGeneric('scp',  config); }
+  async saveUdm(config: any)  { return this.saveGeneric('udm',  config); }
+  async saveUdr(config: any)  { return this.saveGeneric('udr',  config); }
+  async savePcf(config: any)  { return this.saveGeneric('pcf',  config); }
   async saveNssf(config: any) { return this.saveGeneric('nssf', config); }
-  async saveBsf(config: any) { return this.saveGeneric('bsf', config); }
-  async saveMme(config: any) { return this.saveGeneric('mme', config); }
-  async saveHss(config: any) { return this.saveGeneric('hss', config); }
+  async saveBsf(config: any)  { return this.saveGeneric('bsf',  config); }
+  async saveMme(config: any)  { return this.saveGeneric('mme',  config); }
+  async saveHss(config: any)  { return this.saveGeneric('hss',  config); }
   async savePcrf(config: any) { return this.saveGeneric('pcrf', config); }
   async saveSgwc(config: any) { return this.saveGeneric('sgwc', config); }
   async saveSgwu(config: any) { return this.saveGeneric('sgwu', config); }

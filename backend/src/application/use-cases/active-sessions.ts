@@ -137,25 +137,116 @@ export class ActiveSessionsUseCase {
   }
 
   /**
-   * Determine if a UE IP is connected via 5G based on actual interface usage
-   * Checks if the IP appears in N3 conntrack (5G) vs S1-U conntrack (4G)
+   * Find the network interface that owns a given IP address.
+   * e.g. "10.0.1.155" → "ens34"
    */
-  private async is5GConnection(ueIP: string): Promise<boolean> {
+  private async getInterfaceForIP(ip: string): Promise<string | null> {
     try {
-      // Check if IP appears in N3 conntrack (GTP-U port 2152 from gNodeB)
-      const n3Check = await this.hostExecutor.executeCommand('bash', [
+      const result = await this.hostExecutor.executeCommand('bash', [
         '-c',
-        `conntrack -L -p udp --dport 2152 -s ${ueIP} 2>/dev/null | grep -q ${ueIP} && echo "found" || echo "not_found"`
+        `ip -4 addr show | grep -B2 "inet ${ip}/" | grep -oP '(?<=\\d: )\\w+'  | head -1`,
       ]);
-      
-      const isOnN3 = n3Check.stdout.trim() === 'found';
-      
-      console.log(`[Connection Check] UE ${ueIP}: N3=${isOnN3 ? 'YES' : 'NO'}`);
-      
-      return isOnN3;
-    } catch (error) {
-      console.error(`[Connection Check] Error checking UE ${ueIP}:`, error);
-      return false;
+      const iface = result.stdout.trim();
+      return iface.length > 0 ? iface : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Get the verified UPF GTP-U IP — must be in upf.yaml AND assigned to a
+   * host interface (same logic as get-interface-status.ts).
+   */
+  private async getVerifiedUpfGtpuIP(): Promise<string | null> {
+    try {
+      const upfConfig = await this.configRepo.loadUpf();
+      const upfRaw = upfConfig as any;
+      const gtpuAddr =
+        upfRaw?.gtpu?.server?.[0]?.address ||
+        upfRaw?.gtpu?.addr ||
+        upfRaw?.rawYaml?.upf?.gtpu?.server?.[0]?.address ||
+        upfRaw?.rawYaml?.upf?.gtpu?.addr;
+
+      if (!gtpuAddr) return null;
+
+      // Confirm the IP is actually assigned to this host
+      const ipResult = await this.hostExecutor.executeCommand('bash', [
+        '-c',
+        `ip -4 addr show | grep -oP '(?<=inet\\s)\\d+(\\.\\d+){3}' | grep -v '^127\\.' | sort -u`,
+      ]);
+      const hostIPs = ipResult.stdout.split('\n').map(l => l.trim()).filter(Boolean);
+      return hostIPs.includes(gtpuAddr) ? gtpuAddr : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Run tshark for a bounded window (3 s / 100 pkts) on the interface that
+   * owns the UPF GTP-U IP, capturing GTP-U traffic to/from that IP.
+   *
+   * Each output line looks like:
+   *   "172.16.1.67,10.45.0.102  10.0.1.155,10.45.0.1  0x0000f5f2"
+   *   ip.src (outer,inner)     ip.dst (outer,inner)   teid
+   *
+   * The UE IP is the SECOND element of ip.src (the GTP inner source).
+   * Returns the set of unique UE IPs seen.
+   */
+  async getActive5GUEIPsViaTshark(): Promise<string[]> {
+    const upfIP = await this.getVerifiedUpfGtpuIP();
+    if (!upfIP) {
+      console.warn('[5G Sessions] No verified UPF GTP-U IP found — skipping tshark');
+      return [];
+    }
+
+    const iface = await this.getInterfaceForIP(upfIP);
+    if (!iface) {
+      console.warn(`[5G Sessions] Could not find interface for UPF IP ${upfIP}`);
+      return [];
+    }
+
+    console.log(`[5G Sessions] Running tshark on ${iface} for UPF ${upfIP}`);
+
+    try {
+      const result = await this.hostExecutor.executeCommand(
+        'tshark',
+        [
+          '-i', iface,
+          '-f', `udp port 2152 and (host ${upfIP})`,
+          '-T', 'fields',
+          '-e', 'ip.src',
+          '-e', 'ip.dst',
+          '-e', 'gtp.teid',
+          '-c', '100',          // max 100 packets
+          '-a', 'duration:3',   // stop after 3 seconds
+        ],
+        8000,  // 8 s timeout — gives tshark time to run its 3 s window
+      );
+
+      const ueIPs = new Set<string>();
+      const lines = result.stdout.split('\n').filter(l => l.trim().length > 0);
+
+      for (const line of lines) {
+        // ip.src field may be comma-separated when GTP inner header is decoded:
+        //   "172.16.1.67,10.45.0.102"
+        // The UE IP is the SECOND value (inner GTP source)
+        const cols = line.split('\t');
+        if (cols.length < 2) continue;
+        const srcField = cols[0].trim();
+        const srcParts = srcField.split(',');
+        if (srcParts.length < 2) continue;
+        const ueIP = srcParts[1].trim();
+        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ueIP)) {
+          ueIPs.add(ueIP);
+        }
+      }
+
+      const result2 = Array.from(ueIPs);
+      console.log(`[5G Sessions] tshark found ${result2.length} unique UE IP(s): ${result2.join(', ')}`);
+      return result2;
+    } catch (err) {
+      console.error('[5G Sessions] tshark error:', err);
+      return [];
     }
   }
 
@@ -210,30 +301,52 @@ export class ActiveSessionsUseCase {
   }
 
   /**
-   * PLACEHOLDER: Currently returns all active UEs
-   * TODO: Implement proper 5G detection once we determine the correct method
+   * Active 5G UEs — tshark-based, positive correlation required.
+   * 1. Run tshark on the UPF GTP-U interface to extract inner UE IPs
+   * 2. For each IP, look up IMSI in MongoDB
+   * 3. Only return UEs where both IP and IMSI are confirmed
    */
   async getActive5GUEs(): Promise<ActiveUE[]> {
-    const allActiveUEs = await this.getActiveUEs();
-    
-    if (allActiveUEs.length > 0) {
-      console.log(`[Active Sessions] ✓ ${allActiveUEs.length} active UE(s) shown in 5G box (PLACEHOLDER - showing all UEs)`);
+    const ueIPs = await this.getActive5GUEIPsViaTshark();
+    if (ueIPs.length === 0) return [];
+
+    const activeUEs: ActiveUE[] = [];
+    for (const ip of ueIPs) {
+      const imsi = await this.findImsiByIP(ip);
+      if (imsi) {
+        activeUEs.push({ ip, imsi });
+        console.log(`[5G Sessions] ✓ ${ip} → IMSI: ${imsi}`);
+      } else {
+        console.log(`[5G Sessions] ✗ ${ip} — no matching subscriber (skipped)`);
+      }
     }
-    
-    return allActiveUEs;
+
+    console.log(`[5G Sessions] ${activeUEs.length} active 5G UE(s) with positive correlation`);
+    return activeUEs;
   }
 
   /**
-   * PLACEHOLDER: Currently returns all active UEs
-   * TODO: Implement proper 4G detection once we determine the correct method
+   * Active 4G UEs — conntrack-based.
+   * Any IMSI already detected via tshark (5G) is excluded to prevent
+   * the same subscriber appearing in both the 4G and 5G session boxes.
    */
   async getActive4GUEs(): Promise<ActiveUE[]> {
-    const allActiveUEs = await this.getActiveUEs();
-    
-    if (allActiveUEs.length > 0) {
-      console.log(`[Active Sessions] ✓ ${allActiveUEs.length} active UE(s) shown in 4G box (PLACEHOLDER - showing all UEs)`);
+    // Run both in parallel — 5G list is needed to deduplicate
+    const [allConntrack, active5G] = await Promise.all([
+      this.getActiveUEs(),
+      this.getActive5GUEs(),
+    ]);
+
+    const imsi5GSet = new Set(active5G.map(ue => ue.imsi));
+    const deduplicated = allConntrack.filter(ue => !imsi5GSet.has(ue.imsi));
+
+    if (allConntrack.length !== deduplicated.length) {
+      console.log(
+        `[4G Sessions] Removed ${allConntrack.length - deduplicated.length} duplicate IMSI(s) ` +
+        `already present in 5G sessions`,
+      );
     }
-    
-    return allActiveUEs;
+
+    return deduplicated;
   }
 }

@@ -58,11 +58,19 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![AMF Configuration Editor](docs/screenshots/config-amf-editor.png)
 
+### RAN Network Monitoring
+- **4G EPC section** — S1-MME (control plane) and S1-U (user plane) interface cards with live connected eNodeB IPs
+- **5G NR section** — N2 (AMF ↔ gNodeB, SCTP/netstat) and N3 (UPF ↔ gNodeB, tshark/GTP-U) interface cards with live connected gNodeB IPs
+- **Active UE Sessions table** — combined 4G + 5G sessions with a Generation column (`4G`/`5G` badge per row) and separate session counts in the header
+- **True 4G/5G separation** — 5G sessions detected via tshark inner GTP-U packet inspection; 4G via conntrack; no duplicate IMSIs across both boxes
+- All interface IPs sourced from Open5GS YAML configs and verified against host interfaces — no hardcoded addresses
+
 ### Network Topology Visualization
 - **Interactive Diagram** - JointJS-based professional network topology
 - **Real-Time Status** - Color-coded service indicators (green=active, red=inactive)
-- **Interface Monitoring** - S1-MME, S1-U, N2, N3 interface status with active connections
-- **Active UE Sessions** - Live display of connected devices with IP-to-IMSI correlation
+- **5G Radio Network Status box** — live N2 and N3 gNodeB IPs on the topology canvas
+- **Active 5G UE Sessions box** — tshark-correlated UE IP + IMSI pairs with positive MongoDB correlation
+- **Active 4G UE Sessions box** — conntrack-correlated sessions
 - **Professional Layout** - Manual routing with 90-degree orthogonal connectors
 
 ![Network Topology Visualization](docs/screenshots/topology-network-diagram.png)
@@ -368,12 +376,14 @@ See **[CHANGELOG.md](CHANGELOG.md)** for a complete version history.
 
 ### Latest Release: v1.3.0 (Unreleased — 2026-04-22)
 
-**📊 Metrics & Monitoring**
-- Prometheus + Grafana added to Docker Compose with auto-provisioned datasource and built-in Open5GS dashboard
-- New Metrics page with dual-mode editor (Endpoint table / Scrape Config YAML)
-- Prometheus `prometheus.yml` auto-regenerated and live-reloaded on every config apply
-- SBI Client mode selector on all 9 affected 5G NFs (SCP / NRF / Both)
-- AMF T3502/T3512 timer fields; UPF port injection fix; SEPP included in backup/restore
+**📡 5G RAN Monitoring**
+- RAN Network page: new 5G NR section with N2 (netstat/SCTP) and N3 (tshark/GTP-U) interface cards
+- True 4G/5G UE session separation — tshark inner GTP-U inspection for 5G, conntrack for 4G, no duplicate IMSIs
+- Topology page 5G boxes now show real live data: gNodeB IPs (N2+N3) and correlated UE sessions
+- S1-U fix: bound to SGW-U IP, host IPs excluded — no more 5G core addresses appearing as eNodeBs
+- N3 fix: replaced conntrack with tshark — interface card now shows the correct gNodeB transport IP
+- Auto-Config NAT persistence: sysctl.d file + netfilter-persistent save survive reboots
+- Config editor improvements: AMF multi-slice PLMN, SMF info block, NSSF NSI rewrite, SD quoting fix
 
 ### v1.2.1 (2026-04-20) — MME SGs-AP fix
 ### v1.2.0 (2026-04-18) — Authentication

@@ -100,6 +100,8 @@ The Open5GS NMS follows a **three-tier architecture** with clear separation betw
 | **systemd** | Service lifecycle management | systemd (host) |
 | **Prometheus** | Metrics scraping and storage | Prometheus (port 9099) |
 | **Grafana** | Metrics dashboards and visualization | Grafana (port 3000) |
+| **tshark** | GTP-U packet inspection for 5G UE/gNodeB detection | tshark (host, in backend container) |
+| **conntrack** | Connection tracking for 4G S1-U session detection | conntrack (host) |
 
 ---
 
@@ -161,11 +163,14 @@ backend/src/
 │       ├── apply-config.ts          # Safe config apply with rollback
 │       ├── load-config.ts           # Load all NF configs
 │       ├── validate-config.ts       # Cross-service validation
+│       ├── active-sessions.ts       # 5G (tshark) + 4G (conntrack) UE detection
+│       ├── interface-status/        # S1-MME / S1-U / N2 / N3 status
+│       │   └── get-interface-status.ts
 │       ├── sync-prometheus-config.ts # Regenerate prometheus.yml + live reload
 │       ├── subscriber-mgmt.ts       # CRUD operations
 │       ├── service-monitor.ts       # Service status polling
 │       ├── backup-restore.ts        # Backup/restore workflows
-│       ├── auto-config.ts           # Wizard-based setup
+│       ├── auto-config.ts           # Wizard-based setup (NAT persistent)
 │       └── suci-mgmt.ts             # SUCI key management
 │
 ├── infrastructure/      # External system integrations
@@ -546,6 +551,25 @@ Frontend: Refresh subscriber list, show toast
 ---
 
 ## Design Patterns
+
+### 5G vs 4G Detection Strategy
+
+The NMS uses **source-of-truth IP binding** from Open5GS YAML configs to cleanly separate 4G and 5G traffic. All IPs are read from YAML and verified against host interfaces — nothing is hardcoded.
+
+| Interface | Method | Bound To | What is extracted |
+|-----------|--------|----------|-------------------|
+| S1-MME | `netstat -an`, SCTP port 36412 | MME IP (`mme.yaml`) | Remote SCTP peer = eNodeB IP |
+| S1-U | `conntrack` UDP/2152, `dst=<sgwu-ip>` | SGW-U GTP-U IP (`sgwu.yaml`) | `src=` field; host IPs excluded |
+| N2 | `netstat -an`, SCTP port 38412 | AMF NGAP IP (`amf.yaml`) | Remote SCTP peer = gNodeB IP |
+| N3 | `tshark` UDP/2152, `host <upf-ip>` | UPF GTP-U IP (`upf.yaml`) | `ip.src[0]` outer = gNodeB transport IP |
+| 5G UE IPs | same tshark capture as N3 | UPF GTP-U IP (`upf.yaml`) | `ip.src[1]` inner GTP payload = UE IP |
+| 4G UE IPs | `conntrack`, session pool subnets | SMF/UPF session pools | Conntrack ESTABLISHED entries |
+
+**IMSI correlation:** Both paths require a positive IP → IMSI lookup in MongoDB. IPs seen in traffic but absent from the subscriber database are silently discarded.
+
+**Deduplication:** `getActive4GUEs()` runs in parallel with `getActive5GUEs()` and subtracts any IMSI already claimed by tshark. A subscriber appears in exactly one session box at a time.
+
+---
 
 ### 1. Clean Architecture
 

@@ -58,11 +58,12 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ```bash
 sudo apt update
-sudo apt install -y iptables-persistent conntrack
+sudo apt install -y iptables-persistent conntrack tshark
 ```
 
 - **`iptables-persistent`** — Saves and restores iptables NAT rules across reboots. Required if you configure UPF internet access (MASQUERADE rules). During install, answer **Yes** to both prompts to save current IPv4 and IPv6 rules.
 - **`conntrack`** — Connection tracking tools required by Open5GS UPF and SGW-U for GTP session management.
+- **`tshark`** — Network packet analyser used by the NMS to detect active 5G UE sessions via GTP-U inner packet inspection. Required for the 5G active sessions feature on the Topology and RAN Network pages.
 
 ---
 

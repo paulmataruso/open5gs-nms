@@ -270,40 +270,44 @@ export class GetInterfaceStatus {
 
   private async checkS1U(): Promise<{ active: boolean; connectedEnodebs: string[] }> {
     try {
-      // Run: conntrack -L -p udp --dport 2152 | grep -oP 'src=\K[0-9.]+' | grep -vE '10\.0\.1\.175|10\.0\.1\.155' | sort -u
+      // Get verified SGW-U GTPU IP — S1-U traffic is ONLY traffic involving this IP
+      const sgwuIP = await this.getVerifiedSgwuGtpuIP();
+      if (!sgwuIP) {
+        this.logger.warn('No verified SGW-U GTPU IP found, skipping S1-U check');
+        return { active: false, connectedEnodebs: [] };
+      }
+
+      // Query conntrack filtered to SGW-U IP only — this guarantees 4G-only results
       const result = await this.hostExecutor.executeCommand('bash', [
         '-c',
-        "conntrack -L -p udp --dport 2152 | grep -oP 'src=\\K[0-9.]+' | grep -vE '10\\.0\\.1\\.175|10\\.0\\.1\\.155' | sort -u"
+        `conntrack -L -p udp --dport 2152 2>/dev/null | grep "dst=${sgwuIP}" | grep -oP 'src=\\K[0-9.]+' | sort -u`,
       ]);
-      
-      this.logger.info({ exitCode: result.exitCode, stdoutLength: result.stdout.length }, 'conntrack command result');
-      
+
+      this.logger.info({ exitCode: result.exitCode, sgwuIP }, 'conntrack S1-U result');
+
       if (result.exitCode !== 0) {
         this.logger.warn({ stderr: result.stderr }, 'Failed to run conntrack for S1-U check');
         return { active: false, connectedEnodebs: [] };
       }
 
-      // Parse output - each line is an IP
-      const lines = result.stdout.split('\n').filter(line => line.trim().length > 0);
+      // Get host IPs so we can exclude internal core-to-core traffic
+      const hostIPs = await this.getHostNetworkIPs();
+
       const connectedIPs: string[] = [];
-      
-      this.logger.info({ totalLines: lines.length }, 'Parsing conntrack output');
-      
-      for (const line of lines) {
+      for (const line of result.stdout.split('\n')) {
         const ip = line.trim();
-        // Validate it's an IP address
-        if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+        if (
+          /^\d{1,3}(\.\d{1,3}){3}$/.test(ip) &&
+          ip !== sgwuIP &&
+          !hostIPs.includes(ip)   // exclude internal core-to-core traffic
+        ) {
           connectedIPs.push(ip);
           this.logger.info({ ip }, 'Found S1-U connected eNodeB');
         }
       }
-      
-      this.logger.info({ connectedIPs, count: connectedIPs.length }, 'S1-U check complete');
 
-      return {
-        active: connectedIPs.length > 0,
-        connectedEnodebs: connectedIPs,
-      };
+      this.logger.info({ connectedIPs, count: connectedIPs.length }, 'S1-U check complete');
+      return { active: connectedIPs.length > 0, connectedEnodebs: connectedIPs };
     } catch (error) {
       this.logger.error({ error }, 'Error checking S1-U interface status');
       return { active: false, connectedEnodebs: [] };
@@ -386,74 +390,69 @@ export class GetInterfaceStatus {
 
   /**
    * Check N3 interface (UPF ↔ gNodeB) - GTP-U port 2152
-   * Filtered to exclude S1-U eNodeBs and verified 4G/5G core infrastructure IPs
-   * Also filters out any IPs that appear in 4G S1-U (dual-mode radios)
+   * Uses tshark to capture GTP-U packets on the UPF interface.
+   * The gNodeB transport IP is the FIRST element of ip.src (outer source).
+   * Also filters out any IPs that appear in 4G S1-U (dual-mode radios).
    */
   private async checkN3(): Promise<{ active: boolean; connectedGnodebs: string[] }> {
     try {
-      // Get verified UPF GTPU interface IP (5G core - must be in config AND on host)
       const upfGtpuIP = await this.getVerifiedUpfGtpuIP();
       if (!upfGtpuIP) {
         this.logger.warn('No verified UPF GTPU interface found, skipping N3 check');
         return { active: false, connectedGnodebs: [] };
       }
 
-      // Get verified SGW-U GTPU interface IP (4G core - must be in config AND on host)
-      const sgwuGtpuIP = await this.getVerifiedSgwuGtpuIP();
-      
-      // Get S1-U IPs first (these are 4G eNodeBs that might also be dual-mode)
-      const s1uStatus = await this.checkS1U();
-      const s1uIPs = s1uStatus.connectedEnodebs;
-
-      // Build filter pattern to exclude verified core IPs (both 4G and 5G)
-      const escapeIP = (ip: string) => ip.replace(/\./g, '\\.');
-      const coreIPs = [upfGtpuIP];
-      if (sgwuGtpuIP) {
-        coreIPs.push(sgwuGtpuIP);
-      }
-      const filterPattern = coreIPs.map(escapeIP).join('|');
-
-      this.logger.info({ upfGtpuIP, sgwuGtpuIP, coreIPs, filterPattern }, 'N3 filter: excluding verified core GTPU IPs');
-
-      // Query conntrack for all GTP-U traffic on port 2152, excluding core IPs
-      const result = await this.hostExecutor.executeCommand('bash', [
+      // Find the host interface that owns the UPF GTP-U IP
+      const ifaceResult = await this.hostExecutor.executeCommand('bash', [
         '-c',
-        `conntrack -L -p udp --dport 2152 | grep -oP 'src=\\K[0-9.]+' | grep -vE '${filterPattern}' | sort -u`
+        `ip -4 addr show | grep -B2 "inet ${upfGtpuIP}/" | grep -oP '(?<=\\d: )\\w+' | head -1`,
       ]);
-      
-      this.logger.info({ exitCode: result.exitCode, stdoutLength: result.stdout.length }, 'conntrack command result for N3');
-      
-      if (result.exitCode !== 0) {
-        this.logger.warn({ stderr: result.stderr }, 'Failed to run conntrack for N3 check');
+      const iface = ifaceResult.stdout.trim();
+      if (!iface) {
+        this.logger.warn({ upfGtpuIP }, 'Could not find interface for UPF IP, skipping N3 check');
         return { active: false, connectedGnodebs: [] };
       }
 
-      const lines = result.stdout.split('\n').filter(line => line.trim().length > 0);
-      const allGtpIPs: string[] = [];
-      
-      this.logger.info({ totalLines: lines.length }, 'Parsing conntrack output for N3');
-      
+      this.logger.info({ iface, upfGtpuIP }, 'Running tshark for N3 gNodeB detection');
+
+      // Run tshark bounded: 3 s or 100 packets
+      const result = await this.hostExecutor.executeCommand(
+        'tshark',
+        [
+          '-i', iface,
+          '-f', `udp port 2152 and (host ${upfGtpuIP})`,
+          '-T', 'fields',
+          '-e', 'ip.src',
+          '-e', 'ip.dst',
+          '-c', '100',
+          '-a', 'duration:3',
+        ],
+        8000,
+      );
+
+      const gnodebIPs = new Set<string>();
+      const lines = result.stdout.split('\n').filter(l => l.trim().length > 0);
+
       for (const line of lines) {
-        const ip = line.trim();
-        // Validate it's an IP address
-        if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-          allGtpIPs.push(ip);
+        const cols = line.split('\t');
+        if (cols.length < 1) continue;
+        const srcField = cols[0].trim();
+        const srcParts = srcField.split(',');
+        const gnodebIP = srcParts[0].trim();
+        if (
+          /^\d{1,3}(\.\d{1,3}){3}$/.test(gnodebIP) &&
+          gnodebIP !== upfGtpuIP
+        ) {
+          gnodebIPs.add(gnodebIP);
         }
       }
-      
-      // Filter out S1-U eNodeB IPs to get only 5G gNodeB IPs (pure 5G radios)
-      const pureGnodebIPs = allGtpIPs.filter(ip => !s1uIPs.includes(ip));
-      
-      pureGnodebIPs.forEach(ip => {
-        this.logger.info({ ip }, 'Found N3 connected gNodeB (5G only)');
-      });
-      
-      this.logger.info({ 
-        allN3IPs: allGtpIPs, 
-        s1uIPs, 
-        filtered5GOnly: pureGnodebIPs, 
-        count: pureGnodebIPs.length 
-      }, 'N3 check complete (filtered out dual-mode 4G radios)');
+
+      const pureGnodebIPs = Array.from(gnodebIPs);
+
+      this.logger.info({
+        n3IPs: pureGnodebIPs,
+        count: pureGnodebIPs.length,
+      }, 'N3 check complete (tshark-based)');
 
       return {
         active: pureGnodebIPs.length > 0,
