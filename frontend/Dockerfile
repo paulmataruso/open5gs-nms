@@ -29,7 +29,7 @@ COPY --from=builder /app/dist /app/dist
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=15s --timeout=5s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=5s --retries=5 --start-period=30s \
   CMD curl -f http://localhost:8080/ || exit 1
 
 CMD ["serve", "-s", "dist", "-l", "8080"]
