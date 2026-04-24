@@ -53,7 +53,7 @@ export function TopologyPage(): JSX.Element {
     paperInstanceRef.current = paper;
 
     // Scaling is handled in CSS
-    
+    // Store paper reference so we can scale after graph is built
     // Add tooltip element to DOM
     const tooltip = document.createElement('div');
     tooltip.style.position = 'absolute';
@@ -107,11 +107,11 @@ export function TopologyPage(): JSX.Element {
     
     // Check if S1-MME interface is active
     const s1mmeActive = interfaceStatus?.s1mme?.active || false;
-    const s1mmeConnectedEnodebs = interfaceStatus?.s1mme?.connectedEnodebs || [];
+    const s1mmeConnectedEnodebs = (interfaceStatus?.s1mme?.connectedEnodebs || []).map((r: any) => typeof r === 'string' ? r : r.ip);
     
     // Check if S1-U interface is active
     const s1uActive = interfaceStatus?.s1u?.active || false;
-    const s1uConnectedEnodebs = interfaceStatus?.s1u?.connectedEnodebs || [];
+    const s1uConnectedEnodebs = (interfaceStatus?.s1u?.connectedEnodebs || []).map((r: any) => typeof r === 'string' ? r : r.ip);
 
     // ========================================
     // BACKGROUND BOXES
@@ -256,6 +256,8 @@ export function TopologyPage(): JSX.Element {
     pcrf.addTo(jointGraph);
 
     // MongoDB - CENTERED (square box like others)
+    const mongodbNf = nfMap.get('mongodb');
+    const mongodbActive = mongodbNf?.active || false;
     const mongodb = new shapes.standard.Rectangle({
       id: 'mongodb',
       position: { x: 800 - 50, y: 400 - 30 },  // centered at 800,400
@@ -278,6 +280,21 @@ export function TopologyPage(): JSX.Element {
       z: 10,
     });
     mongodb.addTo(jointGraph);
+
+    // Status indicator circle for MongoDB (top-right corner, same pattern as createNfNode)
+    const mongodbStatusCircle = new shapes.standard.Circle({
+      position: { x: 800 - 50 + 85, y: 400 - 30 + 5 },
+      size: { width: 10, height: 10 },
+      attrs: {
+        body: {
+          fill: mongodbActive ? '#22c55e' : '#ef4444',
+          stroke: mongodbActive ? '#16a34a' : '#dc2626',
+          strokeWidth: 1,
+        },
+      },
+      z: 11,
+    });
+    mongodbStatusCircle.addTo(jointGraph);
 
     // SBI Box - NRF and NSSF on top border (snapped to grid) - half height, centered on border
     const nrf = new shapes.standard.Rectangle({
@@ -454,9 +471,13 @@ export function TopologyPage(): JSX.Element {
     
     // Main box with gradient background - SCALED UP
     // Centered at x=500 to align with eNodeB for vertical line
+    // Box height is dynamic based on number of connected radios
+    const s1mmeRows = Math.max(1, s1mmeConnectedEnodebs.length);
+    const s1uRows   = Math.max(1, s1uConnectedEnodebs.length);
+    const connectedRadiosBoxHeight = 42 + 58 + (s1mmeRows * 26) + 28 + 34 + (s1uRows * 26) + 20;
     const connectedRadiosBox = new shapes.standard.Rectangle({
       position: { x: 375, y: 1250 },  // x=500-125 (half of width 250) to center at 500
-      size: { width: 250, height: 350 },
+      size: { width: 250, height: connectedRadiosBoxHeight },
       attrs: {
         body: {
           fill: {
@@ -985,11 +1006,11 @@ export function TopologyPage(): JSX.Element {
     
     // Check if N2 interface is active
     const n2Active = interfaceStatus?.n2?.active || false;
-    const n2ConnectedGnodebs = interfaceStatus?.n2?.connectedGnodebs || [];
+    const n2ConnectedGnodebs = (interfaceStatus?.n2?.connectedGnodebs || []).map((r: any) => typeof r === 'string' ? r : r.ip);
     
     // Check if N3 interface is active
     const n3Active = interfaceStatus?.n3?.active || false;
-    const n3ConnectedGnodebs = interfaceStatus?.n3?.connectedGnodebs || [];
+    const n3ConnectedGnodebs = (interfaceStatus?.n3?.connectedGnodebs || []).map((r: any) => typeof r === 'string' ? r : r.ip);
     
     // Main box - 100px to the left of Active 5G Sessions box
     const fiveGRadioBox = new shapes.standard.Rectangle({
@@ -2040,6 +2061,11 @@ export function TopologyPage(): JSX.Element {
 
 
     console.log('Topology created:', jointGraph.getCells().length, 'elements');
+
+    // Scale the entire map to fit the container on load
+    if (paperRef.current) {
+      paperInstanceRef.current?.scaleContentToFit({ padding: 20 });
+    }
     
   }, [graph, interfaceStatus]);
 
@@ -2052,7 +2078,20 @@ export function TopologyPage(): JSX.Element {
         </p>
       </div>
 
-      <div className="flex-1 rounded-lg border border-nms-border bg-[#0a0f1a]" style={{ maxWidth: '1450px', maxHeight: '800px' }}>
+      <div
+        ref={(el) => {
+          // Attach ResizeObserver so the map re-fits when the window is resized
+          if (el && paperInstanceRef.current) {
+            const ro = new ResizeObserver(() => {
+              paperInstanceRef.current?.scaleContentToFit({ padding: 20 });
+            });
+            ro.observe(el);
+            (el as any)._ro = ro;
+          }
+        }}
+        className="flex-1 rounded-lg border border-nms-border bg-[#0a0f1a]"
+        style={{ maxWidth: '1450px', minHeight: 0 }}
+      >
         <div ref={paperRef} />
       </div>
     </div>

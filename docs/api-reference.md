@@ -1,28 +1,56 @@
-# API Reference
+# Open5GS NMS — API Reference
 
-Complete reference for the Open5GS NMS REST API.
+Complete reference for all HTTP REST endpoints exposed by the backend on port `3001` (proxied through nginx on port `8888` at `/api/*`).
+
+All endpoints except `/api/health`, `POST /api/auth/login` require a valid session cookie (`nms_session`). Unauthenticated requests return `401`.
+
+Base URL (via nginx proxy): `http://YOUR_SERVER:8888/api`  
+Base URL (direct backend): `http://YOUR_SERVER:3001/api`
 
 ---
 
-## Base URL
+## Table of Contents
 
-All API endpoints are relative to: `http://YOUR_SERVER:3001/api` (or `/api` when accessed through nginx proxy)
+1. [Health](#health)
+2. [Authentication](#authentication)
+3. [Users](#users)
+4. [Configuration](#configuration)
+5. [Services](#services)
+6. [Subscribers](#subscribers)
+7. [Interface Status](#interface-status)
+8. [Backup & Restore](#backup--restore)
+9. [Auto-Config](#auto-config)
+10. [SUCI Keys](#suci-keys)
+11. [Audit Log](#audit-log)
+12. [Docker](#docker)
+13. [WebSocket](#websocket)
+
+---
+
+## Health
+
+### `GET /api/health`
+
+Public endpoint. No authentication required. Used by Docker healthcheck.
+
+**Response `200`**
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-04-22T22:00:00.000Z",
+  "wsConnections": 3
+}
+```
 
 ---
 
 ## Authentication
 
-All API endpoints except `GET /api/health` and `POST /api/auth/login` require a valid session cookie. Requests without a valid session receive `401 Unauthorized`.
+### `POST /api/auth/login`
 
-Sessions are managed via an HttpOnly cookie named `nms_session`, set automatically on successful login.
+Public endpoint. Rate-limited to **10 attempts per 15 minutes per IP** (failed attempts only).
 
-### POST /api/auth/login
-
-Authenticate and receive a session cookie.
-
-> **Rate limited:** 10 attempts per 15 minutes per IP address.
-
-**Request Body:**
+**Request body**
 ```json
 {
   "username": "admin",
@@ -30,7 +58,7 @@ Authenticate and receive a session cookie.
 }
 ```
 
-**Success Response (200):**
+**Response `200`** — Sets `nms_session` HttpOnly cookie.
 ```json
 {
   "success": true,
@@ -38,45 +66,40 @@ Authenticate and receive a session cookie.
     "user": {
       "id": "abc123",
       "username": "admin",
-      "role": "admin",
-      "lastLoginAt": "2026-04-18T21:00:00.000Z"
+      "role": "admin"
     }
   }
 }
 ```
-Also sets `Set-Cookie: nms_session=...; HttpOnly; SameSite=Lax; Path=/`
 
-**Error Response (401):**
+**Response `401`**
 ```json
-{
-  "success": false,
-  "error": "Invalid username or password"
-}
+{ "success": false, "error": "Invalid username or password" }
+```
+
+**Response `429`**
+```json
+{ "success": false, "error": "Too many login attempts, please try again later" }
 ```
 
 ---
 
-### POST /api/auth/logout
+### `POST /api/auth/logout`
 
-Invalidate the current session and clear the session cookie.
+Requires valid session. Invalidates the session and clears the cookie.
 
-**Requires:** Valid session cookie
-
-**Response (200):**
+**Response `200`**
 ```json
 { "success": true }
 ```
-Also clears the `nms_session` cookie.
 
 ---
 
-### GET /api/auth/me
+### `GET /api/auth/me`
 
-Return information about the currently authenticated user.
+Returns the currently authenticated user.
 
-**Requires:** Valid session cookie
-
-**Response (200):**
+**Response `200`**
 ```json
 {
   "success": true,
@@ -84,234 +107,33 @@ Return information about the currently authenticated user.
     "user": {
       "id": "abc123",
       "username": "admin",
-      "role": "admin",
-      "createdAt": "2026-04-18T20:00:00.000Z",
-      "lastLoginAt": "2026-04-18T21:00:00.000Z"
+      "role": "admin"
     }
   }
 }
 ```
 
-**Error Response (401):**
-```json
-{
-  "success": false,
-  "error": "Unauthorized"
-}
-```
-
 ---
 
-### Using the API with curl
+## Users
 
-To authenticate and make authenticated requests:
+### `GET /api/users`
 
-```bash
-# 1. Login and save the session cookie
-curl -c cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "your-password"}'
+List all NMS users.
 
-# 2. Use the saved cookie for subsequent requests
-curl -b cookies.txt http://YOUR_SERVER:8888/api/config
-
-# 3. Logout
-curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/logout
-```
-
-### Using the API with JavaScript
-
-```javascript
-const client = axios.create({
-  baseURL: 'http://YOUR_SERVER:8888/api',
-  withCredentials: true, // required — sends session cookie automatically
-});
-
-// Login
-await client.post('/auth/login', { username: 'admin', password: 'your-password' });
-
-// All subsequent requests automatically include the session cookie
-const configs = await client.get('/config');
-
-// Logout
-await client.post('/auth/logout');
-```
-
----
-
-## Response Format
-
-All responses follow this format:
-
-**Success:**
+**Response `200`**
 ```json
 {
   "success": true,
-  "data": { ... }
-}
-```
-
-**Error:**
-```json
-{
-  "success": false,
-  "error": "Error message"
-}
-```
-
----
-
-## Configuration Endpoints
-
-### GET /api/config/all
-
-Get all network function configurations.
-
-**Response:**
-```json
-{
-  "success": true,
-  "configs": {
-    "nrf": { ... },
-    "amf": { ... },
-    "smf": { ... },
-    // ... all 16 NFs
-  }
-}
-```
-
----
-
-### GET /api/config/:service
-
-Get specific network function configuration.
-
-**Parameters:**
-- `service` - Service name (nrf, amf, smf, upf, etc.)
-
-**Example:**
-```
-GET /api/config/nrf
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "config": {
-    "nrf": {
-      "sbi": {
-        "server": [
-          { "address": "127.0.0.10", "port": 7777 }
-        ]
+  "data": {
+    "users": [
+      {
+        "id": "abc123",
+        "username": "admin",
+        "role": "admin",
+        "createdAt": "2026-04-01T00:00:00.000Z",
+        "lastLoginAt": "2026-04-22T22:00:00.000Z"
       }
-    },
-    "logger": {
-      "level": "info"
-    }
-  }
-}
-```
-
----
-
-### POST /api/config/validate
-
-Validate configuration before applying.
-
-**Request Body:**
-```json
-{
-  "nrf": { ... },
-  "amf": { ... },
-  // ... configs to validate
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "valid": true,
-  "errors": []
-}
-```
-
-**Error Response:**
-```json
-{
-  "success": true,
-  "valid": false,
-  "errors": [
-    {
-      "service": "amf",
-      "field": "ngap.server.address",
-      "message": "Invalid IP address"
-    }
-  ]
-}
-```
-
----
-
-### POST /api/config/apply
-
-Apply new configuration with automatic backup and service restart.
-
-**Request Body:**
-```json
-{
-  "nrf": { ... },
-  "amf": { ... },
-  // ... all 16 NFs
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "backup": "/etc/open5gs/backups/config/2026-03-23-1430",
-  "diff": "...",
-  "restartResults": [
-    { "service": "nrf", "success": true },
-    { "service": "amf", "success": true }
-  ],
-  "rollback": false
-}
-```
-
-**Error Response (with rollback):**
-```json
-{
-  "success": false,
-  "error": "Failed to restart amf",
-  "restartResults": [
-    { "service": "nrf", "success": true },
-    { "service": "amf", "success": false, "error": "..." }
-  ],
-  "rollback": true,
-  "restoredFrom": "/etc/open5gs/backups/config/2026-03-23-1430"
-}
-```
-
----
-
-### GET /api/config/topology
-
-Get network topology graph.
-
-**Response:**
-```json
-{
-  "success": true,
-  "topology": {
-    "nodes": [
-      { "id": "nrf", "label": "NRF", "status": "active" },
-      { "id": "amf", "label": "AMF", "status": "active" }
-    ],
-    "edges": [
-      { "from": "amf", "to": "nrf", "label": "SBI" }
     ]
   }
 }
@@ -319,23 +141,242 @@ Get network topology graph.
 
 ---
 
-## Service Endpoints
+### `POST /api/users`
 
-### GET /api/services/statuses
+Create a new NMS user.
 
-Get status of all services.
+**Request body**
+```json
+{
+  "username": "operator1",
+  "password": "SecurePass123!"
+}
+```
 
-**Response:**
+**Response `201`**
 ```json
 {
   "success": true,
-  "statuses": [
+  "data": {
+    "user": { "id": "def456", "username": "operator1", "role": "admin" }
+  }
+}
+```
+
+**Response `409`** — Username already exists.
+
+**Response `400`** — Weak password or invalid username.
+
+---
+
+### `PUT /api/users/:id/password`
+
+Change a user's password.
+
+**URL params:** `id` — user ID string
+
+**Request body**
+```json
+{ "password": "NewSecurePass456!" }
+```
+
+**Response `200`**
+```json
+{ "success": true }
+```
+
+**Response `404`** — User not found.
+
+**Response `400`** — Weak password.
+
+---
+
+### `DELETE /api/users/:id`
+
+Delete a user. Cannot delete yourself or the last remaining user.
+
+**URL params:** `id` — user ID string
+
+**Response `200`**
+```json
+{ "success": true }
+```
+
+**Response `400`** — Cannot delete self / cannot delete last user.
+
+**Response `404`** — User not found.
+
+---
+
+## Configuration
+
+Valid service names for all config endpoints:
+
+`nrf` `scp` `amf` `smf` `upf` `ausf` `udm` `udr` `pcf` `nssf` `bsf` `mme` `hss` `pcrf` `sgwc` `sgwu`
+
+---
+
+### `GET /api/config`
+
+Load all 16 NF configurations at once.
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": {
+    "nrf": { ... },
+    "amf": { ... },
+    "smf": { ... },
+    "..." : "..."
+  }
+}
+```
+
+---
+
+### `GET /api/config/:service`
+
+Load a single NF configuration.
+
+**URL params:** `service` — one of the 16 valid service names
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": {
+    "sbi": { "server": [{ "address": "10.0.1.155", "port": 7777 }] },
+    "ngap": { "server": [{ "address": "10.0.1.155" }] },
+    "rawYaml": { ... }
+  }
+}
+```
+
+**Response `400`** — Invalid service name.
+
+---
+
+### `POST /api/config/validate`
+
+Validate all current on-disk configurations against Zod schemas without applying anything.
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": {
+    "valid": true,
+    "errors": []
+  }
+}
+```
+
+---
+
+### `POST /api/config/apply`
+
+Apply configuration changes to all NF YAML files. Automatically backs up current config first, restarts affected services in dependency order, and rolls back on failure. Also regenerates and live-reloads `prometheus.yml`.
+
+**Request body** — Full configs object (same shape as `GET /api/config` response `data`)
+```json
+{
+  "amf": { "rawYaml": { ... } },
+  "smf": { "rawYaml": { ... } },
+  "..."
+}
+```
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": {
+    "success": true,
+    "rollback": false,
+    "backupCreated": "/etc/open5gs/backups/backup-2026-04-22T22-00-00",
+    "restartedServices": ["open5gs-amfd", "open5gs-smfd"],
+    "errors": [],
+    "prometheusReloaded": true,
+    "prometheusReloadError": null
+  }
+}
+```
+
+---
+
+### `GET /api/config/topology/graph`
+
+Returns node data for all 16 NFs including their addresses, ports, and current active status. Used by the topology page.
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": {
+    "nodes": [
+      { "id": "amf", "address": "10.0.1.155", "port": 7777, "active": true },
+      { "id": "smf", "address": "10.0.1.155", "port": 7777, "active": true }
+    ],
+    "edges": []
+  }
+}
+```
+
+---
+
+### `POST /api/config/sync-sd`
+
+Sync a Slice Differentiator (SD) value across SMF config and all matching subscriber slices in MongoDB.
+
+**Request body**
+```json
+{
+  "sd": "000001",
+  "sst": 1
+}
+```
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": {
+    "smfUpdated": true,
+    "subscribersUpdated": 12
+  }
+}
+```
+
+**Response `400`** — SD value is required.
+
+---
+
+## Services
+
+Valid service names: `nrf` `scp` `amf` `smf` `upf` `ausf` `udm` `udr` `pcf` `nssf` `bsf` `mme` `hss` `pcrf` `sgwc` `sgwu`
+
+Valid actions for single service: `start` `stop` `restart` `enable` `disable`
+
+Valid actions for bulk: `start` `stop` `restart`
+
+---
+
+### `GET /api/services`
+
+Get status of all 16 Open5GS services.
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "data": [
     {
-      "name": "nrf",
+      "name": "amf",
       "active": true,
-      "pid": 12345,
-      "uptime": "2d 14h 32m",
-      "memory": "45.2 MB"
+      "enabled": true,
+      "description": "open5gs-amfd.service",
+      "subState": "running"
     }
   ]
 }
@@ -343,179 +384,144 @@ Get status of all services.
 
 ---
 
-### GET /api/services/:service
+### `GET /api/services/:name`
 
-Get status of specific service.
+Get status of a single service.
 
-**Parameters:**
-- `service` - Service name (nrf, amf, etc.)
+**URL params:** `name` — service name
 
-**Response:**
+**Response `200`**
 ```json
 {
   "success": true,
-  "status": {
-    "name": "nrf",
+  "data": {
+    "name": "amf",
     "active": true,
-    "pid": 12345,
-    "uptime": "2d 14h 32m"
+    "enabled": true,
+    "subState": "running"
   }
 }
 ```
 
+**Response `400`** — Invalid service name.
+
 ---
 
-### POST /api/services/:service/start
+### `POST /api/services/:name/:action`
 
-Start a service.
+Execute an action on a single service.
 
-**Response:**
+**URL params:** `name` — service name, `action` — one of `start` `stop` `restart` `enable` `disable`
+
+**Response `200`**
+```json
+{ "success": true, "message": "Service amf restarted successfully" }
+```
+
+**Response `400`** — Invalid service name or action.
+
+---
+
+### `POST /api/services/all/:action`
+
+Execute an action across all 16 services at once.
+
+**URL params:** `action` — one of `start` `stop` `restart`
+
+**Response `200`**
 ```json
 {
   "success": true,
-  "status": "active"
+  "results": [
+    { "service": "nrf", "success": true, "message": "Started" },
+    { "service": "amf", "success": true, "message": "Started" }
+  ]
 }
 ```
 
 ---
 
-### POST /api/services/:service/stop
+## Subscribers
 
-Stop a service.
+### `GET /api/subscribers`
 
-**Response:**
+List subscribers with optional pagination and search.
+
+**Query params**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `skip` | number | `0` | Records to skip (pagination offset) |
+| `limit` | number | `50` | Max records to return |
+| `search` | string | — | Filter by IMSI (partial match) |
+
+**Response `200`**
 ```json
 {
-  "success": true,
-  "status": "inactive"
-}
-```
-
----
-
-### POST /api/services/:service/restart
-
-Restart a service.
-
-**Response:**
-```json
-{
-  "success": true,
-  "status": "active"
-}
-```
-
----
-
-## Subscriber Endpoints
-
-### GET /api/subscribers
-
-List subscribers with pagination.
-
-**Query Parameters:**
-- `skip` (optional) - Number of records to skip (default: 0)
-- `limit` (optional) - Number of records to return (default: 50, max: 100)
-- `search` (optional) - Search by IMSI or MSISDN
-
-**Example:**
-```
-GET /api/subscribers?skip=0&limit=50&search=001
-```
-
-**Response:**
-```json
-{
-  "success": true,
   "subscribers": [
     {
-      "imsi": "001010000000001",
-      "msisdn": ["1234567890"],
-      "security": {
-        "k": "465B5CE8B199B49FAA5F0A2EE238A6BC",
-        "opc": "E8ED289DEBA952E4283B54E88E6183CA",
-        "amf": "8000",
-        "sqn": 0
-      },
-      "ambr": {
-        "downlink": { "value": 1, "unit": 3 },
-        "uplink": { "value": 1, "unit": 3 }
-      },
-      "slice": [
-        {
-          "sst": 1,
-          "default_indicator": true,
-          "session": [
-            {
-              "name": "internet",
-              "type": 3,
-              "qos": { "index": 9 },
-              "ambr": {
-                "downlink": { "value": 1, "unit": 3 },
-                "uplink": { "value": 1, "unit": 3 }
-              }
-            }
-          ]
-        }
-      ]
+      "imsi": "999700000053555",
+      "msisdn": [],
+      "imeisv": [],
+      "slice": [...]
     }
   ],
-  "total": 100,
-  "skip": 0,
-  "limit": 50
+  "total": 42
 }
 ```
 
 ---
 
-### GET /api/subscribers/:imsi
+### `GET /api/subscribers/ip-assignments`
 
-Get specific subscriber.
+Get the current static IP assignments for all subscribers that have one configured.
 
-**Parameters:**
-- `imsi` - 15-digit IMSI
-
-**Response:**
+**Response `200`**
 ```json
 {
   "success": true,
-  "subscriber": { ... }
+  "data": [
+    { "imsi": "999700000053555", "ipv4": "10.45.0.100" }
+  ]
 }
 ```
 
 ---
 
-### POST /api/subscribers
+### `GET /api/subscribers/:imsi`
 
-Create new subscriber.
+Get a single subscriber by IMSI.
 
-**Request Body:**
+**URL params:** `imsi` — 15-digit IMSI string
+
+**Response `200`** — Full subscriber document from MongoDB.
+
+**Response `404`** — Subscriber not found.
+
+---
+
+### `POST /api/subscribers`
+
+Create a new subscriber.
+
+**Request body** — Open5GS subscriber document
 ```json
 {
-  "imsi": "001010000000001",
-  "msisdn": ["1234567890"],
+  "imsi": "999700000053556",
   "security": {
     "k": "465B5CE8B199B49FAA5F0A2EE238A6BC",
     "opc": "E8ED289DEBA952E4283B54E88E6183CA",
     "amf": "8000"
   },
-  "ambr": {
-    "downlink": { "value": 1, "unit": 3 },
-    "uplink": { "value": 1, "unit": 3 }
-  },
   "slice": [
     {
       "sst": 1,
-      "default_indicator": true,
       "session": [
         {
           "name": "internet",
           "type": 3,
-          "qos": { "index": 9 },
-          "ambr": {
-            "downlink": { "value": 1, "unit": 3 },
-            "uplink": { "value": 1, "unit": 3 }
-          }
+          "qos": { "index": 9, "arp": { "priority_level": 8 } },
+          "ambr": { "downlink": { "value": 1, "unit": 3 }, "uplink": { "value": 1, "unit": 3 } }
         }
       ]
     }
@@ -523,264 +529,509 @@ Create new subscriber.
 }
 ```
 
-**Response:**
+**Response `201`**
+```json
+{ "message": "Created" }
+```
+
+**Response `400`** — Validation error (e.g. duplicate IMSI, invalid key format).
+
+---
+
+### `PUT /api/subscribers/:imsi`
+
+Update an existing subscriber.
+
+**URL params:** `imsi` — 15-digit IMSI string
+
+**Request body** — Same shape as `POST /api/subscribers`
+
+**Response `200`**
+```json
+{ "message": "Updated" }
+```
+
+**Response `400`** — Validation error.
+
+---
+
+### `DELETE /api/subscribers/:imsi`
+
+Delete a subscriber.
+
+**URL params:** `imsi` — 15-digit IMSI string
+
+**Response `200`**
+```json
+{ "message": "Deleted" }
+```
+
+---
+
+### `POST /api/subscribers/auto-assign-ips`
+
+Auto-assign sequential static IPv4 addresses from the session pool to all subscribers that do not already have one.
+
+**Response `200`**
 ```json
 {
   "success": true,
-  "subscriber": { ... }
+  "data": {
+    "assigned": 5,
+    "skipped": 12,
+    "errors": []
+  }
 }
 ```
 
 ---
 
-### PUT /api/subscribers/:imsi
+## Interface Status
 
-Update existing subscriber.
+### `GET /api/interface-status`
 
-**Request Body:** Same as POST
+Returns live RAN interface status and active UE sessions. Runs netstat (N2, S1-MME), conntrack (S1-U, 4G sessions), and tshark (N3, 5G sessions) on the host.
 
-**Response:**
+**Response `200`**
 ```json
 {
-  "success": true,
-  "subscriber": { ... }
+  "s1mme": {
+    "active": true,
+    "connectedEnodebs": ["10.0.1.100", "10.0.1.101", "10.0.1.102"]
+  },
+  "s1u": {
+    "active": true,
+    "connectedEnodebs": ["10.0.1.100", "10.0.1.101"]
+  },
+  "n2": {
+    "active": true,
+    "connectedGnodebs": ["10.0.1.48", "172.16.1.67"]
+  },
+  "n3": {
+    "active": true,
+    "connectedGnodebs": ["172.16.1.67"]
+  },
+  "activeUEs4G": [
+    { "ip": "10.45.0.100", "imsi": "999700000053555" }
+  ],
+  "activeUEs5G": [
+    { "ip": "10.45.0.102", "imsi": "999702959493689" }
+  ]
 }
 ```
 
----
+**Detection methods:**
 
-### DELETE /api/subscribers/:imsi
-
-Delete subscriber.
-
-**Response:**
-```json
-{
-  "success": true,
-  "deleted": true
-}
-```
+| Field | Method | Bound to |
+|-------|--------|----------|
+| `s1mme` | `netstat -an`, SCTP port 36412 | MME IP from `mme.yaml` |
+| `s1u` | `conntrack` UDP/2152, `dst=<sgwu-ip>` | SGW-U IP from `sgwu.yaml` |
+| `n2` | `netstat -an`, SCTP port 38412 | AMF NGAP IP from `amf.yaml` |
+| `n3` | `tshark` UDP/2152, `host <upf-ip>` | UPF GTP-U IP from `upf.yaml` |
+| `activeUEs4G` | `conntrack` + MongoDB correlation | Session pool subnets |
+| `activeUEs5G` | `tshark` inner GTP + MongoDB correlation | UPF GTP-U IP from `upf.yaml` |
 
 ---
 
-## SUCI Key Management
+## Backup & Restore
 
-### GET /api/suci/keys
+### `GET /api/backup/list`
 
-List all SUCI keys.
+List all available backups.
 
-**Response:**
+**Response `200`**
 ```json
 {
-  "success": true,
-  "keys": [
-    {
-      "pki": 1,
-      "scheme": 1,
-      "publicKey": "0123456789ABCDEF...",
-      "keyFile": "/etc/open5gs/hnet/1.key"
-    }
+  "mongoBackups": [
+    { "name": "mongo-backup-2026-04-22T22-00-00", "timestamp": "2026-04-22T22:00:00.000Z", "type": "mongodb" }
+  ],
+  "configBackups": [
+    { "name": "config-backup-2026-04-22T22-00-00", "timestamp": "2026-04-22T22:00:00.000Z", "type": "config" }
   ]
 }
 ```
 
 ---
 
-### POST /api/suci/generate
+### `POST /api/backup/config`
 
-Generate new SUCI keypair.
+Create a manual config backup of all 16 YAML files immediately.
 
-**Request Body:**
+**Response `200`**
+```json
+{ "success": true, "backupName": "config-backup-2026-04-22T22-00-00" }
+```
+
+---
+
+### `POST /api/backup/mongo`
+
+Create a manual MongoDB backup using `mongodump`.
+
+**Response `200`**
+```json
+{ "success": true, "backupName": "mongo-backup-2026-04-22T22-00-00" }
+```
+
+---
+
+### `POST /api/backup/restore/config`
+
+Restore all config files from a named config backup.
+
+**Request body**
+```json
+{ "backupName": "config-backup-2026-04-22T22-00-00" }
+```
+
+**Response `200`**
+```json
+{ "success": true, "restoredFiles": ["amf.yaml", "smf.yaml", "..."] }
+```
+
+---
+
+### `POST /api/backup/restore/mongo`
+
+Restore MongoDB subscriber database from a named backup using `mongorestore`.
+
+**Request body**
+```json
+{ "backupName": "mongo-backup-2026-04-22T22-00-00" }
+```
+
+**Response `200`**
+```json
+{ "success": true }
+```
+
+---
+
+### `POST /api/backup/restore/both`
+
+Restore both config and MongoDB in one operation.
+
+**Request body**
 ```json
 {
-  "scheme": 1,
-  "pki": 1,
-  "routingIndicator": "0000"
+  "configBackupName": "config-backup-2026-04-22T22-00-00",
+  "mongoBackupName": "mongo-backup-2026-04-22T22-00-00"
 }
 ```
 
-**Response:**
+**Response `200`**
+```json
+{ "success": true, "configRestored": true, "mongoRestored": true, "errors": [] }
+```
+
+---
+
+### `POST /api/backup/restore/selective`
+
+Restore only specific NF config files from a backup, leaving others untouched.
+
+**Request body**
+```json
+{
+  "backupName": "config-backup-2026-04-22T22-00-00",
+  "services": ["amf", "smf", "upf"]
+}
+```
+
+**Response `200`**
+```json
+{ "success": true, "restored": ["amf.yaml", "smf.yaml", "upf.yaml"], "errors": {} }
+```
+
+---
+
+### `POST /api/backup/diff`
+
+Get a unified diff showing what changed between a backup and the current on-disk config.
+
+**Request body**
+```json
+{ "backupName": "config-backup-2026-04-22T22-00-00" }
+```
+
+**Response `200`**
 ```json
 {
   "success": true,
-  "key": {
-    "pki": 1,
-    "scheme": 1,
-    "publicKey": "0123456789ABCDEF...",
-    "keyFile": "/etc/open5gs/hnet/1.key"
+  "diffs": {
+    "amf": "--- amf.yaml\n+++ amf.yaml\n@@ -10,7 +10,7 @@\n ...",
+    "smf": ""
   }
 }
 ```
 
 ---
 
-### PUT /api/suci/regenerate/:pki
+### `GET /api/backup/last-config`
 
-Regenerate existing keypair.
+Get the name of the most recent config backup (useful for the auto-rollback display).
 
-**Response:**
+**Response `200`**
+```json
+{ "backupName": "config-backup-2026-04-22T22-00-00" }
+```
+
+---
+
+### `GET /api/backup/settings`
+
+Get current backup retention settings.
+
+**Response `200`**
+```json
+{ "configBackupsToKeep": 10, "mongoBackupsToKeep": 5 }
+```
+
+---
+
+### `PUT /api/backup/settings`
+
+Update backup retention settings and immediately apply cleanup.
+
+**Request body**
+```json
+{ "configBackupsToKeep": 10, "mongoBackupsToKeep": 5 }
+```
+
+**Response `200`**
+```json
+{ "configBackupsToKeep": 10, "mongoBackupsToKeep": 5 }
+```
+
+**Response `400`** — Retention values must be at least 1.
+
+---
+
+### `POST /api/backup/cleanup`
+
+Manually trigger backup cleanup to enforce retention limits.
+
+**Request body** (optional — defaults used if omitted)
+```json
+{ "configBackupsToKeep": 10, "mongoBackupsToKeep": 5 }
+```
+
+**Response `200`**
+```json
+{ "success": true }
+```
+
+---
+
+### `POST /api/backup/restore-defaults`
+
+Restore all 16 NF YAML configs to factory defaults (bundled with the NMS). Creates a backup of the current state first.
+
+**Response `200`**
 ```json
 {
   "success": true,
-  "key": { ... }
+  "message": "Factory defaults restored. Backup created at /etc/open5gs/backups/...",
+  "backupCreated": "/etc/open5gs/backups/pre-restore-defaults-2026-04-22T22-00-00"
 }
 ```
 
 ---
 
-### DELETE /api/suci/:pki
+## Auto-Config
 
-Delete SUCI key.
+### `POST /api/auto-config/preview`
 
-**Query Parameters:**
-- `deleteFile` (optional) - Whether to delete key file (default: false)
+Generate a YAML diff preview of what the auto-config wizard would change without actually applying anything.
 
-**Response:**
+**Request body**
 ```json
 {
-  "success": true,
-  "deleted": true
-}
-```
-
----
-
-## Backup Endpoints
-
-### GET /api/backup/list
-
-List all backups.
-
-**Response:**
-```json
-{
-  "success": true,
-  "backups": [
-    {
-      "timestamp": "2026-03-23-1430",
-      "configPath": "/etc/open5gs/backups/config/2026-03-23-1430",
-      "mongoPath": "/etc/open5gs/backups/mongodb/2026-03-23-1430",
-      "configSize": "45.2 KB",
-      "mongoSize": "2.3 MB"
-    }
-  ]
-}
-```
-
----
-
-### POST /api/backup/create
-
-Create new backup.
-
-**Response:**
-```json
-{
-  "success": true,
-  "backup": {
-    "timestamp": "2026-03-23-1430",
-    "configPath": "...",
-    "mongoPath": "..."
-  }
-}
-```
-
----
-
-### POST /api/backup/restore
-
-Restore from backup.
-
-**Request Body:**
-```json
-{
-  "timestamp": "2026-03-23-1430",
-  "restoreConfig": true,
-  "restoreMongo": true
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "restored": {
-    "config": true,
-    "mongo": true
-  }
-}
-```
-
----
-
-## Auto-Configuration
-
-### POST /api/auto-config/preview
-
-Preview auto-configuration changes.
-
-**Request Body:**
-```json
-{
-  "mcc4g": "001",
-  "mnc4g": "01",
-  "mcc5g": "001",
-  "mnc5g": "01",
-  "s1mmeAddress": "10.0.1.175",
-  "sgwuGtpuAddress": "10.0.1.176",
-  "amfNgapAddress": "10.0.1.175",
-  "upfGtpuAddress": "10.0.1.177",
+  "plmn4g": [{ "mcc": "999", "mnc": "70", "mme_gid": 2, "mme_code": 1, "tac": 1 }],
+  "plmn5g": [{ "mcc": "999", "mnc": "70", "tac": 1 }],
+  "s1mmeIP": "10.0.1.175",
+  "sgwuGtpIP": "10.0.1.175",
+  "amfNgapIP": "10.0.1.155",
+  "upfGtpIP": "10.0.1.155",
   "sessionPoolIPv4Subnet": "10.45.0.0/16",
   "sessionPoolIPv4Gateway": "10.45.0.1",
+  "sessionPoolIPv6Subnet": "2001:db8:cafe::/48",
+  "sessionPoolIPv6Gateway": "2001:db8:cafe::1",
+  "configureNAT": false
+}
+```
+
+**Response `200`**
+```json
+{
+  "success": true,
+  "diffs": {
+    "mme": "--- mme.yaml\n+++ mme.yaml\n@@ ...",
+    "amf": "--- amf.yaml\n+++ amf.yaml\n@@ ...",
+    "sgwu": "",
+    "upf": "",
+    "smf": ""
+  }
+}
+```
+
+---
+
+### `POST /api/auto-config/apply`
+
+Apply the auto-configuration wizard. Backs up current configs, writes MME, SGW-U, AMF, UPF, SMF YAML files, optionally configures NAT (persistent via `netfilter-persistent save`), then restarts affected services.
+
+**Request body** — Same shape as `POST /api/auto-config/preview` plus optional NAT fields:
+
+```json
+{
+  "...": "...(same as preview)...",
   "configureNAT": true,
   "natInterface": "ogstun"
 }
 ```
 
-**Response:**
+**Response `200`**
 ```json
 {
   "success": true,
-  "diffs": {
-    "mme": "...",
-    "amf": "...",
-    "smf": "...",
-    "upf": "..."
-  },
-  "natCommands": [
-    "sysctl -w net.ipv4.ip_forward=1",
-    "iptables -t nat -A POSTROUTING ..."
-  ]
+  "message": "Auto-configuration applied successfully. Services restarted.",
+  "backupCreated": "/etc/open5gs/backups/pre-autoconfig-2026-04-22T22-00-00",
+  "updatedFiles": ["mme.yaml", "sgwu.yaml", "amf.yaml", "upf.yaml", "smf.yaml"]
 }
 ```
 
 ---
 
-### POST /api/auto-config/apply
+## SUCI Keys
 
-Apply auto-configuration.
+### `GET /api/suci/keys`
 
-**Request Body:** Same as preview
+List all SUCI home network public/private keypairs.
 
-**Response:**
+**Response `200`**
+```json
+[
+  {
+    "id": 1,
+    "scheme": 1,
+    "publicKey": "5a8d38864820197c3394b92613b20b91633cbd897119273bf8e4a6f4eec0a650",
+    "privateKey": "c80949f13ebe...",
+    "createdAt": "2026-04-22T22:00:00.000Z"
+  }
+]
+```
+
+---
+
+### `GET /api/suci/next-id`
+
+Get the next available PKI ID (0–255).
+
+**Response `200`**
+```json
+{ "nextId": 2 }
+```
+
+---
+
+### `POST /api/suci/keys`
+
+Generate a new SUCI keypair. Scheme 1 = Profile A (X25519), Scheme 2 = Profile B (secp256r1). Also updates UDM config with the new public key.
+
+**Request body**
+```json
+{ "id": 1, "scheme": 1 }
+```
+
+**Response `200`**
 ```json
 {
-  "success": true,
-  "appliedServices": ["mme", "sgwu", "amf", "upf", "smf"],
-  "natConfigured": true,
-  "restartResults": [...]
+  "id": 1,
+  "scheme": 1,
+  "publicKey": "5a8d38864820197c3394b92613b20b91633cbd897119273bf8e4a6f4eec0a650",
+  "privateKey": "c80949f13ebe...",
+  "createdAt": "2026-04-22T22:00:00.000Z"
+}
+```
+
+**Response `400`** — Missing fields or invalid scheme.
+
+---
+
+### `PUT /api/suci/keys/:id`
+
+Regenerate an existing keypair (deletes old, creates new with same ID). Also updates UDM config.
+
+**URL params:** `id` — PKI ID number
+
+**Request body**
+```json
+{ "scheme": 1 }
+```
+
+**Response `200`** — Same shape as `POST /api/suci/keys`.
+
+---
+
+### `DELETE /api/suci/keys/:id`
+
+Delete a SUCI keypair. Optionally deletes the key file from disk.
+
+**URL params:** `id` — PKI ID number
+
+**Query params:** `deleteFile=true` — also remove the key file from disk
+
+**Response `200`**
+```json
+{ "success": true, "id": 1, "deletedFile": true }
+```
+
+---
+
+## Audit Log
+
+### `GET /api/audit`
+
+Retrieve audit log entries with optional pagination and action filtering.
+
+**Query params**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `skip` | number | `0` | Records to skip |
+| `limit` | number | `100` | Max records to return |
+| `action` | string | — | Filter by action type (see below) |
+
+**Valid action values:** `config_apply` `config_load` `service_action` `subscriber_create` `subscriber_update` `subscriber_delete` `backup_create` `backup_restore` `suci_generate` `suci_delete` `auto_config`
+
+**Response `200`**
+```json
+{
+  "entries": [
+    {
+      "id": "abc123",
+      "timestamp": "2026-04-22T22:00:00.000Z",
+      "user": "admin",
+      "action": "config_apply",
+      "target": "amf",
+      "details": "AMF configuration applied",
+      "success": true
+    }
+  ],
+  "total": 156
 }
 ```
 
 ---
 
-## Docker Endpoints
+## Docker
 
-### GET /api/docker/containers
+### `GET /api/docker/containers`
 
-List all NMS Docker containers.
+List all NMS Docker containers (backend, frontend, nginx).
 
-**Response:**
+**Response `200`**
 ```json
 {
   "success": true,
@@ -794,37 +1045,24 @@ List all NMS Docker containers.
 
 ---
 
-### GET /api/docker/logs/:container
+### `GET /api/docker/logs/:container`
 
-Get recent logs from a specific container.
+Get recent log lines from a specific NMS container.
 
-**Parameters:**
-- `container` - Container name (e.g., `open5gs-nms-backend`)
+**URL params:** `container` — container name (e.g. `open5gs-nms-backend`)
 
-**Query Parameters:**
-- `limit` (optional) - Number of recent lines (default: 100, max: 1000)
+**Query params:** `limit` — number of lines to return (default `100`)
 
-**Example:**
-```
-GET /api/docker/logs/open5gs-nms-backend?limit=200
-```
-
-**Response:**
+**Response `200`**
 ```json
 {
   "success": true,
   "logs": [
     {
-      "timestamp": "2026-04-14T14:30:45.123456789Z",
-      "container": "open5gs-nms-backend",
-      "stream": "stdout",
-      "message": "Starting Open5GS NMS Backend"
-    },
-    {
-      "timestamp": "2026-04-14T14:30:46.234567890Z",
-      "container": "open5gs-nms-backend",
-      "stream": "stdout",
-      "message": "MongoDB connected"
+      "timestamp": "2026-04-22T22:00:00.000Z",
+      "level": "info",
+      "message": "HTTP server started",
+      "container": "open5gs-nms-backend"
     }
   ]
 }
@@ -832,174 +1070,157 @@ GET /api/docker/logs/open5gs-nms-backend?limit=200
 
 ---
 
-## Health Check
+## WebSocket
 
-### GET /api/health
+The WebSocket server runs on port `3002` (proxied via nginx at `ws://YOUR_SERVER:8888/ws`).
 
-Health check endpoint.
+Used for real-time log streaming and service status updates. Authenticate before connecting — the WebSocket connection shares the same session cookie as HTTP.
 
-**Response:**
-```json
-{
-  "status": "ok",
-  "timestamp": "2026-03-23T14:30:45.123Z",
-  "version": "1.0.0"
-}
-```
+### Service Status Broadcasts
 
----
+The server broadcasts service status updates every 5 seconds to all connected clients automatically. No subscription message needed.
 
-## WebSocket API
-
-### Connection
-
-Connect to: `ws://YOUR_SERVER:3002` (or `ws://YOUR_SERVER:8888/ws` through nginx)
-
-### Subscribe to Service Status Updates
-
-**Client → Server:**
-```json
-{
-  "type": "subscribe_services"
-}
-```
-
-**Server → Client:**
+**Received message**
 ```json
 {
   "type": "service_status_update",
   "payload": {
-    "statuses": [...]
+    "statuses": {
+      "amf": { "name": "amf", "active": true, "enabled": true, "subState": "running" },
+      "smf": { "name": "smf", "active": true, "enabled": true, "subState": "running" }
+    }
   }
 }
 ```
 
-### Subscribe to Log Streaming
+---
 
-**Client → Server:**
+### Log Streaming — Subscribe
+
+Send this message to start streaming logs from Open5GS services or Docker containers.
+
+**Sent message**
 ```json
 {
   "type": "subscribe_logs",
-  "source": "open5gs" | "docker",
-  "services": ["nrf", "amf"] // or container names for Docker
+  "source": "open5gs",
+  "services": ["amf", "smf", "upf"]
 }
 ```
 
-**Server → Client:**
+Or for Docker container logs:
+```json
+{
+  "type": "subscribe_logs",
+  "source": "docker",
+  "services": ["open5gs-nms-backend", "open5gs-nms-nginx"]
+}
+```
+
+Use `"services": []` or omit to subscribe to all services/containers for that source.
+
+---
+
+### Log Streaming — Received
+
+**Received message**
 ```json
 {
   "type": "log_entry",
-  "source": "open5gs" | "docker",
-  "log": {
-    "timestamp": "2026-04-14T14:30:45.123Z",
-    "service": "nrf", // or container name
-    "message": "[info] NRF started"
+  "payload": {
+    "timestamp": "2026-04-22T22:00:00.000Z",
+    "level": "info",
+    "service": "amf",
+    "message": "gNB-N2 accepted[addr:172.16.1.67]",
+    "source": "open5gs"
   }
 }
 ```
 
-**Get Recent Logs:**
-```json
-// Client → Server
-{
-  "type": "get_recent_logs",
-  "source": "open5gs" | "docker",
-  "services": ["nrf", "amf"],
-  "limit": 100
-}
-
-// Server → Client
-{
-  "type": "recent_logs",
-  "source": "open5gs" | "docker",
-  "logs": [...]
-}
-```
-
 ---
 
-## Error Codes
+### Log Streaming — Unsubscribe
 
-| HTTP Status | Meaning |
-|-------------|---------|
-| 200 | Success |
-| 400 | Bad Request (validation error) |
-| 404 | Not Found |
-| 409 | Conflict (duplicate IMSI) |
-| 500 | Internal Server Error |
-
----
-
-## Rate Limiting
-
-| Endpoint | Limit |
-|----------|-------|
-| `POST /api/auth/login` | 10 requests per 15 minutes per IP (failed attempts only) |
-| All other endpoints | 100 requests per 15 minutes per IP |
-
-**Response when exceeded:**
+**Sent message**
 ```json
 {
-  "error": "Too many requests, please try again later"
+  "type": "unsubscribe_logs",
+  "source": "open5gs"
 }
 ```
 
 ---
 
-## Example Usage
+## Error Responses
 
-### cURL
+All endpoints return a consistent error shape on failure:
 
-```bash
-# Login and save session cookie
-curl -c cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "your-password"}'
-
-# Get all configs (uses saved cookie)
-curl -b cookies.txt http://YOUR_SERVER:8888/api/config
-
-# Create subscriber
-curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/subscribers \
-  -H "Content-Type: application/json" \
-  -d '{"imsi":"001010000000001",...}'
-
-# Restart service
-curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/services/nrf/restart
-
-# Logout
-curl -b cookies.txt -X POST http://YOUR_SERVER:8888/api/auth/logout
+```json
+{ "success": false, "error": "Human-readable error message" }
 ```
 
-### JavaScript (Axios)
-
-```javascript
-import axios from 'axios';
-
-const client = axios.create({
-  baseURL: 'http://YOUR_SERVER:8888/api',
-  withCredentials: true, // required — sends session cookie automatically
-});
-
-// Login
-await client.post('/auth/login', { username: 'admin', password: 'your-password' });
-
-// Get configs (session cookie sent automatically)
-const configs = await client.get('/config');
-
-// Create subscriber
-const subscriber = await client.post('/subscribers', {
-  imsi: '001010000000001',
-  // ...
-});
-
-// Restart service
-await client.post('/services/nrf/restart');
-
-// Logout
-await client.post('/auth/logout');
-```
+| Status | Meaning |
+|--------|---------|
+| `400` | Bad request — missing or invalid parameters |
+| `401` | Unauthenticated — no valid session cookie |
+| `404` | Resource not found |
+| `409` | Conflict — e.g. duplicate username |
+| `429` | Rate limited — too many login attempts |
+| `500` | Internal server error |
 
 ---
 
-For integration examples, see **[docs/development.md](development.md)**.
+## Quick Reference
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/health` | No | Health check |
+| POST | `/api/auth/login` | No | Login |
+| POST | `/api/auth/logout` | Yes | Logout |
+| GET | `/api/auth/me` | Yes | Current user |
+| GET | `/api/users` | Yes | List users |
+| POST | `/api/users` | Yes | Create user |
+| PUT | `/api/users/:id/password` | Yes | Change password |
+| DELETE | `/api/users/:id` | Yes | Delete user |
+| GET | `/api/config` | Yes | Load all configs |
+| GET | `/api/config/:service` | Yes | Load one config |
+| POST | `/api/config/validate` | Yes | Validate configs |
+| POST | `/api/config/apply` | Yes | Apply configs |
+| GET | `/api/config/topology/graph` | Yes | Topology node data |
+| POST | `/api/config/sync-sd` | Yes | Sync SD value |
+| GET | `/api/services` | Yes | All service statuses |
+| GET | `/api/services/:name` | Yes | One service status |
+| POST | `/api/services/:name/:action` | Yes | Service action |
+| POST | `/api/services/all/:action` | Yes | Bulk service action |
+| GET | `/api/subscribers` | Yes | List subscribers |
+| GET | `/api/subscribers/ip-assignments` | Yes | IP assignments |
+| GET | `/api/subscribers/:imsi` | Yes | Get subscriber |
+| POST | `/api/subscribers` | Yes | Create subscriber |
+| PUT | `/api/subscribers/:imsi` | Yes | Update subscriber |
+| DELETE | `/api/subscribers/:imsi` | Yes | Delete subscriber |
+| POST | `/api/subscribers/auto-assign-ips` | Yes | Auto-assign IPs |
+| GET | `/api/interface-status` | Yes | RAN + UE status |
+| GET | `/api/backup/list` | Yes | List backups |
+| POST | `/api/backup/config` | Yes | Create config backup |
+| POST | `/api/backup/mongo` | Yes | Create MongoDB backup |
+| POST | `/api/backup/restore/config` | Yes | Restore config |
+| POST | `/api/backup/restore/mongo` | Yes | Restore MongoDB |
+| POST | `/api/backup/restore/both` | Yes | Restore both |
+| POST | `/api/backup/restore/selective` | Yes | Restore selected NFs |
+| POST | `/api/backup/diff` | Yes | Config diff vs backup |
+| GET | `/api/backup/last-config` | Yes | Latest backup name |
+| GET | `/api/backup/settings` | Yes | Retention settings |
+| PUT | `/api/backup/settings` | Yes | Update retention |
+| POST | `/api/backup/cleanup` | Yes | Trigger cleanup |
+| POST | `/api/backup/restore-defaults` | Yes | Factory defaults |
+| POST | `/api/auto-config/preview` | Yes | Preview auto-config |
+| POST | `/api/auto-config/apply` | Yes | Apply auto-config |
+| GET | `/api/suci/keys` | Yes | List SUCI keys |
+| GET | `/api/suci/next-id` | Yes | Next PKI ID |
+| POST | `/api/suci/keys` | Yes | Generate key |
+| PUT | `/api/suci/keys/:id` | Yes | Regenerate key |
+| DELETE | `/api/suci/keys/:id` | Yes | Delete key |
+| GET | `/api/audit` | Yes | Audit log entries |
+| GET | `/api/docker/containers` | Yes | List containers |
+| GET | `/api/docker/logs/:container` | Yes | Container logs |
+| WS | `ws://host:8888/ws` | Yes | Log stream + status |

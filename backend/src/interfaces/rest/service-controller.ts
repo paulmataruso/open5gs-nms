@@ -25,6 +25,7 @@ export function createServiceRouter(
   router.get('/:name', async (req: Request, res: Response) => {
     const name = req.params.name as ServiceName;
     const validServices: ServiceName[] = [
+      'mongodb',
       'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 
       'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
     ];
@@ -50,6 +51,7 @@ export function createServiceRouter(
     const name = req.params.name as ServiceName;
     const action = req.params.action as 'start' | 'stop' | 'restart' | 'enable' | 'disable';
     const validServices: ServiceName[] = [
+      'mongodb',
       'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 
       'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
     ];

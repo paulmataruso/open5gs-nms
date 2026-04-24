@@ -1,5 +1,7 @@
-// All Open5GS Network Functions (4G EPC + 5G Core)
+// All Open5GS Network Functions (4G EPC + 5G Core) + infrastructure services
 export type ServiceName = 
+  // Infrastructure
+  | 'mongodb' // MongoDB database (required by HSS, UDR, PCRF)
   // 5G Core (SA)
   | 'nrf'    // Network Repository Function
   | 'scp'    // Service Communication Proxy
@@ -20,6 +22,8 @@ export type ServiceName =
   | 'sgwu';  // Serving Gateway User Plane
 
 export const SERVICE_UNIT_MAP: Record<ServiceName, string> = {
+  // Infrastructure
+  mongodb: 'mongod',
   // 5G Core
   nrf: 'open5gs-nrfd',
   scp: 'open5gs-scpd',
@@ -42,7 +46,9 @@ export const SERVICE_UNIT_MAP: Record<ServiceName, string> = {
 
 // Proper restart order: Control plane BEFORE user plane to avoid PFCP errors
 export const SERVICE_RESTART_ORDER: ServiceName[] = [
-  // Core services first
+  // Infrastructure first — all NFs depend on MongoDB
+  'mongodb',
+  // Core services
   'hss',
   'pcrf',
   'nrf',

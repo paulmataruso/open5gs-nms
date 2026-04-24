@@ -166,6 +166,7 @@ async function main() {
     hostExecutor,
     configRepo,
     subscriberRepo,
+    logger,
   );
   const suciManagementUseCase = new SuciManagementUseCase(
     hostExecutor,

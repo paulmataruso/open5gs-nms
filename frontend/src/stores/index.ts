@@ -9,34 +9,48 @@ import type {
 import { configApi, serviceApi, subscriberApi, interfaceApi } from '../api';
 
 // Interface status types
+export interface ConnectedRadio {
+  ip: string;
+  numConnectedUes: number;
+  setupSuccess: boolean;
+  plmn?: string;
+}
+
+export interface ActiveUE {
+  ip: string;
+  imsi: string;
+  cmState?: string;
+  dnn?: string;
+  apn?: string;
+  sliceSst?: number;
+  sliceSd?: string;
+  securityEnc?: string;
+  securityInt?: string;
+  ambrDownlink?: number;
+  ambrUplink?: number;
+}
+
 export interface InterfaceStatus {
   // 4G Interfaces
   s1mme: {
     active: boolean;
-    connectedEnodebs: string[];
+    connectedEnodebs: ConnectedRadio[];
   };
   s1u: {
     active: boolean;
-    connectedEnodebs: string[];
+    connectedEnodebs: ConnectedRadio[];
   };
   // 5G Interfaces
   n2: {
     active: boolean;
-    connectedGnodebs: string[];
+    connectedGnodebs: ConnectedRadio[];
   };
   n3: {
     active: boolean;
-    connectedGnodebs: string[];
+    connectedGnodebs: ConnectedRadio[];
   };
-  // Separated Active Sessions
-  activeUEs4G: Array<{
-    ip: string;
-    imsi: string;
-  }>;
-  activeUEs5G: Array<{
-    ip: string;
-    imsi: string;
-  }>;
+  activeUEs4G: ActiveUE[];
+  activeUEs5G: ActiveUE[];
 }
 
 // ── Config Store ──

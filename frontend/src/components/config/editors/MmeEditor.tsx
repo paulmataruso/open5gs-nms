@@ -1,6 +1,6 @@
 import type { AllConfigs } from '../../../types';
 import { LoggerSection } from './SharedComponents';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Shield } from 'lucide-react';
 import { FieldWithTooltip } from '../FieldsWithTooltips';
 import { MME_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -491,15 +491,126 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         ))}
       </div>
 
-      {mme.security && (
-        <div>
-          <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Security Algorithms</h3>
-          <div className="text-xs font-mono text-nms-text-dim space-y-1">
-            <div>Integrity: {mme.security.integrity_order?.join(', ') || 'Not configured'}</div>
-            <div>Ciphering: {mme.security.ciphering_order?.join(', ') || 'Not configured'}</div>
+      {/* NAS Security Configuration */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3 flex items-center gap-2">
+          <Shield className="w-4 h-4" />
+          NAS Security Algorithms
+        </h3>
+        <p className="text-xs text-nms-text-dim mb-4">
+          Configure encryption and integrity protection algorithm preference order for 4G NAS security.
+          Algorithms are tried in order — the first one supported by both the UE and the network is selected.
+        </p>
+
+        {/* Integrity Protection (EIA) */}
+        <div className="mb-4">
+          <label className="text-xs font-semibold text-nms-text uppercase tracking-wider mb-2 block">
+            Integrity Protection Order (EIA)
+          </label>
+          <div className="space-y-2">
+            {(mme.security?.integrity_order || ['EIA2', 'EIA1', 'EIA0']).map((alg: string, idx: number) => (
+              <div key={idx} className="flex items-center gap-3 bg-nms-surface-2/50 rounded p-3 border border-nms-border">
+                <div className="flex items-center justify-center w-8 h-8 rounded bg-nms-accent/10 text-nms-accent font-semibold text-sm">
+                  {idx + 1}
+                </div>
+                <select
+                  className="nms-input flex-1 font-mono text-sm"
+                  value={alg}
+                  onChange={(e) => {
+                    const updated = [...(mme.security?.integrity_order || [])];
+                    updated[idx] = e.target.value;
+                    updateMme({ security: { ...mme.security, integrity_order: updated } });
+                  }}
+                >
+                  <option value="EIA0">EIA0 (Null — No Protection)</option>
+                  <option value="EIA1">EIA1 (128-EIA1 SNOW 3G)</option>
+                  <option value="EIA2">EIA2 (128-EIA2 AES) — Recommended</option>
+                </select>
+                {(mme.security?.integrity_order || []).length > 1 && (
+                  <button
+                    onClick={() => {
+                      const updated = (mme.security?.integrity_order || []).filter((_: string, i: number) => i !== idx);
+                      updateMme({ security: { ...mme.security, integrity_order: updated } });
+                    }}
+                    className="text-nms-text-dim hover:text-nms-red transition-colors"
+                    title="Remove algorithm"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              onClick={() => {
+                const current = mme.security?.integrity_order || ['EIA2', 'EIA1', 'EIA0'];
+                updateMme({ security: { ...mme.security, integrity_order: [...current, 'EIA2'] } });
+              }}
+              className="nms-btn-ghost text-xs w-full flex items-center justify-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Integrity Algorithm
+            </button>
           </div>
         </div>
-      )}
+
+        {/* Ciphering (EEA) */}
+        <div>
+          <label className="text-xs font-semibold text-nms-text uppercase tracking-wider mb-2 block">
+            Ciphering Order (EEA)
+          </label>
+          <div className="space-y-2">
+            {(mme.security?.ciphering_order || ['EEA0', 'EEA1', 'EEA2']).map((alg: string, idx: number) => (
+              <div key={idx} className="flex items-center gap-3 bg-nms-surface-2/50 rounded p-3 border border-nms-border">
+                <div className="flex items-center justify-center w-8 h-8 rounded bg-nms-accent/10 text-nms-accent font-semibold text-sm">
+                  {idx + 1}
+                </div>
+                <select
+                  className="nms-input flex-1 font-mono text-sm"
+                  value={alg}
+                  onChange={(e) => {
+                    const updated = [...(mme.security?.ciphering_order || [])];
+                    updated[idx] = e.target.value;
+                    updateMme({ security: { ...mme.security, ciphering_order: updated } });
+                  }}
+                >
+                  <option value="EEA0">EEA0 (Null — No Encryption)</option>
+                  <option value="EEA1">EEA1 (128-EEA1 SNOW 3G)</option>
+                  <option value="EEA2">EEA2 (128-EEA2 AES) — Recommended</option>
+                </select>
+                {(mme.security?.ciphering_order || []).length > 1 && (
+                  <button
+                    onClick={() => {
+                      const updated = (mme.security?.ciphering_order || []).filter((_: string, i: number) => i !== idx);
+                      updateMme({ security: { ...mme.security, ciphering_order: updated } });
+                    }}
+                    className="text-nms-text-dim hover:text-nms-red transition-colors"
+                    title="Remove algorithm"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+            <button
+              onClick={() => {
+                const current = mme.security?.ciphering_order || ['EEA0', 'EEA1', 'EEA2'];
+                updateMme({ security: { ...mme.security, ciphering_order: [...current, 'EEA2'] } });
+              }}
+              className="nms-btn-ghost text-xs w-full flex items-center justify-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Ciphering Algorithm
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded text-xs text-nms-text-dim">
+          <strong className="text-blue-400">ℹ️ Note:</strong> For production 4G networks, it is recommended to prioritize:
+          <ul className="list-disc list-inside mt-1 ml-2">
+            <li><strong>EIA2/EEA2 (AES)</strong> — Most secure and widely supported</li>
+            <li><strong>EIA1/EEA1 (SNOW 3G)</strong> — Fallback for older UEs</li>
+            <li><strong>EIA0/EEA0 (Null)</strong> — Only for testing, provides no security</li>
+          </ul>
+        </div>
+      </div>
 
       {mme.network_name && (
         <div>
