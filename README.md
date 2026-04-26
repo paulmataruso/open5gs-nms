@@ -60,11 +60,11 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ### RAN Network Monitoring
 - **4G EPC section** — S1-MME (control plane) and S1-U (user plane) interface cards with live connected eNodeB IPs
-- **5G NR section** — N2 (AMF ↔ gNodeB, SCTP/netstat) and N3 (UPF ↔ gNodeB, tshark/GTP-U) interface cards with live connected gNodeB IPs
+- **5G NR section** — N2 (AMF ↔ gNodeB) and N3 (UPF ↔ gNodeB) interface cards with live connected gNodeB IPs
 - **UE-to-radio mapping** — each radio card shows which UEs are connected to it (IMSI, UE IP, CM State) nested directly under the radio row
 - **Active UE Sessions table** — combined 4G + 5G sessions with Generation, CM State, DNN/APN, Security algorithms, AMBR, and Radio IP columns
-- **True 4G/5G separation** — sourced directly from Open5GS internal APIs (AMF, MME, SMF)
-- All interface IPs sourced from Open5GS YAML configs and verified — no hardcoded addresses
+- **True 4G/5G separation** — sourced directly from Open5GS internal APIs (AMF, MME, SMF) — no packet capture needed
+- All interface IPs sourced from Open5GS YAML configs — no hardcoded addresses
 
 ![RAN Network Page](docs/screenshots/ran-network-page.png)
 
@@ -72,11 +72,49 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **Interactive Diagram** - JointJS-based professional network topology
 - **Real-Time Status** - Color-coded service indicators (green=active, red=inactive)
 - **5G Radio Network Status box** — live N2 and N3 gNodeB IPs on the topology canvas
-- **Active 5G UE Sessions box** — tshark-correlated UE IP + IMSI pairs with positive MongoDB correlation
-- **Active 4G UE Sessions box** — conntrack-correlated sessions
+- **Active 5G UE Sessions box** — UE IP + IMSI pairs sourced from Open5GS AMF/SMF APIs
+- **Active 4G UE Sessions box** — UE IP + IMSI pairs sourced from Open5GS MME API
 - **Professional Layout** - Manual routing with 90-degree orthogonal connectors
 
 ![Network Topology Visualization](docs/screenshots/topology-network-diagram.png)
+
+### Service Management
+- **Real-Time Monitoring** — WebSocket-based live status cards for all 16 NFs plus MongoDB
+- **Systemd Integration** — Start, stop, restart, enable and disable services directly from the UI
+- **Bulk Operations** — Control all services at once in correct dependency order
+- **MongoDB tracking** — MongoDB included as a first-class service with status indicator on topology
+
+![Service Management](docs/screenshots/service-management.png)
+
+### Auto-Configuration Wizard
+- **One-Click Setup** — Generate all 16 NF configurations from minimal input (PLMN, host IPs, UE subnets)
+- **Preview Changes** — YAML diff viewer shows exact changes before applying
+- **Persistent NAT** — iptables rules saved via `netfilter-persistent` and IP forwarding via `sysctl.d` — survive reboots
+
+![Auto-Configuration Wizard](docs/screenshots/auto-config-wizard.png)
+
+### Backup & Restore
+- **Automatic Backups** — Created before every configuration change; configurable retention policy
+- **Selective Restore** — Restore config only, database only, both, or specific NFs
+- **Rollback Protection** — Automatic restore on service restart failure
+- **Diff Viewer** — Compare any backup against current config before restoring
+- **Factory Defaults** — One-click restore to stock Open5GS configuration
+
+![Backup & Restore](docs/screenshots/backup-restore.png)
+
+![Backup & Restore Modal](docs/screenshots/backup-restore-modal.png)
+
+### SUCI Key Management (5G Privacy)
+- **Keypair Generation** — Create X25519 (Profile A) or secp256r1 (Profile B) home network keys
+- **Public Key Display** — Hex format ready for eSIM provisioning
+- **Automatic Configuration** — Updates UDM config with new public key on generate/rotate
+- **PKI Management** — Support for multiple PKI values (0–255) with next-ID auto-suggestion
+
+![SUCI Key Management](docs/screenshots/suci-keys.png)
+
+![SUCI Key Detail](docs/screenshots/suci-key-management.png)
+
+![Generate Key Modal](docs/screenshots/suci-generate-key-modal.png)
 
 ### Subscriber Management
 - **Full CRUD Operations** - Create, read, update, delete subscribers via MongoDB
@@ -87,32 +125,14 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Subscriber Management](docs/screenshots/subscribers-list.png)
 
-### SUCI Key Management (5G Privacy)
-- **Keypair Generation** - Create X25519 (Profile A) or secp256r1 (Profile B) keys
-- **Public Key Display** - Hex format ready for eSIM provisioning (Simlessly, etc.)
-- **Automatic Configuration** - Updates UDM config with home network public key
-- **PKI Management** - Support for multiple PKI values (0-255)
-
-### Service Management
-- **Real-Time Monitoring** - WebSocket-based live service status updates
-- **Systemd Integration** - Start, stop, restart services directly from UI
-- **Bulk Operations** - Control all services at once
-- **Dependency Awareness** - Services restart in correct order (NRF first, then dependencies)
-
-### Auto-Configuration Wizard
-- **One-Click Setup** - Generate all 16 NF configurations from minimal input
-- **Preview Changes** - YAML diff viewer shows exact changes before applying
-- **Optional NAT** - Configure iptables rules for UE internet access
+![SIM Generator](docs/screenshots/sim-generator-dialog.png)
 
 ### Real-Time Logging
-- **Dual Log Sources** - Stream logs from Open5GS services OR Docker containers
-- **Live Log Streaming** - Tail logs from any service via WebSocket
-- **Service Filtering** - Multi-select services or containers to monitor
+- **Dual Log Sources** — Stream logs from Open5GS systemd services OR Docker containers
+- **Live Log Streaming** — Tail logs from any service via WebSocket
+- **Service Filtering** — Multi-select services or containers to monitor simultaneously
 
-### Backup & Restore
-- **Automatic Backups** - Created before every configuration change
-- **Selective Restore** - Restore config only, database only, or both
-- **Rollback Protection** - Automatic restore on service restart failure
+![Log Viewer](docs/screenshots/logs-viewer.png)
 
 ---
 
