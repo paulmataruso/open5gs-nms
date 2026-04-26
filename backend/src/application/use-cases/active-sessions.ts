@@ -30,6 +30,7 @@ export interface ActiveUE {
   securityInt?: string;      // 5G only: e.g. "nia2"
   ambrDownlink?: number;     // bps
   ambrUplink?: number;       // bps
+  radioIp?: string;          // IP of the eNodeB/gNodeB this UE is connected to
 }
 
 export class ActiveSessionsUseCase {
@@ -53,9 +54,10 @@ export class ActiveSessionsUseCase {
    */
   async getActive5GUEs(): Promise<ActiveUE[]> {
     try {
-      const [pduSessions, amfUes] = await Promise.all([
+      const [pduSessions, amfUes, amfGnbs] = await Promise.all([
         this.apiClient.getSmfPduInfo(),
         this.apiClient.getAmfUeInfo(),
+        this.apiClient.getAmfGnbInfo(),
       ]);
 
       // Build AMF UE lookup by IMSI for enrichment
@@ -63,6 +65,12 @@ export class ActiveSessionsUseCase {
       for (const ue of amfUes) {
         const imsi = ue.supi.replace(/^imsi-/, '');
         amfByImsi.set(imsi, ue);
+      }
+
+      // Build gNodeB lookup by gnb_id → IP
+      const gnbIpById = new Map<number, string>();
+      for (const gnb of amfGnbs) {
+        gnbIpById.set(gnb.gnb_id, parsePeerIP(gnb.ng.sctp.peer));
       }
 
       const activeUEs: ActiveUE[] = [];
@@ -79,6 +87,10 @@ export class ActiveSessionsUseCase {
 
           const amfUe = amfByImsi.get(imsi);
 
+          // Resolve gNodeB IP from gnb_id
+          const gnbId = amfUe?.gnb?.gnb_id;
+          const radioIp = gnbId !== undefined ? gnbIpById.get(gnbId) : undefined;
+
           const ue: ActiveUE = {
             ip:          pdu.ipv4,
             imsi,
@@ -90,6 +102,7 @@ export class ActiveSessionsUseCase {
             securityInt: amfUe?.security?.int,
             ambrDownlink: amfUe?.ambr?.downlink,
             ambrUplink:   amfUe?.ambr?.uplink,
+            radioIp,
           };
 
           activeUEs.push(ue);
@@ -112,10 +125,11 @@ export class ActiveSessionsUseCase {
    */
   async getActive4GUEs(): Promise<ActiveUE[]> {
     try {
-      const [mmeUes, pduSessions, active5G] = await Promise.all([
+      const [mmeUes, pduSessions, active5G, mmeEnbs] = await Promise.all([
         this.apiClient.getMmeUeInfo(),
         this.apiClient.getSmfPduInfo(),
         this.getActive5GUEs(),
+        this.apiClient.getMmeEnbInfo(),
       ]);
 
       // Build PDU IP lookup by IMSI (4G sessions have no n3 block)
@@ -128,6 +142,12 @@ export class ActiveSessionsUseCase {
             break;
           }
         }
+      }
+
+      // Build eNodeB lookup by enb_id → IP
+      const enbIpById = new Map<number, string>();
+      for (const enb of mmeEnbs) {
+        enbIpById.set(enb.enb_id, parsePeerIP(enb.s1.sctp.peer));
       }
 
       const imsi5GSet = new Set(active5G.map(ue => ue.imsi));
@@ -152,6 +172,10 @@ export class ActiveSessionsUseCase {
         const ip = ipByImsi.get(imsi) || '';
         const apn = mmeUe.pdn?.[0]?.apn;
 
+        // Resolve eNodeB IP from enb_id
+        const enbId = mmeUe.enb?.enb_id;
+        const radioIp = enbId !== undefined ? enbIpById.get(enbId) : undefined;
+
         const ue: ActiveUE = {
           ip,
           imsi,
@@ -159,6 +183,7 @@ export class ActiveSessionsUseCase {
           apn,
           ambrDownlink: mmeUe.ambr?.downlink,
           ambrUplink:   mmeUe.ambr?.uplink,
+          radioIp,
         };
 
         activeUEs.push(ue);

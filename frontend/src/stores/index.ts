@@ -28,6 +28,7 @@ export interface ActiveUE {
   securityInt?: string;
   ambrDownlink?: number;
   ambrUplink?: number;
+  radioIp?: string;
 }
 
 export interface InterfaceStatus {
