@@ -112,8 +112,6 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![SUCI Key Management](docs/screenshots/suci-keys.png)
 
-![SUCI Key Detail](docs/screenshots/suci-key-management.png)
-
 ![Generate Key Modal](docs/screenshots/suci-generate-key-modal.png)
 
 ### Subscriber Management
