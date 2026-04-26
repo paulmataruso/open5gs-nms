@@ -61,9 +61,12 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 ### RAN Network Monitoring
 - **4G EPC section** — S1-MME (control plane) and S1-U (user plane) interface cards with live connected eNodeB IPs
 - **5G NR section** — N2 (AMF ↔ gNodeB, SCTP/netstat) and N3 (UPF ↔ gNodeB, tshark/GTP-U) interface cards with live connected gNodeB IPs
-- **Active UE Sessions table** — combined 4G + 5G sessions with a Generation column (`4G`/`5G` badge per row) and separate session counts in the header
-- **True 4G/5G separation** — 5G sessions detected via tshark inner GTP-U packet inspection; 4G via conntrack; no duplicate IMSIs across both boxes
-- All interface IPs sourced from Open5GS YAML configs and verified against host interfaces — no hardcoded addresses
+- **UE-to-radio mapping** — each radio card shows which UEs are connected to it (IMSI, UE IP, CM State) nested directly under the radio row
+- **Active UE Sessions table** — combined 4G + 5G sessions with Generation, CM State, DNN/APN, Security algorithms, AMBR, and Radio IP columns
+- **True 4G/5G separation** — sourced directly from Open5GS internal APIs (AMF, MME, SMF)
+- All interface IPs sourced from Open5GS YAML configs and verified — no hardcoded addresses
+
+![RAN Network Page](docs/screenshots/ran-network-page.png)
 
 ### Network Topology Visualization
 - **Interactive Diagram** - JointJS-based professional network topology
