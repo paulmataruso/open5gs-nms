@@ -25,6 +25,7 @@ export interface GenerateKeyInput {
 
 export class SuciManagementUseCase {
   private readonly hnetDir = '/etc/open5gs/hnet';
+  private readonly suciKeytool = '/opt/pysim/contrib/suci-keytool.py';
 
   constructor(
     private readonly hostExecutor: IHostExecutor,
@@ -69,28 +70,31 @@ export class SuciManagementUseCase {
 
   async generateKey(input: GenerateKeyInput): Promise<HnetKey> {
     const { id, scheme } = input;
-    this.logger.info({ id, scheme }, 'Generating new SUCI key');
+    this.logger.info({ id, scheme }, 'Generating new SUCI key via suci-keytool.py');
 
-    // Ensure hnet directory exists
     await this.hostExecutor.createDirectory(this.hnetDir);
 
-    // Determine filename and generate command
-    const fileName = scheme === 1
-      ? `curve25519-${id}.key`
-      : `secp256r1-${id}.key`;
-    const keyPath = `${this.hnetDir}/${fileName}`;
+    const curve    = scheme === 1 ? 'curve25519' : 'secp256r1';
+    const fileName = scheme === 1 ? `curve25519-${id}.key` : `secp256r1-${id}.key`;
+    const keyPath  = `${this.hnetDir}/${fileName}`;
 
-    if (scheme === 1) {
-      await this.hostExecutor.executeCommand('openssl', ['genpkey', '-algorithm', 'X25519', '-out', keyPath]);
-    } else {
-      await this.hostExecutor.executeCommand('openssl', ['ecparam', '-name', 'prime256v1', '-genkey', '-conv_form', 'compressed', '-out', keyPath]);
+    const result = await this.hostExecutor.executeLocalCommand('python3', [
+      this.suciKeytool,
+      '--key-file', keyPath,
+      'generate-key',
+      '--curve', curve,
+    ]);
+
+    if (result.exitCode !== 0) {
+      this.logger.error({ exitCode: result.exitCode, stderr: result.stderr }, 'suci-keytool generate-key failed');
+      throw new Error(`Key generation failed: ${result.stderr}`);
     }
-    this.logger.info({ keyPath }, 'Key file generated');
+    this.logger.info({ keyPath, curve }, 'Key file generated via suci-keytool.py');
 
     // Extract the public key
     const publicKeyHex = await this.extractPublicKey(scheme, keyPath);
 
-    // Update udm.yaml — add or replace this id
+    // Update udm.yaml
     await this.addKeyToUdmYaml(id, scheme, keyPath);
 
     return {
@@ -131,6 +135,72 @@ export class SuciManagementUseCase {
     }
   }
 
+  async renameKey(currentId: number, newId: number): Promise<HnetKey> {
+    this.logger.info({ currentId, newId }, 'Renaming SUCI key PKI ID');
+
+    const raw = await this.getRawUdm();
+    const entries = this.parseHnet(raw);
+
+    // Validate current key exists
+    const entry = entries.find((e) => e.id === currentId);
+    if (!entry) {
+      throw new Error(`Key ID ${currentId} not found in udm.yaml`);
+    }
+
+    // Validate new ID is not already taken
+    if (entries.some((e) => e.id === newId)) {
+      throw new Error(`Key ID ${newId} is already in use`);
+    }
+
+    // Rename the physical key file if it exists
+    let newKeyPath = entry.key;
+    const fileExists = await this.hostExecutor.fileExists(entry.key);
+    if (fileExists) {
+      // Derive new filename by replacing the ID in the filename
+      // e.g. curve25519-1.key → curve25519-30.key
+      const oldFileName = entry.key.split('/').pop() || '';
+      const newFileName = oldFileName.replace(
+        /(curve25519-|secp256r1-)(\d+)(\.key)/,
+        `$1${newId}$3`,
+      );
+      newKeyPath = `${this.hnetDir}/${newFileName}`;
+
+      if (newKeyPath !== entry.key) {
+        await this.hostExecutor.executeCommand('mv', [entry.key, newKeyPath]);
+        this.logger.info({ from: entry.key, to: newKeyPath }, 'Key file renamed');
+      }
+    }
+
+    // Update the entry in udm.yaml
+    const updatedEntries = entries.map((e) =>
+      e.id === currentId ? { id: newId, scheme: e.scheme, key: newKeyPath } : e,
+    );
+    updatedEntries.sort((a, b) => a.id - b.id);
+    await this.saveHnet(raw, updatedEntries);
+
+    // Extract public key from the (possibly renamed) file
+    let publicKeyHex: string | null = null;
+    const newFileExists = await this.hostExecutor.fileExists(newKeyPath);
+    if (newFileExists) {
+      try {
+        publicKeyHex = await this.extractPublicKey(entry.scheme, newKeyPath);
+      } catch (err) {
+        this.logger.warn({ err: String(err) }, 'Failed to extract public key after rename');
+      }
+    }
+
+    return {
+      id: newId,
+      scheme: entry.scheme as 1 | 2,
+      keyFile: newKeyPath,
+      fileExists: newFileExists,
+      publicKeyHex,
+      profile: entry.scheme === 1 ? 'A' : 'B',
+      schemeLabel: entry.scheme === 1 ? 'Profile A (X25519)' : 'Profile B (secp256r1)',
+      algorithm: entry.scheme === 1 ? 'X25519 / curve25519' : 'secp256r1 / prime256v1',
+    };
+  }
+
   async getNextAvailableId(): Promise<number> {
     const raw = await this.getRawUdm();
     const entries = this.parseHnet(raw);
@@ -144,37 +214,45 @@ export class SuciManagementUseCase {
   // ── Private helpers ──
 
   private async extractPublicKey(scheme: number, keyPath: string): Promise<string> {
-    if (scheme === 1) {
-      // X25519: extract public key from text output
-      // Output format:
-      // pub:
-      //     e4:21:68:6f:6f:b2:d7:0e:3f:a2:8d:94:04:94:09:
-      //     56:86:c3:17:9f:ef:53:51:46:67:a6:ed:10:6b:8a:
-      //     7d:3d
-      const result = await this.hostExecutor.executeCommand('sh', ['-c', 
-        `openssl pkey -in ${keyPath} -text | grep -A 3 "^pub:" | tail -n +2 | tr -d "\\n: "`
-      ]);
-      const pubKey = result.stdout.trim().toLowerCase();
-      if (!pubKey || pubKey.length !== 64) {
-        this.logger.warn({ keyPath, pubKey, length: pubKey.length }, 'X25519 public key extraction failed or invalid length (expected 64 hex chars)');
-      }
-      return pubKey;
-    } else {
-      // secp256r1: extract public key from text output
-      // Output format:
-      // pub:
-      //     02:0f:67:c7:91:1b:81:dc:fd:68:03:7e:92:61:22:
-      //     83:bc:b4:de:d1:10:4f:f6:a3:61:e8:3a:20:37:f5:
-      //     93:b2:ca
-      const result = await this.hostExecutor.executeCommand('sh', ['-c', 
-        `openssl ec -in ${keyPath} -conv_form compressed -text 2>/dev/null | grep -A 3 "^pub:" | tail -n +2 | tr -d "\\n: "`
-      ]);
-      const pubKey = result.stdout.trim().toLowerCase();
-      if (!pubKey || pubKey.length !== 66) {
-        this.logger.warn({ keyPath, pubKey, length: pubKey.length }, 'secp256r1 public key extraction failed or invalid length (expected 66 hex chars)');
-      }
-      return pubKey;
+    this.logger.info({ scheme, keyPath }, 'Extracting public key via suci-keytool.py');
+
+    // suci-keytool dump-pub-key:
+    //   curve25519 (scheme 1): no --compressed flag — raw 32-byte key (64 hex chars)
+    //   secp256r1  (scheme 2): --compressed flag — compressed point 02/03||X (33 bytes, 66 hex chars)
+    //
+    // 3GPP TS 33.501 and pySIM both expect:
+    //   Profile A: raw 32-byte X25519 public key (64 hex chars, no prefix)
+    //   Profile B: compressed secp256r1 point (66 hex chars, 02 or 03 prefix)
+    const args = [
+      this.suciKeytool,
+      '--key-file', keyPath,
+      'dump-pub-key',
+    ];
+    if (scheme === 2) args.push('--compressed');
+
+    const result = await this.hostExecutor.executeLocalCommand('python3', args);
+
+    this.logger.info({
+      exitCode: result.exitCode,
+      stdout: result.stdout.trim(),
+      stderr: result.stderr?.trim(),
+    }, 'suci-keytool dump-pub-key result');
+
+    if (result.exitCode !== 0) {
+      this.logger.error({ keyPath, stderr: result.stderr }, 'suci-keytool dump-pub-key failed');
+      throw new Error(`Public key extraction failed for ${keyPath}: ${result.stderr}`);
     }
+
+    const pubKey = result.stdout.trim().toLowerCase();
+    const expectedLength = scheme === 1 ? 64 : 66;
+
+    if (!pubKey || pubKey.length !== expectedLength) {
+      this.logger.error({ keyPath, pubKey, length: pubKey.length, expectedLength }, 'Unexpected public key length');
+      throw new Error(`Public key extraction failed for ${keyPath} — got ${pubKey.length} chars, expected ${expectedLength}`);
+    }
+
+    this.logger.info({ keyPath, scheme, pubKey }, 'Public key extracted successfully');
+    return pubKey;
   }
 
   private async getRawUdm(): Promise<Record<string, unknown>> {

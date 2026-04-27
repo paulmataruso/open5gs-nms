@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Plus, AlertTriangle } from 'lucide-react';
+import { Plus, AlertTriangle, FileJson } from 'lucide-react';
 import { useSuciStore } from '../../stores/suci';
 import { KeyCard } from './KeyCard';
 import { GenerateKeyModal } from './GenerateKeyModal';
+import { PysimJsonModal } from './PysimJsonModal';
 import toast from 'react-hot-toast';
 
 export function SuciManagementPage(): JSX.Element {
   const { keys, hnetDir, loading, fetchKeys } = useSuciStore();
   const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [showPysimModal, setShowPysimModal] = useState(false);
 
   useEffect(() => {
     fetchKeys().catch((err) => {
@@ -24,12 +26,22 @@ export function SuciManagementPage(): JSX.Element {
             Home Network Public Keys for 5G Privacy Protection
           </p>
         </div>
-        <button 
-          onClick={() => setShowGenerateModal(true)} 
-          className="nms-btn-primary flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" /> Generate New Key
-        </button>
+        <div className="flex items-center gap-2">
+          {keys.length > 0 && (
+            <button
+              onClick={() => setShowPysimModal(true)}
+              className="nms-btn-ghost flex items-center gap-2 text-sm"
+            >
+              <FileJson className="w-4 h-4" /> pySIM JSON
+            </button>
+          )}
+          <button 
+            onClick={() => setShowGenerateModal(true)} 
+            className="nms-btn-primary flex items-center gap-2"
+          >
+            <Plus className="w-4 h-4" /> Generate New Key
+          </button>
+        </div>
       </div>
 
       {/* Info Box */}
@@ -76,6 +88,10 @@ export function SuciManagementPage(): JSX.Element {
 
       {showGenerateModal && (
         <GenerateKeyModal onClose={() => setShowGenerateModal(false)} />
+      )}
+
+      {showPysimModal && (
+        <PysimJsonModal keys={keys} onClose={() => setShowPysimModal(false)} />
       )}
     </div>
   );

@@ -107,12 +107,15 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 ### SUCI Key Management (5G Privacy)
 - **Keypair Generation** — Create X25519 (Profile A) or secp256r1 (Profile B) home network keys
 - **Public Key Display** — Hex format ready for eSIM provisioning
+- **pySIM JSON Generator** — One-click generation of correctly formatted `EF.SUCI_Calc_Info` JSON for pySIM-shell, in both pretty and single-line formats
 - **Automatic Configuration** — Updates UDM config with new public key on generate/rotate
-- **PKI Management** — Support for multiple PKI values (0–255) with next-ID auto-suggestion
+- **PKI Management** — Support for multiple PKI values (0–255) with next-ID auto-suggestion, rename without destroying keys
 
 ![SUCI Key Management](docs/screenshots/suci-keys.png)
 
 ![Generate Key Modal](docs/screenshots/suci-generate-key-modal.png)
+
+![pySIM JSON Generator](docs/screenshots/suci-pysim-json.png)
 
 ### Subscriber Management
 - **Full CRUD Operations** - Create, read, update, delete subscribers via MongoDB

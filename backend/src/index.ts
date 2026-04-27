@@ -202,6 +202,10 @@ async function main() {
   // Create Express app
   const app = express();
 
+  // Trust the nginx reverse proxy — required for express-rate-limit to
+  // correctly identify client IPs from X-Forwarded-For headers
+  app.set('trust proxy', 1);
+
   // Middleware
   app.use(helmet());
   app.use(cors());

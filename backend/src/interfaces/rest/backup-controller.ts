@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import * as fs from 'fs';
+import * as path from 'path';
 import { BackupRestoreUseCase } from '../../application/use-cases/backup-restore';
 import { RestoreDefaultsUseCase } from '../../application/use-cases/restore-defaults';
 import type {
@@ -245,6 +247,69 @@ export function createBackupRouter(
         success: false,
         restored: [],
         errors: { general: err instanceof Error ? err.message : 'Unknown error' },
+      });
+    }
+  });
+
+  // GET /api/backup/full/download - Create and stream a full backup archive
+  router.get('/full/download', async (req, res) => {
+    try {
+      logger?.info('Full backup download requested');
+      const result = await backupRestoreUseCase.createFullBackup();
+
+      if (!result.success || !result.archivePath) {
+        return res.status(500).json({ success: false, error: result.error || 'Backup failed' });
+      }
+
+      const filename = path.basename(result.archivePath);
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+      const stream = fs.createReadStream(result.archivePath);
+      stream.pipe(res);
+
+      // Clean up the temp file after streaming
+      stream.on('end', () => {
+        fs.unlink(result.archivePath, () => {});
+      });
+      stream.on('error', (err) => {
+        logger?.error({ err: String(err) }, 'Error streaming full backup');
+        fs.unlink(result.archivePath, () => {});
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  });
+
+  // POST /api/backup/full/restore - Upload and restore a full backup archive
+  router.post('/full/restore', async (req, res) => {
+    const tmpPath = `/tmp/open5gs-upload-${Date.now()}.tar.gz`;
+    try {
+      // Stream the raw request body to a temp file
+      await new Promise<void>((resolve, reject) => {
+        const writeStream = fs.createWriteStream(tmpPath);
+        req.pipe(writeStream);
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+        req.on('error', reject);
+      });
+
+      logger?.info({ tmpPath }, 'Full backup upload received, restoring');
+      const result = await backupRestoreUseCase.restoreFullBackup(tmpPath);
+
+      if (!result.success) {
+        return res.status(500).json({ success: false, error: result.error });
+      }
+
+      res.json({ success: true, message: 'Full backup restored successfully' });
+    } catch (err) {
+      fs.unlink(tmpPath, () => {});
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : 'Unknown error',
       });
     }
   });

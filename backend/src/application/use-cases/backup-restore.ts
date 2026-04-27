@@ -24,6 +24,125 @@ export class BackupRestoreUseCase {
     private readonly mongoBackupPath: string,
   ) {}
 
+  async createFullBackup(): Promise<{ success: boolean; archivePath: string; error?: string }> {
+    let tmpDir = '';
+    try {
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+      const dirName = `open5gs-full-backup-${dateStr}`;
+      tmpDir = `/tmp/${dirName}`;
+      const archivePath = `/tmp/${dirName}.tar.gz`;
+
+      this.logger.info({ tmpDir, archivePath }, 'Creating full backup archive');
+
+      // Create temp working directory structure
+      await this.hostExecutor.executeLocalCommand('mkdir', ['-p', `${tmpDir}/mongodb`, `${tmpDir}/config`]);
+
+      // Dump MongoDB into temp dir
+      const mongoResult = await this.hostExecutor.executeLocalCommand('mongodump', ['-o', `${tmpDir}/mongodb`]);
+      if (mongoResult.exitCode !== 0) {
+        throw new Error(`mongodump failed: ${mongoResult.stderr}`);
+      }
+      this.logger.info('MongoDB dump complete');
+
+      // Copy all NF config YAMLs into temp dir
+      const services = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+      for (const service of services) {
+        try {
+          const src = `/etc/open5gs/${service}.yaml`;
+          const dst = `${tmpDir}/config/${service}.yaml`;
+          await this.hostExecutor.copyFile(src, dst);
+        } catch {
+          this.logger.warn({ service }, 'Config file not found, skipping');
+        }
+      }
+      this.logger.info('Config files copied');
+
+      // Write a manifest so restore knows what's inside
+      const manifest = JSON.stringify({
+        version: '1.0',
+        createdAt: now.toISOString(),
+        contents: ['mongodb', 'config'],
+      }, null, 2);
+      const fs = await import('fs/promises');
+      await fs.writeFile(`${tmpDir}/manifest.json`, manifest, 'utf8');
+
+      // Create the tarball — use the exact directory name relative to /tmp
+      const tarResult = await this.hostExecutor.executeLocalCommand('tar', [
+        '-czf', archivePath,
+        '-C', '/tmp',
+        dirName,
+      ]);
+      if (tarResult.exitCode !== 0) {
+        throw new Error(`tar failed: ${tarResult.stderr}`);
+      }
+
+      // Cleanup temp dir
+      await this.hostExecutor.executeLocalCommand('rm', ['-rf', tmpDir]);
+
+      this.logger.info({ archivePath }, 'Full backup archive created successfully');
+      return { success: true, archivePath };
+    } catch (err) {
+      await this.hostExecutor.executeLocalCommand('rm', ['-rf', tmpDir]).catch(() => {});
+      const error = err instanceof Error ? err.message : String(err);
+      this.logger.error({ err: error }, 'Full backup failed');
+      return { success: false, archivePath: '', error };
+    }
+  }
+
+  async restoreFullBackup(archivePath: string): Promise<{ success: boolean; error?: string }> {
+    const tmpDir = `/tmp/open5gs-full-restore-${Date.now()}`;
+    try {
+      this.logger.info({ archivePath, tmpDir }, 'Restoring full backup archive');
+
+      // Extract archive
+      await this.hostExecutor.executeLocalCommand('mkdir', ['-p', tmpDir]);
+      const tarResult = await this.hostExecutor.executeLocalCommand('tar', [
+        '-xzf', archivePath,
+        '-C', tmpDir,
+        '--strip-components=1',  // strip the top-level directory
+      ]);
+      if (tarResult.exitCode !== 0) {
+        throw new Error(`tar extract failed: ${tarResult.stderr}`);
+      }
+
+      // Restore MongoDB
+      const mongoResult = await this.hostExecutor.executeLocalCommand('mongorestore', [
+        '--drop',
+        `${tmpDir}/mongodb`,
+      ]);
+      if (mongoResult.exitCode !== 0) {
+        throw new Error(`mongorestore failed: ${mongoResult.stderr}`);
+      }
+      this.logger.info('MongoDB restored from full backup');
+
+      // Restore config YAMLs
+      const services = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+      for (const service of services) {
+        try {
+          const src = `${tmpDir}/config/${service}.yaml`;
+          const dst = `/etc/open5gs/${service}.yaml`;
+          await this.hostExecutor.copyFile(src, dst);
+        } catch {
+          this.logger.warn({ service }, 'Config file missing from archive, skipping');
+        }
+      }
+      this.logger.info('Config files restored from full backup');
+
+      // Cleanup
+      await this.hostExecutor.executeLocalCommand('rm', ['-rf', tmpDir]);
+      await this.hostExecutor.executeLocalCommand('rm', ['-f', archivePath]).catch(() => {});
+
+      this.logger.info('Full backup restore complete');
+      return { success: true };
+    } catch (err) {
+      await this.hostExecutor.executeLocalCommand('rm', ['-rf', tmpDir]).catch(() => {});
+      const error = err instanceof Error ? err.message : String(err);
+      this.logger.error({ err: error }, 'Full backup restore failed');
+      return { success: false, error };
+    }
+  }
+
   async createMongoBackup(): Promise<{ success: boolean; backupName: string; error?: string }> {
     try {
       const dateStr = new Date().toISOString().split('T')[0].split('-').reverse().join('-'); // dd-mm-yyyy

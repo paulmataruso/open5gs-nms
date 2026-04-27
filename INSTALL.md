@@ -58,12 +58,24 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ```bash
 sudo apt update
-sudo apt install -y iptables-persistent conntrack tshark
+sudo apt install -y iptables-persistent conntrack tshark python3 python3-pip
 ```
 
-- **`iptables-persistent`** — Saves and restores iptables NAT rules across reboots. Required if you configure UPF internet access (MASQUERADE rules). During install, answer **Yes** to both prompts to save current IPv4 and IPv6 rules.
-- **`conntrack`** — Connection tracking tools required by Open5GS UPF and SGW-U for GTP session management.
-- **`tshark`** — Network packet analyser used by the NMS to detect active 5G UE sessions via GTP-U inner packet inspection. Required for the 5G active sessions feature on the Topology and RAN Network pages.
+- **`iptables-persistent`** — Saves and restores iptables NAT rules across reboots.
+- **`conntrack`** — Connection tracking tools required by Open5GS UPF and SGW-U.
+- **`tshark`** — Network packet analyser (retained as fallback).
+- **`python3` / `python3-pip`** — Required for pysim/suci-keytool.
+
+Then install pysim:
+
+```bash
+sudo git clone https://gitea.osmocom.org/sim-card/pysim.git /opt/pysim
+sudo pip3 install pycryptodome pyosmocom --break-system-packages
+```
+
+- **pysim** — Cloned to `/opt/pysim`. The NMS uses `contrib/suci-keytool.py` from this repo for SUCI key generation and public key extraction.
+- **`pycryptodome`** — ECC key generation library used by suci-keytool.
+- **`pyosmocom`** — Osmocom utilities library used by suci-keytool (`osmocom.utils`).
 
 ---
 

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Database, HardDrive, Settings as SettingsIcon, RotateCw, Check, AlertTriangle } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Database, HardDrive, Settings as SettingsIcon, RotateCw, Check, AlertTriangle, Download, Upload, Archive } from 'lucide-react';
 import { backupApi as legacyBackupApi, BackupListItem, BackupSettings } from '../api/backup';
 import { backupApi } from '../api';
 import toast from 'react-hot-toast';
@@ -16,6 +16,67 @@ export const BackupPage: React.FC = () => {
   const [selectedMongoBackup, setSelectedMongoBackup] = useState<string>('');
   const [selectedConfigBackup, setSelectedConfigBackup] = useState<string>('');
   const [showRestoreModal, setShowRestoreModal] = useState(false);
+  const [fullBackupLoading, setFullBackupLoading] = useState(false);
+  const [fullRestoreLoading, setFullRestoreLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFullBackupDownload = async () => {
+    setFullBackupLoading(true);
+    try {
+      toast.loading('Generating full backup archive...', { id: 'full-backup' });
+      const response = await fetch('/api/backup/full/download', { credentials: 'include' });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Download failed');
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      const filename = match ? match[1] : 'open5gs-full-backup.tar.gz';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('Full backup downloaded', { id: 'full-backup' });
+    } catch (err: any) {
+      toast.error(err.message || 'Full backup failed', { id: 'full-backup' });
+    } finally {
+      setFullBackupLoading(false);
+    }
+  };
+
+  const handleFullRestoreUpload = async (file: File) => {
+    if (!file.name.endsWith('.tar.gz')) {
+      toast.error('Please select a valid .tar.gz backup file');
+      return;
+    }
+    if (!confirm(`Restore full backup from "${file.name}"?\n\nThis will overwrite ALL config files and subscriber data. Are you sure?`)) {
+      return;
+    }
+    setFullRestoreLoading(true);
+    try {
+      toast.loading('Restoring full backup...', { id: 'full-restore' });
+      const response = await fetch('/api/backup/full/restore', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Restore failed');
+      }
+      toast.success('Full backup restored successfully', { id: 'full-restore' });
+      await loadBackups();
+    } catch (err: any) {
+      toast.error(err.message || 'Full restore failed', { id: 'full-restore' });
+    } finally {
+      setFullRestoreLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
 
   useEffect(() => {
     loadBackups();
@@ -351,6 +412,77 @@ export const BackupPage: React.FC = () => {
           <AlertTriangle className="w-4 h-4 inline mr-2" />
           Restore Factory Defaults
         </button>
+      </div>
+
+      {/* Full Backup / Disaster Recovery */}
+      <div className="nms-card border-nms-accent/30 bg-nms-accent/5 mb-6">
+        <div className="flex items-center gap-2 mb-2">
+          <Archive className="w-5 h-5 text-nms-accent" />
+          <h2 className="text-lg font-semibold font-display text-nms-text">Full Backup / Disaster Recovery</h2>
+        </div>
+        <p className="text-xs text-nms-text-dim mb-4">
+          Download a single <code className="text-nms-accent">.tar.gz</code> archive containing all Open5GS config YAMLs
+          and a full MongoDB subscriber dump. Use this to fully restore the system from scratch — even if the project
+          folder and backups directory are gone.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Download */}
+          <div className="border border-nms-border rounded-md p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Download className="w-4 h-4 text-nms-accent" />
+              <span className="text-sm font-semibold text-nms-text">Download Full Backup</span>
+            </div>
+            <p className="text-xs text-nms-text-dim mb-3">
+              Generates a <code className="text-nms-accent">.tar.gz</code> containing all 16 NF config files
+              and a MongoDB dump. Save this file somewhere safe off the server.
+            </p>
+            <button
+              onClick={handleFullBackupDownload}
+              disabled={fullBackupLoading}
+              className="nms-btn-primary w-full flex items-center justify-center gap-2"
+            >
+              {fullBackupLoading ? (
+                <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Generating...</>
+              ) : (
+                <><Download className="w-4 h-4" /> Download Full Backup</>
+              )}
+            </button>
+          </div>
+
+          {/* Upload & Restore */}
+          <div className="border border-nms-border rounded-md p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Upload className="w-4 h-4 text-amber-400" />
+              <span className="text-sm font-semibold text-nms-text">Restore from Full Backup</span>
+            </div>
+            <p className="text-xs text-nms-text-dim mb-3">
+              Upload a previously downloaded <code className="text-nms-accent">.tar.gz</code> backup file.
+              This will overwrite all config files and subscriber data.
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".tar.gz"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleFullRestoreUpload(file);
+              }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={fullRestoreLoading}
+              className="nms-btn w-full flex items-center justify-center gap-2 bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20"
+            >
+              {fullRestoreLoading ? (
+                <><div className="w-4 h-4 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin" /> Restoring...</>
+              ) : (
+                <><Upload className="w-4 h-4" /> Upload &amp; Restore</>
+              )}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Settings */}

@@ -77,6 +77,29 @@ export function createSuciRouter(
     }
   });
 
+  // PATCH /api/suci/keys/:id/rename - Rename PKI ID without touching the key
+  router.patch('/keys/:id/rename', async (req: Request, res: Response) => {
+    try {
+      const currentId = Number(req.params.id);
+      const { newId } = req.body;
+
+      if (newId === undefined || newId === null) {
+        return res.status(400).json({ error: 'Missing required field: newId' });
+      }
+
+      const newIdNum = Number(newId);
+      if (!Number.isInteger(newIdNum) || newIdNum < 0 || newIdNum > 255) {
+        return res.status(400).json({ error: 'newId must be an integer between 0 and 255' });
+      }
+
+      const key = await suciUseCase.renameKey(currentId, newIdNum);
+      res.json(key);
+    } catch (error) {
+      logger.error({ error }, 'Failed to rename SUCI key');
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
   // DELETE /api/suci/keys/:id - Delete SUCI key
   router.delete('/keys/:id', async (req: Request, res: Response) => {
     try {

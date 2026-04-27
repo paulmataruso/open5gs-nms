@@ -52,3 +52,6 @@ monitoring/grafana_data/*
 
 # Internal documentation (keep local)
 GIT_PUSH_COMMANDS.md
+
+# Local archive folder
+docs/archive/

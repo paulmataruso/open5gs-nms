@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Copy, Trash2, RefreshCw, CheckCircle, AlertCircle } from 'lucide-react';
+import { Copy, Trash2, RefreshCw, CheckCircle, AlertCircle, Pencil } from 'lucide-react';
 import type { HnetKey } from '../../types/suci';
 import { RegenerateKeyModal } from './RegenerateKeyModal';
 import { DeleteKeyModal } from './DeleteKeyModal';
+import { RenameKeyModal } from './RenameKeyModal';
 import toast from 'react-hot-toast';
 
 interface KeyCardProps {
@@ -12,6 +13,7 @@ interface KeyCardProps {
 export function KeyCard({ keyData }: KeyCardProps): JSX.Element {
   const [showRegenerateModal, setShowRegenerateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
 
   const copyPublicKey = () => {
     if (keyData.publicKeyHex) {
@@ -39,6 +41,14 @@ export function KeyCard({ keyData }: KeyCardProps): JSX.Element {
             </div>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => setShowRenameModal(true)}
+              className="nms-btn-ghost text-xs flex items-center gap-1"
+              title="Change PKI ID"
+            >
+              <Pencil className="w-3.5 h-3.5" />
+              Edit ID
+            </button>
             <button
               onClick={() => setShowRegenerateModal(true)}
               className="nms-btn-ghost text-xs flex items-center gap-1"
@@ -124,6 +134,13 @@ export function KeyCard({ keyData }: KeyCardProps): JSX.Element {
         <DeleteKeyModal
           keyData={keyData}
           onClose={() => setShowDeleteModal(false)}
+        />
+      )}
+
+      {showRenameModal && (
+        <RenameKeyModal
+          keyData={keyData}
+          onClose={() => setShowRenameModal(false)}
         />
       )}
     </>
