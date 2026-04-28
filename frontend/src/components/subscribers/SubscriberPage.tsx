@@ -367,6 +367,7 @@ function SIMGeneratorDialog({ onClose }: {
   // Helper function to convert generated SIM to Subscriber object
   const simToSubscriber = (sim: GeneratedSIMData): Subscriber => ({
     imsi: sim.imsi,
+    iccid: sim.iccid,
     msisdn: [],
     security: {
       k: sim.ki,
@@ -1059,7 +1060,7 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
         {/* Basic Info */}
         <div>
           <h4 className="text-xs font-semibold text-nms-accent mb-3 uppercase tracking-wider">Basic Information</h4>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <label className="nms-label">IMSI *</label>
               <input 
@@ -1068,6 +1069,25 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                 disabled={!isNew}
                 onChange={e => setForm({...form, imsi: e.target.value})} 
                 placeholder="001010000000001" 
+              />
+            </div>
+            <div>
+              <label className="nms-label">Nickname</label>
+              <input 
+                className="nms-input text-sm" 
+                value={(form as any).nickname || ''}
+                onChange={e => setForm({...form, nickname: e.target.value || undefined} as any)} 
+                placeholder="e.g. iPhone 15 Pro, Lab UE #1"
+              />
+            </div>
+            <div>
+              <label className="nms-label">ICCID</label>
+              <input 
+                className="nms-input font-mono text-sm" 
+                value={(form as any).iccid || ''}
+                onChange={e => setForm({...form, iccid: e.target.value || undefined} as any)} 
+                placeholder="e.g. 8901234567890123456"
+                maxLength={22}
               />
             </div>
             <div>
@@ -1642,6 +1662,8 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
           <thead>
             <tr className="border-b border-nms-border">
               <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IMSI</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Nickname</th>
+              <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">ICCID</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">MSISDN</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Status</th>
               <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Slices</th>
@@ -1653,6 +1675,14 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
             {subscribers.map((sub: SubscriberListItem) => (
               <tr key={sub.imsi} className="border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors">
                 <td className="px-4 py-3 font-mono text-xs">{sub.imsi}</td>
+                <td className="px-4 py-3 text-xs">
+                  {sub.nickname
+                    ? <span className="text-nms-accent font-medium">{sub.nickname}</span>
+                    : <span className="text-nms-text-dim">—</span>}
+                </td>
+                <td className="px-4 py-3 font-mono text-xs text-nms-text-dim">
+                  {sub.iccid || <span className="text-nms-text-dim">—</span>}
+                </td>
                 <td className="px-4 py-3 text-xs text-nms-text-dim">{sub.msisdn?.join(', ') || '—'}</td>
                 <td className="px-4 py-3">
                   <span className="bg-nms-green/10 text-nms-green text-xs px-2 py-0.5 rounded-full">Active</span>
@@ -1698,7 +1728,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
             ))}
             {subscribers.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-12 text-center text-nms-text-dim">
+                <td colSpan={8} className="px-4 py-12 text-center text-nms-text-dim">
                   No subscribers found
                 </td>
               </tr>

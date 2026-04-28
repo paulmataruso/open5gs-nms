@@ -50,6 +50,8 @@ export interface SubscriberSlice {
 export interface Subscriber {
   _id?: ObjectId;
   imsi: string;
+  nickname?: string;
+  iccid?: string;
   msisdn?: string[];
   imeisv?: string | string[];  // Can be string or array
   mme_host?: string | string[];  // MME hostname
@@ -70,6 +72,8 @@ export interface Subscriber {
 
 export interface SubscriberListItem {
   imsi: string;
+  nickname?: string;
+  iccid?: string;
   msisdn?: string[];
   slice_count: number;
   session_count: number;

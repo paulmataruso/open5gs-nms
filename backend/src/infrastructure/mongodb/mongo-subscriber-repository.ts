@@ -29,13 +29,15 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
   async findAll(skip: number = 0, limit: number = 50): Promise<SubscriberListItem[]> {
     const docs = await this.collection
       .find({})
-      .project({ imsi: 1, msisdn: 1, slice: 1 })
+      .project({ imsi: 1, nickname: 1, iccid: 1, msisdn: 1, slice: 1 })
       .skip(skip)
       .limit(limit)
       .toArray();
 
     return docs.map((doc) => ({
       imsi: doc.imsi as string,
+      nickname: doc.nickname as string | undefined,
+      iccid: doc.iccid as string | undefined,
       msisdn: doc.msisdn as string[] | undefined,
       slice_count: Array.isArray(doc.slice) ? doc.slice.length : 0,
       session_count: Array.isArray(doc.slice)
@@ -82,13 +84,15 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
 
     const docs = await this.collection
       .find(filter)
-      .project({ imsi: 1, msisdn: 1, slice: 1 })
+      .project({ imsi: 1, nickname: 1, iccid: 1, msisdn: 1, slice: 1 })
       .skip(skip)
       .limit(limit)
       .toArray();
 
     return docs.map((doc) => ({
       imsi: doc.imsi as string,
+      nickname: doc.nickname as string | undefined,
+      iccid: doc.iccid as string | undefined,
       msisdn: doc.msisdn as string[] | undefined,
       slice_count: Array.isArray(doc.slice) ? doc.slice.length : 0,
       session_count: Array.isArray(doc.slice)
