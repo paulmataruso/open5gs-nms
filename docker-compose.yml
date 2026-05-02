@@ -95,7 +95,7 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      test: ["CMD", "curl", "-f", "http://localhost:8081/"]
       interval: 15s
       timeout: 5s
       retries: 5

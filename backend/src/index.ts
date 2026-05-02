@@ -33,6 +33,7 @@ import { UserManagementUseCase } from './application/use-cases/user-management';
 import { createUsersRouter } from './interfaces/rest/users-controller';
 import { createConfigRouter } from './interfaces/rest/config-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
+import { createFemtoRouter } from './interfaces/rest/femto-controller';
 import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller';
 import { createServiceRouter } from './interfaces/rest/service-controller';
 import { createSubscriberRouter } from './interfaces/rest/subscriber-controller';
@@ -251,6 +252,7 @@ async function main() {
   );
   app.use('/api/audit', createAuditRouter(auditLogger, logger));
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
+  app.use('/api/femto', createFemtoRouter(logger));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
   app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo));
   app.use('/api/suci', createSuciRouter(suciManagementUseCase, logger));

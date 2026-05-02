@@ -104,6 +104,18 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Backup & Restore Modal](docs/screenshots/backup-restore-modal.png)
 
+### Femtocell Provisioning (Sercomm SCE4255W)
+- **Auto-credential derivation** — derives root SSH and WebUI passwords from MAC address using the calc_f2 algorithm
+- **Auto-config pull** — detects if WebUI is already enabled and pulls current config into the form automatically
+- **Full provisioning** — enables WebUI via SSH if needed, applies all radio and core config, reboots device
+- **CBRS Band 48 defaults** — pre-filled for dual-carrier deployment
+- **MME IP auto-populated** from your Open5GS configuration
+- **Browser geolocation** for SAS lat/long coordinates
+
+![Femtocell Provisioning](docs/screenshots/femto-provisioning.png)
+
+![Femtocell Config Loaded](docs/screenshots/femto-config-loaded.png)
+
 ### SUCI Key Management (5G Privacy)
 - **Keypair Generation** — Create X25519 (Profile A) or secp256r1 (Profile B) home network keys
 - **Public Key Display** — Hex format ready for eSIM provisioning
