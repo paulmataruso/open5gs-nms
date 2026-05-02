@@ -14,6 +14,7 @@ export interface AppConfig {
   sessionMaxAge: number;
   firstRunPassword: string;
   isProduction: boolean;
+  cookieSecure: boolean;
 }
 
 export function loadAppConfig(): AppConfig {
@@ -33,5 +34,9 @@ export function loadAppConfig(): AppConfig {
     sessionMaxAge: parseInt(process.env.SESSION_MAX_AGE || '86400', 10),
     firstRunPassword: process.env.FIRST_RUN_PASSWORD || '',
     isProduction: process.env.NODE_ENV === 'production',
+    // COOKIE_SECURE controls the Secure flag on the session cookie.
+    // Default false — the NMS runs over plain HTTP on a local LAN.
+    // Only set to true if you are running behind HTTPS.
+    cookieSecure: process.env.COOKIE_SECURE === 'true',
   };
 }

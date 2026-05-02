@@ -19,7 +19,7 @@ RUN npm prune --omit=dev
 
 FROM node:20-bookworm-slim
 
-# Runtime deps: nsenter, Docker CLI, MongoDB tools, tshark, Python3 + pysim (for suci-keytool)
+# Runtime deps: nsenter, Docker CLI, MongoDB tools, tshark, Python3 (for suci-keytool)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     util-linux \
     curl \
@@ -29,9 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tshark \
     python3 \
     python3-pip \
-    git \
-    && git clone --depth 1 https://gitea.osmocom.org/sim-card/pysim.git /opt/pysim \
-    && pip3 install pycryptodomex pyosmocom --break-system-packages \
+    && pip3 install pycryptodomex --break-system-packages \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \

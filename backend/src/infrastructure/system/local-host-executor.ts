@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 export class LocalHostExecutor implements IHostExecutor {
   constructor(
     private readonly logger: pino.Logger,
-    private readonly systemctlPath: string = '/usr/bin/systemctl',
+    private readonly systemctlPath: string = 'systemctl',
   ) {}
 
   async executeCommand(
@@ -21,6 +21,19 @@ export class LocalHostExecutor implements IHostExecutor {
     this.logger.debug({ command, args }, 'Executing command');
 
     try {
+      // nsenter flags:
+      // -t 1  : target PID 1 (host init process)
+      // -m    : enter host mount namespace — process sees host filesystem,
+      //         so /usr/bin/systemctl, /sbin/conntrack etc. resolve to HOST
+      //         binaries which use the HOST's GLIBC. This is what fixes the
+      //         GLIBC mismatch on Ubuntu 24.04 without needing -r.
+      // -u -i -p : UTS, IPC, PID namespaces
+      //
+      // IMPORTANT: we pass the bare command name (e.g. 'systemctl') not a
+      // full path. If we passed a full path it would be resolved in the
+      // CONTAINER filesystem before nsenter runs, picking up the container's
+      // binary instead of the host's. Bare names are resolved by nsenter
+      // after entering the host mount namespace.
       const nsenterArgs = ['-t', '1', '-m', '-u', '-i', '-p', command, ...args];
       
       const { stdout, stderr } = await execFileAsync('nsenter', nsenterArgs, {

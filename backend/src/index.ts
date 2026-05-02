@@ -85,7 +85,7 @@ async function main() {
   // ── Auth setup ──
   const authRepo = new SqliteAuthRepository(config.authDbPath, logger);
   await seedAdminUser(authRepo, config.firstRunPassword, logger);
-  const lucia = createLucia(authRepo.getLuciaAdapter(), config.sessionMaxAge, config.isProduction);
+  const lucia = createLucia(authRepo.getLuciaAdapter(), config.sessionMaxAge, config.cookieSecure);
   const authLoginUseCase = new AuthLoginUseCase(authRepo, lucia, logger);
   const authLogoutUseCase = new AuthLogoutUseCase(lucia, logger);
   const userManagementUseCase = new UserManagementUseCase(authRepo, lucia, logger);

@@ -238,14 +238,14 @@ declare module 'lucia' {
 export function createLucia(
   adapter: Adapter,
   sessionMaxAge: number,
-  isProduction: boolean,
+  cookieSecure: boolean,
 ) {
   return new Lucia(adapter, {
     sessionExpiresIn: new (require('lucia').TimeSpan)(sessionMaxAge, 's'),
     sessionCookie: {
       name: 'nms_session',
       attributes: {
-        secure: isProduction,
+        secure: cookieSecure,
         sameSite: 'lax',
         path: '/',
       },

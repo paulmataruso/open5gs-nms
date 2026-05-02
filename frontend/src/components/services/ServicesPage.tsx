@@ -43,6 +43,7 @@ function formatUptime(timestamp: string | null): string {
 
 function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
   const [acting, setActing] = useState(false);
+  const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
 
   const doAction = async (action: 'start' | 'stop' | 'restart' | 'enable' | 'disable'): Promise<void> => {
     setActing(true);
@@ -50,7 +51,7 @@ function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
       const result = await serviceApi.action(status.name, action);
       if (result.success) {
         toast.success(`${status.name.toUpperCase()} ${action} successful`);
-        window.location.reload();
+        await fetchStatuses();
       } else {
         toast.error(result.message);
       }
@@ -144,6 +145,7 @@ function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
 
 export function ServicesPage(): JSX.Element {
   const statuses = useServiceStore((s) => s.statuses);
+  const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
   const [bulkActing, setBulkActing] = useState(false);
 
   const doBulkAction = async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
@@ -157,7 +159,7 @@ export function ServicesPage(): JSX.Element {
       } else {
         toast.error(result.message);
       }
-      window.location.reload();
+      await fetchStatuses();
     } catch (err) {
       toast.error(`Failed to ${action} all services`);
     } finally {

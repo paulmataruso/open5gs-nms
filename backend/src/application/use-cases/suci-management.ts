@@ -25,7 +25,7 @@ export interface GenerateKeyInput {
 
 export class SuciManagementUseCase {
   private readonly hnetDir = '/etc/open5gs/hnet';
-  private readonly suciKeytool = '/opt/pysim/contrib/suci-keytool.py';
+  private readonly suciKeytool = '/app/tools/suci-keytool.py';
 
   constructor(
     private readonly hostExecutor: IHostExecutor,
