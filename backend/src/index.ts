@@ -28,7 +28,7 @@ import { seedAdminUser } from './infrastructure/auth/seed-admin';
 import { AuthLoginUseCase } from './application/use-cases/auth-login';
 import { AuthLogoutUseCase } from './application/use-cases/auth-logout';
 import { createAuthRouter } from './interfaces/rest/auth-controller';
-import { createAuthMiddleware } from './interfaces/rest/middleware/auth-middleware';
+import { createAuthMiddleware, requireAdmin } from './interfaces/rest/middleware/auth-middleware';
 import { UserManagementUseCase } from './application/use-cases/user-management';
 import { createUsersRouter } from './interfaces/rest/users-controller';
 import { createConfigRouter } from './interfaces/rest/config-controller';
@@ -228,28 +228,12 @@ async function main() {
   // ── Auth middleware ── all routes below this line are protected
   app.use('/api', authMiddleware);
 
-  // API Routes
+  // API Routes — GET routes open to all authenticated users
+  // requireAdmin middleware applied before routers that have write operations
   app.use('/api/users', createUsersRouter(userManagementUseCase, logger));
-  app.use(
-    '/api/config',
-    createConfigRouter(
-      loadConfigUseCase,
-      validateConfigUseCase,
-      applyConfigUseCase,
-      topologyUseCase,
-      serviceMonitorUseCase,
-      syncSDUseCase,
-      logger,
-    ),
-  );
-  app.use(
-    '/api/services',
-    createServiceRouter(serviceMonitorUseCase, logger),
-  );
-  app.use(
-    '/api/subscribers',
-    createSubscriberRouter(subscriberManagementUseCase, autoAssignIPsUseCase, logger),
-  );
+  app.use('/api/config', createConfigRouter(loadConfigUseCase, validateConfigUseCase, applyConfigUseCase, topologyUseCase, serviceMonitorUseCase, syncSDUseCase, logger));
+  app.use('/api/services', createServiceRouter(serviceMonitorUseCase, logger));
+  app.use('/api/subscribers', createSubscriberRouter(subscriberManagementUseCase, autoAssignIPsUseCase, logger));
   app.use('/api/audit', createAuditRouter(auditLogger, logger));
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
   app.use('/api/femto', createFemtoRouter(logger));

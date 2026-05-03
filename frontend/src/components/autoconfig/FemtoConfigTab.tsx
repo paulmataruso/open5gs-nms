@@ -285,8 +285,12 @@ export function FemtoConfigTab() {
         setDryRunOutput(data.output || 'No output');
       } else {
         setLiveOutput(data.output || 'No output');
-        if (data.success) toast.success('Femtocell provisioned successfully');
-        else toast.error(`Provisioning failed: ${data.error || 'Unknown error'}`);
+        if (data.success) {
+          toast.success('Femtocell provisioned successfully');
+        } else {
+          // Show the error but keep the output visible so the user can diagnose
+          toast.error(`Provisioning failed: ${data.error || 'Check output for details'}`, { duration: 8000 });
+        }
       }
     } catch (err) {
       toast.error(dryRun ? 'Dry run failed' : 'Provisioning failed');
@@ -533,9 +537,9 @@ export function FemtoConfigTab() {
       )}
 
       {liveOutput !== null && (
-        <div className={clsx('nms-card', liveOutput.includes('FAILED') ? 'border-nms-red/30 bg-nms-red/5' : 'border-nms-green/30 bg-nms-green/5')}>
+        <div className={clsx('nms-card', liveOutput.includes('[-] FAILED') ? 'border-nms-red/30 bg-nms-red/5' : 'border-nms-green/30 bg-nms-green/5')}>
           <div className="flex items-center gap-2 mb-3">
-            <AlertCircle className={clsx('w-4 h-4', liveOutput.includes('FAILED') ? 'text-nms-red' : 'text-nms-green')} />
+            <AlertCircle className={clsx('w-4 h-4', liveOutput.includes('[-] FAILED') ? 'text-nms-red' : 'text-nms-green')} />
             <h3 className="text-sm font-semibold text-nms-text">Provisioning Output</h3>
           </div>
           <pre ref={liveRef} className="text-xs font-mono text-nms-text-dim bg-nms-surface-2 border border-nms-border rounded p-4 overflow-x-auto whitespace-pre-wrap max-h-96 overflow-y-auto min-h-12">

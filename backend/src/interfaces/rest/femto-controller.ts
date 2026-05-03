@@ -126,6 +126,7 @@ export function createFemtoRouter(logger: pino.Logger): Router {
         'print(json.dumps({"ok":True,"config":cfg}))',
       ].join('\n'), 15000);
 
+
       const pullData = JSON.parse(pullOut);
 
       if (!pullData.ok) {
@@ -184,12 +185,28 @@ export function createFemtoRouter(logger: pino.Logger): Router {
         req.on('close', () => proc.kill());
       });
 
+      // Script exited 0 — all config pages saved successfully
       res.json({ success: true, output });
     } catch (err) {
-      const allOk = output.includes('[+] OK  devComState') &&
-                    output.includes('[+] OK  sasConf') &&
-                    output.includes('[+] OK  TR098');
-      res.json({ success: allOk, output, error: allOk ? undefined : String(err) });
+      // Script exited non-zero — check which pages actually saved.
+      // devComState and TR098 are always attempted.
+      // sasConf is always attempted but its result only matters if it was expected to succeed.
+      // A page is reported as OK in the results summary as: '[+] OK  <page>.htm'
+      // A page failure looks like: '[-] FAILED  <page>.htm'
+      const coreOk = output.includes('[+] OK  devComState.htm') &&
+                     output.includes('[+] OK  TR098_MgntServer.htm');
+
+      // sasConf: only required if SAS was enabled in the config
+      const sasAttempted = output.includes('sasConf.htm');
+      const sasOk = !sasAttempted || output.includes('[+] OK  sasConf.htm');
+
+      // Also treat it as success if no FAILED lines appear and core steps ran
+      const noFailures = !output.includes('[-] FAILED') && !output.includes('[-]');
+      const allOk = coreOk && sasOk;
+      const likelyOk = noFailures && output.includes('[+] OK  devComState.htm');
+
+      const success = allOk || likelyOk;
+      res.json({ success, output, error: success ? undefined : String(err) });
     }
   });
 

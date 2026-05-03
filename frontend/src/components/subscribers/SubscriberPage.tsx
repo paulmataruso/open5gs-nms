@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Shield, Network, List } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Upload, Shield, Network, List } from 'lucide-react';
 import { useSubscriberStore, useSuciStore } from '../../stores';
 import { subscriberApi } from '../../api';
+import { useAuth } from '../../contexts/AuthContext';
 import type { Subscriber, SubscriberListItem, SubscriberSession } from '../../types';
 import toast from 'react-hot-toast';
 
@@ -1505,6 +1506,8 @@ interface SubscriberPageProps {
 }
 
 export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}): JSX.Element {
+  const { user } = useAuth();
+  const isViewer = user?.role === 'viewer';
   const subscribers = useSubscriberStore(s => s.subscribers);
   const total = useSubscriberStore(s => s.total);
   const page = useSubscriberStore(s => s.page);
@@ -1518,6 +1521,9 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
   const [showGenerator, setShowGenerator] = useState(false);
   const [showIPAssignments, setShowIPAssignments] = useState(false);
   const [assigningIPs, setAssigningIPs] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importMode, setImportMode] = useState<'skip' | 'overwrite'>('skip');
+  const importRef = useRef<HTMLInputElement>(null);
 
   // Handle navigation from other pages (e.g., RAN page)
   useEffect(() => {
@@ -1570,6 +1576,32 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
     }
   };
 
+  const handleExport = () => {
+    const a = document.createElement('a');
+    a.href = subscriberApi.exportCSV('csv');
+    a.click();
+  };
+
+  const handleImport = async (file: File) => {
+    const text = await file.text();
+    setImporting(true);
+    try {
+      const result = await subscriberApi.importCSV(text, importMode);
+      const msg = `Imported: ${result.imported} | Skipped: ${result.skipped} | Overwritten: ${result.overwritten}`;
+      if (result.errors.length > 0) {
+        toast.error(`${msg}\n${result.errors.slice(0, 3).join('\n')}`, { duration: 8000 });
+      } else {
+        toast.success(msg);
+      }
+      fetch();
+    } catch {
+      toast.error('Import failed');
+    } finally {
+      setImporting(false);
+      if (importRef.current) importRef.current.value = '';
+    }
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -1577,28 +1609,49 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
           <h1 className="text-2xl font-semibold font-display">Subscribers</h1>
           <p className="text-sm text-nms-text-dim mt-1">{total} provisioned</p>
         </div>
-        <div className="flex gap-3">
-          <button 
-            onClick={() => setShowIPAssignments(true)} 
-            className="nms-btn-ghost flex items-center gap-2"
-            title="View IP address assignments"
-          >
+        <div className="flex gap-3 flex-wrap">
+          {/* Export — available to all */}
+          <button onClick={handleExport} className="nms-btn-ghost flex items-center gap-2" title="Export all subscribers to CSV">
+            <Download className="w-4 h-4" /> Export CSV
+          </button>
+
+          {/* Import — admin only */}
+          {!isViewer && (
+            <>
+              <select value={importMode} onChange={e => setImportMode(e.target.value as 'skip' | 'overwrite')}
+                className="nms-input text-xs w-32" title="Import mode">
+                <option value="skip">Skip duplicates</option>
+                <option value="overwrite">Overwrite duplicates</option>
+              </select>
+              <button onClick={() => importRef.current?.click()} disabled={importing}
+                className="nms-btn-ghost flex items-center gap-2" title="Import subscribers from CSV">
+                <Upload className="w-4 h-4" /> {importing ? 'Importing...' : 'Import CSV'}
+              </button>
+              <input ref={importRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(f); }} />
+            </>
+          )}
+
+          <button onClick={() => setShowIPAssignments(true)} className="nms-btn-ghost flex items-center gap-2"
+            title="View IP address assignments">
             <List className="w-4 h-4" /> IP Assignments
           </button>
-          <button 
-            onClick={handleAutoAssignIPs} 
-            disabled={assigningIPs}
-            className="nms-btn-secondary flex items-center gap-2"
-            title="Auto-assign IPv4 addresses from UPF pool"
-          >
-            <Network className="w-4 h-4" /> {assigningIPs ? 'Assigning...' : 'Auto-Assign IPs'}
-          </button>
-          <button onClick={() => setShowGenerator(true)} className="nms-btn-ghost flex items-center gap-2">
-            <CreditCard className="w-4 h-4" /> SIM Generator
-          </button>
-          <button onClick={() => { setShowForm(true); setEditImsi(null); }} className="nms-btn-primary flex items-center gap-2">
-            <Plus className="w-4 h-4" /> Add Subscriber
-          </button>
+
+          {!isViewer && (
+            <>
+              <button onClick={handleAutoAssignIPs} disabled={assigningIPs}
+                className="nms-btn-secondary flex items-center gap-2"
+                title="Auto-assign IPv4 addresses from UPF pool">
+                <Network className="w-4 h-4" /> {assigningIPs ? 'Assigning...' : 'Auto-Assign IPs'}
+              </button>
+              <button onClick={() => setShowGenerator(true)} className="nms-btn-ghost flex items-center gap-2">
+                <CreditCard className="w-4 h-4" /> SIM Generator
+              </button>
+              <button onClick={() => { setShowForm(true); setEditImsi(null); }} className="nms-btn-primary flex items-center gap-2">
+                <Plus className="w-4 h-4" /> Add Subscriber
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1612,15 +1665,13 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
         />
       </div>
 
-      {showGenerator && (
-        <SIMGeneratorDialog
-          onClose={() => setShowGenerator(false)}
-        />
+      {showGenerator && !isViewer && (
+        <SIMGeneratorDialog onClose={() => setShowGenerator(false)} />
       )}
 
       {showIPAssignments && <IPAssignmentsModal onClose={() => setShowIPAssignments(false)} />}
 
-      {showForm && (
+      {showForm && !isViewer && (
         <SubForm 
           sub={DEFAULT_SUB} 
           onSave={async s => {
@@ -1694,35 +1745,40 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                   <span className="bg-nms-surface-2 text-nms-text-dim text-xs px-2 py-0.5 rounded-full">{sub.session_count}</span>
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <button 
-                    onClick={async () => {
-                      try {
-                        const s = await subscriberApi.get(sub.imsi);
-                        setEditSub(s);
-                        setEditImsi(sub.imsi);
-                      } catch {
-                        toast.error('Failed to load subscriber');
-                      }
-                    }} 
-                    className="text-nms-text-dim hover:text-nms-accent mr-2"
-                  >
-                    <Edit className="w-4 h-4 inline" />
-                  </button>
-                  <button 
-                    onClick={async () => {
-                      if (!confirm(`Delete subscriber ${sub.imsi}?`)) return;
-                      try {
-                        await subscriberApi.delete(sub.imsi);
-                        toast.success('Subscriber deleted');
-                        fetch();
-                      } catch {
-                        toast.error('Failed to delete subscriber');
-                      }
-                    }} 
-                    className="text-nms-text-dim hover:text-nms-red"
-                  >
-                    <Trash2 className="w-4 h-4 inline" />
-                  </button>
+                  {!isViewer && (
+                    <>
+                      <button 
+                        onClick={async () => {
+                          try {
+                            const s = await subscriberApi.get(sub.imsi);
+                            setEditSub(s);
+                            setEditImsi(sub.imsi);
+                          } catch {
+                            toast.error('Failed to load subscriber');
+                          }
+                        }} 
+                        className="text-nms-text-dim hover:text-nms-accent mr-2"
+                      >
+                        <Edit className="w-4 h-4 inline" />
+                      </button>
+                      <button 
+                        onClick={async () => {
+                          if (!confirm(`Delete subscriber ${sub.imsi}?`)) return;
+                          try {
+                            await subscriberApi.delete(sub.imsi);
+                            toast.success('Subscriber deleted');
+                            fetch();
+                          } catch {
+                            toast.error('Failed to delete subscriber');
+                          }
+                        }} 
+                        className="text-nms-text-dim hover:text-nms-red"
+                      >
+                        <Trash2 className="w-4 h-4 inline" />
+                      </button>
+                    </>
+                  )}
+                  {isViewer && <span className="text-xs text-nms-text-dim">view only</span>}
                 </td>
               </tr>
             ))}

@@ -1,21 +1,9 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import {
-  Radio,
-  Settings,
-  Users,
-  Activity,
-  Network,
-  FileText,
-  ChevronLeft,
-  ChevronRight,
-  Zap,
-  Database,
-  ScrollText,
-  Key,
-  LogOut,
-  UserCog,
-  BarChart2,
+  Radio, Settings, Users, Activity, Network, FileText,
+  ChevronLeft, ChevronRight, Zap, Database, ScrollText,
+  Key, LogOut, UserCog, BarChart2, EyeOff,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -125,7 +113,15 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="flex-1 overflow-auto">
+        {user?.role === 'viewer' && (
+          <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex items-center gap-2">
+            <EyeOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="text-xs text-amber-400">View-only mode — you can monitor but cannot make changes</span>
+          </div>
+        )}
+        {children}
+      </main>
     </div>
   );
 }

@@ -34,7 +34,6 @@ export function createAuthMiddleware(lucia: AppLucia) {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    // Read session cookie
     const sessionId = lucia.readSessionCookie(req.headers.cookie ?? '');
 
     if (!sessionId) {
@@ -42,22 +41,18 @@ export function createAuthMiddleware(lucia: AppLucia) {
       return;
     }
 
-    // Validate session
     const { session, user } = await lucia.validateSession(sessionId);
 
     if (!session) {
-      // Session expired or invalid — clear cookie
       res.setHeader('Set-Cookie', lucia.createBlankSessionCookie().serialize());
       res.status(401).json({ success: false, error: 'Unauthorized' });
       return;
     }
 
-    // Lucia rolling window: if session was refreshed, send updated cookie
     if (session.fresh) {
       res.setHeader('Set-Cookie', lucia.createSessionCookie(session.id).serialize());
     }
 
-    // Attach to request for use in controllers
     req.session = session;
     req.user = {
       id: user.id,
@@ -69,4 +64,13 @@ export function createAuthMiddleware(lucia: AppLucia) {
 
     next();
   };
+}
+
+// Middleware that blocks viewer role — admin only
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.role !== 'admin') {
+    res.status(403).json({ success: false, error: 'Forbidden: admin role required' });
+    return;
+  }
+  next();
 }

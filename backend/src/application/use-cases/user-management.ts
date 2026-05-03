@@ -29,6 +29,10 @@ export class WeakPasswordError extends Error {
   constructor() { super('Password must be at least 8 characters'); this.name = 'WeakPasswordError'; }
 }
 
+export class InvalidRoleError extends Error {
+  constructor() { super('Role must be admin or viewer'); this.name = 'InvalidRoleError'; }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Use Case: User Management
 // ─────────────────────────────────────────────────────────────
@@ -47,7 +51,7 @@ export class UserManagementUseCase {
     return users.map(toSafeUser);
   }
 
-  async createUser(username: string, password: string): Promise<SafeUser> {
+  async createUser(username: string, password: string, role: 'admin' | 'viewer' = 'admin'): Promise<SafeUser> {
     const normalised = username.trim().toLowerCase();
 
     if (!normalised || normalised.length < 2) {
@@ -59,17 +63,34 @@ export class UserManagementUseCase {
     if (password.length < 8) {
       throw new WeakPasswordError();
     }
+    if (role !== 'admin' && role !== 'viewer') {
+      throw new InvalidRoleError();
+    }
 
-    // Check for duplicate — surface a clean error rather than a SQLite constraint message
     const existing = await this.authRepo.findUserByUsername(normalised);
     if (existing) throw new DuplicateUsernameError();
 
     const passwordHash = await this.bcrypt.hash(password);
     const id = generateIdFromEntropySize(10);
-    const user = await this.authRepo.createUser(id, normalised, passwordHash);
+    const user = await this.authRepo.createUser(id, normalised, passwordHash, role);
 
-    this.logger.info({ userId: id, username: normalised }, 'UserMgmt: user created');
+    this.logger.info({ userId: id, username: normalised, role }, 'UserMgmt: user created');
     return toSafeUser(user);
+  }
+
+  async updateRole(targetUserId: string, requestingUserId: string, role: 'admin' | 'viewer'): Promise<void> {
+    if (role !== 'admin' && role !== 'viewer') throw new InvalidRoleError();
+
+    const user = await this.authRepo.findUserById(targetUserId);
+    if (!user) throw new UserNotFoundError();
+
+    // Prevent demoting yourself — could lock you out
+    if (targetUserId === requestingUserId && role === 'viewer') {
+      throw new Error('You cannot demote your own account to viewer');
+    }
+
+    await this.authRepo.updateRole(targetUserId, role);
+    this.logger.info({ targetUserId, role, requestingUserId }, 'UserMgmt: role updated');
   }
 
   async changePassword(

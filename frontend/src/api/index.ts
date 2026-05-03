@@ -68,11 +68,7 @@ export const serviceApi = {
 // ── Subscribers ──
 export const subscriberApi = {
   list: (skip = 0, limit = 50, search?: string) =>
-    api
-      .get<{ subscribers: SubscriberListItem[]; total: number }>('/subscribers', {
-        params: { skip, limit, search },
-      })
-      .then((r) => r.data),
+    api.get<{ subscribers: SubscriberListItem[]; total: number }>('/subscribers', { params: { skip, limit, search } }).then((r) => r.data),
   get: (imsi: string) =>
     api.get<Subscriber>(`/subscribers/${imsi}`).then((r) => r.data),
   create: (subscriber: Subscriber) =>
@@ -85,6 +81,10 @@ export const subscriberApi = {
     api.post<{ success: boolean; data: { assigned: number; skipped: number; failed: number; ipPool: string; errors?: string[] } }>('/subscribers/auto-assign-ips').then((r) => r.data),
   getIPAssignments: () =>
     api.get<{ success: boolean; data: Array<{ imsi: string; ipv4: string }> }>('/subscribers/ip-assignments').then((r) => r.data),
+  exportCSV: (format: 'csv' | 'tsv' = 'csv') =>
+    `${API_URL}/api/subscribers/export?format=${format}`,
+  importCSV: (csv: string, mode: 'skip' | 'overwrite' = 'skip') =>
+    api.post<{ success: boolean; imported: number; skipped: number; overwritten: number; errors: string[] }>('/subscribers/import', { csv, mode }).then((r) => r.data),
 };
 
 // ── Audit ──
@@ -132,14 +132,13 @@ export const authApi = {
 // ── Users ──
 export const usersApi = {
   list: (): Promise<AuthUser[]> =>
-    api
-      .get<{ success: boolean; data: { users: AuthUser[] } }>('/users')
-      .then((r) => r.data.data.users),
+    api.get<{ success: boolean; data: { users: AuthUser[] } }>('/users').then((r) => r.data.data.users),
 
-  create: (username: string, password: string): Promise<AuthUser> =>
-    api
-      .post<{ success: boolean; data: { user: AuthUser } }>('/users', { username, password })
-      .then((r) => r.data.data.user),
+  create: (username: string, password: string, role: 'admin' | 'viewer' = 'admin'): Promise<AuthUser> =>
+    api.post<{ success: boolean; data: { user: AuthUser } }>('/users', { username, password, role }).then((r) => r.data.data.user),
+
+  updateRole: (id: string, role: 'admin' | 'viewer'): Promise<void> =>
+    api.patch(`/users/${id}/role`, { role }).then(() => undefined),
 
   changePassword: (id: string, password: string): Promise<void> =>
     api.put(`/users/${id}/password`, { password }).then(() => undefined),

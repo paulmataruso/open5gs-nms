@@ -7,7 +7,16 @@ export interface HnetKey {
   scheme: 1 | 2;
   keyFile: string;
   fileExists: boolean;
+  // Open5GS UDM format (goes in udm.yaml hnet block):
+  //   Profile A (X25519):    raw 32-byte key, no prefix — 64 hex chars
+  //   Profile B (secp256r1): compressed point 02/03||X  — 66 hex chars
   publicKeyHex: string | null;
+  // SIM provisioning tools format (pySIM, sysmoUSIM tools etc.):
+  //   Profile A (X25519):    raw 32-byte key, no prefix — 64 hex chars (same as UDM)
+  //   Profile B (secp256r1): uncompressed point 04||X||Y — 130 hex chars
+  //   NOTE: X25519 has no concept of point compression — the '04' prefix used for
+  //   secp256r1 uncompressed points does NOT apply to X25519.
+  publicKeyUncompressed: string | null;
   profile: 'A' | 'B';
   schemeLabel: string;
   algorithm: string;
@@ -43,10 +52,13 @@ export class SuciManagementUseCase {
       hnetEntries.map(async (entry) => {
         const fileExists = await this.hostExecutor.fileExists(entry.key);
         let publicKeyHex: string | null = null;
+        let publicKeyUncompressed: string | null = null;
 
         if (fileExists) {
           try {
-            publicKeyHex = await this.extractPublicKey(entry.scheme, entry.key);
+            const extracted = await this.extractPublicKey(entry.scheme, entry.key);
+            publicKeyHex = extracted.hex;
+            publicKeyUncompressed = extracted.uncompressed;
           } catch (err) {
             this.logger.warn({ err: String(err), key: entry.key }, 'Failed to extract public key');
           }
@@ -58,6 +70,7 @@ export class SuciManagementUseCase {
           keyFile: entry.key,
           fileExists,
           publicKeyHex,
+          publicKeyUncompressed,
           profile: entry.scheme === 1 ? 'A' : 'B',
           schemeLabel: entry.scheme === 1 ? 'Profile A (X25519)' : 'Profile B (secp256r1)',
           algorithm: entry.scheme === 1 ? 'X25519 / curve25519' : 'secp256r1 / prime256v1',
@@ -91,10 +104,8 @@ export class SuciManagementUseCase {
     }
     this.logger.info({ keyPath, curve }, 'Key file generated via suci-keytool.py');
 
-    // Extract the public key
-    const publicKeyHex = await this.extractPublicKey(scheme, keyPath);
+    const extracted = await this.extractPublicKey(scheme, keyPath);
 
-    // Update udm.yaml
     await this.addKeyToUdmYaml(id, scheme, keyPath);
 
     return {
@@ -102,7 +113,8 @@ export class SuciManagementUseCase {
       scheme,
       keyFile: keyPath,
       fileExists: true,
-      publicKeyHex,
+      publicKeyHex: extracted.hex,
+      publicKeyUncompressed: extracted.uncompressed,
       profile: scheme === 1 ? 'A' : 'B',
       schemeLabel: scheme === 1 ? 'Profile A (X25519)' : 'Profile B (secp256r1)',
       algorithm: scheme === 1 ? 'X25519 / curve25519' : 'secp256r1 / prime256v1',
@@ -120,11 +132,9 @@ export class SuciManagementUseCase {
       throw new Error(`Key ID ${id} not found in udm.yaml`);
     }
 
-    // Remove from hnet array
     const newEntries = hnetEntries.filter((e) => e.id !== id);
     await this.saveHnet(raw, newEntries);
 
-    // Optionally delete the file
     if (deleteFile && entry.key) {
       try {
         await this.hostExecutor.executeCommand('rm', ['-f', entry.key]);
@@ -141,23 +151,18 @@ export class SuciManagementUseCase {
     const raw = await this.getRawUdm();
     const entries = this.parseHnet(raw);
 
-    // Validate current key exists
     const entry = entries.find((e) => e.id === currentId);
     if (!entry) {
       throw new Error(`Key ID ${currentId} not found in udm.yaml`);
     }
 
-    // Validate new ID is not already taken
     if (entries.some((e) => e.id === newId)) {
       throw new Error(`Key ID ${newId} is already in use`);
     }
 
-    // Rename the physical key file if it exists
     let newKeyPath = entry.key;
     const fileExists = await this.hostExecutor.fileExists(entry.key);
     if (fileExists) {
-      // Derive new filename by replacing the ID in the filename
-      // e.g. curve25519-1.key → curve25519-30.key
       const oldFileName = entry.key.split('/').pop() || '';
       const newFileName = oldFileName.replace(
         /(curve25519-|secp256r1-)(\d+)(\.key)/,
@@ -171,19 +176,20 @@ export class SuciManagementUseCase {
       }
     }
 
-    // Update the entry in udm.yaml
     const updatedEntries = entries.map((e) =>
       e.id === currentId ? { id: newId, scheme: e.scheme, key: newKeyPath } : e,
     );
     updatedEntries.sort((a, b) => a.id - b.id);
     await this.saveHnet(raw, updatedEntries);
 
-    // Extract public key from the (possibly renamed) file
     let publicKeyHex: string | null = null;
+    let publicKeyUncompressed: string | null = null;
     const newFileExists = await this.hostExecutor.fileExists(newKeyPath);
     if (newFileExists) {
       try {
-        publicKeyHex = await this.extractPublicKey(entry.scheme, newKeyPath);
+        const extracted = await this.extractPublicKey(entry.scheme, newKeyPath);
+        publicKeyHex = extracted.hex;
+        publicKeyUncompressed = extracted.uncompressed;
       } catch (err) {
         this.logger.warn({ err: String(err) }, 'Failed to extract public key after rename');
       }
@@ -195,6 +201,7 @@ export class SuciManagementUseCase {
       keyFile: newKeyPath,
       fileExists: newFileExists,
       publicKeyHex,
+      publicKeyUncompressed,
       profile: entry.scheme === 1 ? 'A' : 'B',
       schemeLabel: entry.scheme === 1 ? 'Profile A (X25519)' : 'Profile B (secp256r1)',
       algorithm: entry.scheme === 1 ? 'X25519 / curve25519' : 'secp256r1 / prime256v1',
@@ -211,48 +218,64 @@ export class SuciManagementUseCase {
     throw new Error('All 255 key IDs are in use');
   }
 
-  // ── Private helpers ──
+  // ── Private helpers ──────────────────────────────────────────────────────────
 
-  private async extractPublicKey(scheme: number, keyPath: string): Promise<string> {
+  private async extractPublicKey(
+    scheme: number,
+    keyPath: string,
+  ): Promise<{ hex: string; uncompressed: string }> {
     this.logger.info({ scheme, keyPath }, 'Extracting public key via suci-keytool.py');
 
-    // suci-keytool dump-pub-key:
-    //   curve25519 (scheme 1): no --compressed flag — raw 32-byte key (64 hex chars)
-    //   secp256r1  (scheme 2): --compressed flag — compressed point 02/03||X (33 bytes, 66 hex chars)
+    // Profile A (X25519, scheme 1):
+    //   dump-pub-key (no flags) → raw 32 bytes = 64 hex
+    //   Same value used for both Open5GS UDM and SIM provisioning tools.
+    //   X25519 has no point compression — the 04 prefix is secp256r1-only.
     //
-    // 3GPP TS 33.501 and pySIM both expect:
-    //   Profile A: raw 32-byte X25519 public key (64 hex chars, no prefix)
-    //   Profile B: compressed secp256r1 point (66 hex chars, 02 or 03 prefix)
-    const args = [
-      this.suciKeytool,
-      '--key-file', keyPath,
-      'dump-pub-key',
-    ];
-    if (scheme === 2) args.push('--compressed');
+    // Profile B (secp256r1, scheme 2):
+    //   dump-pub-key --compressed → 02/03||X = 66 hex    → Open5GS UDM format
+    //   dump-pub-key (no flags)   → 04||X||Y = 130 hex   → SIM provisioning tools
 
-    const result = await this.hostExecutor.executeLocalCommand('python3', args);
+    const runDump = async (compressed: boolean): Promise<string> => {
+      const args = [this.suciKeytool, '--key-file', keyPath, 'dump-pub-key'];
+      if (compressed) args.push('--compressed');
+      const result = await this.hostExecutor.executeLocalCommand('python3', args);
+      if (result.exitCode !== 0) {
+        throw new Error(`dump-pub-key failed for ${keyPath}: ${result.stderr}`);
+      }
+      return result.stdout.trim().toLowerCase();
+    };
 
-    this.logger.info({
-      exitCode: result.exitCode,
-      stdout: result.stdout.trim(),
-      stderr: result.stderr?.trim(),
-    }, 'suci-keytool dump-pub-key result');
-
-    if (result.exitCode !== 0) {
-      this.logger.error({ keyPath, stderr: result.stderr }, 'suci-keytool dump-pub-key failed');
-      throw new Error(`Public key extraction failed for ${keyPath}: ${result.stderr}`);
+    if (scheme === 1) {
+      const raw = await runDump(false);
+      if (raw.length !== 64) {
+        throw new Error(`X25519 key extraction failed — got ${raw.length} chars, expected 64`);
+      }
+      this.logger.info({ keyPath, scheme, pubKeyHex: raw }, 'X25519 public key extracted');
+      // X25519 public keys are always raw 32 bytes (64 hex) — no point-compression prefix.
+      // Both Open5GS UDM and SIM provisioning tools (pySIM, sysmoUSIM) use the same
+      // raw 32-byte format.  The '04' prefix is secp256r1 uncompressed-point notation
+      // and is incorrect for X25519.
+      return {
+        hex:          raw, // 64 hex — Open5GS UDM format
+        uncompressed: raw, // 64 hex — pySIM / sysmoUSIM format (identical for X25519)
+      };
+    } else {
+      const [compressed, uncompressed] = await Promise.all([
+        runDump(true),
+        runDump(false),
+      ]);
+      if (compressed.length !== 66) {
+        throw new Error(`secp256r1 compressed extraction failed — got ${compressed.length} chars, expected 66`);
+      }
+      if (uncompressed.length !== 130) {
+        throw new Error(`secp256r1 uncompressed extraction failed — got ${uncompressed.length} chars, expected 130`);
+      }
+      this.logger.info({ keyPath, scheme, compressed, uncompressed }, 'secp256r1 public keys extracted');
+      return {
+        hex:          compressed,   // 66 hex — Open5GS UDM
+        uncompressed: uncompressed, // 130 hex — SIM tools
+      };
     }
-
-    const pubKey = result.stdout.trim().toLowerCase();
-    const expectedLength = scheme === 1 ? 64 : 66;
-
-    if (!pubKey || pubKey.length !== expectedLength) {
-      this.logger.error({ keyPath, pubKey, length: pubKey.length, expectedLength }, 'Unexpected public key length');
-      throw new Error(`Public key extraction failed for ${keyPath} — got ${pubKey.length} chars, expected ${expectedLength}`);
-    }
-
-    this.logger.info({ keyPath, scheme, pubKey }, 'Public key extracted successfully');
-    return pubKey;
   }
 
   private async getRawUdm(): Promise<Record<string, unknown>> {
@@ -284,7 +307,6 @@ export class SuciManagementUseCase {
     const raw = await this.getRawUdm();
     const entries = this.parseHnet(raw);
 
-    // Replace if id exists, otherwise append
     const idx = entries.findIndex((e) => e.id === id);
     if (idx >= 0) {
       entries[idx] = { id, scheme, key: keyPath };
@@ -302,7 +324,6 @@ export class SuciManagementUseCase {
   ): Promise<void> {
     const yaml = await import('js-yaml');
 
-    // Build updated doc
     const updatedRaw = { ...raw };
     const udm = { ...(updatedRaw.udm as Record<string, unknown> || {}) };
     udm.hnet = entries;

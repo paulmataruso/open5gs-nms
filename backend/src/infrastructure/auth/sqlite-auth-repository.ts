@@ -153,22 +153,19 @@ export class SqliteAuthRepository implements IAuthRepository {
     return row ? this.rowToUser(row) : null;
   }
 
-  async createUser(id: string, username: string, passwordHash: string): Promise<User> {
+  async createUser(id: string, username: string, passwordHash: string, role: 'admin' | 'viewer' = 'admin'): Promise<User> {
     const now = Date.now();
     this.db
       .prepare(
         'INSERT INTO user (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(id, username, passwordHash, 'admin', now);
+      .run(id, username, passwordHash, role, now);
 
-    return {
-      id,
-      username,
-      passwordHash,
-      role: 'admin',
-      createdAt: new Date(now),
-      lastLoginAt: null,
-    };
+    return { id, username, passwordHash, role, createdAt: new Date(now), lastLoginAt: null };
+  }
+
+  async updateRole(userId: string, role: 'admin' | 'viewer'): Promise<void> {
+    this.db.prepare('UPDATE user SET role = ? WHERE id = ?').run(role, userId);
   }
 
   async updateLastLogin(userId: string): Promise<void> {
