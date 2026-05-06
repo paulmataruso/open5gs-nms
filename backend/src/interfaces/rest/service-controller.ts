@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import pino from 'pino';
 import { ServiceMonitorUseCase } from '../../application/use-cases/service-monitor';
 import { ServiceName } from '../../domain/entities/service-status';
+import { requireAdmin } from './middleware/auth-middleware';
 
 export function createServiceRouter(
   serviceMonitorUseCase: ServiceMonitorUseCase,
@@ -47,7 +48,7 @@ export function createServiceRouter(
     }
   });
 
-  router.post('/:name/:action', async (req: Request, res: Response) => {
+  router.post('/:name/:action', requireAdmin, async (req: Request, res: Response) => {
     const name = req.params.name as ServiceName;
     const action = req.params.action as 'start' | 'stop' | 'restart' | 'enable' | 'disable';
     const validServices: ServiceName[] = [
@@ -80,7 +81,7 @@ export function createServiceRouter(
     }
   });
 
-  router.post('/all/:action', async (req: Request, res: Response) => {
+  router.post('/all/:action', requireAdmin, async (req: Request, res: Response) => {
     const action = req.params.action as 'start' | 'stop' | 'restart';
     const validActions = ['start', 'stop', 'restart'];
 

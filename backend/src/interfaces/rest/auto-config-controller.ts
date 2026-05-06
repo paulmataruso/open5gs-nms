@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { AutoConfigUseCase, AutoConfigInput } from '../../application/use-cases/auto-config';
+import { requireAdmin } from './middleware/auth-middleware';
 
 export function createAutoConfigRouter(autoConfigUseCase: AutoConfigUseCase): Router {
   const router = Router();
 
   // POST /api/auto-config/preview - Preview auto-configuration changes (YAML diff)
-  router.post('/preview', async (req, res) => {
+  router.post('/preview', requireAdmin, async (req, res) => {
     try {
       const input: AutoConfigInput = req.body;
 
@@ -51,7 +52,7 @@ export function createAutoConfigRouter(autoConfigUseCase: AutoConfigUseCase): Ro
   });
 
   // POST /api/auto-config/apply - Apply auto-configuration
-  router.post('/apply', async (req, res) => {
+  router.post('/apply', requireAdmin, async (req, res) => {
     try {
       const input: AutoConfigInput = req.body;
 

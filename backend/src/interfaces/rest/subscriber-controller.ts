@@ -7,7 +7,7 @@ import pino from 'pino';
 // CSV column order
 const CSV_HEADERS = [
   'imsi', 'nickname', 'iccid', 'msisdn', 'ki', 'opc', 'amf',
-  'sst', 'sd', 'apn', 'ue_ipv4',
+  'sst', 'sd', 'apn', 'type', 'ue_ipv4', 'ue_ipv6',
 ];
 
 function subscriberToRow(sub: any): string {
@@ -24,7 +24,9 @@ function subscriberToRow(sub: any): string {
     slice.sst ?? '1',
     slice.sd ?? '',
     session.name ?? 'internet',
+    session.type ?? '1',
     session.ue?.ipv4 ?? '',
+    session.ue?.ipv6 ?? '',
   ];
   return vals.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
 }
@@ -43,18 +45,25 @@ function rowToSubscriber(headers: string[], values: string[]): any {
     iccid:    row.iccid    || undefined,
     msisdn:   row.msisdn ? row.msisdn.split('|').filter(Boolean) : [],
     security: { k: row.ki, opc: row.opc, amf: row.amf || '8000' },
+    ambr: {
+      uplink:   { value: 1, unit: 3 },  // 1 Gbps
+      downlink: { value: 1, unit: 3 },
+    },
     slice: [{
       sst: parseInt(row.sst || '1'),
       sd:  row.sd  || undefined,
       default_indicator: true,
       session: [{
         name: row.apn || 'internet',
-        type: 3,
+        type: parseInt(row.type || '1'),  // 1=IPv4, 2=IPv6, 3=IPv4v6
         ambr: {
           uplink:   { value: 1, unit: 3 },
           downlink: { value: 1, unit: 3 },
         },
-        ue: row.ue_ipv4 ? { ipv4: row.ue_ipv4 } : undefined,
+        ue: (row.ue_ipv4 || row.ue_ipv6) ? {
+          ...(row.ue_ipv4 ? { ipv4: row.ue_ipv4 } : {}),
+          ...(row.ue_ipv6 ? { ipv6: row.ue_ipv6 } : {}),
+        } : undefined,
         qos: { index: 9, arp: { priority_level: 8, pre_emption_capability: 1, pre_emption_vulnerability: 1 } },
       }],
     }],

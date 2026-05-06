@@ -302,7 +302,17 @@ export function FemtoConfigTab() {
   return (
     <div className="space-y-6">
 
-      {/* Info banner */}
+      {/* Beta warning */}
+      <div className="flex items-start gap-3 px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/40">
+        <AlertCircle className="w-5 h-5 text-red-400 mt-0.5 flex-shrink-0" />
+        <div>
+          <p className="text-sm font-semibold text-red-400">⚠️ Beta / Under Construction</p>
+          <p className="text-xs text-red-300/80 mt-0.5">
+            This module is still under active development and may not work correctly.
+            Use with caution and verify all settings on the device after provisioning.
+          </p>
+        </div>
+      </div>
       <div className="nms-card border-nms-accent/30 bg-nms-accent/5">
         <div className="flex items-start gap-3">
           <Radio className="w-5 h-5 text-nms-accent mt-0.5 flex-shrink-0" />

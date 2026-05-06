@@ -21,10 +21,7 @@ const api = axios.create({
   withCredentials: true, // send session cookie on every request
 });
 
-// ── 401 interceptor ──
-// Only trigger a reload if the user was already authenticated (has a session cookie)
-// and the server rejects it mid-session. On initial load, 401 from /api/auth/me
-// is expected and handled gracefully by AuthContext — don't reload in that case.
+// ── 401 / 403 interceptor ──
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -33,8 +30,16 @@ api.interceptors.response.use(
       !error.config?.url?.includes('/auth/me') &&
       !error.config?.url?.includes('/auth/login')
     ) {
-      // Session expired mid-use — reload so AuthGuard shows login page
       window.location.reload();
+    }
+    if (error.response?.status === 403) {
+      // Lazy import toast to avoid circular deps
+      import('react-hot-toast').then(({ default: toast }) => {
+        toast.error(
+          '🔒 Permission denied — your account is view-only and cannot make changes.',
+          { id: 'forbidden', duration: 5000 },
+        );
+      });
     }
     return Promise.reject(error);
   },

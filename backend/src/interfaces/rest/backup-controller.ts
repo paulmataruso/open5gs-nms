@@ -1,8 +1,9 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { BackupRestoreUseCase } from '../../application/use-cases/backup-restore';
 import { RestoreDefaultsUseCase } from '../../application/use-cases/restore-defaults';
+import { requireAdmin } from './middleware/auth-middleware';
 import type {
   BackupListResponseDto,
   BackupSettingsDto,
@@ -19,7 +20,7 @@ export function createBackupRouter(
   const router = Router();
 
   // POST /api/backup/mongo - Create MongoDB backup
-  router.post('/mongo', async (req, res) => {
+  router.post('/mongo', requireAdmin, async (req, res) => {
     try {
       const result = await backupRestoreUseCase.createMongoBackup();
       const response: CreateBackupResponseDto = result;
@@ -34,7 +35,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/config - Create config backup
-  router.post('/config', async (req, res) => {
+  router.post('/config', requireAdmin, async (req, res) => {
     try {
       const result = await backupRestoreUseCase.createConfigBackup();
       const response: CreateBackupResponseDto = result;
@@ -49,7 +50,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/restore/mongo - Restore MongoDB backup
-  router.post('/restore/mongo', async (req, res) => {
+  router.post('/restore/mongo', requireAdmin, async (req, res) => {
     try {
       const { backupName } = req.body;
       if (!backupName) {
@@ -70,7 +71,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/restore/config - Restore config backup
-  router.post('/restore/config', async (req, res) => {
+  router.post('/restore/config', requireAdmin, async (req, res) => {
     try {
       const { backupName } = req.body;
       if (!backupName) {
@@ -91,7 +92,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/restore/both - Restore both MongoDB and config
-  router.post('/restore/both', async (req, res) => {
+  router.post('/restore/both', requireAdmin, async (req, res) => {
     try {
       const { configBackupName, mongoBackupName } = req.body;
       if (!configBackupName || !mongoBackupName) {
@@ -160,7 +161,7 @@ export function createBackupRouter(
   });
 
   // PUT /api/backup/settings - Update backup settings
-  router.put('/settings', async (req, res) => {
+  router.put('/settings', requireAdmin, async (req, res) => {
     try {
       const settings: BackupSettingsDto = req.body;
       
@@ -181,7 +182,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/cleanup - Trigger manual cleanup
-  router.post('/cleanup', async (req, res) => {
+  router.post('/cleanup', requireAdmin, async (req, res) => {
     try {
       const settings: BackupSettingsDto = req.body || {
         configBackupsToKeep: 10,
@@ -211,7 +212,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/diff - Get diff between current and backup configs
-  router.post('/diff', async (req, res) => {
+  router.post('/diff', requireAdmin, async (req, res) => {
     try {
       const { backupName } = req.body;
       if (!backupName) {
@@ -231,7 +232,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/restore/selective - Restore selected config files
-  router.post('/restore/selective', async (req, res) => {
+  router.post('/restore/selective', requireAdmin, async (req, res) => {
     try {
       const { backupName, services } = req.body;
       if (!backupName || !services || !Array.isArray(services)) {
@@ -285,7 +286,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/full/restore - Upload and restore a full backup archive
-  router.post('/full/restore', async (req, res) => {
+  router.post('/full/restore', requireAdmin, async (req, res) => {
     const tmpPath = `/tmp/open5gs-upload-${Date.now()}.tar.gz`;
     try {
       // Stream the raw request body to a temp file
@@ -315,7 +316,7 @@ export function createBackupRouter(
   });
 
   // POST /api/backup/restore-defaults - Restore factory default configs
-  router.post('/restore-defaults', async (req, res) => {
+  router.post('/restore-defaults', requireAdmin, async (req, res) => {
     try {
       if (!restoreDefaultsUseCase) {
         return res.status(501).json({

@@ -6,6 +6,7 @@ import { ApplyConfigUseCase } from '../../application/use-cases/apply-config';
 import { TopologyUseCase } from '../../application/use-cases/topology';
 import { ServiceMonitorUseCase } from '../../application/use-cases/service-monitor';
 import { SyncSDUseCase } from '../../application/use-cases/sync-sd-usecase';
+import { requireAdmin } from './middleware/auth-middleware';
 
 export function createConfigRouter(
   loadConfigUseCase: LoadConfigUseCase,
@@ -104,7 +105,7 @@ export function createConfigRouter(
     }
   });
 
-  router.post('/validate', async (req: Request, res: Response) => {
+  router.post('/validate', requireAdmin, async (req: Request, res: Response) => {
     try {
       logger.info('Validating current configurations');
       const result = await validateConfigUseCase.validateCurrent();
@@ -117,7 +118,7 @@ export function createConfigRouter(
     }
   });
 
-  router.post('/apply', async (req: Request, res: Response) => {
+  router.post('/apply', requireAdmin, async (req: Request, res: Response) => {
     try {
       logger.info('Applying configuration changes');
       const configs = req.body;
@@ -131,7 +132,7 @@ export function createConfigRouter(
     }
   });
 
-  router.post('/sync-sd', async (req: Request, res: Response) => {
+  router.post('/sync-sd', requireAdmin, async (req: Request, res: Response) => {
     try {
       const { sd, sst } = req.body;
       

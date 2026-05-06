@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import pino from 'pino';
 import { SuciManagementUseCase } from '../../application/use-cases/suci-management';
+import { requireAdmin } from './middleware/auth-middleware';
 
 export function createSuciRouter(
   suciUseCase: SuciManagementUseCase,
@@ -31,7 +32,7 @@ export function createSuciRouter(
   });
 
   // POST /api/suci/keys - Generate new SUCI key
-  router.post('/keys', async (req: Request, res: Response) => {
+  router.post('/keys', requireAdmin, async (req: Request, res: Response) => {
     try {
       const { id, scheme } = req.body;
       
@@ -52,7 +53,7 @@ export function createSuciRouter(
   });
 
   // PUT /api/suci/keys/:id - Regenerate existing SUCI key
-  router.put('/keys/:id', async (req: Request, res: Response) => {
+  router.put('/keys/:id', requireAdmin, async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
       const { scheme } = req.body;
@@ -78,7 +79,7 @@ export function createSuciRouter(
   });
 
   // PATCH /api/suci/keys/:id/rename - Rename PKI ID without touching the key
-  router.patch('/keys/:id/rename', async (req: Request, res: Response) => {
+  router.patch('/keys/:id/rename', requireAdmin, async (req: Request, res: Response) => {
     try {
       const currentId = Number(req.params.id);
       const { newId } = req.body;
@@ -101,7 +102,7 @@ export function createSuciRouter(
   });
 
   // DELETE /api/suci/keys/:id - Delete SUCI key
-  router.delete('/keys/:id', async (req: Request, res: Response) => {
+  router.delete('/keys/:id', requireAdmin, async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
       const deleteFile = req.query.deleteFile === 'true';
