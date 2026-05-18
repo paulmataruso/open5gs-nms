@@ -157,11 +157,17 @@ export class ServiceMonitorUseCase {
   }
 
   private async getMongoDockerStatus(): Promise<ServiceStatus> {
+    const now = Date.now();
+    const shouldLog = (now - this.lastMongoLogTime) >= ServiceMonitorUseCase.MONGO_LOG_INTERVAL_MS;
+    if (shouldLog) this.lastMongoLogTime = now;
+
     const dockerResult = await this.hostExecutor.executeLocalCommand('bash', ['-c',
       `docker ps --format '{{.Names}}\t{{.Status}}\t{{.Image}}' 2>/dev/null | grep -i mongo || true`,
     ]);
 
-    this.logger.info({ dockerOut: dockerResult.stdout.trim() }, 'MongoDB Docker probe output');
+    if (shouldLog) {
+      this.logger.info({ dockerOut: dockerResult.stdout.trim() }, 'MongoDB Docker probe output');
+    }
 
     const line = dockerResult.stdout.trim().split('\n')[0] || '';
     const parts = line.split('\t');
@@ -170,10 +176,11 @@ export class ServiceMonitorUseCase {
     const isRunning       = containerStatus.toLowerCase().startsWith('up');
 
     const tcpOk = await this.checkMongoTcp();
-    this.logger.info({ containerName, containerStatus, isRunning, tcpOk }, 'MongoDB Docker status resolved');
 
-    // If docker ps found nothing but TCP works, MongoDB is running but not via Docker
-    // (e.g. running on host directly). Use TCP result alone.
+    if (shouldLog) {
+      this.logger.info({ containerName, containerStatus, isRunning, tcpOk }, 'MongoDB Docker status resolved');
+    }
+
     const active = tcpOk;
 
     return {
@@ -194,6 +201,10 @@ export class ServiceMonitorUseCase {
     };
   }
 
+  // Timestamp of last MongoDB Docker probe log — used to throttle noisy log output
+  private lastMongoLogTime = 0;
+  private static MONGO_LOG_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+
   private async getServiceStatus(name: ServiceName, unitName: string): Promise<ServiceStatusDto> {
     // MongoDB special case: check Docker/TCP FIRST if systemctl says inactive
     // This handles users who run MongoDB in Docker instead of as a systemd service.
@@ -203,13 +214,15 @@ export class ServiceMonitorUseCase {
           this.hostExecutor.isServiceActive(unitName),
         ]);
         if (!isActive) {
-          // systemctl says not active — check Docker/TCP before reporting red
+          // systemctl says not active (expected when MongoDB runs in Docker) —
+          // check Docker/TCP before reporting red. Log suppressed to once per 15 min.
           const dockerStatus = await this.getMongoDockerStatus();
           this.statusCache[name] = dockerStatus;
           return dockerStatus;
         }
       } catch {
-        // systemctl itself failed — also try Docker/TCP
+        // systemctl itself failed (also expected when no mongod unit exists) —
+        // try Docker/TCP fallback. Log suppressed to once per 15 min.
         try {
           const dockerStatus = await this.getMongoDockerStatus();
           this.statusCache[name] = dockerStatus;

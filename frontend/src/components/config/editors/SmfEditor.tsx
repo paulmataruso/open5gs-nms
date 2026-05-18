@@ -597,14 +597,19 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
 
         <div className="space-y-2">
           {sessions.map((sess, i) => {
-            // Find which UPF handles this session's DNN
-            const matchingUpf = sess.dnn
+            // Determine which UPF handles this session pool
+            // DNN-specific remote UPF match
+            const matchingRemoteUpf = sess.dnn
               ? upfClients.find(c => {
-                  if (!c.dnn) return false;
+                  if (!c.dnn || isLocalUpf(c.address)) return false;
                   const dnns = Array.isArray(c.dnn) ? c.dnn : [c.dnn];
                   return dnns.includes(sess.dnn!);
                 })
               : null;
+
+            // Find the local UPF for display
+            const localUpf = upfClients.find(c => isLocalUpf(c.address));
+            const localUpfAddr = localUpf?.address || localUpfPfcpAddress || '127.0.0.7';
 
             return (
               <div key={i} className="border border-nms-border rounded-lg p-3 bg-nms-surface-2/30">
@@ -644,17 +649,19 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                       placeholder="internet"
                       tooltip="Link this pool to a specific DNN. UEs requesting this APN/DNN get IPs from this range."
                     />
-                    {/* Show which UPF this DNN routes to */}
-                    {sess.dnn && matchingUpf && (
-                      <p className="text-xs text-blue-400 mt-1 flex items-center gap-1">
-                        <span>↗</span> Routed to UPF: <span className="font-mono">{matchingUpf.address}</span>
-                      </p>
-                    )}
-                    {sess.dnn && !matchingUpf && (
-                      <p className="text-xs text-nms-text-dim mt-1">
-                        No UPF routing rule for this DNN yet
-                      </p>
-                    )}
+                    {/* Routing destination badge — always shown */}
+                    <div className="mt-1">
+                      {matchingRemoteUpf ? (
+                        <p className="text-xs text-blue-400 flex items-center gap-1">
+                          <span>↗</span> Remote UPF: <span className="font-mono">{matchingRemoteUpf.address}</span>
+                        </p>
+                      ) : (
+                        <p className="text-xs text-nms-green flex items-center gap-1">
+                          <span>↗</span> Local UPF: <span className="font-mono">{localUpfAddr}</span>
+                          {!sess.dnn && <span className="text-nms-text-dim ml-1">(default pool)</span>}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
                 <div className="flex justify-end">

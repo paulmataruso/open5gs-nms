@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, Server, AlertTriangle, Info, Download, Copy, Check, Radio } from 'lucide-react';
+import { Plus, X, Server, AlertTriangle, Info, Download, Copy, Check, Radio } from 'lucide-react';
 import type { AllConfigs } from '../../../types';
 import { LoggerSection } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
@@ -17,9 +17,7 @@ interface RemoteUpfForm {
   label: string;
   pfcpAddress: string;
   gtpuAddress: string;
-  subnet: string;
-  gateway: string;
-  dnn: string;
+  sessions: Array<{ subnet: string; gateway: string; dnn: string; dev: string }>;
   logPath: string;
 }
 
@@ -91,10 +89,13 @@ function generateRemoteUpfYaml(form: RemoteUpfForm, smfDisplayAddress: string): 
   lines.push(`      - address: ${form.gtpuAddress || '172.16.10.21'}`);
   lines.push(``);
   lines.push(`  session:`);
-  lines.push(`    - subnet: ${form.subnet || '10.45.0.0/16'}`);
-  lines.push(`      gateway: ${form.gateway || '10.45.0.1'}`);
-  if (form.dnn) {
-    lines.push(`      dnn: ${form.dnn}`);
+  const sessions = form.sessions?.length ? form.sessions : [{ subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: 'internet', dev: '' }];
+  for (const s of sessions) {
+    if (!s.subnet) continue;
+    lines.push(`    - subnet: ${s.subnet}`);
+    if (s.gateway) lines.push(`      gateway: ${s.gateway}`);
+    if (s.dnn)     lines.push(`      dnn: ${s.dnn}`);
+    if (s.dev)     lines.push(`      dev: ${s.dev}`);
   }
   lines.push(``);
 
@@ -135,9 +136,12 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
     label: '',
     pfcpAddress: '',
     gtpuAddress: '',
-    subnet: upf.session?.[0]?.subnet || '10.45.0.0/16',
-    gateway: upf.session?.[0]?.gateway || '10.45.0.1',
-    dnn: upf.session?.[0]?.dnn || 'internet',
+    sessions: [{
+      subnet: upf.session?.[0]?.subnet || '10.45.0.0/16',
+      gateway: upf.session?.[0]?.gateway || '10.45.0.1',
+      dnn: upf.session?.[0]?.dnn || 'internet',
+      dev: upf.session?.[0]?.dev || '',
+    }],
     logPath: '/var/log/open5gs/upf.log',
   });
   const [copied, setCopied] = useState(false);
@@ -151,12 +155,14 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
     setRemoteForm(prev => ({
       ...prev,
       pfcpAddress: editUpfData.pfcpAddress || prev.pfcpAddress,
-      dnn:         editUpfData.dnn         || prev.dnn,
-      subnet:      editUpfData.subnet      || prev.subnet,
-      gateway:     editUpfData.gateway     || prev.gateway,
+      sessions: [{
+        subnet:  editUpfData.subnet  || prev.sessions[0]?.subnet  || '10.45.0.0/16',
+        gateway: editUpfData.gateway || prev.sessions[0]?.gateway || '10.45.0.1',
+        dnn:     editUpfData.dnn     || prev.sessions[0]?.dnn     || 'internet',
+        dev:     prev.sessions[0]?.dev || '',
+      }],
     }));
     onEditUpfDataConsumed?.();
-    // Scroll generator into view
     setTimeout(() => {
       document.getElementById('remote-upf-generator')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
@@ -190,37 +196,33 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
   const handleAddToSmf = async () => {
     if (!remoteForm.pfcpAddress) return;
 
-    // Build the new UPF client entry with DNN routing rule if specified
-    const newUpfClient: any = { address: remoteForm.pfcpAddress };
-    if (remoteForm.dnn) newUpfClient.dnn = remoteForm.dnn;
+    // Use the first session's DNN for SMF UPF client routing hint
+    const firstDnn = remoteForm.sessions[0]?.dnn || '';
 
-    // Add UPF to SMF pfcp.client.upf (skip if already there)
+    const newUpfClient: any = { address: remoteForm.pfcpAddress };
+    if (firstDnn) newUpfClient.dnn = firstDnn;
+
     const alreadyInUpf = upfClients.some(c => c.address === remoteForm.pfcpAddress);
     const newUpfClients = alreadyInUpf
       ? upfClients.map(c => c.address === remoteForm.pfcpAddress ? newUpfClient : c)
       : [...upfClients, newUpfClient];
 
-    // Build matching session for this DNN if one doesn't exist
+    // Add DNN-specific sessions to SMF for each session in the remote form
     const existingSessions: any[] = smf.session || [];
-    const sessionExists = remoteForm.dnn
-      ? existingSessions.some((s: any) => s.dnn === remoteForm.dnn)
-      : false;
-
-    // Helper: sort so DNN-specific sessions come before default (no-DNN) ones
-    const sortSessions = (sess: any[]) => [
-      ...sess.filter((s: any) => s.dnn),
-      ...sess.filter((s: any) => !s.dnn),
+    let newSessions = [...existingSessions];
+    for (const s of remoteForm.sessions) {
+      if (!s.dnn) continue;
+      const exists = newSessions.some((es: any) => es.dnn === s.dnn && es.subnet === s.subnet);
+      if (!exists) {
+        newSessions.push({ subnet: s.subnet, gateway: s.gateway, dnn: s.dnn });
+      }
+    }
+    // DNN-specific first
+    newSessions = [
+      ...newSessions.filter((s: any) => s.dnn),
+      ...newSessions.filter((s: any) => !s.dnn),
     ];
 
-    const newSessions = sessionExists || !remoteForm.dnn
-      ? existingSessions
-      : sortSessions([...existingSessions, {
-          subnet: remoteForm.subnet,
-          gateway: remoteForm.gateway,
-          dnn: remoteForm.dnn,
-        }]);
-
-    // Build updated configs with both UPF client and session changes
     const updatedConfigs: AllConfigs = {
       ...configs,
       smf: {
@@ -236,11 +238,8 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
       },
     };
 
-    // Update state then auto-apply
     onChange(updatedConfigs);
-    if (onApply) {
-      await onApply(updatedConfigs);
-    }
+    if (onApply) await onApply(updatedConfigs);
   };
 
   // ── Updaters ──────────────────────────────────────────────────────────────
@@ -360,37 +359,93 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
             </div>
           </div>
 
-          {upf.session && upf.session.length > 0 && (
-            <div>
-              <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Session Pools</h4>
-              {upf.session.map((sess: any, i: number) => (
-                <div key={i} className="grid grid-cols-2 gap-4 mb-2">
+          {/* Session Pools — always show, support dnn and dev */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-semibold font-display text-nms-accent">Session Pools</h4>
+              <button
+                onClick={() => {
+                  const current: any[] = upf.session?.length ? upf.session : [];
+                  updateUpf({ session: [...current, { subnet: '', gateway: '', dnn: '', dev: '' }] });
+                }}
+                className="nms-btn-ghost text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add Pool
+              </button>
+            </div>
+            <p className="text-xs text-nms-text-dim mb-3">
+              Each pool maps a subnet to a TUN interface. Use <span className="font-mono">dnn</span> to
+              tie a pool to a specific APN. Use <span className="font-mono">dev</span> to bind to a
+              named TUN interface (e.g. <span className="font-mono">ogstun2</span>). Leave blank to
+              use the default <span className="font-mono">ogstun</span> interface.
+            </p>
+            {(upf.session?.length ? upf.session : [{ subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: '', dev: '' }]).map((sess: any, i: number) => (
+              <div key={i} className="p-3 mb-2 rounded-lg border border-nms-border bg-nms-surface-2/30 space-y-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Pool {i + 1}</span>
+                  {(upf.session?.length || 0) > 1 && (
+                    <button
+                      onClick={() => {
+                        const updated = [...upf.session];
+                        updated.splice(i, 1);
+                        updateUpf({ session: updated });
+                      }}
+                      className="text-nms-text-dim hover:text-nms-red transition-colors"
+                      title="Remove pool"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
                   <FieldRow
-                    label="Subnet"
+                    label="Subnet *"
                     value={sess.subnet || ''}
                     onChange={(v) => {
-                      const updated = [...upf.session];
+                      const updated = [...(upf.session || [{ subnet: '', gateway: '', dnn: '', dev: '' }])];
                       updated[i] = { ...updated[i], subnet: v };
                       updateUpf({ session: updated });
                     }}
                     placeholder="10.45.0.0/16"
-                    tooltip={UPF_TOOLTIPS.session_subnet}
+                    tooltip="UE IP address pool. Required."
                   />
                   <FieldRow
                     label="Gateway"
                     value={sess.gateway || ''}
                     onChange={(v) => {
-                      const updated = [...upf.session];
+                      const updated = [...(upf.session || [{ subnet: '', gateway: '', dnn: '', dev: '' }])];
                       updated[i] = { ...updated[i], gateway: v };
                       updateUpf({ session: updated });
                     }}
                     placeholder="10.45.0.1"
-                    tooltip={UPF_TOOLTIPS.session_gateway}
+                    tooltip="TUN interface gateway IP address."
+                  />
+                  <FieldRow
+                    label="DNN / APN (optional)"
+                    value={sess.dnn || ''}
+                    onChange={(v) => {
+                      const updated = [...(upf.session || [{ subnet: '', gateway: '', dnn: '', dev: '' }])];
+                      updated[i] = { ...updated[i], dnn: v || undefined };
+                      updateUpf({ session: updated });
+                    }}
+                    placeholder="internet"
+                    tooltip="Tie this pool to a specific DNN/APN. Leave blank for default (all DNNs)."
+                  />
+                  <FieldRow
+                    label="TUN Interface / dev (optional)"
+                    value={sess.dev || ''}
+                    onChange={(v) => {
+                      const updated = [...(upf.session || [{ subnet: '', gateway: '', dnn: '', dev: '' }])];
+                      updated[i] = { ...updated[i], dev: v || undefined };
+                      updateUpf({ session: updated });
+                    }}
+                    placeholder="ogstun"
+                    tooltip="Specific TUN interface name. Leave blank to use the default ogstun. Use named interfaces (ogstun2, ogstun3) for multi-APN setups."
                   />
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            ))}
+          </div>
 
           <div>
             <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h4>
@@ -505,32 +560,82 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
             </div>
           </div>
 
-          {/* Session */}
+          {/* Session Pools */}
           <div>
-            <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Session Pool</h4>
-            <div className="grid grid-cols-3 gap-4">
-              <FieldRow
-                label="Subnet"
-                value={remoteForm.subnet}
-                onChange={(v) => setRemote({ subnet: v })}
-                placeholder="10.45.0.0/16"
-                tooltip="UE IP address pool for this UPF. Should match your central UPF subnet unless you are splitting pools."
-              />
-              <FieldRow
-                label="Gateway"
-                value={remoteForm.gateway}
-                onChange={(v) => setRemote({ gateway: v })}
-                placeholder="10.45.0.1"
-                tooltip="TUN interface gateway address created by the UPF on the remote host."
-              />
-              <FieldRow
-                label="DNN (optional)"
-                value={remoteForm.dnn}
-                onChange={(v) => setRemote({ dnn: v })}
-                placeholder="internet"
-                tooltip="Data Network Name. Leave blank to handle all DNNs, or specify to route only a specific DNN to this UPF."
-              />
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-semibold font-display text-nms-accent">Session Pools</h4>
+              <button
+                onClick={() => setRemote({ sessions: [...remoteForm.sessions, { subnet: '', gateway: '', dnn: '', dev: '' }] })}
+                className="nms-btn-ghost text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Add Pool
+              </button>
             </div>
+            <p className="text-xs text-nms-text-dim mb-3">
+              Add one entry per APN/DNN. Use <span className="font-mono">dev</span> to bind each pool
+              to a specific TUN interface (e.g. <span className="font-mono">ogstun2</span> for a second APN).
+            </p>
+            {remoteForm.sessions.map((s, i) => (
+              <div key={i} className="p-3 mb-2 rounded-lg border border-nms-border bg-nms-surface-2/30 space-y-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Pool {i + 1}</span>
+                  {remoteForm.sessions.length > 1 && (
+                    <button
+                      onClick={() => setRemote({ sessions: remoteForm.sessions.filter((_, idx) => idx !== i) })}
+                      className="text-nms-text-dim hover:text-nms-red transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <FieldRow
+                    label="Subnet *"
+                    value={s.subnet}
+                    onChange={(v) => {
+                      const updated = [...remoteForm.sessions];
+                      updated[i] = { ...updated[i], subnet: v };
+                      setRemote({ sessions: updated });
+                    }}
+                    placeholder="10.45.0.0/16"
+                    tooltip="UE IP address pool."
+                  />
+                  <FieldRow
+                    label="Gateway"
+                    value={s.gateway}
+                    onChange={(v) => {
+                      const updated = [...remoteForm.sessions];
+                      updated[i] = { ...updated[i], gateway: v };
+                      setRemote({ sessions: updated });
+                    }}
+                    placeholder="10.45.0.1"
+                    tooltip="TUN interface gateway IP."
+                  />
+                  <FieldRow
+                    label="DNN / APN (optional)"
+                    value={s.dnn}
+                    onChange={(v) => {
+                      const updated = [...remoteForm.sessions];
+                      updated[i] = { ...updated[i], dnn: v };
+                      setRemote({ sessions: updated });
+                    }}
+                    placeholder="internet"
+                    tooltip="Tie pool to a specific DNN/APN. Leave blank for all DNNs."
+                  />
+                  <FieldRow
+                    label="TUN Interface / dev (optional)"
+                    value={s.dev}
+                    onChange={(v) => {
+                      const updated = [...remoteForm.sessions];
+                      updated[i] = { ...updated[i], dev: v };
+                      setRemote({ sessions: updated });
+                    }}
+                    placeholder="ogstun"
+                    tooltip="Named TUN interface. Use ogstun2, ogstun3 etc. for multi-APN setups."
+                  />
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Log path */}
@@ -602,7 +707,7 @@ cp upf.yaml /etc/open5gs/upf.yaml`}</pre>
 
                 <p className="font-semibold text-nms-text-dim">2. Assign gateway IP to TUN interface</p>
                 <p className="text-nms-text-dim">Open5GS creates the ogstun interface but does NOT assign the IP — you must do this manually:</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ip addr add ${remoteForm.gateway || '10.x.x.1'}/${(remoteForm.subnet || '').split('/')[1] || '16'} dev ogstun
+                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ip addr add ${remoteForm.sessions[0]?.gateway || '10.x.x.1'}/${(remoteForm.sessions[0]?.subnet || '').split('/')[1] || '16'} dev ogstun
 sudo ip link set ogstun up`}</pre>
                 <p className="text-amber-300">⚠️ Add to a startup script to persist across reboots.</p>
 
@@ -613,7 +718,7 @@ sudo sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
 
 # NAT masquerading (replace eth0 with your interface)
-sudo iptables -t nat -A POSTROUTING -s ${remoteForm.subnet || '10.x.x.x/16'} ! -o ogstun -j MASQUERADE
+sudo iptables -t nat -A POSTROUTING -s ${remoteForm.sessions[0]?.subnet || '10.x.x.x/16'} ! -o ogstun -j MASQUERADE
 sudo iptables -I INPUT -i ogstun -j ACCEPT
 
 # Make persistent

@@ -199,6 +199,23 @@ export class GetInterfaceStatus {
         this.apiClient.getAmfGnbInfo().catch(() => []),
       ]);
 
+      // Metrics fallback for N3 when JSON APIs not available
+      if (pduSessions.length === 0) {
+        const upfCounts = await this.apiClient.getUpfCountsFromMetrics();
+        if (upfCounts.sessionsActive > 0) {
+          this.logger.info({ sessions: upfCounts.sessionsActive }, 'N3: using UPF metrics fallback');
+          return {
+            active: true,
+            connectedGnodebs: [{
+              ip: `N3 active (${upfCounts.sessionsActive} sessions — upgrade to v2.7.7 for details)`,
+              numConnectedUes: upfCounts.sessionsActive,
+              setupSuccess: true,
+            }],
+          };
+        }
+        return { active: false, connectedGnodebs: [] };
+      }
+
       // Build set of gNodeB IPs that have an active N2 SCTP connection
       const liveN2Ips = new Set(
         gnbs

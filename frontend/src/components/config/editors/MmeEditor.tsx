@@ -103,17 +103,40 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
       )}
 
       <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">S1AP Server</h3>
-        <FieldWithTooltip
-          label="Address"
-          value={s1apServer.address}
-          onChange={(v) => {
-            const updated = { ...mme, s1ap: { server: [{ address: v }] } };
-            updateMme(updated);
-          }}
-          placeholder="10.0.1.175"
-          tooltip={MME_TOOLTIPS.s1ap_address}
-        />
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-1">S1AP Server</h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          Bind to an IP <strong>or</strong> an interface name — not both.
+          When <span className="font-mono">Interface</span> is set it takes priority and Address is ignored.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip
+            label="Address (IP)"
+            value={s1apServer.dev ? '' : (s1apServer.address || '')}
+            onChange={(v) => {
+              const { dev: _dev, ...rest } = s1apServer;
+              updateMme({ s1ap: { server: [v ? { ...rest, address: v } : rest] } });
+            }}
+            placeholder="10.0.1.175"
+            tooltip="Bind S1AP listener to this IP. Leave blank if using Interface binding."
+          />
+          <div>
+            <FieldWithTooltip
+              label="Interface / dev (alternative to Address)"
+              value={s1apServer.dev || ''}
+              onChange={(v) => {
+                const { address: _addr, ...rest } = s1apServer;
+                updateMme({ s1ap: { server: [v ? { ...rest, dev: v } : { ...rest, address: s1apServer.address || '' }] } });
+              }}
+              placeholder="eth0"
+              tooltip="Bind S1AP to all IPs on this interface. Use instead of Address."
+            />
+            {s1apServer.dev && (
+              <p className="text-xs text-blue-400 mt-1">
+                ℹ️ Will write: <span className="font-mono">dev: {s1apServer.dev}</span> (address field omitted)
+              </p>
+            )}
+          </div>
+        </div>
       </div>
 
       <div>

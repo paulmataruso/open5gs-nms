@@ -4,6 +4,37 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v1.3.6] - 2026-05-18
+
+### Added
+- **Radio nickname tags** — Tag any eNodeB or gNodeB IP with a friendly name (e.g. "Site A gNB", "Lab eNB"). Tags stored in SQLite (`radio_tags` table), persist across sessions, visible to all users. Admins edit inline on the RAN Network page (pencil icon on hover, Enter to save, empty = delete).
+  - `SqliteRadioTagRepository` — new repository sharing the existing auth SQLite DB (`getDb()` exposed on `SqliteAuthRepository`)
+  - `radio-tags-controller.ts` — `GET /api/radio-tags` (all users), `PUT /api/radio-tags/:ip` and `DELETE /api/radio-tags/:ip` (admin only)
+  - `radio_tags` table added to `sqlite-auth-repository.ts` `initSchema()`
+  - `radioTagsApi` added to frontend `api/index.ts`
+- **UE nicknames on RAN Network page** — Subscriber nicknames (set on Subscriber page) now appear below the IMSI in both per-radio UE sub-rows and the All Sessions table. Enriched at the backend by batch-fetching nicknames from MongoDB after building the active UE list.
+  - `getNicknamesByImsi(imsis)` added to `MongoSubscriberRepository` and `ISubscriberRepository` interface
+  - `getActive5GUEs()` and `getActive4GUEs()` in `active-sessions.ts` now enrich each `ActiveUE` with `nickname` from MongoDB
+  - `ActiveUE` interface: `nickname?: string` added in both backend and frontend
+- **RAN Network page — wider layout** — Container widened from `max-w-7xl` (1280px) to `max-w-[1600px]`. Table cell padding tightened from `px-4 py-3` to `px-3 py-2.5`. IMSI and Radio columns given `min-w` so nicknames have room to breathe.
+
+### Fixed
+- **Femtocell — password/username re-probe on blur** — WebUI Username and WebUI Password fields now call `probeDevice(cfg.ip)` on blur when an IP is already entered. Previously the user had to retype the IP after entering credentials to re-trigger the probe.
+- **MongoDB log spam suppressed** — `systemctl is-active mongod` failures are now logged at `debug` (not `error`) since they are expected when MongoDB runs in Docker. MongoDB Docker probe info logs throttled to once per 15 minutes (was every 5 seconds).
+- **TUN interface creation — IP not assigned** — `ip addr add` was returning exit 0 but the address never appeared on the interface. Root cause: `executeCommand` (nsenter `-m`) enters the host mount namespace but not the host network namespace. Fix: use `executeLocalCommand` with explicit `nsenter --net=/proc/1/ns/net` for all `ip` commands. Confirmed working.
+- **TUN interface creation — networkctl race** — `networkctl reload` after `ip addr add` caused systemd-networkd to flush and reassign the address, creating a race where `list()` ran during the flush window and saw no address. `networkctl reload` removed from the create/edit flow. Persistence handled exclusively by a systemd oneshot service at `/etc/systemd/system/open5gs-tun-<name>.service`.
+- **TUN interface state detection** — State now derived from the `<...,UP>` flags field in `ip -o link show` output, not the `state UP` keyword. TUN interfaces with `NO-CARRIER` always show `state DOWN` even when the UP flag is set, so the previous logic always reported them as down even after `ip link set up`.
+- **TUN interface — not detected as created** — `exists` was derived from `liveMap` which was built from `ip addr` output and only populated when an IPv4 was assigned. Interfaces without a yet-assigned IP were reported as `NOT CREATED`. Fixed: `exists` now derived from `ip link` output which lists all interfaces regardless of IP.
+- **SMF/UPF — local UPF routing label missing** — SMF Session Pools now show a green "↗ Local UPF" badge for all pools with no matching remote UPF DNN rule (including the default no-DNN pool). Previously only remote UPF pools showed a routing destination badge.
+- **YAML round-trip safety (all 16 NFs)** — `saveRaw()` in `yaml-config-repository.ts` now reads the current on-disk YAML before every write and deep-merges the incoming doc over it using `deepMerge(base, overlay)`. Unknown fields (manually added `dev:` bindings, custom `session` entries, extra top-level keys, timer sections) are preserved. Arrays are replaced not merged so deleting a session pool via the UI still works. Frontend editors for AMF NGAP server, MME S1AP server, and SGW-C GTP-C server fixed to spread existing server entries (preserving unknown sibling keys) rather than creating bare replacement objects.
+- **SMF session pool ordering** — `auto-config.ts` `execute()` now sorts SMF session pools: DNN-specific pools first, default (no-DNN) pools last. Open5GS matches pools top-to-bottom and crashes on unknown DNN if the default pool appears before a named one.
+
+### Changed
+- **Tests infrastructure** — `tests/yaml-round-trip.test.ts` updated with correct run command (via backend container). `tests/run-tests.sh` one-shot script and `tests/README.md` added.
+- **`iproute2` added to backend Dockerfile** — Required for `ip tuntap`, `ip addr`, `ip link` commands used by the TUN management use case.
+
+---
+
 ## [v1.3.5] - 2026-05-16
 
 ### Added

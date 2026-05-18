@@ -20,17 +20,19 @@ import { Open5gsApiClient, parsePeerIP } from './open5gs-api-client';
 export interface ActiveUE {
   ip: string;
   imsi: string;
-  // Enriched fields from Open5GS API
   cmState?: 'connected' | 'idle' | string;
-  dnn?: string;              // 5G data network name
-  apn?: string;              // 4G APN
+  dnn?: string;
+  apn?: string;
   sliceSst?: number;
   sliceSd?: string;
-  securityEnc?: string;      // 5G only: e.g. "nea2"
-  securityInt?: string;      // 5G only: e.g. "nia2"
-  ambrDownlink?: number;     // bps
-  ambrUplink?: number;       // bps
-  radioIp?: string;          // IP of the eNodeB/gNodeB this UE is connected to
+  securityEnc?: string;
+  securityInt?: string;
+  ambrDownlink?: number;
+  ambrUplink?: number;
+  radioIp?: string;
+  // true when sourced from Prometheus metrics only (JSON API unavailable)
+  metricsOnly?: boolean;
+  nickname?: string;  // from subscriber record in MongoDB
 }
 
 export class ActiveSessionsUseCase {
@@ -59,6 +61,22 @@ export class ActiveSessionsUseCase {
         this.apiClient.getAmfUeInfo(),
         this.apiClient.getAmfGnbInfo(),
       ]);
+
+      // ─ Metrics fallback ────────────────────────────────────────────────────
+      if (pduSessions.length === 0 && amfUes.length === 0) {
+        const [amfCounts, upfCounts] = await Promise.all([
+          this.apiClient.getAmfCountsFromMetrics(),
+          this.apiClient.getUpfCountsFromMetrics(),
+        ]);
+        const ueCount = amfCounts.ueCount > 0 ? amfCounts.ueCount : upfCounts.sessionsActive;
+        if (ueCount <= 0) return [];
+        this.logger.info({ ueCount, upfCounts }, '[5G Sessions] using Prometheus metrics fallback');
+        const dnns = Object.keys(upfCounts.dnnFlows);
+        const primaryDnn = dnns[0] || 'internet';
+        return Array.from({ length: ueCount }, () => ({
+          ip: '', imsi: '', dnn: primaryDnn, cmState: 'connected', metricsOnly: true,
+        }));
+      }
 
       // Build AMF UE lookup by IMSI for enrichment
       const amfByImsi = new Map<string, typeof amfUes[0]>();
@@ -128,7 +146,10 @@ export class ActiveSessionsUseCase {
       }
 
       this.logger.info({ count: activeUEs.length }, '[5G Sessions] complete');
-      return activeUEs;
+
+      // Enrich with subscriber nicknames from MongoDB
+      const nicknames = await this.subscriberRepo.getNicknamesByImsi(activeUEs.map(u => u.imsi));
+      return activeUEs.map(u => ({ ...u, nickname: nicknames[u.imsi] }));
     } catch (err) {
       this.logger.error({ err: String(err) }, '[5G Sessions] error');
       return [];
@@ -148,6 +169,45 @@ export class ActiveSessionsUseCase {
         this.getActive5GUEs(),
         this.apiClient.getMmeEnbInfo(),
       ]);
+
+      // ─ Metrics fallback ────────────────────────────────────────────────────
+      if (mmeUes.length === 0 && mmeEnbs.length === 0) {
+        const [mmeCounts, smfCounts] = await Promise.all([
+          this.apiClient.getMmeCountsFromMetrics(),
+          this.apiClient.getSmfCountsFromMetrics(),
+        ]);
+
+        // enb_ue from MME is the most accurate 4G UE count.
+        // Fall back to mme_session, then ues_active from SMF.
+        // Subtract already-known 5G UE count to avoid double-counting.
+        const rawCount = mmeCounts.ueCount > 0
+          ? mmeCounts.ueCount
+          : mmeCounts.sessionCount > 0
+            ? mmeCounts.sessionCount
+            : smfCounts.activeUeCount;
+
+        // Don't double-count UEs already shown as 5G
+        const already5G = active5G.length;
+        const ueCount = Math.max(0, rawCount - already5G);
+
+        if (ueCount <= 0) {
+          this.logger.info('[4G Sessions] metrics fallback: no active UEs');
+          return [];
+        }
+
+        this.logger.info({ ueCount, mmeCounts }, '[4G Sessions] using Prometheus metrics fallback');
+
+        const syntheticUEs: ActiveUE[] = Array.from({ length: ueCount }, () => ({
+          ip:          '',
+          imsi:        '',
+          apn:         'internet',
+          cmState:     'connected',
+          metricsOnly: true,
+        }));
+
+        this.logger.info({ count: syntheticUEs.length }, '[4G Sessions] metrics fallback complete');
+        return syntheticUEs;
+      }
 
       // Build PDU IP lookup by IMSI (4G sessions have no n3 block)
       const ipByImsi = new Map<string, string>();
@@ -227,7 +287,10 @@ export class ActiveSessionsUseCase {
       }
 
       this.logger.info({ count: activeUEs.length }, '[4G Sessions] complete');
-      return activeUEs;
+
+      // Enrich with subscriber nicknames from MongoDB
+      const nicknames4G = await this.subscriberRepo.getNicknamesByImsi(activeUEs.map(u => u.imsi));
+      return activeUEs.map(u => ({ ...u, nickname: nicknames4G[u.imsi] }));
     } catch (err) {
       this.logger.error({ err: String(err) }, '[4G Sessions] error');
       return [];

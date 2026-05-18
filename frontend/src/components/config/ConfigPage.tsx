@@ -214,8 +214,44 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
       />
 
       <div>
-        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">NGAP Server</h3>
-        <FieldWithTooltip label="Address" value={ngapServer.address} onChange={(v) => updateAmf({ ngap: { server: [{ address: v }] } })} tooltip={AMF_TOOLTIPS.ngap_address} />
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-1">NGAP Server (N2)</h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          Bind to an IP <strong>or</strong> an interface name — not both.
+          When <span className="font-mono">Interface</span> is set it takes priority and Address is ignored.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip
+            label="Address (IP)"
+            value={ngapServer.dev ? '' : (ngapServer.address || '')}
+            onChange={(v) => {
+              // Spread existing server entry to preserve any unknown fields;
+              // remove dev (mutually exclusive with address)
+              const { dev: _dev, ...rest } = ngapServer;
+              updateAmf({ ngap: { server: [v ? { ...rest, address: v } : rest] } });
+            }}
+            placeholder="10.0.1.155"
+            tooltip="Bind NGAP listener to this IP. Leave blank if using Interface binding."
+          />
+          <div>
+            <FieldWithTooltip
+              label="Interface / dev (alternative to Address)"
+              value={ngapServer.dev || ''}
+              onChange={(v) => {
+                // Spread existing server entry to preserve any unknown fields;
+                // remove address (mutually exclusive with dev)
+                const { address: _addr, ...rest } = ngapServer;
+                updateAmf({ ngap: { server: [v ? { ...rest, dev: v } : { ...rest, address: ngapServer.address || '' }] } });
+              }}
+              placeholder="eth0"
+              tooltip="Bind NGAP to all IPs on this interface. Use instead of Address."
+            />
+            {ngapServer.dev && (
+              <p className="text-xs text-blue-400 mt-1">
+                ℹ️ Will write: <span className="font-mono">dev: {ngapServer.dev}</span> (address field omitted)
+              </p>
+            )}
+          </div>
+        </div>
       </div>
 
       {amf.guami && amf.guami.length > 0 && (

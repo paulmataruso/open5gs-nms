@@ -19,9 +19,10 @@ RUN npm prune --omit=dev
 
 FROM node:20-bookworm-slim
 
-# Runtime deps: nsenter, Docker CLI, MongoDB tools, tshark, Python3 (for suci-keytool)
+# Runtime deps: nsenter, iproute2 (ip command), Docker CLI, MongoDB tools, tshark, Python3 (for suci-keytool)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     util-linux \
+    iproute2 \
     curl \
     gnupg \
     ca-certificates \

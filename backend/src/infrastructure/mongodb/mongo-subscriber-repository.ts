@@ -133,6 +133,19 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     return this.mapToListItems(docs);
   }
 
+  async getNicknamesByImsi(imsis: string[]): Promise<Record<string, string>> {
+    if (!imsis.length) return {};
+    const docs = await this.collection
+      .find({ imsi: { $in: imsis } })
+      .project({ imsi: 1, nickname: 1 })
+      .toArray();
+    const result: Record<string, string> = {};
+    for (const doc of docs) {
+      if (doc.nickname) result[doc.imsi as string] = doc.nickname as string;
+    }
+    return result;
+  }
+
   async updateSDForAll(sd: string, sst?: number): Promise<number> {
     // Build the filter - optionally match SST
     const filter = sst ? { 'slice.sst': sst } : {};

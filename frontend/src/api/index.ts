@@ -71,6 +71,40 @@ export const serviceApi = {
 };
 
 // ── Subscribers ──
+export const radioTagsApi = {
+  getAll: () =>
+    api.get<Record<string, string>>('/radio-tags').then(r => r.data),
+  set: (ip: string, nickname: string) =>
+    api.put(`/radio-tags/${encodeURIComponent(ip)}`, { nickname }).then(r => r.data),
+  remove: (ip: string) =>
+    api.delete(`/radio-tags/${encodeURIComponent(ip)}`).then(r => r.data),
+};
+
+export const tunApi = {
+  list: () =>
+    api.get<{ interfaces: TunInterface[]; networkdActive: boolean; nextName: string }>('/tun-interfaces').then(r => r.data),
+  create: (data: { name: string; ip: string; prefix: number }) =>
+    api.post('/tun-interfaces', data).then(r => r.data),
+  edit: (name: string, data: { ip: string; prefix: number }) =>
+    api.put(`/tun-interfaces/${name}`, data).then(r => r.data),
+  delete: (name: string) =>
+    api.delete(`/tun-interfaces/${name}`).then(r => r.data),
+  setUp: (name: string) =>
+    api.post(`/tun-interfaces/${name}/up`).then(r => r.data),
+  setDown: (name: string) =>
+    api.post(`/tun-interfaces/${name}/down`).then(r => r.data),
+};
+
+export interface TunInterface {
+  name: string;
+  ip: string;
+  prefix: number;
+  state: 'up' | 'down';
+  managed: boolean;
+  default: boolean;
+  exists: boolean;
+}
+
 export const subscriberApi = {
   list: (skip = 0, limit = 50, search?: string, sortOrder?: 'asc' | 'desc', sortBy?: 'imsi' | 'ue_ipv4' | 'apn') =>
     api.get<{ subscribers: SubscriberListItem[]; total: number }>('/subscribers', { params: { skip, limit, search, sortOrder, sortBy } }).then((r) => r.data),
@@ -155,24 +189,34 @@ export const usersApi = {
 export interface PlmnConfig {
   mcc: string;
   mnc: string;
-  mme_gid?: number;  // For MME
-  mme_code?: number; // For MME
-  tac?: number;      // TAC for this PLMN
+  mme_gid?: number;
+  mme_code?: number;
+  tac?: number;
+}
+
+export interface SessionPool {
+  subnet: string;
+  gateway?: string;
+  dnn?: string;
+  dev?: string;
 }
 
 export interface AutoConfigInput {
-  plmn4g: PlmnConfig[];  // Multiple PLMNs for MME
-  plmn5g: PlmnConfig[];  // Multiple PLMNs for AMF
-  s1mmeIP: string;
+  plmn4g: PlmnConfig[];
+  plmn5g: PlmnConfig[];
+  s1mmeIP?: string;
+  s1mmeDev?: string;
   sgwuGtpIP: string;
-  amfNgapIP: string;
+  amfNgapIP?: string;
+  amfNgapDev?: string;
   upfGtpIP: string;
   smfPfcpIP?: string;
   localUpfPfcpIP?: string;
-  sessionPoolIPv4Subnet: string;
-  sessionPoolIPv4Gateway: string;
-  sessionPoolIPv6Subnet: string;
-  sessionPoolIPv6Gateway: string;
+  sessionPools: SessionPool[];
+  sessionPoolIPv4Subnet?: string;
+  sessionPoolIPv4Gateway?: string;
+  sessionPoolIPv6Subnet?: string;
+  sessionPoolIPv6Gateway?: string;
   configureNAT: boolean;
   natInterface?: string;
 }

@@ -6,26 +6,43 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 export interface PlmnConfig {
   mcc: string;
   mnc: string;
-  mme_gid?: number;  // For MME
-  mme_code?: number; // For MME
-  tac?: number;      // TAC for this PLMN
+  mme_gid?: number;
+  mme_code?: number;
+  tac?: number;
+}
+
+// A single UPF/SMF session pool entry
+export interface SessionPool {
+  subnet: string;
+  gateway?: string;
+  dnn?: string;   // optional — ties pool to specific DNN/APN
+  dev?: string;   // optional — specific TUN interface name (e.g. ogstun2)
 }
 
 export interface AutoConfigInput {
-  plmn4g: PlmnConfig[];  // Multiple PLMNs for MME
-  plmn5g: PlmnConfig[];  // Multiple PLMNs for AMF
-  s1mmeIP: string;
+  plmn4g: PlmnConfig[];
+  plmn5g: PlmnConfig[];
+  // 4G S1AP — either IP or interface name, not both
+  s1mmeIP?: string;
+  s1mmeDev?: string;   // dev: eth0 — binds S1AP to interface instead of IP
+  // 4G User Plane
   sgwuGtpIP: string;
-  amfNgapIP: string;
+  // 5G NGAP — either IP or interface name, not both
+  amfNgapIP?: string;
+  amfNgapDev?: string; // dev: eth0 — binds NGAP to interface instead of IP
+  // 5G User Plane
   upfGtpIP: string;
-  smfPfcpIP?: string;       // SMF PFCP server address (routable, for remote UPFs)
-  localUpfPfcpIP?: string;  // Local UPF PFCP address (must differ from smfPfcpIP)
-  sessionPoolIPv4Subnet: string;
-  sessionPoolIPv4Gateway: string;
-  sessionPoolIPv6Subnet: string;
-  sessionPoolIPv6Gateway: string;
+  smfPfcpIP?: string;
+  localUpfPfcpIP?: string;
+  // Session pools — supports multiple entries with dnn and dev
+  sessionPools: SessionPool[];
+  // Legacy flat fields kept for backwards compatibility with existing frontend
+  sessionPoolIPv4Subnet?: string;
+  sessionPoolIPv4Gateway?: string;
+  sessionPoolIPv6Subnet?: string;
+  sessionPoolIPv6Gateway?: string;
   configureNAT: boolean;
-  natInterface?: string; // e.g., 'ogstun'
+  natInterface?: string;
 }
 
 export interface AutoConfigResult {
@@ -71,7 +88,12 @@ export class AutoConfigUseCase {
         // Apply MME changes to rawYaml structure
         if (!modified.mme) modified.mme = {};
         if (!modified.mme.s1ap) modified.mme.s1ap = {};
-        modified.mme.s1ap.server = [{ address: input.s1mmeIP }];
+        // Use dev: if provided, otherwise address:
+        if (input.s1mmeDev) {
+          modified.mme.s1ap.server = [{ dev: input.s1mmeDev }];
+        } else if (input.s1mmeIP) {
+          modified.mme.s1ap.server = [{ address: input.s1mmeIP }];
+        }
 
         // Update GUMMEI with multiple PLMNs
         modified.mme.gummei = input.plmn4g.map(plmn => ({
@@ -114,7 +136,12 @@ export class AutoConfigUseCase {
 
         if (!modified.amf) modified.amf = {};
         if (!modified.amf.ngap) modified.amf.ngap = {};
-        modified.amf.ngap.server = [{ address: input.amfNgapIP }];
+        // Use dev: if provided, otherwise address:
+        if (input.amfNgapDev) {
+          modified.amf.ngap.server = [{ dev: input.amfNgapDev }];
+        } else if (input.amfNgapIP) {
+          modified.amf.ngap.server = [{ address: input.amfNgapIP }];
+        }
 
         // Update GUAMI with multiple PLMNs
         modified.amf.guami = input.plmn5g.map(plmn => ({
@@ -152,17 +179,18 @@ export class AutoConfigUseCase {
         if (!modified.upf.gtpu) modified.upf.gtpu = {};
         modified.upf.gtpu.server = [{ address: input.upfGtpIP }];
 
-        // Update Session pools
-        modified.upf.session = [
-          {
-            subnet: input.sessionPoolIPv4Subnet,
-            gateway: input.sessionPoolIPv4Gateway,
-          },
-          {
-            subnet: input.sessionPoolIPv6Subnet,
-            gateway: input.sessionPoolIPv6Gateway,
-          },
-        ];
+        // Update Session pools — support dnn and dev fields
+        const pools = input.sessionPools?.length ? input.sessionPools : [
+          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+        ].filter(p => p.subnet);
+        modified.upf.session = pools.map(p => {
+          const entry: any = { subnet: p.subnet };
+          if (p.gateway) entry.gateway = p.gateway;
+          if (p.dnn)     entry.dnn     = p.dnn;
+          if (p.dev)     entry.dev     = p.dev;
+          return entry;
+        });
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -177,17 +205,18 @@ export class AutoConfigUseCase {
 
         if (!modified.smf) modified.smf = {};
         
-        // Update Session pools
-        modified.smf.session = [
-          {
-            subnet: input.sessionPoolIPv4Subnet,
-            gateway: input.sessionPoolIPv4Gateway,
-          },
-          {
-            subnet: input.sessionPoolIPv6Subnet,
-            gateway: input.sessionPoolIPv6Gateway,
-          },
-        ];
+        // Update Session pools — support dnn and dev fields
+        const smfPools = input.sessionPools?.length ? input.sessionPools : [
+          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+        ].filter(p => p.subnet);
+        modified.smf.session = smfPools.map(p => {
+          const entry: any = { subnet: p.subnet };
+          if (p.gateway) entry.gateway = p.gateway;
+          if (p.dnn)     entry.dnn     = p.dnn;
+          if (p.dev)     entry.dev     = p.dev;
+          return entry;
+        });
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -248,7 +277,12 @@ export class AutoConfigUseCase {
         
         if (!raw.mme) raw.mme = {};
         if (!raw.mme.s1ap) raw.mme.s1ap = {};
-        raw.mme.s1ap.server = [{ address: input.s1mmeIP }];
+        // Use dev: if provided, otherwise address:
+        if (input.s1mmeDev) {
+          raw.mme.s1ap.server = [{ dev: input.s1mmeDev }];
+        } else if (input.s1mmeIP) {
+          raw.mme.s1ap.server = [{ address: input.s1mmeIP }];
+        }
 
         // Update GUMMEI with multiple PLMNs
         raw.mme.gummei = input.plmn4g.map(plmn => ({
@@ -289,7 +323,12 @@ export class AutoConfigUseCase {
         
         if (!raw.amf) raw.amf = {};
         if (!raw.amf.ngap) raw.amf.ngap = {};
-        raw.amf.ngap.server = [{ address: input.amfNgapIP }];
+        // Use dev: if provided, otherwise address:
+        if (input.amfNgapDev) {
+          raw.amf.ngap.server = [{ dev: input.amfNgapDev }];
+        } else if (input.amfNgapIP) {
+          raw.amf.ngap.server = [{ address: input.amfNgapIP }];
+        }
 
         // Update GUAMI with multiple PLMNs
         raw.amf.guami = input.plmn5g.map(plmn => ({
@@ -333,17 +372,18 @@ export class AutoConfigUseCase {
           this.logger.info({ localUpfPfcpIP: input.localUpfPfcpIP }, 'Set local UPF PFCP address');
         }
 
-        // Update Session pools
-        raw.upf.session = [
-          {
-            subnet: input.sessionPoolIPv4Subnet,
-            gateway: input.sessionPoolIPv4Gateway,
-          },
-          {
-            subnet: input.sessionPoolIPv6Subnet,
-            gateway: input.sessionPoolIPv6Gateway,
-          },
-        ];
+        // Update Session pools — support multiple entries with dnn and dev
+        const execPools = input.sessionPools?.length ? input.sessionPools : [
+          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+        ].filter((p: any) => p.subnet);
+        raw.upf.session = execPools.map(p => {
+          const entry: any = { subnet: p.subnet };
+          if (p.gateway) entry.gateway = p.gateway;
+          if (p.dnn)     entry.dnn     = p.dnn;
+          if (p.dev)     entry.dev     = p.dev;
+          return entry;
+        });
 
         configs.upf.rawYaml = raw;
         await this.configRepo.saveUpf(configs.upf);
@@ -377,16 +417,22 @@ export class AutoConfigUseCase {
           this.logger.info({ localUpfPfcpIP: input.localUpfPfcpIP }, 'Updated SMF UPF client list');
         }
         
-        // Build session pools — DNN-specific pools must come before default (no-DNN) pools
-        // so Open5GS matches them correctly in order
-        const defaultSessions = [
-          { subnet: input.sessionPoolIPv4Subnet, gateway: input.sessionPoolIPv4Gateway },
-          { subnet: input.sessionPoolIPv6Subnet, gateway: input.sessionPoolIPv6Gateway },
+        // Build session pools — DNN-specific pools first, then default (no-DNN) pools
+        const execSmfPools = input.sessionPools?.length ? input.sessionPools : [
+          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+        ].filter((p: any) => p.subnet);
+        const smfNewPools = execSmfPools.map((p: any) => {
+          const entry: any = { subnet: p.subnet };
+          if (p.gateway) entry.gateway = p.gateway;
+          if (p.dnn)     entry.dnn     = p.dnn;
+          if (p.dev)     entry.dev     = p.dev;
+          return entry;
+        });
+        raw.smf.session = [
+          ...smfNewPools.filter((p: any) => p.dnn),
+          ...smfNewPools.filter((p: any) => !p.dnn),
         ];
-        // Preserve any existing DNN-specific sessions (remote UPF pools), add defaults at end
-        const existingDnnSessions = (raw.smf.session || [])
-          .filter((s: any) => s.dnn);
-        raw.smf.session = [...existingDnnSessions, ...defaultSessions];
 
         configs.smf.rawYaml = raw;
         await this.configRepo.saveSmf(configs.smf);
@@ -412,23 +458,26 @@ export class AutoConfigUseCase {
           this.logger.info('Enabled IP forwarding (persistent via /etc/sysctl.d/99-open5gs-nat.conf)');
 
           // ── iptables rules ─────────────────────────────────────────────────
+          const ipv4Subnet = input.sessionPools?.[0]?.subnet || input.sessionPoolIPv4Subnet || '10.45.0.0/16';
+          const ipv6Subnet = input.sessionPools?.[1]?.subnet || input.sessionPoolIPv6Subnet || '2001:db8:cafe::/48';
+
           // IPv4 MASQUERADE
           await this.hostExecutor.executeCommand('iptables', [
             '-t', 'nat', '-A', 'POSTROUTING',
-            '-s', input.sessionPoolIPv4Subnet,
+            '-s', ipv4Subnet,
             '!', '-o', natInterface,
             '-j', 'MASQUERADE',
           ]);
-          this.logger.info({ subnet: input.sessionPoolIPv4Subnet }, 'Configured IPv4 NAT');
+          this.logger.info({ subnet: ipv4Subnet }, 'Configured IPv4 NAT');
 
           // IPv6 MASQUERADE
           await this.hostExecutor.executeCommand('ip6tables', [
             '-t', 'nat', '-A', 'POSTROUTING',
-            '-s', input.sessionPoolIPv6Subnet,
+            '-s', ipv6Subnet,
             '!', '-o', natInterface,
             '-j', 'MASQUERADE',
           ]);
-          this.logger.info({ subnet: input.sessionPoolIPv6Subnet }, 'Configured IPv6 NAT');
+          this.logger.info({ subnet: ipv6Subnet }, 'Configured IPv6 NAT');
 
           // Allow inbound from tunnel interface
           await this.hostExecutor.executeCommand('iptables', [

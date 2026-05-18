@@ -19,11 +19,17 @@ export const AutoConfigPage: React.FC = () => {
     plmn4g: [{ mcc: '', mnc: '', mme_gid: 2, mme_code: 1, tac: 1 }],
     plmn5g: [{ mcc: '', mnc: '', tac: 1 }],
     s1mmeIP: '',
+    s1mmeDev: '',
     sgwuGtpIP: '',
     amfNgapIP: '',
+    amfNgapDev: '',
     upfGtpIP: '',
     smfPfcpIP: '',
     localUpfPfcpIP: '',
+    sessionPools: [
+      { subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: '', dev: '' },
+      { subnet: '2001:db8:cafe::/48', gateway: '2001:db8:cafe::1', dnn: '', dev: '' },
+    ],
     sessionPoolIPv4Subnet: '',
     sessionPoolIPv4Gateway: '',
     sessionPoolIPv6Subnet: '',
@@ -66,12 +72,22 @@ export const AutoConfigPage: React.FC = () => {
         setConfig({
           plmn4g: plmn4g.length > 0 ? plmn4g : [{ mcc: '999', mnc: '70', mme_gid: 2, mme_code: 1, tac: 1 }],
           plmn5g: plmn5g.length > 0 ? plmn5g : [{ mcc: '999', mnc: '70', tac: 1 }],
-          s1mmeIP: mmeConfig?.s1ap?.server?.[0]?.address || '',
+          s1mmeIP:  mmeConfig?.s1ap?.server?.[0]?.address || '',
+          s1mmeDev: mmeConfig?.s1ap?.server?.[0]?.dev     || '',
           sgwuGtpIP: (configs.sgwu as any)?.sgwu?.gtpu?.server?.[0]?.address || '',
-          amfNgapIP: amfConfig?.ngap?.server?.[0]?.address || '',
+          amfNgapIP:  amfConfig?.ngap?.server?.[0]?.address || '',
+          amfNgapDev: amfConfig?.ngap?.server?.[0]?.dev     || '',
           upfGtpIP: (configs.upf as any)?.upf?.gtpu?.server?.[0]?.address || '',
-          smfPfcpIP: (configs.smf as any)?.smf?.pfcp?.server?.find((s: any) => !s.address.startsWith('127.'))?.address || (configs.smf as any)?.smf?.pfcp?.server?.[0]?.address || '',
+          smfPfcpIP: (configs.smf as any)?.smf?.pfcp?.server?.find((s: any) => !s.address?.startsWith('127.'))?.address || (configs.smf as any)?.smf?.pfcp?.server?.[0]?.address || '',
           localUpfPfcpIP: (configs.upf as any)?.upf?.pfcp?.server?.[0]?.address || '',
+          sessionPools: (() => {
+            const upfSessions = (configs.upf as any)?.upf?.session || [];
+            if (upfSessions.length > 0) return upfSessions.map((s: any) => ({ subnet: s.subnet || '', gateway: s.gateway || '', dnn: s.dnn || '', dev: s.dev || '' }));
+            return [
+              { subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: '', dev: '' },
+              { subnet: '2001:db8:cafe::/48', gateway: '2001:db8:cafe::1', dnn: '', dev: '' },
+            ];
+          })(),
           sessionPoolIPv4Subnet: (configs.upf as any)?.upf?.session?.[0]?.subnet || '10.45.0.0/16',
           sessionPoolIPv4Gateway: (configs.upf as any)?.upf?.session?.[0]?.gateway || '10.45.0.1',
           sessionPoolIPv6Subnet: (configs.upf as any)?.upf?.session?.[1]?.subnet || '2001:db8:cafe::/48',
@@ -85,8 +101,12 @@ export const AutoConfigPage: React.FC = () => {
         setConfig({
           plmn4g: [{ mcc: '999', mnc: '70', mme_gid: 2, mme_code: 1, tac: 1 }],
           plmn5g: [{ mcc: '999', mnc: '70', tac: 1 }],
-          s1mmeIP: '', sgwuGtpIP: '', amfNgapIP: '', upfGtpIP: '',
+          s1mmeIP: '', s1mmeDev: '', sgwuGtpIP: '', amfNgapIP: '', amfNgapDev: '', upfGtpIP: '',
           smfPfcpIP: '', localUpfPfcpIP: '',
+          sessionPools: [
+            { subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: '', dev: '' },
+            { subnet: '2001:db8:cafe::/48', gateway: '2001:db8:cafe::1', dnn: '', dev: '' },
+          ],
           sessionPoolIPv4Subnet: '10.45.0.0/16', sessionPoolIPv4Gateway: '10.45.0.1',
           sessionPoolIPv6Subnet: '2001:db8:cafe::/48', sessionPoolIPv6Gateway: '2001:db8:cafe::1',
           configureNAT: false, natInterface: 'ogstun',
@@ -101,7 +121,9 @@ export const AutoConfigPage: React.FC = () => {
   const handleApply = async () => {
     if (config.plmn4g.length === 0 || !config.plmn4g.every(p => p.mcc && p.mnc)) { toast.error('4G PLMN is required'); return; }
     if (config.plmn5g.length === 0 || !config.plmn5g.every(p => p.mcc && p.mnc)) { toast.error('5G PLMN is required'); return; }
-    if (!config.s1mmeIP || !config.sgwuGtpIP || !config.amfNgapIP || !config.upfGtpIP) { toast.error('All IP addresses are required'); return; }
+    if (!config.s1mmeIP && !config.s1mmeDev) { toast.error('S1-MME: provide an IP address or interface name'); return; }
+    if (!config.amfNgapIP && !config.amfNgapDev) { toast.error('NGAP: provide an IP address or interface name'); return; }
+    if (!config.sgwuGtpIP || !config.upfGtpIP) { toast.error('SGW-U GTP-U and UPF GTP-U IP addresses are required'); return; }
     if (!confirm('⚡ This will automatically configure Open5GS and restart all services.\n\nA backup will be created automatically.\n\nContinue?')) return;
     setLoading(true);
     try {
@@ -210,8 +232,13 @@ export const AutoConfigPage: React.FC = () => {
                 <h3 className="text-sm font-semibold text-nms-text mb-3">4G Network (EPC)</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.s1mme_ip}>S1-MME (MME ↔ eNodeB)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.0.1.175" value={config.s1mmeIP} onChange={(e) => setConfig({ ...config, s1mmeIP: e.target.value })} className="nms-input font-mono" />
+                    <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.s1mme_ip}>S1-MME IP (MME ↔ eNodeB)</LabelWithTooltip></label>
+                    <input type="text" placeholder="10.0.1.175" value={config.s1mmeIP} onChange={(e) => setConfig({ ...config, s1mmeIP: e.target.value, s1mmeDev: '' })} className="nms-input font-mono" />
+                  </div>
+                  <div>
+                    <label className="nms-label">S1-MME Interface / dev (alternative to IP)</label>
+                    <input type="text" placeholder="eth0" value={config.s1mmeDev || ''} onChange={(e) => setConfig({ ...config, s1mmeDev: e.target.value, s1mmeIP: '' })} className="nms-input font-mono" />
+                    <p className="text-xs text-nms-text-dim mt-1">Bind to interface instead of IP. Leave blank to use IP.</p>
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.sgwu_gtpu_ip}>S1-U (SGW-U GTP-U)</LabelWithTooltip></label>
@@ -223,8 +250,13 @@ export const AutoConfigPage: React.FC = () => {
                 <h3 className="text-sm font-semibold text-nms-text mb-3">5G Network (5GC)</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.amf_ngap_ip}>NGAP (AMF ↔ gNodeB)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.0.1.175" value={config.amfNgapIP} onChange={(e) => setConfig({ ...config, amfNgapIP: e.target.value })} className="nms-input font-mono" />
+                    <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.amf_ngap_ip}>NGAP IP (AMF ↔ gNodeB)</LabelWithTooltip></label>
+                    <input type="text" placeholder="10.0.1.175" value={config.amfNgapIP} onChange={(e) => setConfig({ ...config, amfNgapIP: e.target.value, amfNgapDev: '' })} className="nms-input font-mono" />
+                  </div>
+                  <div>
+                    <label className="nms-label">NGAP Interface / dev (alternative to IP)</label>
+                    <input type="text" placeholder="eth0" value={config.amfNgapDev || ''} onChange={(e) => setConfig({ ...config, amfNgapDev: e.target.value, amfNgapIP: '' })} className="nms-input font-mono" />
+                    <p className="text-xs text-nms-text-dim mt-1">Bind to interface instead of IP. Leave blank to use IP.</p>
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.upf_gtpu_ip}>N3 (UPF GTP-U)</LabelWithTooltip></label>

@@ -29,6 +29,8 @@ export interface ActiveUE {
   ambrDownlink?: number;
   ambrUplink?: number;
   radioIp?: string;
+  metricsOnly?: boolean;
+  nickname?: string;
 }
 
 export interface InterfaceStatus {

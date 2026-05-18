@@ -135,6 +135,12 @@ export class SqliteAuthRepository implements IAuthRepository {
 
       CREATE INDEX IF NOT EXISTS idx_session_user_id ON session(user_id);
       CREATE INDEX IF NOT EXISTS idx_session_expires_at ON session(expires_at);
+
+      CREATE TABLE IF NOT EXISTS radio_tags (
+        ip         TEXT    NOT NULL PRIMARY KEY,
+        nickname   TEXT    NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
     `);
     this.logger.info('Auth database schema initialised');
   }
@@ -212,6 +218,10 @@ export class SqliteAuthRepository implements IAuthRepository {
 
   getLuciaAdapter(): Adapter {
     return new BetterSqlite3Adapter(this.db);
+  }
+
+  getDb(): Database {
+    return this.db;
   }
 }
 

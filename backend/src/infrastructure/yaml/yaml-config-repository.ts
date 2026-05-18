@@ -218,11 +218,63 @@ export class YamlConfigRepository implements IConfigRepository {
     }
   }
 
+  // ── Deep merge: overlay wins on scalars and arrays, objects are merged recursively ──
+  // This preserves unknown fields (e.g. manually added dev:, custom session entries)
+  // that the NMS UI doesn't know about.
+  private deepMerge(base: any, overlay: any): any {
+    // Scalars, arrays, null: overlay always wins
+    if (
+      overlay === null || overlay === undefined ||
+      typeof overlay !== 'object' || Array.isArray(overlay)
+    ) return overlay;
+    if (
+      base === null || base === undefined ||
+      typeof base !== 'object' || Array.isArray(base)
+    ) return overlay;
+
+    // Both are plain objects — merge key by key
+    const result: any = { ...base };
+    for (const key of Object.keys(overlay)) {
+      const ov = overlay[key];
+      const bv = base[key];
+      if (
+        ov !== null && ov !== undefined &&
+        typeof ov === 'object' && !Array.isArray(ov) &&
+        bv !== null && bv !== undefined &&
+        typeof bv === 'object' && !Array.isArray(bv)
+      ) {
+        result[key] = this.deepMerge(bv, ov);
+      } else {
+        result[key] = ov;
+      }
+    }
+    return result;
+  }
+
   private async saveRaw(service: string, doc: RawYamlDoc): Promise<void> {
     const filePath = `${this.configPath}/${service}.yaml`;
 
+    // ── Round-trip safety: merge incoming doc over the current on-disk file ──
+    // This preserves fields the NMS UI never touched (e.g. manual dev: bindings,
+    // custom session entries, unknown top-level keys). The incoming doc wins on
+    // every key it contains; keys only present on disk are kept as-is.
+    // Arrays are NOT merged — the incoming array replaces the on-disk array
+    // (so deleting a session pool via the UI actually removes it).
+    let mergedDoc: RawYamlDoc = doc;
+    try {
+      const currentContent = await this.hostExecutor.readFile(filePath);
+      const currentParsed = yaml.load(currentContent) as RawYamlDoc;
+      if (currentParsed && typeof currentParsed === 'object') {
+        mergedDoc = this.deepMerge(currentParsed, doc) as RawYamlDoc;
+        this.logger.debug({ service }, 'Deep-merged incoming config over on-disk file');
+      }
+    } catch {
+      // File doesn't exist yet or can't be read — start fresh
+      this.logger.debug({ service }, 'No existing file to merge; writing fresh');
+    }
+
     // Keep mcc/mnc/sd as strings, convert everything else to proper numbers.
-    let cleanDoc = this.ensureNumericTypes(doc);
+    let cleanDoc = this.ensureNumericTypes(mergedDoc);
     cleanDoc = this.removeNullValues(cleanDoc);
 
     this.logger.info(

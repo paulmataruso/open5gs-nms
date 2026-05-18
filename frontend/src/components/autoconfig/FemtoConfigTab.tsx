@@ -376,11 +376,24 @@ export function FemtoConfigTab() {
               </div>
               <div>
                 <label className="nms-label"><LabelWithTooltip tooltip={FEMTO_TOOLTIPS.webui_user}>WebUI Username</LabelWithTooltip></label>
-                <input className="nms-input" value={cfg.webuiUser} onChange={e => set({ webuiUser: e.target.value })} placeholder="debug" />
+                <input
+                  className="nms-input"
+                  value={cfg.webuiUser}
+                  onChange={e => set({ webuiUser: e.target.value })}
+                  onBlur={() => { if (cfg.ip) probeDevice(cfg.ip); }}
+                  placeholder="debug"
+                />
               </div>
               <div>
                 <label className="nms-label"><LabelWithTooltip tooltip={FEMTO_TOOLTIPS.webui_pass}>WebUI Password</LabelWithTooltip></label>
-                <input type="password" className="nms-input font-mono" value={cfg.webuiPass} onChange={e => set({ webuiPass: e.target.value })} placeholder="Derived from MAC" />
+                <input
+                  type="password"
+                  className="nms-input font-mono"
+                  value={cfg.webuiPass}
+                  onChange={e => set({ webuiPass: e.target.value })}
+                  onBlur={() => { if (cfg.ip) probeDevice(cfg.ip); }}
+                  placeholder="Derived from MAC"
+                />
               </div>
             </div>
           )}

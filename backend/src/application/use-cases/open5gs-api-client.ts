@@ -140,11 +140,12 @@ export class Open5gsApiClient {
    * Read the metrics server address + port from a NF's YAML config.
    * Falls back to the Open5GS install defaults if not configured.
    */
-  private async getApiBase(nf: 'amf' | 'mme' | 'smf'): Promise<string> {
+  private async getApiBase(nf: 'amf' | 'mme' | 'smf' | 'upf'): Promise<string> {
     const defaults: Record<string, string> = {
       amf: 'http://127.0.0.5:9090',
       mme: 'http://127.0.0.2:9090',
       smf: 'http://127.0.0.4:9090',
+      upf: 'http://127.0.0.7:9090',
     };
 
     try {
@@ -155,8 +156,11 @@ export class Open5gsApiClient {
       } else if (nf === 'smf') {
         const cfg = await this.configRepo.loadSmf();
         raw = (cfg as any).rawYaml?.smf;
+      } else if (nf === 'upf') {
+        const cfg = await (this.configRepo as any).loadGeneric('upf');
+        raw = (cfg as any).rawYaml?.upf;
       } else {
-        // MME is loaded via loadGeneric
+        // MME
         const cfg = await (this.configRepo as any).loadMme();
         raw = (cfg as any).rawYaml?.mme;
       }
@@ -229,7 +233,7 @@ export class Open5gsApiClient {
    * Fetch raw Prometheus metrics text from a NF.
    * Returns empty string if unavailable.
    */
-  private async fetchPrometheusMetrics(nf: 'amf' | 'mme' | 'smf'): Promise<string> {
+  private async fetchPrometheusMetrics(nf: 'amf' | 'mme' | 'smf' | 'upf'): Promise<string> {
     const base = await this.getApiBase(nf);
     try {
       const result = await this.hostExecutor.executeCommand(
@@ -273,13 +277,34 @@ export class Open5gsApiClient {
     const text = await this.fetchPrometheusMetrics('smf');
     if (!text) return { sessionCount: 0, activeUeCount: 0, bearerCount: 0, pfcpPeers: 0 };
     return {
-      // gtp2_sessions_active = active 4G GTPv2 sessions (reliable)
-      // ues_active = active UEs across 4G+5G
       sessionCount:  this.extractMetric(text, 'gtp2_sessions_active'),
       activeUeCount: this.extractMetric(text, 'ues_active'),
       bearerCount:   this.extractMetric(text, 'bearers_active'),
       pfcpPeers:     this.extractMetric(text, 'pfcp_peers_active'),
     };
+  }
+
+  async getUpfCountsFromMetrics(): Promise<{ sessionsActive: number; dnnFlows: Record<string, number> }> {
+    const text = await this.fetchPrometheusMetrics('upf');
+    if (!text) return { sessionsActive: 0, dnnFlows: {} };
+
+    // fivegs_upffunction_upf_sessionnbr — total active sessions
+    const sessionsActive = this.extractMetric(text, 'fivegs_upffunction_upf_sessionnbr');
+
+    // fivegs_upffunction_upf_qosflows{dnn="internet"} — per-DNN QoS flows
+    // Parse labelled metrics to extract DNN names
+    const dnnFlows: Record<string, number> = {};
+    for (const line of text.split('\n')) {
+      if (line.startsWith('#')) continue;
+      const m = line.match(/^fivegs_upffunction_upf_qosflows\{dnn="([^"]+)"\}\s+(\S+)/);
+      if (m) {
+        const dnn = m[1];
+        const val = parseFloat(m[2]) || 0;
+        if (val > 0) dnnFlows[dnn] = val;
+      }
+    }
+
+    return { sessionsActive, dnnFlows };
   }
 
   /** AMF: connected gNodeBs with SCTP peer IP and UE count */

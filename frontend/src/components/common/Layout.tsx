@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network, FileText,
   ChevronLeft, ChevronRight, Zap, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Layers,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -20,6 +20,7 @@ const NAV_ITEMS = [
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
+  { id: 'tun-interfaces', label: 'TUN Interfaces', icon: Layers },
   { id: 'subscribers', label: 'Subscribers', icon: Users },
   { id: 'suci', label: 'SUCI Keys', icon: Key },
   { id: 'backup', label: 'Backup & Restore', icon: Database },

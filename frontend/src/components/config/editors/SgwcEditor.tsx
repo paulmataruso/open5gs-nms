@@ -37,7 +37,7 @@ export function SgwcEditor({ configs, onChange }: Props): JSX.Element {
           <input
             className="nms-input font-mono text-xs"
             value={gtpcServer.address}
-            onChange={(e) => updateSgwc({ gtpc: { server: [{ address: e.target.value }] } })}
+            onChange={(e) => updateSgwc({ gtpc: { ...sgwc.gtpc, server: [{ ...gtpcServer, address: e.target.value }] } })}
           />
         </div>
       </div>

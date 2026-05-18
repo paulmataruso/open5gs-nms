@@ -38,6 +38,8 @@ import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller
 import { createServiceRouter } from './interfaces/rest/service-controller';
 import { createSubscriberRouter } from './interfaces/rest/subscriber-controller';
 import { createAuditRouter } from './interfaces/rest/audit-controller';
+import { createTunRouter } from './interfaces/rest/tun-controller';
+import { TunManagementUseCase } from './application/use-cases/tun-management';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
@@ -46,6 +48,8 @@ import { AutoAssignIPsUseCase } from './application/use-cases/auto-assign-ips-us
 import { SyncPrometheusConfigUseCase } from './application/use-cases/sync-prometheus-config';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
+import { SqliteRadioTagRepository } from './infrastructure/auth/sqlite-radio-tag-repository';
+import { createRadioTagsRouter } from './interfaces/rest/radio-tags-controller';
 import { createLogDownloadRouter } from './interfaces/rest/log-download-controller';
 
 async function main() {
@@ -93,6 +97,8 @@ async function main() {
   const userManagementUseCase = new UserManagementUseCase(authRepo, lucia, logger);
   const authMiddleware = createAuthMiddleware(lucia);
   logger.info({ dbPath: config.authDbPath }, 'Auth initialised');
+
+  const radioTagRepo = new SqliteRadioTagRepository(authRepo.getDb());
 
   // Ensure backup directories exist
   try {
@@ -239,8 +245,12 @@ async function main() {
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
   app.use('/api/femto', createFemtoRouter(logger));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
+  const tunUseCase = new TunManagementUseCase(hostExecutor, logger);
+  app.use('/api/tun-interfaces', createTunRouter(tunUseCase, logger));
+
   app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo));
   app.use('/api/suci', createSuciRouter(suciManagementUseCase, logger));
+  app.use('/api/radio-tags', createRadioTagsRouter(radioTagRepo, logger));
   app.use('/api/docker', createDockerRouter(dockerLogStreamingUseCase, logger));
   app.use('/api/logs', createLogDownloadRouter(hostExecutor, config, logger));
 

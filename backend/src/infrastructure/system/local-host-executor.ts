@@ -49,7 +49,17 @@ export class LocalHostExecutor implements IHostExecutor {
       return { stdout: stdout || '', stderr: stderr || '', exitCode: 0 };
     } catch (err: unknown) {
       const error = err as { stdout?: string; stderr?: string; code?: number; signal?: string };
-      this.logger.error({ command, args, error: error.stderr || String(err) }, 'Command execution failed');
+      // Use debug level for commands that are expected to fail (e.g. systemctl is-active
+      // on a service that doesn't exist). Only escalate to error for unexpected failures.
+      const isExpectedFailure = (
+        (command === 'systemctl' || args[0] === 'systemctl') &&
+        (args.includes('is-active') || args.includes('is-enabled'))
+      );
+      if (isExpectedFailure) {
+        this.logger.debug({ command, args, error: String(err) }, 'Command execution failed (expected)');
+      } else {
+        this.logger.error({ command, args, error: error.stderr || String(err) }, 'Command execution failed');
+      }
       return {
         stdout: error.stdout || '',
         stderr: error.stderr || String(err),
