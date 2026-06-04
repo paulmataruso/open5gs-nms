@@ -27,9 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     ca-certificates \
     lsb-release \
-    tshark \
     python3 \
     python3-pip \
+    && apt-get install -y --no-install-recommends \
+       -o Dpkg::Options::="--force-overwrite" \
+       tshark \
     && pip3 install pycryptodomex paramiko requests --break-system-packages \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \

@@ -10,7 +10,10 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
-const SERVICES_5G = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf'];
+// In Open5GS 2.7+, SMF absorbed PGW-c and UPF absorbed PGW-u.
+// SMF and UPF are shared between 4G and 5G — do NOT include them in the 5G-only group.
+// Stopping "5G" should only stop the 5G-specific NFs, leaving SMF/UPF running for 4G.
+const SERVICES_5G = ['nrf', 'scp', 'amf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf'];
 const SERVICES_4G = ['mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 
 function formatBytes(bytes: number | null): string {
@@ -147,7 +150,7 @@ function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
   );
 }
 
-export function ServicesPage(): JSX.Element {
+export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => void }): JSX.Element {
   const statuses = useServiceStore((s) => s.statuses);
   const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
   const [bulkActing, setBulkActing] = useState(false);
@@ -311,9 +314,9 @@ export function ServicesPage(): JSX.Element {
             </span>
           </div>
           {!chrony?.installed && (
-            <div className="flex items-center gap-2 text-xs text-amber-400 mb-3">
+            <div className="flex items-center gap-2 text-xs text-amber-400 mb-3 cursor-pointer hover:text-amber-300" onClick={() => onNavigate?.('time-server')}>
               <AlertCircle className="w-3.5 h-3.5" />
-              Not installed — visit Time Server page to install
+              Not installed — click to install
             </div>
           )}
           {chrony?.refSource && (

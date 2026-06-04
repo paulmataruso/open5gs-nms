@@ -253,7 +253,7 @@ export function createBackupRouter(
   });
 
   // GET /api/backup/full/download - Create and stream a full backup archive
-  router.get('/full/download', async (req, res) => {
+  router.get('/full/download', requireAdmin, async (req, res) => {
     try {
       logger?.info('Full backup download requested');
       const result = await backupRestoreUseCase.createFullBackup();

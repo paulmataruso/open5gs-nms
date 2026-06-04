@@ -17,6 +17,7 @@ import { UserManagementPage } from './components/users/UserManagementPage';
 import { MetricsPage } from './components/metrics/MetricsPage';
 import { SASPage } from './pages/SASPage';
 import { TimeServerPage } from './pages/TimeServerPage';
+import { FRRPage } from './pages/FRRPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 
@@ -47,7 +48,7 @@ function App(): JSX.Element {
       case 'ran':
         return <RANPage onNavigateToSubscriber={handleNavigateToSubscriber} />;
       case 'services':
-        return <ServicesPage />;
+        return <ServicesPage onNavigate={setActiveTab} />;
       case 'config':
         return <ConfigPage />;
       case 'subscribers':
@@ -70,6 +71,8 @@ function App(): JSX.Element {
         return <SASPage />;
       case 'time-server':
         return <TimeServerPage />;
+      case 'frr':
+        return <FRRPage />;
       case 'users':
         return <UserManagementPage />;
       default:

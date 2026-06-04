@@ -1,11 +1,15 @@
 import { Router, Request, Response } from 'express';
-import { spawn } from 'child_process';
+import { spawn, execFile } from 'child_process';
+import { promisify } from 'util';
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { AppConfig } from '../../config';
+import { requireAdmin } from './middleware/auth-middleware';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+
+const execFileAsync = promisify(execFile);
 
 const ALL_OPEN5GS_SERVICES = [
   'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
@@ -96,7 +100,7 @@ export const createLogDownloadRouter = (
   };
 
   // ── POST /api/logs/download ──────────────────────────────────────────────────
-  router.post('/download', async (req: Request, res: Response) => {
+  router.post('/download', requireAdmin, async (req: Request, res: Response) => {
     const {
       services = ALL_OPEN5GS_SERVICES,
       source   = 'open5gs',
@@ -115,7 +119,9 @@ export const createLogDownloadRouter = (
         ? services.filter(s => ALL_OPEN5GS_SERVICES.includes(s))
         : source === 'genieacs'
         ? services.filter(s => GENIEACS_SERVICES.includes(s))
-        : services;
+        // Docker source: allowlist container name characters to prevent injection
+        // Container names: alphanumeric, hyphens, underscores, dots only
+        : services.filter(s => /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(s));
 
       if (validServices.length === 0) {
         res.status(400).json({ error: 'No valid services specified' });
@@ -166,15 +172,13 @@ export const createLogDownloadRouter = (
         res.setHeader('Content-Disposition', `attachment; filename="${writtenFiles[0]}-${ts}.log"`);
         res.send(content);
       } else {
-        // tar inside the container — all files are already here
+        // Use execFile — no shell, args passed as argv, immune to injection
         const tarPath  = path.join(os.tmpdir(), `open5gs-logs-${ts}.tar.gz`);
-        const fileList = writtenFiles.map(f => `${f}.log`).join(' ');
-        const tarResult = await hostExecutor.executeLocalCommand('bash', [
-          '-c', `tar -czf "${tarPath}" -C "${tmpDir}" ${fileList} && echo OK`,
-        ]);
-
-        if (!tarResult.stdout.includes('OK')) {
-          throw new Error(`tar failed: ${tarResult.stderr}`);
+        const fileArgs = writtenFiles.map(f => `${f}.log`);
+        try {
+          await execFileAsync('tar', ['-czf', tarPath, '-C', tmpDir, ...fileArgs]);
+        } catch (tarErr) {
+          throw new Error(`tar failed: ${tarErr}`);
         }
 
         const tarBuffer = await fs.readFile(tarPath);
@@ -192,7 +196,7 @@ export const createLogDownloadRouter = (
   });
 
   // ── GET /api/logs/debug-bundle ───────────────────────────────────────────────
-  router.get('/debug-bundle', async (_req: Request, res: Response) => {
+  router.get('/debug-bundle', requireAdmin, async (_req: Request, res: Response) => {
     const ts         = new Date().toISOString().slice(0, 16).replace('T', '-').replace(/:/g, '');
     const bundleName = `open5gs-debug-bundle-${ts}`;
     const tmpDir     = path.join(os.tmpdir(), bundleName);
@@ -295,15 +299,13 @@ export const createLogDownloadRouter = (
       ].join('\n');
       await fs.writeFile(path.join(tmpDir, 'README.txt'), readme, 'utf8');
 
-      // ── 6. Tar inside the container — all files already here ─────────────────
+      // Use execFile — no shell, args passed as argv, immune to injection
       logger.info('Debug bundle: creating archive');
-      const tarPath   = path.join(os.tmpdir(), `${bundleName}.tar.gz`);
-      const tarResult = await hostExecutor.executeLocalCommand('bash', [
-        '-c', `tar -czf "${tarPath}" -C "${os.tmpdir()}" "${bundleName}" && echo OK`,
-      ]);
-
-      if (!tarResult.stdout.includes('OK')) {
-        throw new Error(`tar failed: ${tarResult.stderr}`);
+      const tarPath = path.join(os.tmpdir(), `${bundleName}.tar.gz`);
+      try {
+        await execFileAsync('tar', ['-czf', tarPath, '-C', os.tmpdir(), bundleName]);
+      } catch (tarErr) {
+        throw new Error(`tar failed: ${tarErr}`);
       }
 
       const tarBuffer = await fs.readFile(tarPath);

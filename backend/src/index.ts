@@ -53,8 +53,9 @@ import { createRadioTagsRouter } from './interfaces/rest/radio-tags-controller';
 import { createLogDownloadRouter } from './interfaces/rest/log-download-controller';
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
 import { createChronyRouter } from './interfaces/rest/chrony-controller';
+import { createFrrRouter } from './interfaces/rest/frr-controller';
 import { SasService } from './domain/sas/sas-service';
-import { createSasRouter } from './interfaces/rest/sas-controller';
+import { createSasProtocolRouter, createSasAdminRouter } from './interfaces/rest/sas-controller';
 
 async function main() {
   // Load configuration
@@ -123,9 +124,11 @@ async function main() {
   }
 
   // Initialize WebSocket server
-  const wss = new WebSocketServer({ port: config.wsPort });
+  // noServer: true — we handle the HTTP upgrade manually so we can validate the
+  // Lucia session cookie before handing the socket to the log stream handler.
+  const wss = new WebSocketServer({ noServer: true });
   const wsBroadcaster = new WssBroadcaster(wss, logger);
-  logger.info({ wsPort: config.wsPort }, 'WebSocket server started');
+  logger.info({ wsPort: config.wsPort }, 'WebSocket server started (session-authenticated)');
 
   // Initialize use cases
   const loadConfigUseCase = new LoadConfigUseCase(configRepo, auditLogger, logger);
@@ -211,9 +214,8 @@ async function main() {
     dockerLogStreamingUseCase,
     logger,
   );
-  wss.on('connection', (ws) => {
-    logStreamHandler.handleConnection(ws);
-  });
+  // The wss itself handles connections — the authenticated upgrade
+  // is wired onto the HTTP server after app.listen() below.
   logger.info('Log streaming handler initialized');
 
   // Start service monitoring
@@ -243,7 +245,7 @@ async function main() {
   });
 
   // Auth routes (public — login endpoint must be reachable before auth)
-  app.use('/api/auth', createAuthRouter(authLoginUseCase, authLogoutUseCase, logger));
+  app.use('/api/auth', createAuthRouter(authLoginUseCase, authLogoutUseCase, logger, authMiddleware));
 
   // ── Auth middleware ── all routes below this line are protected
   app.use('/api', authMiddleware);
@@ -268,11 +270,13 @@ async function main() {
   app.use('/api/logs', createLogDownloadRouter(hostExecutor, config, logger));
   app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/chrony',   createChronyRouter(logger, auditLogger));
+  app.use('/api/frr',      createFrrRouter(logger, auditLogger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
-  app.use('/sas', createSasRouter(sasService, sasLogger));
-  // SAS admin endpoints under /api (protected by authMiddleware above)
-  app.use('/api/sas', createSasRouter(sasService, sasLogger));
+  // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below
+  app.use('/sas', createSasProtocolRouter(sasService, sasLogger));
+  // SAS admin endpoints — authenticated + admin-only, mounted under /api
+  app.use('/api/sas', createSasAdminRouter(sasService, sasLogger, config.genieacsNbiUrl));
 
   // Error handler
   app.use(
@@ -291,9 +295,47 @@ async function main() {
   );
 
   // Start HTTP server
-  app.listen(config.port, () => {
+  const httpServer = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'HTTP server started');
   });
+
+  // ── Authenticated WebSocket upgrade ──────────────────────────────────────────
+  // The WebSocket server uses noServer:true so we can validate the Lucia session
+  // cookie on the HTTP upgrade request BEFORE the socket is accepted.
+  // Unauthenticated upgrades are rejected with 401 and the socket is destroyed.
+  httpServer.on('upgrade', async (req, socket, head) => {
+    try {
+      const cookieHeader = req.headers.cookie ?? '';
+      const sessionId = lucia.readSessionCookie(cookieHeader);
+
+      if (!sessionId) {
+        logger.warn({ ip: req.socket.remoteAddress }, 'WS upgrade rejected: no session cookie');
+        socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nUnauthorized');
+        socket.destroy();
+        return;
+      }
+
+      const { session } = await lucia.validateSession(sessionId);
+
+      if (!session) {
+        logger.warn({ ip: req.socket.remoteAddress }, 'WS upgrade rejected: invalid or expired session');
+        socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nUnauthorized');
+        socket.destroy();
+        return;
+      }
+
+      // Session valid — hand off to the WS server
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit('connection', ws, req);
+        logStreamHandler.handleConnection(ws);
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'WS upgrade error');
+      socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
+      socket.destroy();
+    }
+  });
+  logger.info({ port: config.port }, 'Authenticated WebSocket upgrade handler registered');
 
   // Graceful shutdown
   const shutdown = async () => {
@@ -303,6 +345,7 @@ async function main() {
     sasService.stopSummaryLogger();
     logStreamHandler.cleanup();
     await subscriberRepo.disconnect();
+    httpServer.close();
     wss.close();
     process.exit(0);
   };

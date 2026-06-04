@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
+import { requireAdmin } from './middleware/auth-middleware';
 
 // ─── Bandwidth MHz → LTE resource blocks ────────────────────────────────────
 // BaiBLQ_3.x expects integer resource blocks as xsd:int
@@ -592,7 +593,7 @@ export function createGenieacsRouter(
 
   // ── POST /api/genieacs/preview-sercomm/:deviceId ───────────────────────────
   // Returns the two NBI task bodies for Sercomm provisioning without sending them.
-  router.post('/preview-sercomm/:deviceId', (req: Request, res: Response) => {
+  router.post('/preview-sercomm/:deviceId', requireAdmin, (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const input        = req.body as SercommProvisionInput;
     const sasServerUrl = req.body.sasServerUrl as string | undefined;
@@ -663,7 +664,7 @@ export function createGenieacsRouter(
 
   // ── POST /api/genieacs/preview/:deviceId ─────────────────────────────────
   // Returns the three NBI task bodies that would be sent — without sending them.
-  router.post('/preview/:deviceId', (req: Request, res: Response) => {
+  router.post('/preview/:deviceId', requireAdmin, (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const input: BaicellsProvisionInput = req.body;
 
@@ -680,20 +681,26 @@ export function createGenieacsRouter(
 
   // ── POST /api/genieacs/execute-tasks ─────────────────────────────────────
   // Fires an ordered array of NBI tasks — used by the confirm modal after user review/edit.
-  router.post('/execute-tasks', async (req: Request, res: Response) => {
-    const { deviceId, tasks } = req.body as { deviceId: string; tasks: NbiTask[] };
+  // Security: caller supplies task bodies only — URLs are constructed server-side
+  // from deviceId to prevent SSRF (fix for bug report 3.5).
+  router.post('/execute-tasks', requireAdmin, async (req: Request, res: Response) => {
+    const { deviceId, tasks } = req.body as { deviceId: string; tasks: Array<{ body: Record<string, any> }> };
     const user = (req as any).user?.username ?? 'unknown';
 
     if (!deviceId || !Array.isArray(tasks) || tasks.length === 0) {
       return res.status(400).json({ success: false, error: 'deviceId and tasks array required' });
     }
 
+    // Construct task URL server-side — never trust a caller-supplied URL
+    const encodedId = encodeDeviceId(deviceId);
+    const taskUrl   = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
+
     const results: { task: number; ok: boolean; status: number; response: string }[] = [];
 
     try {
       for (let i = 0; i < tasks.length; i++) {
-        const { url, body } = tasks[i];
-        const r = await nbiPost(url, body);
+        const { body } = tasks[i];
+        const r = await nbiPost(taskUrl, body);
         results.push({ task: i + 1, ok: r.ok, status: r.status, response: r.text });
         if (!r.ok) throw new Error(`Task ${i + 1} failed (${r.status}): ${r.text}`);
       }
@@ -733,7 +740,7 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/refresh/:deviceId ─────────────────────────────────
-  router.post('/refresh/:deviceId', async (req: Request, res: Response) => {
+  router.post('/refresh/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?connection_request`;
@@ -772,7 +779,7 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/reboot/:deviceId ──────────────────────────────────
-  router.post('/reboot/:deviceId', async (req: Request, res: Response) => {
+  router.post('/reboot/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const user         = (req as any).user?.username ?? 'unknown';
     const encodedId    = encodeDeviceId(deviceId);
@@ -792,7 +799,7 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/reboot-all ────────────────────────────────────────
-  router.post('/reboot-all', async (req: Request, res: Response) => {
+  router.post('/reboot-all', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
 
     try {
@@ -829,7 +836,7 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/rf/:deviceId ──────────────────────────────────────
-  router.post('/rf/:deviceId', async (req: Request, res: Response) => {
+  router.post('/rf/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId }       = req.params;
     const { enable }         = req.body as { enable: boolean };
     const user               = (req as any).user?.username ?? 'unknown';
@@ -864,7 +871,7 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/rf-all ─────────────────────────────────────────────
-  router.post('/rf-all', async (req: Request, res: Response) => {
+  router.post('/rf-all', requireAdmin, async (req: Request, res: Response) => {
     const { enable } = req.body as { enable: boolean };
     const user       = (req as any).user?.username ?? 'unknown';
 
@@ -922,7 +929,7 @@ export function createGenieacsRouter(
 
   // ── POST /api/genieacs/rf-sercomm/:deviceId ─────────────────────────────
   // Sercomm RF on/off via AdminState (not X_COM_RadioEnable)
-  router.post('/rf-sercomm/:deviceId', async (req: Request, res: Response) => {
+  router.post('/rf-sercomm/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const { enable }   = req.body as { enable: boolean };
     const user         = (req as any).user?.username ?? 'unknown';
@@ -945,7 +952,7 @@ export function createGenieacsRouter(
 
   // ── POST /api/genieacs/rf-sercomm-all ────────────────────────────────────
   // RF on/off for all Sercomm devices via AdminState
-  router.post('/rf-sercomm-all', async (req: Request, res: Response) => {
+  router.post('/rf-sercomm-all', requireAdmin, async (req: Request, res: Response) => {
     const { enable } = req.body as { enable: boolean };
     const user       = (req as any).user?.username ?? 'unknown';
     try {
@@ -1013,7 +1020,7 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/backup/:deviceId ───────────────────────────────────
-  router.post('/backup/:deviceId', async (req: Request, res: Response) => {
+  router.post('/backup/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     try {
       // Use the NBI devices list with a query filter to avoid ID encoding issues

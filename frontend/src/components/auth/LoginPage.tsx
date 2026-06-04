@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
-import { Zap } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { NmsLogoMark } from '../common/NmsLogo';
 
 // ─────────────────────────────────────────────────────────────
 // Login Page — matches NMS dark theme
@@ -33,9 +33,7 @@ export function LoginPage(): JSX.Element {
       <div className="w-full max-w-sm px-4">
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-nms-accent to-cyan-600 flex items-center justify-center mb-4 shadow-lg shadow-nms-accent/20">
-            <Zap className="w-7 h-7 text-white" />
-          </div>
+          <NmsLogoMark size={72} className="mb-4" />
           <h1 className="text-2xl font-semibold font-display text-nms-text tracking-tight">
             Open5GS NMS
           </h1>

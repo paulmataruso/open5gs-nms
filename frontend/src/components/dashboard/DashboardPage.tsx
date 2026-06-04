@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
-import { configApi, healthApi, serviceApi } from '../../api';
+import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
+import { sasApi } from '../../api/sas';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -73,6 +74,9 @@ export function DashboardPage(): JSX.Element {
   const [health, setHealth] = useState<{ status: string; wsConnections: number } | null>(null);
   const [bulkActing, setBulkActing] = useState(false);
   const [chronyStatus, setChronyStatus] = useState<{ installed: boolean; active: boolean; refSource?: string; sysTimeOffset?: string } | null>(null);
+  const [sasStats, setSasStats] = useState<{ activeGrants: number; authorizedGrants: number; registeredCbsds: number } | null>(null);
+  const [sasRfStatus, setSasRfStatus] = useState<{ rfOn: number; rfOff: number; unknown: number } | null>(null);
+  const [activeUes, setActiveUes] = useState<number | null>(null);
 
   useEffect(() => {
     fetchStatuses();
@@ -92,11 +96,26 @@ export function DashboardPage(): JSX.Element {
         });
       })
       .catch(() => setChronyStatus({ installed: false, active: false }));
+    // SAS stats
+    sasApi.getStats().then(s => setSasStats(s)).catch(() => {});
+    sasApi.getRfStatus().then(rf => {
+      const vals = rf.map((r: any) => r.rfOn);
+      setSasRfStatus({
+        rfOn:    vals.filter((v: any) => v === true).length,
+        rfOff:   vals.filter((v: any) => v === false).length,
+        unknown: vals.filter((v: any) => v === null).length,
+      });
+    }).catch(() => {});
+    // Active UEs
+    interfaceApi.getStatus().then((s: any) => {
+      setActiveUes(s?.activeSessions ?? s?.ueCount ?? null);
+    }).catch(() => {});
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
   const totalCount = statuses.length || 5;
   const errorCount = validation?.errors?.filter((e) => e.severity === 'error').length || 0;
+
 
   const doBulkAction = async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
     if (!confirm(`Are you sure you want to ${action} ALL services?`)) return;
@@ -180,6 +199,62 @@ export function DashboardPage(): JSX.Element {
           subValue={health?.status === 'ok' ? 'Backend healthy' : 'Checking...'}
           color="nms-accent"
         />
+        {/* SAS Grants card */}
+        <div className="nms-card animate-fade-in">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">SAS Grants</p>
+              <p className="text-2xl font-semibold font-display mt-1">{sasStats?.activeGrants ?? '—'}</p>
+              <p className="text-xs text-nms-text-dim mt-1">
+                <span className="text-green-400">{sasStats?.authorizedGrants ?? 0} authorized</span>
+                {sasStats != null && sasStats.activeGrants > sasStats.authorizedGrants && (
+                  <span className="text-amber-400 ml-1">{sasStats.activeGrants - sasStats.authorizedGrants} granted</span>
+                )}
+              </p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-purple-500/10">
+              <Shield className="w-5 h-5 text-purple-400" />
+            </div>
+          </div>
+        </div>
+
+        {/* Radio RF status card */}
+        <div className="nms-card animate-fade-in">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">CBRS Radios</p>
+              <p className="text-2xl font-semibold font-display mt-1">{sasStats?.registeredCbsds ?? '—'}</p>
+              <div className="flex flex-wrap gap-x-2 mt-1 text-xs">
+                {sasRfStatus ? (
+                  <>
+                    {sasRfStatus.rfOn   > 0 && <span className="text-cyan-400">{sasRfStatus.rfOn} RF on</span>}
+                    {sasRfStatus.rfOff  > 0 && <span className="text-red-400">{sasRfStatus.rfOff} RF off</span>}
+                    {sasRfStatus.unknown > 0 && <span className="text-nms-text-dim">{sasRfStatus.unknown} unknown</span>}
+                  </>
+                ) : <span className="text-nms-text-dim">Loading…</span>}
+              </div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-blue-500/10">
+              <Radio className="w-5 h-5 text-blue-400" />
+            </div>
+          </div>
+        </div>
+
+        {/* Active UEs card */}
+        <div className="nms-card animate-fade-in">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">Active UEs</p>
+              <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}</p>
+              <p className="text-xs text-nms-text-dim mt-1">Connected devices</p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-nms-accent/10">
+              <Users className="w-5 h-5 text-nms-accent" />
+            </div>
+          </div>
+        </div>
+
+        {/* Time Server card */}
         <div className="nms-card animate-fade-in">
           <div className="flex items-start justify-between">
             <div>

@@ -56,10 +56,20 @@ export const sasApi = {
   getLastRequests: async () => { const { data } = await api.get('/admin/last-requests'); return data.requests as Array<{ cbsdId: string; serial: string; fccId: string; ip: string; lowFrequency: number; highFrequency: number; type: string; ts: string }>; },
 
   // ── Band Policy ──────────────────────────────────────────────────────────────
+  getRfStatus: async () => {
+    const { data } = await api.get('/admin/rf-status');
+    return data.status as Array<{ cbsdId: string; serial: string; fccId: string; rfOn: boolean | null; operationState?: string; lastHeartbeat?: string }>;
+  },
+
   listGroupPolicies:  async () => { const { data } = await api.get('/admin/policies/groups');  return data.policies as Array<{ _id: string; bandId: string; notes?: string; customSlots?: Array<{low:number;high:number;label?:string}>; updatedAt: string }>; },
   setGroupPolicy:     async (groupId: string, bandId: string, notes?: string, customSlots?: Array<{low:number;high:number;label?:string}>) => { const { data } = await api.put(`/admin/policies/groups/${encodeURIComponent(groupId)}`, { bandId, notes, customSlots }); return data.policy; },
   deleteGroupPolicy:  async (groupId: string) => { const { data } = await api.delete(`/admin/policies/groups/${encodeURIComponent(groupId)}`); return data; },
   listCbsdPolicies:   async () => { const { data } = await api.get('/admin/policies/cbsds');   return data.policies as Array<{ _id: string; fccId: string; serial: string; bandId: string; notes?: string; updatedAt: string }>; },
   setCbsdPolicy:      async (fccId: string, serial: string, bandId: string, notes?: string) => { const { data } = await api.put(`/admin/policies/cbsds/${encodeURIComponent(fccId)}/${encodeURIComponent(serial)}`, { bandId, notes }); return data.policy; },
   deleteCbsdPolicy:   async (fccId: string, serial: string) => { const { data } = await api.delete(`/admin/policies/cbsds/${encodeURIComponent(fccId)}/${encodeURIComponent(serial)}`); return data; },
+
+  // ── Manual group assignments ───────────────────────────────────────────────────────────────────
+  listManualGroups:   async () => { const { data } = await api.get('/admin/manual-groups'); return data.groups as Array<{ _id: string; cbsdIds: string[]; updatedAt: string }>; },
+  setManualGroup:     async (groupId: string, cbsdIds: string[]) => { const { data } = await api.put(`/admin/manual-groups/${encodeURIComponent(groupId)}`, { cbsdIds }); return data.group; },
+  deleteManualGroup:  async (groupId: string) => { const { data } = await api.delete(`/admin/manual-groups/${encodeURIComponent(groupId)}`); return data; },
 };

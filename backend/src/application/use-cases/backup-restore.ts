@@ -95,12 +95,51 @@ export class BackupRestoreUseCase {
     try {
       this.logger.info({ archivePath, tmpDir }, 'Restoring full backup archive');
 
-      // Extract archive
+      // ── Zip Slip prevention ────────────────────────────────────────────────────
+      // Enumerate all archive members before extracting anything.
+      // Reject the archive if any member:
+      //   • Has an absolute path
+      //   • Contains a .. path component
+      //   • Is a symlink (type=2), hardlink (type=1), block/char device, or FIFO
+      const listResult = await this.hostExecutor.executeLocalCommand('tar', [
+        '-tvf', archivePath,
+      ]);
+      if (listResult.exitCode !== 0) {
+        throw new Error(`Failed to read archive members: ${listResult.stderr}`);
+      }
+
+      for (const line of listResult.stdout.split('\n')) {
+        if (!line.trim()) continue;
+        // tar -tv output: mode owner size date name
+        // The first character of mode indicates type:
+        //   - = regular file, d = directory, l = symlink, h = hardlink,
+        //   b/c = device, p = FIFO
+        const typeChar = line[0];
+        if (typeChar === 'l' || typeChar === 'h' || typeChar === 'b' || typeChar === 'c' || typeChar === 'p') {
+          throw new Error(
+            `Archive rejected: contains unsafe entry type '${typeChar}' in line: ${line.trim()}`
+          );
+        }
+        // Extract the path — it is the last whitespace-delimited token
+        const parts = line.trim().split(/\s+/);
+        const memberPath = parts[parts.length - 1];
+        if (!memberPath) continue;
+        if (memberPath.startsWith('/')) {
+          throw new Error(`Archive rejected: contains absolute path '${memberPath}'`);
+        }
+        if (memberPath.split('/').some(seg => seg === '..')) {
+          throw new Error(`Archive rejected: contains path traversal component in '${memberPath}'`);
+        }
+      }
+      this.logger.info({ archivePath }, 'Archive member validation passed');
+      // ────────────────────────────────────────────────────────────────
+
+      // Extract archive — safe to proceed now
       await this.hostExecutor.executeLocalCommand('mkdir', ['-p', tmpDir]);
       const tarResult = await this.hostExecutor.executeLocalCommand('tar', [
         '-xzf', archivePath,
         '-C', tmpDir,
-        '--strip-components=1',  // strip the top-level directory
+        '--strip-components=1',
       ]);
       if (tarResult.exitCode !== 0) {
         throw new Error(`tar extract failed: ${tarResult.stderr}`);

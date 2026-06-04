@@ -22,7 +22,17 @@ export type AuditAction =
   | 'chrony_install'
   | 'chrony_restart'
   | 'chrony_start'
-  | 'chrony_stop';
+  | 'chrony_stop'
+  | 'frr_backup'
+  | 'frr_install'
+  | 'frr_transit'
+  | 'frr_neighbor_config'
+  | 'frr_neighbor_up'
+  | 'frr_dummies'
+  | 'frr_advertise'
+  | 'frr_cutover'
+  | 'frr_confirm'
+  | 'frr_rollback';
 
 export interface AuditLogEntry {
   id: string;

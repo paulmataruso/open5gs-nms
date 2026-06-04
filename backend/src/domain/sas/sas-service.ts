@@ -33,6 +33,7 @@ export class SasService {
   private configs!:       Collection<SasConfig>;
   private groupPolicies!: Collection<GroupBandPolicy>;
   private cbsdPolicies!:  Collection<CbsdBandPolicy>;
+  private manualGroups!:  Collection<{ _id: string; cbsdIds: string[]; updatedAt: Date }>;
   private ready = false;
 
   constructor(
@@ -49,6 +50,8 @@ export class SasService {
     this.configs       = db.collection<SasConfig>('sas_configs');
     this.groupPolicies = db.collection<GroupBandPolicy>('sas_group_policies');
     this.cbsdPolicies  = db.collection<CbsdBandPolicy>('sas_cbsd_policies');
+    this.manualGroups  = db.collection('sas_manual_groups');
+    await this.manualGroups.createIndex({ cbsdIds: 1 });
 
     await this.cbsds.createIndex({ cbsdId: 1 },                     { unique: true });
     await this.cbsds.createIndex({ cbsdSerialNumber: 1, fccId: 1 });
@@ -169,7 +172,11 @@ export class SasService {
       const groupCbsds = allCbsds.filter(c =>
         c.groupingParam?.some(p => p.groupType === 'INTERFERENCE_COORDINATION' && p.groupId === groupId)
       );
-      const sorted  = [...groupCbsds].sort((a, b) =>
+      // Also include CBSDs manually assigned to this group
+      const manualGroup = await this.manualGroups.findOne({ _id: groupId });
+      const manualCbsdIds = new Set(manualGroup?.cbsdIds ?? []);
+      const allGroupCbsds = [...groupCbsds, ...allCbsds.filter(c => manualCbsdIds.has(c.cbsdId) && !groupCbsds.find(g => g.cbsdId === c.cbsdId))];
+      const sorted  = [...allGroupCbsds].sort((a, b) =>
         (a.cbsdSerialNumber ?? a.cbsdId).localeCompare(b.cbsdSerialNumber ?? b.cbsdId)
       );
       const idx     = sorted.findIndex(c => c.cbsdId === cbsdId);
@@ -226,6 +233,14 @@ export class SasService {
     )[0];
   }
 
+  // ─── Resolve effective group ID for a CBSD ─────────────────────────────────
+  // Manual group assignments take priority over what the radio sent at registration.
+  private async resolveGroupId(cbsd: SasCbsd): Promise<string | undefined> {
+    const manual = await this.manualGroups.findOne({ cbsdIds: cbsd.cbsdId });
+    if (manual) return manual._id;
+    return cbsd.groupingParam?.find(p => p.groupType === 'INTERFERENCE_COORDINATION')?.groupId;
+  }
+
   // ─── 3-level band resolution ──────────────────────────────────────────────────────────────
   // Priority: CBSD override > group policy > findMatchingBand (global)
   private async resolveBand(
@@ -242,8 +257,8 @@ export class SasService {
       const band = bands.find(b => b.id === cbsdPolicy.bandId);
       if (band) { this.logger.trace({ cbsdId: cbsd.cbsdId, bandId: band.id, label: band.label }, 'Band resolved via CBSD override'); return band; }
     }
-    // 2 — Interference group policy
-    const groupId = cbsd.groupingParam?.find(p => p.groupType === 'INTERFERENCE_COORDINATION')?.groupId;
+    // 2 — Interference group policy (manual override takes priority over registered groupingParam)
+    const groupId = await this.resolveGroupId(cbsd);
     if (groupId) {
       const groupPolicy = await this.groupPolicies.findOne({ _id: groupId });
       if (groupPolicy) {
@@ -256,6 +271,21 @@ export class SasService {
   }
 
   // ─── Policy CRUD ──────────────────────────────────────────────────────────────────────
+  async listManualGroups(): Promise<Array<{ _id: string; cbsdIds: string[]; updatedAt: Date }>> {
+    return this.manualGroups.find({}).toArray();
+  }
+
+  async setManualGroup(groupId: string, cbsdIds: string[]): Promise<{ _id: string; cbsdIds: string[]; updatedAt: Date }> {
+    const doc = { _id: groupId, cbsdIds, updatedAt: new Date() };
+    await this.manualGroups.replaceOne({ _id: groupId }, doc, { upsert: true });
+    this.logger.info({ groupId, cbsdIds }, 'Manual group set');
+    return doc;
+  }
+
+  async deleteManualGroup(groupId: string): Promise<boolean> {
+    return (await this.manualGroups.deleteOne({ _id: groupId })).deletedCount > 0;
+  }
+
   async listGroupPolicies(): Promise<GroupBandPolicy[]> { return this.groupPolicies.find({}).toArray(); }
   async setGroupPolicy(groupId: string, bandId: string, notes?: string, customSlots?: import('./sas-types').GroupBandSlot[]): Promise<GroupBandPolicy> {
     const p: GroupBandPolicy = { _id: groupId, bandId, notes, customSlots, updatedAt: new Date() };
@@ -805,6 +835,7 @@ export class SasService {
           lastHeartbeat:     now,
           transmitExpireTime,
           grantExpireTime:   newGrantExpireTime,
+          lastOperationState: req.operationState ?? 'AUTHORIZED',
         }},
       );
       await this.cbsds.updateOne({ cbsdId: req.cbsdId }, { $set: { lastSeen: now } });
@@ -931,7 +962,15 @@ export class SasService {
       ? cfg.frequencyBands
       : [{ id: 'legacy', label: 'Default', lowFrequency: cfg.allowedBandLow, highFrequency: cfg.allowedBandHigh, maxBandwidthMhz: cfg.defaultGrantBandwidthMhz ?? 20 } as SasFrequencyBand];
 
-    // Build a reverse map: bandId -> groupIds that are assigned to it
+    // Build a map: cbsdId -> effective groupId (manual override first)
+    const allManualGroups = await this.manualGroups.find({}).toArray();
+    const manualGroupMap = new Map<string, string>(); // cbsdId -> groupId
+    for (const mg of allManualGroups) {
+      for (const cbsdId of mg.cbsdIds) manualGroupMap.set(cbsdId, mg._id);
+    }
+    const effectiveGroupId = (cbsd: SasCbsd) =>
+      manualGroupMap.get(cbsd.cbsdId) ??
+      cbsd.groupingParam?.find(p => p.groupType === 'INTERFERENCE_COORDINATION')?.groupId;
     const allGroupPolicies = await this.groupPolicies.find({}).toArray();
     const bandGroupMap = new Map<string, string[]>(); // bandId -> groupIds[]
     for (const gp of allGroupPolicies) {
@@ -964,18 +1003,15 @@ export class SasService {
         return true;
       });
 
-      // Map slots — for display purposes, match each slot to a grant that
-      // overlaps it by at least 50% of the slot width (center-of-mass match).
-      // This handles grants that don't align exactly to slot boundaries.
+      // Map slots — for display purposes, find ALL grants that overlap each slot
+      // by at least 40%. Multiple CBSDs can share the same frequency (e.g. two
+      // Sercomm radios with the same CA channels) — return all of them.
       const slotResults = slots.map(s => {
         const sMid = (s.low + s.high) / 2;
         const centerMhz = sMid / 1e6;
         const earfcn    = Math.round(55240 + (centerMhz - 3550) * 10);
 
-        // Find the grant whose center frequency is closest to this slot's center
-        // and overlaps this slot by at least 50%
-        let bestGrant: SasGrant | undefined;
-        let bestOverlap = 0;
+        const matchingGrants: Array<{ cbsdId: string; serial?: string; fccId?: string; state: string; groupId?: string }> = [];
         for (const g of bandGrants) {
           const gLow  = g.operationParam.operationFrequencyRange.lowFrequency;
           const gHigh = g.operationParam.operationFrequencyRange.highFrequency;
@@ -983,22 +1019,26 @@ export class SasService {
           const overlapHigh = Math.min(gHigh, s.high);
           const overlapHz   = Math.max(0, overlapHigh - overlapLow);
           const overlapPct  = overlapHz / slotW;
-          if (overlapPct > bestOverlap && overlapPct >= 0.4) {
-            bestOverlap = overlapPct;
-            bestGrant   = g;
+          if (overlapPct >= 0.4) {
+            const cbsd    = cbsdMap.get(g.cbsdId);
+            const groupId = cbsd ? effectiveGroupId(cbsd) : undefined;
+            matchingGrants.push({
+              cbsdId:  g.cbsdId,
+              serial:  cbsd?.cbsdSerialNumber,
+              fccId:   cbsd?.fccId,
+              state:   g.state,
+              groupId,
+            });
           }
         }
 
-        const cbsd    = bestGrant ? cbsdMap.get(bestGrant.cbsdId) : undefined;
-        const groupId = cbsd?.groupingParam?.find(
-          p => p.groupType === 'INTERFERENCE_COORDINATION'
-        )?.groupId;
-
+        // For backward compat keep single cbsdId/serial/fccId/state on the slot
+        // pointing to the first match, plus a grants[] array for all matches.
+        const first = matchingGrants[0];
         return {
           low: s.low, high: s.high, earfcn,
-          ...(bestGrant ? { cbsdId: bestGrant.cbsdId, state: bestGrant.state } : {}),
-          ...(cbsd      ? { serial: cbsd.cbsdSerialNumber, fccId: cbsd.fccId } : {}),
-          ...(groupId   ? { groupId } : {}),
+          ...(first ? { cbsdId: first.cbsdId, state: first.state, serial: first.serial, fccId: first.fccId, groupId: first.groupId } : {}),
+          grants: matchingGrants,
         };
       });
 
@@ -1104,6 +1144,52 @@ export class SasService {
   }
 
   isReady(): boolean { return this.ready; }
+
+  // ─── RF status per CBSD ───────────────────────────────────────────────────
+  // Returns the last known RF transmit state for every registered CBSD.
+  // Derived from the last heartbeat operationState:
+  //   AUTHORIZED = radio told us it is actively transmitting
+  //   GRANTED    = radio holds a grant but RF is off
+  //   unknown    = no heartbeat received yet (just registered/granted)
+  async getRfStatus(): Promise<Array<{
+    cbsdId:     string;
+    serial:     string;
+    fccId:      string;
+    rfOn:       boolean | null;   // null = unknown
+    operationState?: string;
+    lastHeartbeat?:  Date;
+  }>> {
+    const cbsds  = await this.cbsds.find({ state: 'REGISTERED' }).toArray();
+    const grants = await this.grants.find({ state: { $in: ['GRANTED', 'AUTHORIZED'] } }).toArray();
+
+    // Build a map cbsdId -> most recent grant
+    const grantByCbsd = new Map<string, SasGrant>();
+    for (const g of grants) {
+      const existing = grantByCbsd.get(g.cbsdId);
+      if (!existing || (g.lastHeartbeat ?? g.createdAt) > (existing.lastHeartbeat ?? existing.createdAt)) {
+        grantByCbsd.set(g.cbsdId, g);
+      }
+    }
+
+    return cbsds.map(c => {
+      const grant = grantByCbsd.get(c.cbsdId);
+      let rfOn: boolean | null = null;
+      if (grant?.lastOperationState) {
+        rfOn = grant.lastOperationState === 'AUTHORIZED';
+      } else if (grant?.lastHeartbeat) {
+        // Grant has been heartbeated but no operationState stored yet (old data)
+        rfOn = grant.state === 'AUTHORIZED';
+      }
+      return {
+        cbsdId:         c.cbsdId,
+        serial:         c.cbsdSerialNumber,
+        fccId:          c.fccId,
+        rfOn,
+        operationState: grant?.lastOperationState,
+        lastHeartbeat:  grant?.lastHeartbeat,
+      };
+    });
+  }
 
   // ─── Background grant keeper ──────────────────────────────────────────────
   // Baicells BaiBLQ firmware stops heartbeating after GPS lock but keeps the

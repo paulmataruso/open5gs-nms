@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network, FileText,
-  ChevronLeft, ChevronRight, Zap, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Layers, Shield, Clock,
+  ChevronLeft, ChevronRight, Database, ScrollText,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Layers, Shield, Clock, GitBranch, Zap,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { NmsLogo, NmsLogoMark } from './NmsLogo';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -13,7 +14,7 @@ interface LayoutProps {
   onTabChange: (tab: string) => void;
 }
 
-const NAV_ITEMS = [
+const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<any>; beta?: boolean }> = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
   { id: 'topology', label: 'Topology', icon: Network },
   { id: 'ran', label: 'RAN Network', icon: Radio },
@@ -26,8 +27,9 @@ const NAV_ITEMS = [
   { id: 'backup', label: 'Backup & Restore', icon: Database },
   { id: 'logs', label: 'Unified Logs', icon: ScrollText },
   { id: 'metrics', label: 'Metrics', icon: BarChart2 },
-  { id: 'sas',         label: 'SAS',          icon: Shield  },
-  { id: 'time-server', label: 'Time Server',   icon: Clock   },
+  { id: 'sas',         label: 'SAS',          icon: Shield    },
+  { id: 'time-server', label: 'Time Server',   icon: Clock     },
+  { id: 'frr', label: 'L3 Routing', icon: GitBranch },
   { id: 'users',   label: 'User Management', icon: UserCog },
   { id: 'audit', label: 'Audit Log', icon: FileText },
 ];
@@ -46,18 +48,11 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
         )}
       >
         {/* Logo */}
-        <div className="flex items-center gap-2 px-4 h-14 border-b border-nms-border shrink-0">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-nms-accent to-cyan-600 flex items-center justify-center">
-            <Zap className="w-4 h-4 text-white" />
-          </div>
-          {!collapsed && (
-            <div className="overflow-hidden">
-              <div className="text-sm font-semibold text-nms-text font-display tracking-tight">
-                Open5GS
-              </div>
-              <div className="text-[10px] text-nms-accent uppercase tracking-widest">NMS</div>
-            </div>
-          )}
+        <div className="flex items-center gap-2 px-3 h-14 border-b border-nms-border shrink-0">
+          {collapsed
+            ? <NmsLogoMark size={32} />
+            : <NmsLogo size={32} showWordmark />
+          }
         </div>
 
         {/* Nav */}
@@ -74,7 +69,12 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
               )}
             >
               <item.icon className="w-4 h-4 shrink-0" />
-              {!collapsed && <span className="font-display">{item.label}</span>}
+              {!collapsed && (
+                <span className="font-display flex-1 truncate">{item.label}</span>
+              )}
+              {!collapsed && item.beta && (
+                <span className="text-[9px] bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded px-1 py-0.5 font-semibold leading-none">BETA</span>
+              )}
             </button>
           ))}
 

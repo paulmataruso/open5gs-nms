@@ -92,7 +92,7 @@ def check_webui(ip, dry_run=False):
         r = requests.get(url, timeout=5, verify=False)
         if r.status_code == 200 and "SmallCell" in r.text:
             print("[+] WebUI already enabled"); return True
-        print(f"    HTTP {r.status_code} — not ready"); return False
+        print(f"    HTTP {r.status_code} - not ready"); return False
     except Exception:
         print("    WebUI not reachable"); return False
 
@@ -133,7 +133,7 @@ def wait_for_webui_up(ip, timeout=300, interval=10, dry_run=False):
                 print(f"[+] WebUI up after {elapsed}s"); return
         except Exception: pass
         print(f"    Still offline... ({elapsed}s)")
-    print(f"[!] WebUI did not come up within {timeout}s — continuing anyway")
+    print(f"[!] WebUI did not come up within {timeout}s - continuing anyway")
 
 
 def wait_for_webui_reboot(ip, timeout=600, interval=10, dry_run=False):
@@ -152,7 +152,7 @@ def wait_for_webui_reboot(ip, timeout=600, interval=10, dry_run=False):
             print(f"    Offline after {elapsed}s"); break
         print(f"    Still up... ({elapsed}s)")
     else:
-        print("[!] Device never went offline — may have already rebooted"); return
+        print("[!] Device never went offline - may have already rebooted"); return
     print("[*] Waiting for WebUI to come back up...")
     elapsed = 0
     while elapsed < timeout:
@@ -163,7 +163,7 @@ def wait_for_webui_reboot(ip, timeout=600, interval=10, dry_run=False):
                 print(f"[+] WebUI back up after {elapsed}s"); return
         except Exception: pass
         print(f"    Still offline... ({elapsed}s)")
-    print("[!] WebUI did not come back up within timeout — device may still be rebooting")
+    print("[!] WebUI did not come back up within timeout - device may still be rebooting")
 
 
 def webui_login(session, base_url, username, password):
@@ -316,7 +316,7 @@ def build_tr098_mgnt(cfg):
 
 def reboot_device(session, base_url, dry_run=False):
     if dry_run:
-        print(f"[DRY RUN] Would reboot"); return
+        print("[DRY RUN] Would reboot"); return
     print("[*] Sending reboot command...")
     try:
         session.get(f"{base_url}/setup.cgi",
@@ -324,26 +324,156 @@ def reboot_device(session, base_url, dry_run=False):
                     timeout=10, verify=False)
         print("[+] Reboot command sent")
     except Exception:
-        print("[+] Reboot sent (connection closed — normal)")
+        print("[+] Reboot sent (connection closed - normal)")
 
+
+# ─── NMS shortcut modes ────────────────────────────────────────────────────────
+# These are called by femto-controller.ts with values passed as CLI argv,
+# never interpolated into Python code strings.
+
+def pull_config_from_webui(ip, webui_user, webui_pass):
+    """Login to Sercomm WebUI and pull current config from devComState.htm."""
+    base_url = f"https://{ip}"
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    un = base64.b64encode(webui_user.encode()).decode()
+    pw = base64.b64encode(webui_pass.encode()).decode()
+    r = session.post(f"{base_url}/status.htm",
+        data={"un": un, "pw": pw, "login_name": "", "login_pwd": "",
+              "todo": "login", "this_file": "logon.htm", "next_file": "status.htm"},
+        timeout=10, allow_redirects=True, verify=False)
+    if "logon" in r.url.lower():
+        return None  # login failed
+    h = session.get(f"{base_url}/devComState.htm", verify=False, timeout=10).text
+
+    def ex(name):
+        m = re.search(r'name=["\']' + re.escape(name) + r'["\'][^>]*value=["\']([^"\']*)["\']', h)
+        if m: return m.group(1)
+        m = re.search(r'value=["\']([^"\']*)["\'][^>]*name=["\']' + re.escape(name) + r'["\']', h)
+        return m.group(1) if m else ""
+
+    def chk(name):
+        m = re.search(r'name=["\']' + re.escape(name) + r'["\'][^>]*', h)
+        return bool(m and re.search(r'checked', m.group(0), re.I))
+
+    return {
+        "carrier_number":          ex("cell_number") or "2",
+        "bandwidth":               ex("bandwidth") or "20",
+        "freq_band":               ex("freqband"),
+        "earfcn":                  ex("rf_earfcnul"),
+        "cell_identity":           ex("cellidentity"),
+        "pci":                     ex("phycellid"),
+        "tx_power":                ex("txpower"),
+        "sync_source":             ex("sync_source") or "FREE_RUNNING",
+        "tunnel_type":             ex("tunnel_type") or "IPv4",
+        "mme_ip":                  ex("mme_ip_addr"),
+        "plmn_id":                 ex("plmn_id"),
+        "tac":                     ex("enodeb_tac"),
+        "admin_state":             chk("FAPService_FAPControl_LTE_AdminState"),
+        "carrier_aggregation":     chk("enable_ca"),
+        "contiguous_cc":           chk("contiguous_cc"),
+        "auto_internal_neighbors": chk("auto_internal_neighbors"),
+    }
+
+
+def cmd_derive_credentials(mac_arg):
+    """--derive-credentials MAC: print JSON {rootPass, webuiPass} and exit."""
+    try:
+        root, dbg = derive_credentials(mac_arg)
+        print(json.dumps({"rootPass": root, "webuiPass": dbg}))
+        sys.exit(0)
+    except ValueError as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_probe(ip, webui_user, webui_pass):
+    """--probe: check WebUI, optionally derive creds, pull config. Print JSON and exit.
+    Output: {up, credentials_available, login_ok, mac, config}
+    """
+    # Step 1 - check WebUI reachability
+    url = f"https://{ip}/logon.htm"
+    try:
+        r = requests.get(url, timeout=5, verify=False)
+        up = r.status_code == 200 and "SmallCell" in r.text
+    except Exception:
+        up = False
+
+    if not up:
+        print(json.dumps({"up": False}))
+        sys.exit(0)
+
+    # Step 2 - resolve password: use provided or derive from MAC via SSH
+    resolved_pass = webui_pass
+    mac = None
+
+    if not resolved_pass:
+        try:
+            mac = get_mac_via_ssh(ip, dry_run=False)
+            _, derived_dbg = derive_credentials(mac)
+            resolved_pass = derived_dbg
+        except Exception:
+            pass
+
+    if not resolved_pass:
+        print(json.dumps({
+            "up": True, "credentials_available": False,
+            "mac": mac, "login_ok": False, "config": None,
+        }))
+        sys.exit(0)
+
+    # Step 3 - login and pull config
+    cfg = pull_config_from_webui(ip, webui_user, resolved_pass)
+
+    if cfg is None:
+        print(json.dumps({
+            "up": True, "credentials_available": True,
+            "mac": mac, "login_ok": False, "config": None,
+        }))
+        sys.exit(0)
+
+    print(json.dumps({
+        "up": True, "credentials_available": True,
+        "mac": mac, "login_ok": True, "config": cfg,
+    }))
+    sys.exit(0)
+
+
+# ─── Standard provisioning entry point ────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Provision Sercomm SCE4255W Small Cell")
-    parser.add_argument("--ip",          required=True)
-    parser.add_argument("--port",        default="443")
-    mac_group = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--ip",                 required=True)
+    parser.add_argument("--port",               default="443")
+    # NMS shortcut modes - short-circuit before provisioning flow
+    parser.add_argument("--derive-credentials", default=None, metavar="MAC",
+                        help="Print JSON {rootPass, webuiPass} for the given MAC and exit")
+    parser.add_argument("--probe",              action="store_true",
+                        help="Check WebUI, derive creds, pull config. Print JSON and exit.")
+    mac_group = parser.add_mutually_exclusive_group()
     mac_group.add_argument("--mac")
-    mac_group.add_argument("--get-mac",  action="store_true")
-    parser.add_argument("--root-pass",   default=None)
-    parser.add_argument("--webui-user",  default="debug")
-    parser.add_argument("--webui-pass",  default=None)
-    parser.add_argument("--config-json", default=None,
+    mac_group.add_argument("--get-mac",         action="store_true")
+    parser.add_argument("--root-pass",          default=None)
+    parser.add_argument("--webui-user",         default="debug")
+    parser.add_argument("--webui-pass",         default=None)
+    parser.add_argument("--config-json",        default=None,
                         help="JSON string overriding CONFIG values (used by NMS WebUI)")
-    parser.add_argument("--mac-only",    action="store_true")
-    parser.add_argument("--force",       action="store_true")
-    parser.add_argument("--skip-enable", action="store_true")
-    parser.add_argument("--dry-run",     action="store_true")
+    parser.add_argument("--mac-only",           action="store_true")
+    parser.add_argument("--force",              action="store_true")
+    parser.add_argument("--skip-enable",        action="store_true")
+    parser.add_argument("--dry-run",            action="store_true")
     args = parser.parse_args()
+
+    # Dispatch shortcut modes first - they call sys.exit() and never return
+    if args.derive_credentials:
+        cmd_derive_credentials(args.derive_credentials)
+
+    if args.probe:
+        cmd_probe(args.ip, args.webui_user or "debug", args.webui_pass)
+
+    # Standard provisioning flow - requires --mac or --get-mac
+    if not args.mac and not args.get_mac:
+        parser.error("--mac or --get-mac is required for provisioning")
 
     if args.config_json:
         try:
@@ -377,9 +507,9 @@ def main():
 
     print("\n[3/6] Checking WebUI...")
     if args.force:
-        print("    --force — running full provisioning"); webui_up = False
+        print("    --force - running full provisioning"); webui_up = False
     elif args.skip_enable:
-        print("    --skip-enable — assuming WebUI up"); webui_up = True
+        print("    --skip-enable - assuming WebUI up"); webui_up = True
     else:
         webui_up = check_webui(args.ip, dry_run=args.dry_run)
 
@@ -389,7 +519,7 @@ def main():
         print("\n[4/6] Waiting for WebUI to come up...")
         wait_for_webui_up(args.ip, dry_run=args.dry_run)
     else:
-        print("\n[4/6] WebUI already up — skipping")
+        print("\n[4/6] WebUI already up - skipping")
 
     print("\n[5/6] Configuring WebUI...")
     session = requests.Session()
@@ -411,7 +541,7 @@ def main():
     try:
         wait_for_webui_reboot(args.ip, dry_run=args.dry_run)
     except SystemExit:
-        print("[!] Reboot wait timed out — device may still be rebooting")
+        print("[!] Reboot wait timed out - device may still be rebooting")
         print("    Config was applied successfully before reboot")
 
     print(f"\n{'='*60}\n  Results:")
@@ -422,7 +552,6 @@ def main():
     print(f"  Credentials: WebUI={'(provided)' if args.webui_pass else '(derived)'}"
           f"  Root={'(provided)' if args.root_pass else '(derived)'}")
     print(f"{'='*60}\n")
-    # Exit 0 if all config pages saved — reboot wait is best-effort only
     sys.exit(0 if all_ok else 1)
 
 

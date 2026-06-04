@@ -26,6 +26,7 @@ export function createAuthRouter(
   loginUseCase: AuthLoginUseCase,
   logoutUseCase: AuthLogoutUseCase,
   logger: Logger,
+  authMiddleware: (req: Request, res: Response, next: any) => void,
 ): Router {
   const router = Router();
 
@@ -55,8 +56,8 @@ export function createAuthRouter(
     }
   });
 
-  // ── POST /api/auth/logout ── (requires valid session — enforced by authMiddleware upstream)
-  router.post('/logout', async (req: Request, res: Response) => {
+  // ── POST /api/auth/logout ── (requires valid session)
+  router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
     if (!req.session) {
       res.status(401).json({ success: false, error: 'Unauthorized' });
       return;
@@ -73,7 +74,7 @@ export function createAuthRouter(
   });
 
   // ── GET /api/auth/me ── (requires valid session)
-  router.get('/me', (req: Request, res: Response) => {
+  router.get('/me', authMiddleware, (req: Request, res: Response) => {
     if (!req.user) {
       res.status(401).json({ success: false, error: 'Unauthorized' });
       return;

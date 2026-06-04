@@ -4,7 +4,31 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
-## [v2.0-beta_0.2] - 2026-06-03
+## [v2.0-beta_0.3] - 2026-06-04
+
+### Fixed
+
+- **cert-init blocks nginx on fresh install** — The cert-init Docker service was failing with exit code 1 due to Docker Compose interpolating shell variables (`$SERVER_IP`, `$HOSTNAME`, `$expiry`, `$i`) in the inline entrypoint script as Compose variables (blank string). This caused nginx to never start since it `depends_on: cert-init: condition: service_completed_successfully`, making the entire web interface unreachable and preventing any user from logging in.
+- **Inline script moved to `nginx/setup-sas-cert.sh`** — Mounted as a volume into the cert-init container. Docker Compose never interpolates file contents, only `docker-compose.yml` values directly.
+- **Script rewritten as POSIX sh** — Was `#!/bin/bash` which is not available in the Alpine-based `alpine/openssl` container. Now `#!/bin/sh`.
+- **Context detection** — Script detects whether it is running in the container (`/certs` volume mount exists) or on the host, and writes the cert to the correct location in both cases.
+- **Skip logic** — Cert generation is skipped if `sas.crt` and `sas.key` already exist, preventing unnecessary regeneration on every `docker compose up`.
+- **IP fallback** — Falls back to `127.0.0.1` if IP detection fails (was hardcoded to `172.16.0.168`).
+
+### Workaround for existing broken installs
+
+If nginx failed to start due to this issue, pre-generate the cert manually then restart:
+
+```bash
+mkdir -p nginx/certs
+openssl req -x509 -newkey rsa:4096 -keyout nginx/certs/sas.key \
+  -out nginx/certs/sas.crt -days 3650 -nodes \
+  -subj '/CN=sas.local' -addext 'subjectAltName=DNS:localhost'
+docker compose up -d
+```
+
+---
+
 
 ### Fixed — Critical Baicells SAS Issues
 

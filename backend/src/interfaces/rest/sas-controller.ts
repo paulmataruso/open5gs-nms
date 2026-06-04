@@ -1,35 +1,33 @@
 import { Router, Request, Response } from 'express';
 import pino from 'pino';
 import * as fs from 'fs';
-import * as path from 'path';
 import { SasService } from '../../domain/sas/sas-service';
+import { requireAdmin } from './middleware/auth-middleware';
 import {
   RegistrationRequest, SpectrumInquiryRequest,
   GrantRequest, HeartbeatRequest,
   RelinquishmentRequest, DeregistrationRequest,
 } from '../../domain/sas/sas-types';
 
-export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
+// ─── SAS Protocol Router (unauthenticated — CBSDs connect directly) ────────────
+// Contains ONLY the WInnForum CBSD protocol endpoints.
+// Mounted at /sas with NO auth middleware in index.ts.
+// Admin routes are intentionally excluded — they live in createSasAdminRouter.
+export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): Router {
   const router = Router();
 
-  // Runtime verbose toggle — raises sasLogger level to 'trace' (shows all) or 'info' (summary only)
-  // When verbose=false: trace level logs are suppressed (docker compose is quiet)
-  // When verbose=true:  trace level logs appear — ALL SAS protocol messages visible
+  // Verbose toggle state — shared within this router instance only
+  let sasVerbose = true;
   const setVerbose = (verbose: boolean) => {
     (logger as any).level = verbose ? 'trace' : 'info';
     if (verbose) {
-      // Stop the summary logger — let every individual SAS message through instead
       sas.stopSummaryLogger();
       logger.info({ sasVerbose: true }, 'SAS verbose logging ENABLED — all protocol messages visible, summary suppressed');
     } else {
-      // Restart the summary logger — quiet mode
       sas.startSummaryLogger(30_000);
       logger.info({ sasVerbose: false }, 'SAS verbose logging DISABLED — 30s summary only');
     }
   };
-  let sasVerbose = true;
-
-  // Set verbose on by default at startup
   setVerbose(true);
 
   // ── POST /sas/v1.2/registration ──────────────────────────────────────────
@@ -61,7 +59,6 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
       if (!Array.isArray(requests) || requests.length === 0) {
         return res.status(400).json({ spectrumInquiryResponse: [] });
       }
-      // Tag each request with the client IP so the debug view can show it
       for (const r of requests) {
         if (r.cbsdId) {
           const cbsds = await sas.listCbsds();
@@ -91,7 +88,6 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
       if (!Array.isArray(requests) || requests.length === 0) {
         return res.status(400).json({ grantResponse: [] });
       }
-      // Tag each request with the client IP for the debug view
       for (const r of requests) {
         if (r.cbsdId && r.operationParam?.operationFrequencyRange) {
           const cbsds = await sas.listCbsds();
@@ -163,40 +159,55 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── GET /sas/admin/last-requests — last freq request per CBSD (debug) ──────────
+  return router;
+}
+
+// ─── SAS Admin Router (authenticated + admin-only) ─────────────────────────────
+// All /admin/* routes. Mounted at /api/sas behind authMiddleware in index.ts.
+// requireAdmin is applied to every mutating route.
+export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genieacsNbiUrl?: string): Router {
+  const router = Router();
+
+  let sasVerbose = true;
+  const setVerbose = (verbose: boolean) => {
+    (logger as any).level = verbose ? 'trace' : 'info';
+    if (verbose) {
+      sas.stopSummaryLogger();
+      logger.info({ sasVerbose: true }, 'SAS verbose logging ENABLED');
+    } else {
+      sas.startSummaryLogger(30_000);
+      logger.info({ sasVerbose: false }, 'SAS verbose logging DISABLED');
+    }
+  };
+
+  // ── GET /api/sas/admin/last-requests ─────────────────────────────────────
   router.get('/admin/last-requests', (_req, res) => {
     res.json({ success: true, requests: sas.getLastRequests() });
   });
 
-  // ── GET/POST /sas/admin/verbose — toggle verbose SAS protocol logging ──────
+  // ── GET/POST /api/sas/admin/verbose ──────────────────────────────────────
   router.get('/admin/verbose', (_req, res) => {
     res.json({ success: true, verbose: sasVerbose });
   });
-  router.post('/admin/verbose', (req, res) => {
+  router.post('/admin/verbose', requireAdmin, (req, res) => {
     sasVerbose = req.body?.verbose ?? !sasVerbose;
     setVerbose(sasVerbose);
     res.json({ success: true, verbose: sasVerbose });
   });
 
-  // ── GET /sas/admin/logs ───────────────────────────────────────────────────
-  // Merges nginx SAS access log + backend structured SAS logs into one stream
+  // ── GET /api/sas/admin/logs ───────────────────────────────────────────────
   router.get('/admin/logs', async (req: Request, res: Response) => {
     const lines = Math.min(parseInt(req.query.lines as string ?? '200', 10), 2000);
     try {
-      const { spawn }  = await import('child_process');
-      const { promises: fs } = await import('fs');
+      const { spawn }        = await import('child_process');
+      const { promises: fsp } = await import('fs');
 
-      // 1 — Nginx SAS access log (mounted at /var/log/nginx-sas/sas-access.log)
       let nginxLines: string[] = [];
       try {
-        const raw = await fs.readFile('/var/log/nginx-sas/sas-access.log', 'utf8');
-        nginxLines = raw.split('\n')
-          .filter(l => l.trim())
-          .slice(-lines)
-          .map(l => `[NGINX] ${l}`);
+        const raw = await fsp.readFile('/var/log/nginx-sas/sas-access.log', 'utf8');
+        nginxLines = raw.split('\n').filter(l => l.trim()).slice(-lines).map(l => `[NGINX] ${l}`);
       } catch { /* file may not exist yet */ }
 
-      // 2 — Backend structured SAS logs from docker
       const dockerRaw = await new Promise<string>((resolve) => {
         const args = ['logs', '--timestamps', '--tail', String(lines * 4), 'open5gs-nms-backend'];
         const proc = spawn('docker', args);
@@ -213,7 +224,6 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
         .slice(-lines)
         .map(l => `[BACKEND] ${l}`);
 
-      // 3 — Merge and sort by timestamp (both start with ISO timestamp)
       const merged = [...nginxLines, ...backendLines]
         .sort((a, b) => {
           const ta = a.match(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/);
@@ -231,8 +241,8 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── DELETE /sas/admin/grants/:grantId ─────────────────────────────────────
-  router.delete('/admin/grants/:grantId', async (req: Request, res: Response) => {
+  // ── DELETE /api/sas/admin/grants/:grantId ────────────────────────────────
+  router.delete('/admin/grants/:grantId', requireAdmin, async (req: Request, res: Response) => {
     try {
       const deleted = await sas.deleteGrant(req.params.grantId);
       if (!deleted) return res.status(404).json({ success: false, error: 'Grant not found' });
@@ -242,8 +252,8 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── DELETE /sas/admin/cbsds/:cbsdId ─────────────────────────────────────
-  router.delete('/admin/cbsds/:cbsdId', async (req: Request, res: Response) => {
+  // ── DELETE /api/sas/admin/cbsds/:cbsdId ──────────────────────────────────
+  router.delete('/admin/cbsds/:cbsdId', requireAdmin, async (req: Request, res: Response) => {
     try {
       const deleted = await sas.deleteCbsd(req.params.cbsdId);
       if (!deleted) return res.status(404).json({ success: false, error: 'CBSD not found' });
@@ -253,12 +263,11 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── GET /sas/admin/cbsds ─────────────────────────────────────────────────
+  // ── GET /api/sas/admin/cbsds ──────────────────────────────────────────────
   router.get('/admin/cbsds', async (_req: Request, res: Response) => {
     try {
       const cbsds  = await sas.listCbsds();
       const grants = await sas.listGrants();
-      // Attach grants to each CBSD
       const grantsByCbsd = grants.reduce((acc, g) => {
         (acc[g.cbsdId] ??= []).push(g);
         return acc;
@@ -270,7 +279,7 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── GET /sas/admin/stats ──────────────────────────────────────────────────
+  // ── GET /api/sas/admin/stats ──────────────────────────────────────────────
   router.get('/admin/stats', async (_req: Request, res: Response) => {
     try {
       const stats = await sas.getStats();
@@ -280,7 +289,7 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── GET /sas/admin/config ─────────────────────────────────────────────────
+  // ── GET /api/sas/admin/config ─────────────────────────────────────────────
   router.get('/admin/config', async (_req: Request, res: Response) => {
     try {
       const config = await sas.getConfig();
@@ -290,8 +299,8 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── PUT /sas/admin/config ─────────────────────────────────────────────────
-  router.put('/admin/config', async (req: Request, res: Response) => {
+  // ── PUT /api/sas/admin/config ─────────────────────────────────────────────
+  router.put('/admin/config', requireAdmin, async (req: Request, res: Response) => {
     try {
       const config = await sas.updateConfig(req.body);
       res.json({ success: true, config });
@@ -300,9 +309,8 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── POST /sas/admin/reset ────────────────────────────────────────────
-  // Deletes all grants + CBSDs. Does NOT touch radios or ACS.
-  router.post('/admin/reset', async (_req: Request, res: Response) => {
+  // ── POST /api/sas/admin/reset ─────────────────────────────────────────────
+  router.post('/admin/reset', requireAdmin, async (_req: Request, res: Response) => {
     try {
       const result = await sas.resetAll();
       res.json({ success: true, ...result });
@@ -311,26 +319,105 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── POST /sas/admin/pause ────────────────────────────────────────────
-  // Pauses the SAS — all protocol endpoints return DEREGISTER/TERMINATED.
-  // Radios stop transmitting and wait. No data is deleted.
-  router.post('/admin/pause', (_req: Request, res: Response) => {
+  // ── POST /api/sas/admin/pause ─────────────────────────────────────────────
+  router.post('/admin/pause', requireAdmin, (_req: Request, res: Response) => {
     sas.pauseSas();
     res.json({ success: true, paused: true });
   });
 
-  // ── POST /sas/admin/resume ───────────────────────────────────────────
-  router.post('/admin/resume', (_req: Request, res: Response) => {
+  // ── POST /api/sas/admin/resume ────────────────────────────────────────────
+  router.post('/admin/resume', requireAdmin, (_req: Request, res: Response) => {
     sas.resumeSas();
     res.json({ success: true, paused: false });
   });
 
-  // ── GET /sas/admin/status ────────────────────────────────────────────
+  // ── GET /api/sas/admin/status ─────────────────────────────────────────────
   router.get('/admin/status', (_req: Request, res: Response) => {
     res.json({ success: true, paused: sas.isPaused() });
   });
 
-  // ── GET /sas/admin/slots ─────────────────────────────────────────────
+  // ── GET /api/sas/admin/rf-status ─────────────────────────────────────────
+  router.get('/admin/rf-status', async (_req: Request, res: Response) => {
+    try {
+      const cbsds = await sas.listCbsds();
+
+      if (!genieacsNbiUrl) {
+        const status = await sas.getRfStatus();
+        return res.json({ success: true, status });
+      }
+
+      const rfMap = new Map<string, boolean | null>();
+      const FAP = 'Device.Services.FAPService.1.';
+
+      function getParam(device: Record<string, any>, dotPath: string): string {
+        const parts = dotPath.split('.');
+        let node: any = device;
+        for (const part of parts) {
+          if (node == null) return '';
+          node = node[part];
+        }
+        return node?._value != null ? String(node._value) : '';
+      }
+
+      try {
+        const baiProjection = ['_id', '_lastInform', '_deviceId', `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, `${FAP}FAPControl.LTE.OpState`].join(',');
+        const baiResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(baiProjection)}`);
+        if (baiResp.ok) {
+          const devices = (await baiResp.json()) as Record<string, any>[];
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          for (const d of devices) {
+            const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
+            const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
+            if (oui !== '48BF74' && !mfr.includes('baicells')) continue;
+            const serial = d._id as string;
+            const lastInform = d._lastInform ?? null;
+            const isOnline = lastInform && lastInform > fiveMinAgo;
+            const rfEnable = getParam(d, `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`);
+            const opState  = getParam(d, `${FAP}FAPControl.LTE.OpState`);
+            rfMap.set(serial, !isOnline ? null : (rfEnable === 'true' && opState === 'true'));
+          }
+        }
+      } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Baicells query failed'); }
+
+      try {
+        const scProjection = ['_id', '_lastInform', '_deviceId', 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status', `${FAP}FAPControl.LTE.AdminState`].join(',');
+        const scResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(scProjection)}`);
+        if (scResp.ok) {
+          const devices = (await scResp.json()) as Record<string, any>[];
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          for (const d of devices) {
+            const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
+            const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
+            if (oui !== '000E8F' && !mfr.includes('sercomm') && !mfr.includes('freedomfi')) continue;
+            const serial = d._id as string;
+            const lastInform = d._lastInform ?? null;
+            const isOnline = lastInform && lastInform > fiveMinAgo;
+            const enbStatus  = getParam(d, 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status');
+            const adminState = getParam(d, `${FAP}FAPControl.LTE.AdminState`);
+            rfMap.set(serial, !isOnline ? null : (enbStatus.toUpperCase() === 'SUCCESS' || adminState === '1' || adminState === 'true'));
+          }
+        }
+      } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Sercomm query failed'); }
+
+      const status = cbsds.map(c => {
+        let rfOn: boolean | null = null;
+        for (const [gSerial, gRf] of rfMap.entries()) {
+          if (gSerial === c.cbsdSerialNumber || gSerial.endsWith(c.cbsdSerialNumber) ||
+              c.cbsdSerialNumber.endsWith(gSerial) || gSerial.includes(c.cbsdSerialNumber) ||
+              c.cbsdSerialNumber.includes(gSerial)) {
+            rfOn = gRf; break;
+          }
+        }
+        return { cbsdId: c.cbsdId, serial: c.cbsdSerialNumber, fccId: c.fccId, rfOn };
+      });
+
+      res.json({ success: true, status });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // ── GET /api/sas/admin/slots ──────────────────────────────────────────────
   router.get('/admin/slots', async (_req: Request, res: Response) => {
     try {
       const layout = await sas.getSlotLayout();
@@ -340,14 +427,12 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── GET /sas/admin/cert — cert info and download link ──────────────────────
-  router.get('/admin/cert', async (req: Request, res: Response) => {
+  // ── GET /api/sas/admin/cert ───────────────────────────────────────────────
+  router.get('/admin/cert', async (_req: Request, res: Response) => {
     const certPath = '/etc/nginx/certs/sas.crt';
     try {
       const exists = fs.existsSync(certPath);
-      if (!exists) {
-        return res.json({ exists: false, message: 'No certificate found. Run nginx/setup-sas-cert.sh to generate one.' });
-      }
+      if (!exists) return res.json({ exists: false, message: 'No certificate found. Run nginx/setup-sas-cert.sh to generate one.' });
       const stat = fs.statSync(certPath);
       res.json({ exists: true, size: stat.size, modified: stat.mtime });
     } catch (err) {
@@ -355,13 +440,11 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── GET /sas/admin/cert/download — download the SAS cert file ────────────────
-  router.get('/admin/cert/download', async (req: Request, res: Response) => {
+  // ── GET /api/sas/admin/cert/download ─────────────────────────────────────
+  router.get('/admin/cert/download', requireAdmin, async (_req: Request, res: Response) => {
     const certPath = '/etc/nginx/certs/sas.crt';
     try {
-      if (!fs.existsSync(certPath)) {
-        return res.status(404).json({ error: 'Certificate not found. Run nginx/setup-sas-cert.sh first.' });
-      }
+      if (!fs.existsSync(certPath)) return res.status(404).json({ error: 'Certificate not found.' });
       res.setHeader('Content-Type', 'application/x-pem-file');
       res.setHeader('Content-Disposition', 'attachment; filename="sas.crt"');
       res.sendFile(certPath);
@@ -370,12 +453,30 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     }
   });
 
-  // ── Band Policy endpoints ─────────────────────────────────────────────────────────
+  // ── Manual group assignments ──────────────────────────────────────────────
+  router.get('/admin/manual-groups', async (_req, res) => {
+    try { res.json({ success: true, groups: await sas.listManualGroups() }); }
+    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
+  });
+  router.put('/admin/manual-groups/:groupId', requireAdmin, async (req, res) => {
+    try {
+      const { cbsdIds } = req.body;
+      if (!Array.isArray(cbsdIds)) return res.status(400).json({ success: false, error: 'cbsdIds array required' });
+      const group = await sas.setManualGroup(req.params.groupId, cbsdIds);
+      res.json({ success: true, group });
+    } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
+  });
+  router.delete('/admin/manual-groups/:groupId', requireAdmin, async (req, res) => {
+    try { res.json({ success: true, deleted: await sas.deleteManualGroup(req.params.groupId) }); }
+    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
+  });
+
+  // ── Band policy endpoints ─────────────────────────────────────────────────
   router.get('/admin/policies/groups', async (_req, res) => {
     try { res.json({ success: true, policies: await sas.listGroupPolicies() }); }
     catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
-  router.put('/admin/policies/groups/:groupId', async (req, res) => {
+  router.put('/admin/policies/groups/:groupId', requireAdmin, async (req, res) => {
     try {
       const { bandId, notes, customSlots } = req.body;
       if (!bandId) return res.status(400).json({ success: false, error: 'bandId required' });
@@ -383,7 +484,7 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
       res.json({ success: true, policy: p });
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
-  router.delete('/admin/policies/groups/:groupId', async (req, res) => {
+  router.delete('/admin/policies/groups/:groupId', requireAdmin, async (req, res) => {
     try { res.json({ success: true, deleted: await sas.deleteGroupPolicy(req.params.groupId) }); }
     catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
@@ -391,7 +492,7 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     try { res.json({ success: true, policies: await sas.listCbsdPolicies() }); }
     catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
-  router.put('/admin/policies/cbsds/:fccId/:serial', async (req, res) => {
+  router.put('/admin/policies/cbsds/:fccId/:serial', requireAdmin, async (req, res) => {
     try {
       const { bandId, notes } = req.body;
       if (!bandId) return res.status(400).json({ success: false, error: 'bandId required' });
@@ -399,7 +500,7 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
       res.json({ success: true, policy: p });
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
-  router.delete('/admin/policies/cbsds/:fccId/:serial', async (req, res) => {
+  router.delete('/admin/policies/cbsds/:fccId/:serial', requireAdmin, async (req, res) => {
     try { res.json({ success: true, deleted: await sas.deleteCbsdPolicy(req.params.fccId, req.params.serial) }); }
     catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });

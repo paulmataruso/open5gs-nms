@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Shield, Radio, Wifi, Server, Settings, RefreshCw,
-  AlertCircle, CheckCircle, Activity, ScrollText, Trash2, Plus, BookOpen, X, Download, Lock,
+  AlertCircle, CheckCircle, Activity, ScrollText, Trash2, Plus, BookOpen, X, Download, Lock, Users,
 } from 'lucide-react';
 import { sasApi } from '../api/sas';
+import { interfaceApi } from '../api';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 
@@ -422,6 +423,41 @@ function EarfcnReference() {
   );
 }
 
+// ─── Dot legend — shared by both chart types ─────────────────────────────────
+function DotLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-nms-text-dim">
+      <span className="font-semibold text-nms-text-dim/60 uppercase tracking-wider text-[10px]">Legend:</span>
+      {/* SAS state — circles */}
+      <span className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-full bg-green-400 shadow-[0_0_5px_rgba(74,222,128,0.9)] inline-block shrink-0" />
+        SAS Authorized
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-full bg-sky-400 inline-block shrink-0" />
+        SAS Granted
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-full bg-nms-text-dim/30 border border-nms-text-dim/50 inline-block shrink-0" />
+        SAS Idle
+      </span>
+      {/* RF state — squares */}
+      <span className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-sm bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.8)] inline-block shrink-0" />
+        RF ON
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-sm bg-red-500 inline-block shrink-0" />
+        RF OFF
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-sm bg-nms-text-dim/20 border border-nms-text-dim/40 inline-block shrink-0" />
+        RF Unknown
+      </span>
+    </div>
+  );
+}
+
 // ─── Frequency Spectrum Chart ──────────────────────────────────────────────────────
 
 const SLOT_COLORS = [
@@ -435,12 +471,13 @@ const SLOT_COLORS = [
   '#84cc16', // lime
 ];
 
-function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds }: {
+function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, rfStatus = new Map() }: {
   slots:          Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
   bandLow:        number;
   bandHigh:       number;
   slotWidthHz:    number;
-  filterGroupIds?: string[]; // if set, only show slots whose groupId is in this list
+  filterGroupIds?: string[];
+  rfStatus?:      Map<string, boolean | null>;
 }) {
   const bandWidthHz = bandHigh - bandLow;
   const bandMhz     = bandWidthHz / 1e6;
@@ -500,7 +537,21 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds }
               title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}–${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}>
               <span className="text-xs font-bold truncate w-full text-center" style={{ color }}>{label}</span>
               <span className="text-xs font-mono truncate w-full text-center" style={{ color: color + 'cc' }}>{(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}</span>
-              {isAuth && <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]" />}
+              {isAuth && <div className="absolute top-1 right-1 flex items-center gap-0.5">
+                {/* SAS state — circle */}
+                <div className={`w-2 h-2 rounded-full ${
+                  s.state === 'AUTHORIZED' ? 'bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]'
+                  : s.state === 'GRANTED'  ? 'bg-sky-400'
+                  : 'bg-nms-text-dim/40'
+                }`} title={`SAS: ${s.state}`} />
+                {/* RF state — square */}
+                {(() => {
+                  const rf = rfStatus.get(s.cbsdId!);
+                  if (rf === true)  return <div className="w-2 h-2 rounded-sm bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.8)]" title="RF: ON" />;
+                  if (rf === false) return <div className="w-2 h-2 rounded-sm bg-red-500" title="RF: OFF" />;
+                  return <div className="w-2 h-2 rounded-sm bg-nms-text-dim/30 border border-nms-text-dim/40" title="RF: Unknown" />;
+                })()}
+              </div>}
             </div>
           );
         })}
@@ -625,12 +676,13 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds }
 // ─── Stacked Band Chart — one row per band, all on same 3550–3700 MHz axis ──
 // Each row only shows grants from the groups assigned to that band.
 // This cleanly handles overlapping bands without visual collision.
-function StackedBandChart({ bands }: {
+function StackedBandChart({ bands, rfStatus = new Map() }: {
   bands: Array<{
     bandLow: number; bandHigh: number; label: string; slotWidthHz: number;
     bandId: string; assignedGroupIds: string[];
     slots: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
   }>;
+  rfStatus?: Map<string, boolean | null>;
 }) {
   const FULL_LOW   = 3_550_000_000;
   const FULL_HIGH  = 3_700_000_000;
@@ -638,6 +690,8 @@ function StackedBandChart({ bands }: {
   const pct = (hz: number) => ((hz - FULL_LOW) / FULL_WIDTH) * 100;
 
   // Assign stable colors per CBSD across all bands
+  // Also scan grants[] array inside each slot so Nokia radios (which may only
+  // appear in uniqueGlobalSlots) get a colour assigned before rendering.
   const cbsdColorMap = new Map<string, number>();
   let colorIdx = 0;
   for (const band of bands) {
@@ -645,12 +699,35 @@ function StackedBandChart({ bands }: {
       if (s.cbsdId && !cbsdColorMap.has(s.cbsdId)) {
         cbsdColorMap.set(s.cbsdId, colorIdx++ % SLOT_COLORS.length);
       }
+      for (const g of (s as any).grants ?? []) {
+        if (g.cbsdId && !cbsdColorMap.has(g.cbsdId)) {
+          cbsdColorMap.set(g.cbsdId, colorIdx++ % SLOT_COLORS.length);
+        }
+      }
     }
   }
+  // Helper — never returns undefined
+  const getColor = (cbsdId: string) => {
+    if (!cbsdColorMap.has(cbsdId)) cbsdColorMap.set(cbsdId, colorIdx++ % SLOT_COLORS.length);
+    return SLOT_COLORS[cbsdColorMap.get(cbsdId)! % SLOT_COLORS.length];
+  };
 
   // Tick marks every 10 MHz
   const ticks: number[] = [];
   for (let f = 3560; f <= 3700; f += 10) ticks.push(f * 1e6);
+
+  // Collect all CBSDs with active grants that aren't covered by any band's assignedGroupIds
+  const allAssignedGroups = new Set(bands.flatMap(b => b.assignedGroupIds));
+  const globalSlots = bands.flatMap(b => b.slots).filter(s =>
+    s.cbsdId && (!s.groupId || !allAssignedGroups.has(s.groupId))
+  );
+  // Deduplicate by cbsdId
+  const seenGlobal = new Set<string>();
+  const uniqueGlobalSlots = globalSlots.filter(s => {
+    if (seenGlobal.has(s.cbsdId!)) return false;
+    seenGlobal.add(s.cbsdId!);
+    return true;
+  });
 
   const totalGrants = bands.reduce((acc, b) => {
     const groupFilter = b.assignedGroupIds.length > 0 ? b.assignedGroupIds : null;
@@ -663,11 +740,28 @@ function StackedBandChart({ bands }: {
         const bandColor = SLOT_COLORS[bi % SLOT_COLORS.length];
         const groupFilter = band.assignedGroupIds.length > 0 ? band.assignedGroupIds : null;
 
-        // Slots to render in this row — only this band's assigned group
-        const rowSlots = band.slots.filter(s =>
-          !groupFilter || !s.cbsdId || !s.groupId || groupFilter.includes(s.groupId)
-        );
-        const activeInRow = rowSlots.filter(s => s.cbsdId);
+        // Build expanded entries — one per grant per slot so multiple CBSDs
+        // on the same frequency all appear (e.g. two Sercomm radios with same CA channels)
+        const expandedEntries: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }> = [];
+        const seenUnassigned = new Set<string>();
+        for (const s of band.slots) {
+          const grants: Array<{ cbsdId: string; serial?: string; fccId?: string; state: string; groupId?: string }> =
+            (s as any).grants ?? (s.cbsdId ? [{ cbsdId: s.cbsdId, serial: s.serial, fccId: s.fccId, state: s.state, groupId: s.groupId }] : []);
+          const slotKey = `${s.low}-${s.high}`;
+          if (grants.length === 0) {
+            if (!seenUnassigned.has(slotKey)) {
+              seenUnassigned.add(slotKey);
+              expandedEntries.push({ ...s });
+            }
+          } else {
+            for (const g of grants) {
+              if (!groupFilter || !g.groupId || groupFilter.includes(g.groupId)) {
+                expandedEntries.push({ ...s, ...g });
+              }
+            }
+          }
+        }
+        const activeInRow = expandedEntries.filter(s => s.cbsdId);
 
         return (
           <div key={bi} className="flex items-stretch gap-2">
@@ -698,7 +792,7 @@ function StackedBandChart({ bands }: {
               />
 
               {/* Unassigned slot hatching within band */}
-              {rowSlots.filter(s => !s.cbsdId).map((s, i) => (
+              {expandedEntries.filter(s => !s.cbsdId).map((s, i) => (
                 <div key={i} className="absolute inset-y-0"
                   style={{ left: `${pct(s.low)}%`, width: `${pct(s.high) - pct(s.low)}%` }}>
                   <div className="w-full h-full opacity-15"
@@ -706,29 +800,47 @@ function StackedBandChart({ bands }: {
                 </div>
               ))}
 
-              {/* Active grants */}
-              {activeInRow.map(s => {
-                const color = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
-                const label = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
+              {/* Active grants — stacked vertically if multiple CBSDs share same slot */}
+              {activeInRow.map((s, entryIdx) => {
+                const sameSlot = activeInRow.filter(e => e.low === s.low && e.high === s.high);
+                const pos      = sameSlot.indexOf(s);
+                const count    = sameSlot.length;
+                const slotW    = pct(s.high) - pct(s.low);
+                const subW     = slotW / count;
+                const subLeft  = pct(s.low) + pos * subW;
+                const color    = getColor(s.cbsdId!);
+                const label    = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
                 return (
-                  <div key={s.cbsdId}
+                  <div key={`${s.cbsdId}-${entryIdx}`}
                     className="absolute inset-y-0 flex flex-col items-center justify-center px-0.5 overflow-hidden"
-                    style={{
-                      left:            `${pct(s.low)}%`,
-                      width:           `${pct(s.high) - pct(s.low)}%`,
-                      backgroundColor: color + '33',
-                      borderLeft:      `2px solid ${color}`,
-                      borderRight:     `2px solid ${color}`,
-                    }}
+                    style={{ left: `${subLeft}%`, width: `${subW}%`, backgroundColor: color + '33', borderLeft: `2px solid ${color}`, borderRight: `2px solid ${color}` }}
                     title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}
                   >
                     <span className="text-xs font-bold truncate w-full text-center leading-tight" style={{ color }}>{label}</span>
                     <span className="text-xs font-mono truncate w-full text-center leading-tight" style={{ color: color + 'cc' }}>
                       {(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}
                     </span>
-                    {s.state === 'AUTHORIZED' && (
-                      <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]" />
-                    )}
+                    {/* Two status dots: SAS state (circle) + RF on/off (square) */}
+                    <div className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
+                      {/* SAS — circle */}
+                      <div
+                        className={`w-2 h-2 rounded-full ${
+                          s.state === 'AUTHORIZED'
+                            ? 'bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]'
+                            : s.state === 'GRANTED'
+                            ? 'bg-sky-400'
+                            : 'bg-nms-text-dim/40'
+                        }`}
+                        title={`SAS: ${s.state}`}
+                      />
+                      {/* RF — square */}
+                      {(() => {
+                        const rf = rfStatus.get(s.cbsdId!);
+                        if (rf === true)  return <div className="w-2 h-2 rounded-sm bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.8)]" title="RF: ON" />;
+                        if (rf === false) return <div className="w-2 h-2 rounded-sm bg-red-500" title="RF: OFF" />;
+                        return <div className="w-2 h-2 rounded-sm bg-nms-text-dim/30 border border-nms-text-dim/40" title="RF: Unknown" />;
+                      })()}
+                    </div>
                   </div>
                 );
               })}
@@ -743,7 +855,51 @@ function StackedBandChart({ bands }: {
         );
       })}
 
-      {/* Shared x-axis tick labels */}
+      {/* Global default row — always shown; displays CBSDs on global default (no group pinned to a band) */}
+      {uniqueGlobalSlots.length > 0 && (
+        <div className="flex items-stretch gap-2">
+          <div className="w-32 shrink-0 flex flex-col justify-center">
+            <p className="text-xs font-semibold text-nms-text-dim">Global Default</p>
+            <p className="text-xs font-mono text-nms-text-dim/60">no group</p>
+          </div>
+          <div className="flex-1 relative h-12 rounded overflow-hidden bg-nms-surface border border-nms-border border-dashed">
+            {uniqueGlobalSlots.map((s, entryIdx) => {
+              const color = getColor(s.cbsdId!);
+              const label = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
+              const leftPct = pct(s.low);
+              const widthPct = pct(s.high) - pct(s.low);
+              return (
+                <div key={`global-${s.cbsdId}-${entryIdx}`}
+                  className="absolute inset-y-0 flex flex-col items-center justify-center px-0.5 overflow-hidden"
+                  style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color + '33', borderLeft: `2px solid ${color}`, borderRight: `2px solid ${color}` }}
+                  title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz\n${s.state}\nGlobal default`}
+                >
+                  <span className="text-xs font-bold truncate w-full text-center leading-tight" style={{ color }}>{label}</span>
+                  <span className="text-xs font-mono truncate w-full text-center leading-tight" style={{ color: color + 'cc' }}>
+                    {(s.low/1e6).toFixed(0)}\u2013{(s.high/1e6).toFixed(0)}
+                  </span>
+                  <div className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
+                    <div className={`w-2 h-2 rounded-full ${
+                      s.state === 'AUTHORIZED' ? 'bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]'
+                      : s.state === 'GRANTED'  ? 'bg-sky-400'
+                      : 'bg-nms-text-dim/40'
+                    }`} title={`SAS: ${s.state}`} />
+                    {(() => {
+                      const rf = rfStatus.get(s.cbsdId!);
+                      if (rf === true)  return <div className="w-2 h-2 rounded-sm bg-green-500 shadow-[0_0_4px_rgba(34,197,94,0.8)]" title="RF: ON" />;
+                      if (rf === false) return <div className="w-2 h-2 rounded-sm bg-red-500" title="RF: OFF" />;
+                      return <div className="w-2 h-2 rounded-sm bg-nms-text-dim/30 border border-nms-text-dim/40" title="RF: Unknown" />;
+                    })()}
+                  </div>
+                </div>
+              );
+            })}
+            {ticks.map(hz => (
+              <div key={hz} className="absolute inset-y-0 w-px bg-nms-border/20" style={{ left: `${pct(hz)}%` }} />
+            ))}
+          </div>
+        </div>
+      )}
       <div className="flex items-stretch gap-2">
         <div className="w-32 shrink-0" />
         <div className="flex-1 relative h-4">
@@ -765,7 +921,7 @@ function StackedBandChart({ bands }: {
             return band.slots
               .filter(s => s.cbsdId && (!groupFilter || !s.groupId || groupFilter.includes(s.groupId)))
               .map(s => {
-                const color = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
+                const color = getColor(s.cbsdId!);
                 return (
                   <div key={`${bi}-${s.cbsdId}`} className="flex items-center gap-1.5">
                     <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color + '55', border: `1.5px solid ${color}` }} />
@@ -872,16 +1028,18 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   const [cbsdNotes,     setCbsdNotes]     = useState<Record<string, string>>({});
   const [groupNotes,    setGroupNotes]    = useState<Record<string, string>>({});
   const [groupCustomSlots, setGroupCustomSlots] = useState<Record<string, Array<{low:number;high:number;label?:string}> | undefined>>({});
+  const [manualGroups,  setManualGroups]  = useState<Array<{ _id: string; cbsdIds: string[] }>>([]);
   const [saving,        setSaving]        = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
-      const [gp, cp] = await Promise.all([sasApi.listGroupPolicies(), sasApi.listCbsdPolicies()]);
+      const [gp, cp, mg] = await Promise.all([sasApi.listGroupPolicies(), sasApi.listCbsdPolicies(), sasApi.listManualGroups()]);
       setGroupPolicies(Object.fromEntries(gp.map((p: any) => [p._id, p.bandId])));
       setGroupNotes(Object.fromEntries(gp.map((p: any) => [p._id, p.notes ?? ''])));
       setGroupCustomSlots(Object.fromEntries(gp.map((p: any) => [p._id, p.customSlots])));
       setCbsdPolicies(Object.fromEntries(cp.map((p: any) => [p._id, p.bandId])));
       setCbsdNotes(Object.fromEntries(cp.map((p: any) => [p._id, p.notes ?? ''])));
+      setManualGroups(mg);
     } catch { /* silent */ }
   }, []);
 
@@ -898,8 +1056,11 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
     return map;
   }, [cbsds]);
 
-  const groupIds = Object.keys(groups).filter(k => k !== '__none__').sort();
-  const unassigned = groups['__none__'] ?? [];
+  const groupIds = [...new Set([
+    ...Object.keys(groups).filter(k => k !== '__none__'),
+    ...manualGroups.map(mg => mg._id),
+  ])].sort();
+  const unassigned = groups['__none__']?.filter(c => !manualGroups.some(mg => mg.cbsdIds.includes(c.cbsdId))) ?? [];
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(1);
 
@@ -968,13 +1129,117 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   };
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-3xl mx-auto">
 
       <div className="px-3 py-2 rounded-lg bg-nms-accent/5 border border-nms-accent/20 text-xs text-nms-text-dim">
         <p className="font-semibold text-nms-text mb-1">How band assignment works</p>
         <p><span className="text-nms-accent font-medium">1. Per-CBSD override</span> — pin one specific radio to a specific band (highest priority)</p>
         <p><span className="text-purple-400 font-medium">2. Interference group assignment</span> — assign all radios in a group to the same band; each gets a unique non-overlapping slot</p>
         <p><span className="text-nms-text-dim">3. Global default</span> — SAS picks the best-matching band based on what frequency the radio asks for</p>
+      </div>
+
+      {/* ── Manual Group Assignments ── */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
+            Manual Group Assignments
+            <span className="text-xs text-nms-text-dim font-normal">— for radios that don’t send a group ID (e.g. Nokia)</span>
+          </h3>
+          <button onClick={() => {
+            const id = `manual-group-${Date.now()}`;
+            setManualGroups(g => [...g, { _id: id, cbsdIds: [] }]);
+          }} className="nms-btn-ghost flex items-center gap-1.5 text-xs">
+            <Plus className="w-3.5 h-3.5" /> New Group
+          </button>
+        </div>
+        <p className="text-xs text-nms-text-dim">Create interference groups manually and assign CBSDs to them. These assignments take priority over group IDs sent by the radio during registration. Use this for radios like Nokia that don’t include a groupingParam.</p>
+
+        {manualGroups.length === 0 && (
+          <p className="text-xs text-nms-text-dim italic">No manual groups configured.</p>
+        )}
+
+        {manualGroups.map((mg, mi) => (
+          <div key={mg._id} className="nms-card space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-nms-text-dim shrink-0">Group ID:</span>
+                  <input
+                    value={mg._id}
+                    onChange={e => setManualGroups(gs => gs.map((g, i) => i === mi ? { ...g, _id: e.target.value } : g))}
+                    className="nms-input font-mono text-xs flex-1"
+                    placeholder="e.g. nokia-sector-a"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-nms-text-dim mb-1">Assign CBSDs to this group:</p>
+                  <div className="space-y-1">
+                    {cbsds.map(c => {
+                      const isAssigned = mg.cbsdIds.includes(c.cbsdId);
+                      const assignedElsewhere = !isAssigned && manualGroups.some((g, i) => i !== mi && g.cbsdIds.includes(c.cbsdId));
+                      return (
+                        <label key={c.cbsdId} className={clsx('flex items-center gap-2 cursor-pointer text-xs p-1.5 rounded hover:bg-nms-surface-2', assignedElsewhere && 'opacity-50')}>
+                          <input type="checkbox"
+                            checked={isAssigned}
+                            disabled={assignedElsewhere}
+                            onChange={e => setManualGroups(gs => gs.map((g, i) => i !== mi ? g : {
+                              ...g,
+                              cbsdIds: e.target.checked
+                                ? [...g.cbsdIds, c.cbsdId]
+                                : g.cbsdIds.filter(id => id !== c.cbsdId)
+                            }))}
+                            className="w-3.5 h-3.5 rounded"
+                          />
+                          <span className="font-mono text-nms-accent">{c.cbsdSerialNumber}</span>
+                          <span className="text-nms-text-dim">{c.fccId}</span>
+                          {(() => {
+                            const hasNativeGroup = c.groupingParam?.some((p: any) => p.groupType === 'INTERFERENCE_COORDINATION');
+                            if (hasNativeGroup) return <span className="text-green-400/60 text-xs">(has native group)</span>;
+                            return <span className="text-amber-400/70 text-xs">(no native group)</span>;
+                          })()}
+                          {assignedElsewhere && <span className="text-red-400/70 text-xs">— assigned to another group</span>}
+                        </label>
+                      );
+                    })}
+                    {cbsds.length === 0 && <p className="text-xs text-nms-text-dim italic">No CBSDs registered yet.</p>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button
+                  onClick={async () => {
+                    setSaving(s => ({ ...s, [`mg-${mi}`]: true }));
+                    try {
+                      await sasApi.setManualGroup(mg._id, mg.cbsdIds);
+                      await load();
+                      toast.success(`Group “${mg._id}” saved`);
+                    } catch { toast.error('Failed to save group'); }
+                    finally { setSaving(s => ({ ...s, [`mg-${mi}`]: false })); }
+                  }}
+                  disabled={!!saving[`mg-${mi}`] || !mg._id.trim()}
+                  className="nms-btn-primary text-xs flex items-center gap-1.5"
+                >
+                  {saving[`mg-${mi}`] ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                  Save
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Delete manual group “${mg._id}”?`)) return;
+                    try {
+                      await sasApi.deleteManualGroup(mg._id);
+                      await load();
+                      toast.success('Group deleted');
+                    } catch { toast.error('Failed to delete group'); }
+                  }}
+                  className="nms-btn-ghost text-xs text-red-400 flex items-center gap-1"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* ── Interference Groups ── */}
@@ -987,7 +1252,10 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
           </h3>
           <p className="text-xs text-nms-text-dim">Radios in the same interference coordination group will all be served spectrum from the assigned band. Each radio gets a unique non-overlapping slot within that band.</p>
           {groupIds.map(groupId => {
-            const members = groups[groupId] ?? [];
+            const members = [
+              ...(groups[groupId] ?? []),
+              ...(manualGroups.find(mg => mg._id === groupId)?.cbsdIds ?? []).map(id => cbsds.find(c => c.cbsdId === id)).filter(Boolean).filter(c => !groups[groupId]?.find(g => g.cbsdId === c!.cbsdId)),
+            ];
             const currentBandId = groupPolicies[groupId] ?? '';
             const isSaving = saving[groupId];
             return (
@@ -1256,24 +1524,6 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   );
 }
 
-// ─── Stat card ────────────────────────────────────────────────────────────────────────────────
-// ─── Stat card ────────────────────────────────────────────────────────────────
-function StatCard({ label, value, icon: Icon, color }: {
-  label: string; value: number | string; icon: any; color: string;
-}) {
-  return (
-    <div className="nms-card flex items-center gap-4">
-      <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${color}`}>
-        <Icon className="w-5 h-5 text-white" />
-      </div>
-      <div>
-        <p className="text-2xl font-bold text-nms-text">{value}</p>
-        <p className="text-xs text-nms-text-dim">{label}</p>
-      </div>
-    </div>
-  );
-}
-
 function GrantStateDot({ state }: { state: string }) {
   return (
     <span className={clsx(
@@ -1291,6 +1541,8 @@ export function SASPage() {
   const [cbsds, setCbsds]     = useState<any[]>([]);
   const [config, setConfig]   = useState<any>(null);
   const [slots, setSlots]     = useState<any>(null);
+  const [rfStatus, setRfStatus] = useState<Map<string, boolean | null>>(new Map());
+  const [ueCount, setUeCount]   = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab]         = useState<'dashboard' | 'config' | 'policy' | 'api'>('dashboard');
   const [verbose, setVerboseState] = useState(false);
@@ -1344,16 +1596,20 @@ export function SASPage() {
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [s, c, cfg, sl] = await Promise.all([
+      const [s, c, cfg, sl, rf, iface] = await Promise.all([
         sasApi.getStats(),
         sasApi.getCbsds(),
         sasApi.getConfig(),
         sasApi.getSlots(),
+        sasApi.getRfStatus().catch(() => []),
+        interfaceApi.getStatus().catch(() => null),
       ]);
       setStats(s);
       setCbsds(c.cbsds ?? []);
       setConfig(cfg);
       setSlots(sl);
+      setRfStatus(new Map((rf as any[]).map((r: any) => [r.cbsdId, r.rfOn])));
+      if (iface) setUeCount((iface as any).activeSessions ?? (iface as any).ueCount ?? null);
       setCfgForm((prev: any) => prev ?? cfg);
     } catch {
       if (!silent) toast.error('Failed to load SAS data');
@@ -1408,7 +1664,7 @@ export function SASPage() {
   };
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="p-6 space-y-6">
 
       {/* EARFCN Reference modal */}
       {showRefModal && <EarfcnReferenceModal onClose={() => setShowRefModal(false)} />}
@@ -1506,40 +1762,27 @@ export function SASPage() {
       )}
 
       {/* Header */}
-      <div className="space-y-2">
-        {/* Single row: title + all buttons */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-3 mr-auto">
-            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center shrink-0">
-              <Shield className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold text-nms-text">Spectrum Access System</h1>
-              <p className="text-xs text-nms-text-dim">WinnForum CBRS SAS-CBSD Interface — WINNF-TS-0016 V1.2.7</p>
-            </div>
-          </div>
-        <div className="flex items-center gap-1.5 flex-wrap">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold font-display">Spectrum Access System</h1>
+          <p className="text-sm text-nms-text-dim mt-1">WinnForum CBRS SAS-CBSD Interface — WINNF-TS-0016 V1.2.7</p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
           <button
             onClick={toggleVerbose}
             className={clsx(
-              'nms-btn text-xs flex items-center gap-1 border',
-              verbose
-                ? 'border-amber-500/40 text-amber-400 bg-amber-500/5 hover:bg-amber-500/10'
-                : 'border-nms-border text-nms-text-dim hover:text-nms-text'
+              'nms-btn-ghost flex items-center gap-2 text-sm',
+              verbose && 'text-amber-400'
             )}
           >
-            <ScrollText className="w-3.5 h-3.5" />
+            <ScrollText className="w-4 h-4" />
             {verbose ? 'Verbose ON' : 'Verbose OFF'}
           </button>
-          <button onClick={openFreqDebug}
-            className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-accent flex items-center gap-1 text-xs">
-            <Activity className="w-3.5 h-3.5" />
-            Freq Debug
+          <button onClick={openFreqDebug} className="nms-btn-ghost flex items-center gap-2 text-sm">
+            <Activity className="w-4 h-4" /> Freq Debug
           </button>
-          <button onClick={() => load()} disabled={loading}
-            className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text flex items-center gap-1 text-xs">
-            <RefreshCw className={clsx('w-3.5 h-3.5', loading && 'animate-spin')} />
-            Refresh
+          <button onClick={() => load()} disabled={loading} className="nms-btn-ghost flex items-center gap-2 text-sm">
+            <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} /> Refresh
           </button>
           <button
             onClick={async () => {
@@ -1550,9 +1793,9 @@ export function SASPage() {
                 load(true);
               } catch { toast.error('Clear failed'); }
             }}
-            className="nms-btn border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 flex items-center gap-1 text-xs">
-            <Trash2 className="w-3.5 h-3.5" />
-            Clear DB
+            className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400"
+          >
+            <Trash2 className="w-4 h-4" /> Clear DB
           </button>
           <button
             onClick={async () => {
@@ -1569,14 +1812,12 @@ export function SASPage() {
               } catch { toast.error('Failed to change SAS state'); }
             }}
             className={clsx(
-              'nms-btn border flex items-center gap-1 text-xs',
-              paused
-                ? 'border-green-500/40 text-green-400 hover:bg-green-500/10'
-                : 'border-red-500/40 text-red-400 hover:bg-red-500/10'
-            )}>
-            {paused ? <>▶ Resume</> : <>⏸ Pause</>}
+              'flex items-center gap-2 text-sm',
+              paused ? 'nms-btn-primary' : 'nms-btn-danger'
+            )}
+          >
+            {paused ? <>▶ Resume SAS</> : <>⏸ Pause SAS</>}
           </button>
-        </div>
         </div>
       </div>
 
@@ -1609,17 +1850,83 @@ export function SASPage() {
               </div>
             </div>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <StatCard label="Registered CBSDs"  value={stats?.registeredCbsds  ?? '—'} icon={Radio}       color="bg-blue-500/80" />
-            <StatCard label="Active Grants"      value={stats?.activeGrants     ?? '—'} icon={Wifi}        color="bg-amber-500/80" />
-            <StatCard label="Authorized (TX On)" value={stats?.authorizedGrants ?? '—'} icon={CheckCircle} color="bg-green-500/80" />
-          </div>
+          {/* Stats grid — 4 cards */}
+          {(() => {
+            const totalRadios  = stats?.registeredCbsds ?? 0;
+            const rfOnCount    = [...rfStatus.values()].filter(v => v === true).length;
+            const rfOffCount   = [...rfStatus.values()].filter(v => v === false).length;
+            const offlineCount = totalRadios - rfStatus.size; // in SAS but not in GenieACS
+            return (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {/* SAS Grants */}
+                <div className="nms-card">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs text-nms-text-dim uppercase tracking-wider">Active Grants</p>
+                      <p className="text-2xl font-bold text-nms-text mt-1">{stats?.activeGrants ?? '—'}</p>
+                      <p className="text-xs text-nms-text-dim mt-1">
+                        <span className="text-green-400">{stats?.authorizedGrants ?? 0} authorized</span>
+                        {stats?.activeGrants != null && stats?.authorizedGrants != null && stats.activeGrants > stats.authorizedGrants && (
+                          <span className="text-amber-400 ml-1">{stats.activeGrants - stats.authorizedGrants} granted</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-amber-500/10"><Wifi className="w-5 h-5 text-amber-400" /></div>
+                  </div>
+                </div>
+
+                {/* Radio RF status */}
+                <div className="nms-card">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs text-nms-text-dim uppercase tracking-wider">Radios</p>
+                      <p className="text-2xl font-bold text-nms-text mt-1">{totalRadios}</p>
+                      <div className="flex flex-wrap gap-x-2 mt-1 text-xs">
+                        {rfOnCount  > 0 && <span className="text-cyan-400">{rfOnCount} RF on</span>}
+                        {rfOffCount > 0 && <span className="text-red-400">{rfOffCount} RF off</span>}
+                        {offlineCount > 0 && <span className="text-nms-text-dim">{offlineCount} no ACS</span>}
+                        {totalRadios === 0 && <span className="text-nms-text-dim">none registered</span>}
+                      </div>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-blue-500/10"><Radio className="w-5 h-5 text-blue-400" /></div>
+                  </div>
+                </div>
+
+                {/* Authorized (SAS) */}
+                <div className="nms-card">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs text-nms-text-dim uppercase tracking-wider">SAS Authorized</p>
+                      <p className="text-2xl font-bold text-nms-text mt-1">{stats?.authorizedGrants ?? '—'}</p>
+                      <p className="text-xs text-nms-text-dim mt-1">Transmit permission active</p>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-green-500/10"><CheckCircle className="w-5 h-5 text-green-400" /></div>
+                  </div>
+                </div>
+
+                {/* Active UEs */}
+                <div className="nms-card">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-xs text-nms-text-dim uppercase tracking-wider">Active UEs</p>
+                      <p className="text-2xl font-bold text-nms-text mt-1">{ueCount ?? '—'}</p>
+                      <p className="text-xs text-nms-text-dim mt-1">Connected devices</p>
+                    </div>
+                    <div className="p-2.5 rounded-lg bg-purple-500/10"><Users className="w-5 h-5 text-purple-400" /></div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="nms-card space-y-3">
-            <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
-              <Wifi className="w-4 h-4 text-nms-accent" />
-              Frequency Spectrum
-            </h2>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+                <Wifi className="w-4 h-4 text-nms-accent" />
+                Frequency Spectrum
+              </h2>
+              <DotLegend />
+            </div>
             {slots && (slots.bands?.length > 0 || slots.slots?.length > 0)
               ? (() => {
                   const bandList = slots.bands ?? [{ bandLow: slots.bandLow, bandHigh: slots.bandHigh, label: 'Band', slotWidthHz: slots.slotWidthHz, slots: slots.slots }];
@@ -1641,6 +1948,7 @@ export function SASPage() {
                             bandHigh={band.bandHigh}
                             slotWidthHz={band.slotWidthHz}
                             filterGroupIds={band.assignedGroupIds?.length > 0 ? band.assignedGroupIds : undefined}
+                            rfStatus={rfStatus}
                           />
                         </div>
                       ))}
@@ -1650,7 +1958,7 @@ export function SASPage() {
                           All Bands — Full CBRS View
                           <span className="text-nms-text-dim/60 font-mono ml-2">3550–3700 MHz</span>
                         </p>
-                        <StackedBandChart bands={bandList} />
+                        <StackedBandChart bands={bandList} rfStatus={rfStatus} />
                       </div>
                     </div>
                   );
@@ -1839,7 +2147,7 @@ export function SASPage() {
 
       {/* ── Config ── */}
       {tab === 'config' && cfgForm && (
-        <div className="space-y-5 max-w-2xl">
+        <div className="space-y-5 max-w-2xl mx-auto">
           <div className="nms-card space-y-4">
             <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
               <Settings className="w-4 h-4 text-nms-accent" />

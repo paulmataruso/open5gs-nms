@@ -97,7 +97,7 @@ export function createSubscriberRouter(
   });
 
   // GET /api/subscribers/export?format=csv
-  router.get('/export', async (req: Request, res: Response) => {
+  router.get('/export', requireAdmin, async (req: Request, res: Response) => {
     try {
       const format = (req.query.format as string) === 'tsv' ? 'tsv' : 'csv';
       const sep = format === 'tsv' ? '\t' : ',';

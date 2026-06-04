@@ -43,6 +43,10 @@ export interface SasGrant {
   lastHeartbeat?:   Date;
   transmitExpireTime?: Date;
   createdAt:        Date;
+  // Last operationState reported by the radio in a heartbeat:
+  // 'AUTHORIZED' = radio is actively transmitting
+  // 'GRANTED'    = radio holds the grant but RF is off
+  lastOperationState?: 'GRANTED' | 'AUTHORIZED';
 }
 
 // ─── Per-device frequency band entry ─────────────────────────────────────────

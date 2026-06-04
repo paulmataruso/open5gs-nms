@@ -136,15 +136,12 @@ export function TimeServerPage() {
   const active    = status?.active    ?? false;
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Clock className="w-6 h-6 text-nms-accent" />
-          <div>
-            <h1 className="text-2xl font-semibold font-display">Time Server</h1>
-            <p className="text-sm text-nms-text-dim mt-0.5">NTP via Chrony — serves time to radios and UEs</p>
-          </div>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold font-display">Time Server</h1>
+          <p className="text-sm text-nms-text-dim mt-1">NTP via Chrony — serves time to radios and UEs</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => fetchAll()} className="nms-btn-ghost flex items-center gap-2 text-sm">
@@ -152,9 +149,16 @@ export function TimeServerPage() {
           </button>
           {installed && active && (
             <button onClick={handleRestart} disabled={restarting}
-              className="nms-btn border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 flex items-center gap-2 text-sm">
+              className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400">
               <RotateCw className={`w-4 h-4 ${restarting ? 'animate-spin' : ''}`} />
-              {restarting ? 'Restarting…' : 'Restart'}
+              {restarting ? 'Restarting…' : 'Restart Chrony'}
+            </button>
+          )}
+          {config && (
+            <button onClick={handleSave} disabled={saving}
+              className="nms-btn-primary flex items-center gap-2 text-sm">
+              <Save className="w-4 h-4" />
+              {saving ? 'Saving…' : 'Save & Restart'}
             </button>
           )}
         </div>
@@ -408,14 +412,7 @@ export function TimeServerPage() {
             )}
           </div>
 
-          {/* Save */}
-          <div className="flex justify-end">
-            <button onClick={handleSave} disabled={saving}
-              className="nms-btn-primary flex items-center gap-2">
-              <Save className="w-4 h-4" />
-              {saving ? 'Saving…' : 'Save & Restart Chrony'}
-            </button>
-          </div>
+
         </div>
       )}
 
