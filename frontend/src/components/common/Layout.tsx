@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network, FileText,
   ChevronLeft, ChevronRight, Zap, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Layers, Shield,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Layers, Shield, Clock,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -26,7 +26,8 @@ const NAV_ITEMS = [
   { id: 'backup', label: 'Backup & Restore', icon: Database },
   { id: 'logs', label: 'Unified Logs', icon: ScrollText },
   { id: 'metrics', label: 'Metrics', icon: BarChart2 },
-  { id: 'sas',     label: 'SAS',     icon: Shield    },
+  { id: 'sas',         label: 'SAS',          icon: Shield  },
+  { id: 'time-server', label: 'Time Server',   icon: Clock   },
   { id: 'users',   label: 'User Management', icon: UserCog },
   { id: 'audit', label: 'Audit Log', icon: FileText },
 ];

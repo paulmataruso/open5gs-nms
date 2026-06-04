@@ -71,12 +71,22 @@ export interface SasConfig {
   updatedAt:                Date;
 }
 
+// ─── Custom slot for interference-group band policy ───────────────────────────
+export interface GroupBandSlot {
+  low:    number;   // Hz
+  high:   number;   // Hz
+  label?: string;
+}
+
 // ─── Per-interference-group band policy ──────────────────────────────────────
 export interface GroupBandPolicy {
-  _id:       string;   // groupId e.g. "baicells"
-  bandId:    string;   // SasFrequencyBand.id
-  notes?:    string;
-  updatedAt: Date;
+  _id:          string;   // groupId e.g. "baicells"
+  bandId:       string;   // SasFrequencyBand.id
+  notes?:       string;
+  // Optional custom slots — if set, returned verbatim instead of auto-slicing.
+  // Empty array = give the FULL band to every CBSD in the group (no slicing).
+  customSlots?: GroupBandSlot[];
+  updatedAt:    Date;
 }
 
 // ─── Per-CBSD band policy override ───────────────────────────────────────────
@@ -250,8 +260,10 @@ export function makeResponse(code: number, data?: string[]): SasResponse {
   };
 }
 
-// ─── Timestamp format (WINNF-TS-0016 section 9.2) — YYYYMMDDTHH:MM:SSUTC ──
+// ─── Timestamp format ──────────────────────────────────────────────────────
+// WInnForum WINNF-TS-0016 allows both compact (20260523T211500UTC) and ISO 8601
+// (2026-05-23T21:15:00Z) formats. Baicells BaiBLQ firmware only accepts ISO 8601.
 export function sasFmt(d: Date): string {
-  return d.toISOString().replace(/\.\d+Z$/, 'UTC').replace(/-/g, '').replace(/:/g, '');
-  // e.g. "20260523T211500UTC"
+  return d.toISOString().replace(/\.\d+Z$/, 'Z');
+  // e.g. "2026-05-23T21:15:00Z"
 }

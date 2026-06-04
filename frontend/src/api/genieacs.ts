@@ -94,6 +94,7 @@ export interface SercommRadio {
   contiguousCC:  string;
   sasEnable:     string;
   sasLocation:   string;
+  sasUserId:     string;
   latitude:      string;
   longitude:     string;
 }

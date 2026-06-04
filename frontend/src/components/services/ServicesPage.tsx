@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Play, Square, RotateCw, HardDrive, Clock, Hash,
-  RefreshCcw, Power, PowerOff, Zap, Radio, Wifi, Container,
+  RefreshCcw, Power, PowerOff, Zap, Radio, Wifi, Container, AlertCircle,
 } from 'lucide-react';
 import { useServiceStore } from '../../stores';
 import { serviceApi } from '../../api';
 import type { ServiceStatus } from '../../types';
+import axios from 'axios';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
@@ -152,6 +153,31 @@ export function ServicesPage(): JSX.Element {
   const [bulkActing, setBulkActing] = useState(false);
   const [acting4G, setActing4G] = useState(false);
   const [acting5G, setActing5G] = useState(false);
+  const [chrony, setChrony] = useState<{ installed: boolean; active: boolean; refSource?: string } | null>(null);
+  const [chronyActing, setChronyActing] = useState(false);
+
+  const API = import.meta.env.VITE_API_URL || '/api';
+
+  const fetchChrony = () => {
+    axios.get(`${API}/chrony/status`)
+      .then(r => setChrony({ installed: r.data.installed, active: r.data.active, refSource: r.data.tracking?.refSource || '' }))
+      .catch(() => {});
+  };
+
+  useEffect(() => { fetchChrony(); }, []);
+
+  const handleChronyAction = async (action: 'start' | 'stop' | 'restart') => {
+    setChronyActing(true);
+    try {
+      await axios.post(`${API}/chrony/${action}`);
+      toast.success(`Chrony ${action} successful`);
+      setTimeout(fetchChrony, 2000);
+    } catch (err: any) {
+      toast.error(`Chrony ${action} failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setChronyActing(false);
+    }
+  };
 
   // Derive running state for 4G and 5G groups
   const is5GAnyRunning = statuses.some(s => SERVICES_5G.includes(s.name) && s.active);
@@ -261,6 +287,56 @@ export function ServicesPage(): JSX.Element {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {/* Chrony / Time Server card */}
+        <div className="nms-card animate-fade-in">
+          <div className="flex items-start justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className={chrony?.active ? 'status-dot-active' : 'status-dot-inactive'} />
+              <div>
+                <h3 className="text-base font-semibold font-display flex items-center gap-2">
+                  CHRONY
+                  <span className="inline-flex items-center gap-1 text-[10px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded px-1.5 py-0.5 font-semibold">
+                    <Clock className="w-2.5 h-2.5" /> ntp
+                  </span>
+                </h3>
+                <p className="text-xs text-nms-text-dim font-mono">chrony.service</p>
+              </div>
+            </div>
+            <span className={`text-xs px-2 py-1 rounded-full ${
+              !chrony ? 'bg-nms-surface text-nms-text-dim' :
+              !chrony.installed ? 'bg-amber-500/10 text-amber-400' :
+              chrony.active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red'
+            }`}>
+              {!chrony ? '…' : !chrony.installed ? 'not installed' : chrony.active ? 'active/running' : 'inactive/dead'}
+            </span>
+          </div>
+          {!chrony?.installed && (
+            <div className="flex items-center gap-2 text-xs text-amber-400 mb-3">
+              <AlertCircle className="w-3.5 h-3.5" />
+              Not installed — visit Time Server page to install
+            </div>
+          )}
+          {chrony?.refSource && (
+            <p className="text-xs text-nms-text-dim font-mono mb-3">
+              Synced to: <span className="text-nms-text">{chrony.refSource}</span>
+            </p>
+          )}
+          <div className="flex gap-2 pt-3 border-t border-nms-border">
+            <button onClick={() => handleChronyAction('start')} disabled={chronyActing || chrony?.active || !chrony?.installed}
+              className="nms-btn-ghost flex items-center gap-1.5 text-xs flex-1 justify-center">
+              <Play className="w-3.5 h-3.5" /> Start
+            </button>
+            <button onClick={() => handleChronyAction('stop')} disabled={chronyActing || !chrony?.active}
+              className="nms-btn-danger flex items-center gap-1.5 text-xs flex-1 justify-center">
+              <Square className="w-3.5 h-3.5" /> Stop
+            </button>
+            <button onClick={() => handleChronyAction('restart')} disabled={chronyActing || !chrony?.installed}
+              className="nms-btn-primary flex items-center gap-1.5 text-xs flex-1 justify-center">
+              <RotateCw className="w-3.5 h-3.5" /> Restart
+            </button>
+          </div>
+        </div>
+
         {statuses.map((s) => (
           <ServiceCard key={s.name} status={s} />
         ))}

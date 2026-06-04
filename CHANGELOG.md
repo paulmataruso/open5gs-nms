@@ -4,6 +4,87 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.2] - 2026-06-03
+
+### Fixed — Critical Baicells SAS Issues
+
+This release resolves a series of root-cause bugs that prevented Baicells BaiBLQ firmware radios from transitioning from GRANTED to AUTHORIZED state in SAS mode 2. Radios were heartbeating indefinitely in GRANTED state and never enabling RF.
+
+**Root Cause 1 — Timestamp format (PRIMARY FIX)**
+- `sasFmt()` was producing compact UTC format (`20260603T025409UTC`). Baicells firmware silently ignores this format and leaves `SAS_CONFIG_TRANSEXPIRETIME` empty, so the radio's SAS client never knows when it can transmit.
+- Fixed: `sasFmt()` now produces ISO 8601 Z format (`2026-06-03T02:54:09Z`), matching the WInnForum reference SAS (`fake_sas.py`) exactly.
+- This is the primary fix — all other SAS protocol behavior depends on the radio parsing this timestamp correctly.
+
+**Root Cause 2 — REM scan blocking OAM state machine**
+- Baicells radios are factory-configured with `LTE_REM_SCAN_ON_BOOT=1` scanning Band 7 (2600 MHz).
+- The OAM state machine requires `remScanDone=1` before it will allow `SAS_RADIO_ENABLE` to persist. Band 7 is never found in CBRS deployments, so `remScanDone` stays 0 forever.
+- Any TR-069 write of `SAS_RADIO_ENABLE=1` is treated as a "dynamic configure" and immediately reset to 0 with the message `Now Nothing To Do For Dynamic Configure`.
+- Fixed: provision tasks now push `Device.Services.FAPService.1.REM.LTE.ScanOnBoot=false`, `ScanPeriodically=false`, and `InServiceHandling=Disabled`. Also must be pushed manually to existing radios before reboot via GenieACS NBI.
+
+**Root Cause 3 — Heartbeat response too verbose**
+- Our heartbeat response included `heartbeatInterval` and `operationParam` fields. The WInnForum reference SAS returns only `cbsdId`, `grantId`, `transmitExpireTime`, and `response`.
+- Extra fields were causing firmware to reject or misparse the response. Removed `heartbeatInterval` and `operationParam` from heartbeat responses to exactly match reference SAS behavior.
+
+**Root Cause 4 — NTP clock skew**
+- Radio clock was offset by up to 1 hour. `transmitExpireTime` was always in the radio's past, so the SAS client disabled RF immediately after every heartbeat.
+- Fixed by configuring NTP server on each radio. The Time Server page (Chrony) enables setting a network-wide NTP source.
+- Added `transmitExpireTime` debug log at level 20 showing calculated interval for diagnosis.
+
+**Root Cause 5 — SAS.RadioEnable resets to False**
+- In SAS mode 2, `SAS.RadioEnable` is a volatile parameter (`mibAttributeStorageClass=0`) controlled by the radio's SAS daemon, not TR-069.
+- RF On/Off endpoint now also sets `Device.DeviceInfo.SAS.RadioEnable=true` when `sasEnableMode != 0`, in addition to `X_COM_RadioEnable`.
+- Post-reboot provision task also sets `SAS.RadioEnable` conditionally.
+- **Only set when SAS is enabled** — deployments without SAS are not affected.
+
+### Fixed — SAS Protocol
+
+- **Grant keeper** — Now catches grants where `grantExpireTime` is already in the past (previously only caught near-expiry). Renews `grantExpireTime` inline when renewing a grant.
+- **Heartbeat handler expired grant** — No longer returns `TERMINATED_GRANT` when `grantExpireTime` is past and the radio is still heartbeating. Instead renews the grant inline, preventing unnecessary relinquish/re-register cycles.
+- **`assignChannelSlot` null check** — `groupPolicy.customSlots` stored as `null` in MongoDB (not `undefined`) caused `null.length` crash. Fixed with `Array.isArray()` guard.
+- **`UNSUPPORTED_SPECTRUM` on re-registration** — Radios hitting GPS delay window after reboot now wait the full 75 seconds correctly. Added info-level logging for GPS delay countdown.
+- **Deterministic slot log** — `assignChannelSlot` logs at info level now (was trace) showing all serials in sort order for debugging.
+
+### Fixed — RF On/Off Logic
+
+- **`rf-all` endpoint** — Was fetching all devices with `projection=_id` only, then sending `X_COM_RadioEnable` to every device including Sercomm (which uses `AdminState`). Now fetches with `projection=_id,_deviceId,Device.DeviceInfo.SAS.enableMode` and filters to Baicells only (OUI `48BF74`).
+- **Per-radio RF endpoint** — Now checks `SAS.enableMode` from GenieACS before deciding what to push. If SAS is enabled, also sets `SAS.RadioEnable`. If SAS is disabled, only sets `X_COM_RadioEnable`.
+- **`rf-sercomm-all`** — Confirmed Sercomm-only (OUI `000E8F`). No changes to Sercomm RF logic.
+- **Double POST bug** — RF endpoint was posting the task twice (silent + connection_request). Now sends once with `connection_request` only.
+
+### Fixed — GenieACS Provisions
+
+- **`default` provision** — Was declaring `InternetGatewayDevice.*` paths (TR-098 schema) hourly. Baicells uses `Device.*` (TR-181) so every inform produced a `9005 Invalid Parameter Names` fault. Replaced with a no-op comment.
+- **`inform` provision** — Was declaring both `InternetGatewayDevice.*` and `Device.*` ManagementServer params, causing `too_many_commits` fault loop when `PeriodicInformInterval` differed from the provisioned value. Cleaned to `Device.*` only with `PeriodicInformInterval=5` matching what the NMS provisions.
+- **GenieACS faults** — `9005` faults from `InternetGatewayDevice.*` params in the default provision stopped appearing after provision cleanup. Existing faults cleared via `db.faults.deleteMany({})`.
+- **REM scan provision** — Added to `buildProvisionTasks()`: `FAPService.1.REM.LTE.ScanOnBoot=false`, `ScanPeriodically=false`, `InServiceHandling=Disabled`.
+- **Post-reboot task** — Now includes `SAS.RadioEnable=true` when `sasEnableMode !== '0'`.
+
+### Fixed — Spectrum Chart
+
+- **Baicells grants not showing** — `getSlots` TypeScript return type in `frontend/src/api/sas.ts` was missing the `bands` array, so `slots.bands` was `undefined` in the frontend. Backend was returning correct data all along. Fixed type definition.
+- **Slot matching overlap threshold** — Replaced exact boundary matching (`gLow >= s.low-1 && gHigh <= s.high+1`) with center-of-mass overlap matching (≥40% overlap). Handles Sercomm CA grants that don't align to Baicells slot boundaries.
+- **Cross-group grant leakage** — Slot matching now filters grants by `assignedGroupIds` before matching, preventing Baicells grants from appearing in the Sercomm band chart and vice versa.
+- **Unicode escape sequences** — `\u2013` (en dash) in JSX text content was rendering as literal `\u2013`. Replaced with actual `–` characters throughout `SASPage.tsx`.
+- **Header button layout** — All SAS page header buttons (Verbose, Freq Debug, Refresh, Clear DB, Pause/Resume) now on a single line using `flex items-center gap-1.5`. Shortened button labels ("Verbose ON/OFF", "▶ Resume", "⏸ Pause").
+
+### Fixed — Baicells Radio Card
+
+- **EARFCN display in SAS mode 2** — Was showing TR-069 `EARFCNDL` value which is the provisioned value and never updated by the SAS daemon. Now calculates EARFCN from `sasReqLowFrequency` and `sasReqHighFrequency` center point, which reflects the actual SAS-granted frequency. All three radios now show their correct distinct EARFCNs (e.g. 55340, 55540, 55740).
+
+### Added
+
+- **Heartbeat transmit expire debug log** — Level 20 log on every heartbeat showing `heartbeatInterval`, `transmitExpireMs`, and calculated `transmitExpireTime`. Useful for diagnosing NTP clock skew issues.
+- **GRANTED state debug log** — Level 20 log when a radio heartbeats with `operationState: GRANTED` (not yet transmitting), noting that `X_COM_RadioEnable` may be False.
+- **`rf-all` now logs per-radio** — Each successful RF task logs `RF set on Baicells radio` at info level with device ID, enable state, and HTTP status.
+
+### Changed
+
+- **`sasFmt()` format** — Changed from `20260523T211500UTC` to `2026-05-23T21:15:00Z`. **Breaking change for any SAS client that expected compact UTC format**, but Baicells firmware was already rejecting the old format silently.
+- **Heartbeat response** — Removed `heartbeatInterval` from response body. Removed `operationParam`. Only `cbsdId`, `grantId`, `transmitExpireTime`, `response`, and (when `grantRenew=true`) `grantExpireTime` are returned. Matches WInnForum `fake_sas.py` reference exactly.
+- **Version bumped to `2.0.0-beta_0.2`** across `backend/package.json` and `frontend/package.json`
+
+---
+
 ## [v2.0-beta_0.1] - 2026-05-29
 
 ### Added

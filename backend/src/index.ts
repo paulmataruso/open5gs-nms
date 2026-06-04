@@ -52,6 +52,7 @@ import { SqliteRadioTagRepository } from './infrastructure/auth/sqlite-radio-tag
 import { createRadioTagsRouter } from './interfaces/rest/radio-tags-controller';
 import { createLogDownloadRouter } from './interfaces/rest/log-download-controller';
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
+import { createChronyRouter } from './interfaces/rest/chrony-controller';
 import { SasService } from './domain/sas/sas-service';
 import { createSasRouter } from './interfaces/rest/sas-controller';
 
@@ -92,10 +93,12 @@ async function main() {
   logger.info('MongoDB connected');
 
   // ── SAS service ──
-  const sasService = new SasService(config.mongodbUri, logger);
+  // Create a child logger tagged with module:'sas' so the log stream can filter SAS-only messages
+  const sasLogger = logger.child({ module: 'sas' });
+  const sasService = new SasService(config.mongodbUri, sasLogger);
   await sasService.initialize();
-  sasService.startGrantKeeper(200_000); // heartbeat on behalf of radios every 200s
-  sasService.startSummaryLogger(30_000); // print summary every 30s instead of per-request noise
+  sasService.startGrantKeeper(200_000);
+  sasService.startSummaryLogger(30_000);
   logger.info('SAS grant keeper and summary logger started');
 
   // ── Auth setup ──
@@ -264,11 +267,12 @@ async function main() {
   app.use('/api/docker', createDockerRouter(dockerLogStreamingUseCase, logger));
   app.use('/api/logs', createLogDownloadRouter(hostExecutor, config, logger));
   app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
+  app.use('/api/chrony',   createChronyRouter(logger, auditLogger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
-  app.use('/sas', createSasRouter(sasService, logger));
+  app.use('/sas', createSasRouter(sasService, sasLogger));
   // SAS admin endpoints under /api (protected by authMiddleware above)
-  app.use('/api/sas', createSasRouter(sasService, logger));
+  app.use('/api/sas', createSasRouter(sasService, sasLogger));
 
   // Error handler
   app.use(

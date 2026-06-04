@@ -8,6 +8,7 @@ interface LogStreamSubscription {
   source: 'open5gs' | 'docker' | 'genieacs';
   services: Set<string>;
   processes: Map<string, ChildProcess>;
+  filter?: string; // optional line-content filter
 }
 
 export class LogStreamHandler {
@@ -47,30 +48,33 @@ export class LogStreamHandler {
   private handleMessage(ws: WebSocket, message: any): void {
     switch (message.type) {
       case 'subscribe_logs':
-        this.subscribe(ws, message.source || 'open5gs', message.services || []);
+        this.subscribe(ws, message.source || 'open5gs', message.services || [], message.filter);
         break;
       case 'unsubscribe_logs':
         this.unsubscribe(ws);
         break;
       case 'get_recent_logs':
-        this.sendRecentLogs(ws, message.source || 'open5gs', message.services || [], message.limit || 100);
+        this.sendRecentLogs(ws, message.source || 'open5gs', message.services || [], message.limit || 100, message.filter);
         break;
       default:
         this.logger.warn({ type: message.type }, 'Unknown message type');
     }
   }
 
-  private async sendRecentLogs(ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs', services: string[], limit: number): Promise<void> {
+  private async sendRecentLogs(ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs', services: string[], limit: number, filter?: string): Promise<void> {
     try {
       let logs: any[];
       
       if (source === 'docker') {
-        const dockerLogs = await this.dockerLogStreamingUseCase.getRecentLogs(services, limit);
-        logs = dockerLogs.map(log => ({
-          timestamp: log.timestamp,
-          service: log.container,
-          message: `[${log.stream}] ${log.message}`,
-        }));
+        const dockerLogs = await this.dockerLogStreamingUseCase.getRecentLogs(services, limit * 4);
+        logs = dockerLogs
+          .filter(log => !filter || log.message.includes(`"module":"${filter}"`) || log.message.includes(`module:${filter}`))
+          .slice(-limit)
+          .map(log => ({
+            timestamp: log.timestamp,
+            service: log.container,
+            message: `[${log.stream}] ${log.message}`,
+          }));
       } else if (source === 'genieacs') {
         // Read GenieACS log files directly from the mounted path
         logs = [];
@@ -78,10 +82,15 @@ export class LogStreamHandler {
           const serviceLogs = await this.logStreamingUseCase.getRecentLogsFromPath(
             `${this.genieacsLogBasePath}/${service}.log`,
             service,
-            limit,
+            limit * 10, // fetch more then filter down
           );
-          logs.push(...serviceLogs);
+          // Apply device filter to recent logs
+          const filtered = filter
+            ? serviceLogs.filter(l => this.genieacsLineMatchesFilter(l.message, filter))
+            : serviceLogs;
+          logs.push(...filtered);
         }
+        logs = logs.slice(-limit);
       } else {
         logs = await this.logStreamingUseCase.getRecentLogs(services, limit);
       }
@@ -96,7 +105,7 @@ export class LogStreamHandler {
     }
   }
 
-  private subscribe(ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs', services: string[]): void {
+  private subscribe(ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs', services: string[], filter?: string): void {
     // Unsubscribe existing streams
     this.unsubscribe(ws);
 
@@ -104,6 +113,7 @@ export class LogStreamHandler {
       source,
       services: new Set(services),
       processes: new Map(),
+      filter,
     };
 
     this.subscriptions.set(ws, subscription);
@@ -217,12 +227,16 @@ export class LogStreamHandler {
     process.stdout.on('data', (data: Buffer) => {
       const lines = data.toString().split('\n').filter(line => line.trim());
       for (const line of lines) {
+        // Apply device filter — GenieACS logs include the device _id in every line
+        // Filter can be the device _id, serial, or IP address
+        if (subscription.filter && !this.genieacsLineMatchesFilter(line, subscription.filter)) continue;
+
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type:   'log_entry',
             source: 'genieacs',
             log: {
-              timestamp: new Date().toISOString(),
+              timestamp: this.parseGenieacsTimestamp(line),
               service,
               message: line,
             },
@@ -248,6 +262,29 @@ export class LogStreamHandler {
     });
   }
 
+  // GenieACS log lines are JSON — device ID appears as "deviceId":"..." or in the message text
+  // Also match on IP address if filter looks like an IP
+  private genieacsLineMatchesFilter(line: string, filter: string): boolean {
+    if (!filter) return true;
+    // Decode URI encoding in filter for matching (e.g. %2D -> -)
+    const decoded = decodeURIComponent(filter).toLowerCase();
+    const lineLower = line.toLowerCase();
+    // Try direct substring match first (works for serial numbers, IPs)
+    if (lineLower.includes(decoded)) return true;
+    // Also try the raw encoded form
+    if (lineLower.includes(filter.toLowerCase())) return true;
+    return false;
+  }
+
+  private parseGenieacsTimestamp(line: string): string {
+    // GenieACS log lines are JSON: {"level":30,"time":1234567890,...}
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.time) return new Date(parsed.time).toISOString();
+    } catch { /* not JSON */ }
+    return new Date().toISOString();
+  }
+
   private startDockerStream(ws: WebSocket, container: string, subscription: LogStreamSubscription): void {
     const process = this.dockerLogStreamingUseCase.streamLogs(container, 0);
 
@@ -258,6 +295,12 @@ export class LogStreamHandler {
       const lines = data.toString().split('\n').filter(line => line.trim());
 
       for (const line of lines) {
+        // Apply filter if set (e.g. 'sas' only passes lines with "module":"sas")
+        if (subscription.filter) {
+          const needle = `"module":"${subscription.filter}"`;
+          if (!line.includes(needle)) continue;
+        }
+
         const logEntry = this.parseDockerLogLine(line, container, stream);
 
         if (logEntry && ws.readyState === WebSocket.OPEN) {

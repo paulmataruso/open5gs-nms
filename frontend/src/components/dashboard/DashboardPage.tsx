@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi } from '../../api';
 import type { ValidationResult, ServiceStatus } from '../../types';
+import axios from 'axios';
 import toast from 'react-hot-toast';
 
 function formatBytes(bytes: number | null): string {
@@ -71,12 +72,26 @@ export function DashboardPage(): JSX.Element {
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [health, setHealth] = useState<{ status: string; wsConnections: number } | null>(null);
   const [bulkActing, setBulkActing] = useState(false);
+  const [chronyStatus, setChronyStatus] = useState<{ installed: boolean; active: boolean; refSource?: string; sysTimeOffset?: string } | null>(null);
 
   useEffect(() => {
     fetchStatuses();
     fetchSubscribers();
     configApi.validate().then(setValidation).catch(() => {});
     healthApi.check().then(setHealth).catch(() => {});
+    // Fetch chrony status for dashboard widget
+    const API = import.meta.env.VITE_API_URL || '/api';
+    axios.get(`${API}/chrony/status`)
+      .then(res => {
+        const d = res.data;
+        setChronyStatus({
+          installed: d.installed,
+          active: d.active,
+          refSource: d.tracking?.refSource || d.tracking?.refId || '',
+          sysTimeOffset: d.tracking?.sysTimeOffset?.split(' ')[0] || '',
+        });
+      })
+      .catch(() => setChronyStatus({ installed: false, active: false }));
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
@@ -165,6 +180,33 @@ export function DashboardPage(): JSX.Element {
           subValue={health?.status === 'ok' ? 'Backend healthy' : 'Checking...'}
           color="nms-accent"
         />
+        <div className="nms-card animate-fade-in">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">Time Server</p>
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`w-2.5 h-2.5 rounded-full inline-block ${
+                  !chronyStatus ? 'bg-nms-text-dim/40' :
+                  chronyStatus.active ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
+                }`} />
+                <p className="text-2xl font-semibold font-display">
+                  {!chronyStatus ? '…' : chronyStatus.active ? 'Active' : chronyStatus.installed ? 'Stopped' : 'Not Installed'}
+                </p>
+              </div>
+              {chronyStatus?.refSource && (
+                <p className="text-xs text-nms-text-dim mt-1 font-mono truncate">
+                  {chronyStatus.refSource}{chronyStatus.sysTimeOffset ? ` · ${chronyStatus.sysTimeOffset}` : ''}
+                </p>
+              )}
+              {!chronyStatus?.installed && (
+                <p className="text-xs text-amber-400 mt-1">Click to install chrony</p>
+              )}
+            </div>
+            <div className="p-2.5 rounded-lg bg-nms-accent/10">
+              <Clock className="w-5 h-5 text-nms-accent" />
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Service Status Table */}

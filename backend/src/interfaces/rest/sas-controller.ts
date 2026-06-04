@@ -12,6 +12,26 @@ import {
 export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
   const router = Router();
 
+  // Runtime verbose toggle — raises sasLogger level to 'trace' (shows all) or 'info' (summary only)
+  // When verbose=false: trace level logs are suppressed (docker compose is quiet)
+  // When verbose=true:  trace level logs appear — ALL SAS protocol messages visible
+  const setVerbose = (verbose: boolean) => {
+    (logger as any).level = verbose ? 'trace' : 'info';
+    if (verbose) {
+      // Stop the summary logger — let every individual SAS message through instead
+      sas.stopSummaryLogger();
+      logger.info({ sasVerbose: true }, 'SAS verbose logging ENABLED — all protocol messages visible, summary suppressed');
+    } else {
+      // Restart the summary logger — quiet mode
+      sas.startSummaryLogger(30_000);
+      logger.info({ sasVerbose: false }, 'SAS verbose logging DISABLED — 30s summary only');
+    }
+  };
+  let sasVerbose = true;
+
+  // Set verbose on by default at startup
+  setVerbose(true);
+
   // ── POST /sas/v1.2/registration ──────────────────────────────────────────
   router.post('/v1.2/registration', async (req: Request, res: Response) => {
     if (sas.isPaused()) return res.json({ registrationResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
@@ -37,8 +57,20 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     logger.trace({ body: req.body, ip: req.ip }, 'SAS spectrumInquiry request');
     try {
       const requests: SpectrumInquiryRequest[] = req.body?.spectrumInquiryRequest;
+      const clientIp = req.ip ?? '';
       if (!Array.isArray(requests) || requests.length === 0) {
         return res.status(400).json({ spectrumInquiryResponse: [] });
+      }
+      // Tag each request with the client IP so the debug view can show it
+      for (const r of requests) {
+        if (r.cbsdId) {
+          const cbsds = await sas.listCbsds();
+          const cbsd  = cbsds.find(c => c.cbsdId === r.cbsdId);
+          if (cbsd && r.inquiredSpectrum?.[0]) {
+            const fr = r.inquiredSpectrum[0];
+            sas.recordLastRequest(r.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, clientIp, fr.lowFrequency, fr.highFrequency, 'spectrumInquiry');
+          }
+        }
       }
       const spectrumInquiryResponse = await sas.spectrumInquiry(requests);
       logger.trace({ spectrumInquiryResponse }, 'SAS spectrumInquiry response');
@@ -54,9 +86,21 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
     if (sas.isPaused()) return res.json({ grantResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
     try {
       const requests: GrantRequest[] = req.body?.grantRequest;
-      logger.trace({ RAW_REQUEST: req.body, ip: req.ip }, 'SAS /grant RAW');
+      const clientIp = req.ip ?? '';
+      logger.trace({ RAW_REQUEST: req.body, ip: clientIp }, 'SAS /grant RAW');
       if (!Array.isArray(requests) || requests.length === 0) {
         return res.status(400).json({ grantResponse: [] });
+      }
+      // Tag each request with the client IP for the debug view
+      for (const r of requests) {
+        if (r.cbsdId && r.operationParam?.operationFrequencyRange) {
+          const cbsds = await sas.listCbsds();
+          const cbsd  = cbsds.find(c => c.cbsdId === r.cbsdId);
+          if (cbsd) {
+            const { lowFrequency, highFrequency } = r.operationParam.operationFrequencyRange;
+            sas.recordLastRequest(r.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, clientIp, lowFrequency, highFrequency, 'grant');
+          }
+        }
       }
       const grantResponse = await sas.grant(requests);
       logger.trace({ RAW_RESPONSE: { grantResponse } }, 'SAS /grant RAW response');
@@ -117,6 +161,21 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
       logger.error({ err: String(err) }, 'SAS deregistration error');
       res.status(500).json({ deregistrationResponse: [] });
     }
+  });
+
+  // ── GET /sas/admin/last-requests — last freq request per CBSD (debug) ──────────
+  router.get('/admin/last-requests', (_req, res) => {
+    res.json({ success: true, requests: sas.getLastRequests() });
+  });
+
+  // ── GET/POST /sas/admin/verbose — toggle verbose SAS protocol logging ──────
+  router.get('/admin/verbose', (_req, res) => {
+    res.json({ success: true, verbose: sasVerbose });
+  });
+  router.post('/admin/verbose', (req, res) => {
+    sasVerbose = req.body?.verbose ?? !sasVerbose;
+    setVerbose(sasVerbose);
+    res.json({ success: true, verbose: sasVerbose });
   });
 
   // ── GET /sas/admin/logs ───────────────────────────────────────────────────
@@ -318,9 +377,9 @@ export function createSasRouter(sas: SasService, logger: pino.Logger): Router {
   });
   router.put('/admin/policies/groups/:groupId', async (req, res) => {
     try {
-      const { bandId, notes } = req.body;
+      const { bandId, notes, customSlots } = req.body;
       if (!bandId) return res.status(400).json({ success: false, error: 'bandId required' });
-      const p = await sas.setGroupPolicy(req.params.groupId, bandId, notes);
+      const p = await sas.setGroupPolicy(req.params.groupId, bandId, notes, customSlots);
       res.json({ success: true, policy: p });
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });

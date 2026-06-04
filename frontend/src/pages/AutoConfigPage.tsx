@@ -220,7 +220,8 @@ export const AutoConfigPage: React.FC = () => {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border mb-6 w-fit">
+      <div className="flex justify-center mb-6">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
         {TABS.map(tab => (
           <button
             key={tab.id}
@@ -236,6 +237,7 @@ export const AutoConfigPage: React.FC = () => {
             {tab.label}
           </button>
         ))}
+        </div>
       </div>
 
       {/* Tab: Open5GS Auto Config (existing content) */}

@@ -17,7 +17,12 @@ export type AuditAction =
   | 'radio_reboot_all'
   | 'radio_rf_enable'
   | 'radio_rf_disable'
-  | 'radio_rf_all';
+  | 'radio_rf_all'
+  | 'chrony_config_update'
+  | 'chrony_install'
+  | 'chrony_restart'
+  | 'chrony_start'
+  | 'chrony_stop';
 
 export interface AuditLogEntry {
   id: string;

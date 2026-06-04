@@ -12,6 +12,7 @@ interface UseLogStreamOptions {
   maxLines: number;
   autoScroll: boolean;
   paused: boolean;
+  filter?: string; // e.g. 'sas' — server-side line filter
 }
 
 export const useLogStream = (options: UseLogStreamOptions) => {
@@ -20,7 +21,7 @@ export const useLogStream = (options: UseLogStreamOptions) => {
   const wsRef = useRef<WebSocket | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
-  const { services, maxLines, autoScroll, paused, source } = options;
+  const { services, maxLines, autoScroll, paused, source, filter } = options;
 
   // Connect to WebSocket
   useEffect(() => {
@@ -86,6 +87,7 @@ export const useLogStream = (options: UseLogStreamOptions) => {
         type: 'subscribe_logs',
         source,
         services,
+        ...(filter ? { filter } : {}),
       }));
 
       // Request recent logs
@@ -94,11 +96,12 @@ export const useLogStream = (options: UseLogStreamOptions) => {
         source,
         services,
         limit: 100,
+        ...(filter ? { filter } : {}),
       }));
     }, 300); // 300ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [services, source]);
+  }, [services, source, filter]);
 
   // Auto-scroll
   useEffect(() => {

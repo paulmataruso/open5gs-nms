@@ -66,12 +66,14 @@ function CopyBtn({ text }: { text: string }) {
 // ─── Form state ────────────────────────────────────────────────────────────────
 interface SercommForm {
   mcc: string; mnc: string; tac: string; mmeIp: string;
-  carrierNumber: string; bandwidth: string; freqBand: string;
+  carrierNumber: string; bandwidth: string;
+  freqBand1: string; freqBand2: string;
   earfcn: string; earfcn2: string;
   cellIdentity: string; cellIdentity2: string;
-  pci: string; txPower: string;
+  pci1: string; pci2: string;
+  txPower: string;
   syncSource: string;
-  caEnable: boolean; contiguousCC: boolean;
+  caEnable: boolean;
   sasEnable: boolean;
   sasMethod: string;           // '0'=Direct SAS, '1'=Domain Proxy
   sasManufacturerPrefix: boolean; // prepend 'Sercomm-' to serial
@@ -89,24 +91,39 @@ interface SercommForm {
 }
 
 function radioToForm(r: SercommRadio, mmeIpFallback = ''): SercommForm {
+  // Convert microdegrees (×10⁶) back to decimal degrees for display
+  const latRaw = r.latitude  ? parseFloat(r.latitude)  : null;
+  const lonRaw = r.longitude ? parseFloat(r.longitude) : null;
+  const latDecimal = latRaw !== null
+    ? (Math.abs(latRaw) > 900 ? (latRaw / 1_000_000).toFixed(6) : latRaw.toFixed(6))
+    : '';
+  const lonDecimal = lonRaw !== null
+    ? (Math.abs(lonRaw) > 1800 ? (lonRaw / 1_000_000).toFixed(6) : lonRaw.toFixed(6))
+    : '';
+
+  const cellId1 = r.cellIdentity || '138777000';
+
+  const isCA = r.caEnable === '1' || r.caEnable?.toLowerCase() === 'true';
+
   return {
     mcc:           r.mcc  || '',
     mnc:           r.mnc  || '',
     tac:           r.tac  || '1',
     mmeIp:         r.mmeIp || mmeIpFallback,
-    carrierNumber: r.cellNumber || '2',
+    carrierNumber: isCA ? (r.cellNumber || '2') : '1',
     bandwidth:     r.bandwidth ? String(parseInt(r.bandwidth) / 5) : '20',
-    freqBand:      r.band ? `${r.band},${r.band}` : '48,48',
-    earfcn:        r.earfcn   || '55340',
-    earfcn2:       r.earfcn2  || '55538',
-    cellIdentity:  r.cellIdentity  || '138777000',
-    cellIdentity2: r.cellIdentity2 || '138777001',
-    pci:           r.pci      || '361,362',
-    txPower:       r.txPower  || '13,13',
+    freqBand1:     r.band || '48',
+    freqBand2:     isCA ? (r.band || '48') : '',
+    earfcn:        r.earfcn   || '56000',
+    earfcn2:       isCA ? (r.earfcn2 || '56198') : '',
+    cellIdentity:  cellId1,
+    cellIdentity2: isCA ? (r.cellIdentity2 || '138777001') : '',
+    pci1:          r.pci ? r.pci.split(',')[0].trim() : '361',
+    pci2:          isCA ? (r.pci ? (r.pci.split(',')[1]?.trim() || String(parseInt(r.pci.split(',')[0].trim()) + 1)) : '362') : '',
+    txPower:       r.txPower  || '13',
     syncSource:    r.syncSource || 'FREE_RUNNING',
-    caEnable:      r.caEnable === '1' || r.caEnable === 'true',
-    contiguousCC:  r.contiguousCC === '1',
-    sasEnable:             r.sasEnable === '1' || r.sasEnable === 'true',
+    caEnable:      isCA,
+    sasEnable:             r.sasEnable === '1' || r.sasEnable?.toLowerCase() === 'true',
     sasMethod:             '0',      // Direct SAS
     sasManufacturerPrefix: true,     // prepend 'Sercomm-' to serial
     sasInstallMethod:      '0',      // Single-Step
@@ -117,10 +134,10 @@ function radioToForm(r: SercommRadio, mmeIpFallback = ''): SercommForm {
     sasLocationSource:     '0',      // Manual
     sasHeightType:         'AGL',
     sasServerUrl:          DEFAULT_SERCOMM_SAS_URL,
-    sasUserId:             '',
+    sasUserId:             r.sasUserId || cellId1,
     sasPeerCertVerify:     false,
-    latitude:              r.latitude  || '',
-    longitude:             r.longitude || '',
+    latitude:              latDecimal,
+    longitude:             lonDecimal,
   };
 }
 
@@ -131,12 +148,11 @@ function formToInput(f: SercommForm): SercommProvisionInput {
   return {
     mcc: f.mcc.trim(), mnc: f.mnc.trim(), tac: f.tac.trim(), mmeIp: f.mmeIp.trim(),
     earfcn: f.earfcn.trim(), earfcn2: f.earfcn2.trim(),
-    pci: f.pci.trim(),
+    pci: f.pci2.trim() ? `${f.pci1.trim()},${f.pci2.trim()}` : f.pci1.trim(),
     cellIdentity: f.cellIdentity.trim(), cellIdentity2: f.cellIdentity2.trim(),
     txPower: f.txPower.trim(), bandwidth: f.bandwidth.trim(),
-    freqBand: f.freqBand.trim(), syncSource: f.syncSource,
-    carrierNumber: f.carrierNumber,
-    caEnable: f.caEnable, contiguousCC: f.contiguousCC,
+    freqBand: f.freqBand2.trim() ? `${f.freqBand1.trim()},${f.freqBand2.trim()}` : f.freqBand1.trim(), syncSource: f.syncSource,
+    carrierNumber: f.carrierNumber, caEnable: f.caEnable, contiguousCC: false,
     sasEnable: f.sasEnable,
     sasMethod: f.sasMethod,
     sasManufacturerPrefix: f.sasManufacturerPrefix,
@@ -167,14 +183,46 @@ const SercommRadioRow: React.FC<{
   const [rfBusy, setRfBusy]                 = useState(false);
   const [previewTasks, setPreviewTasks]     = useState<NbiTask[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // After a push, freeze form for 90s to prevent the poll from re-loading
+  // stale GenieACS cache values (e.g. CA_Enable still True before radio reports back)
+  const pushFreezeUntil = useRef<number>(0);
 
-  // Only sync form from radio data when the card is collapsed.
-  // If the user has expanded the card to edit, stop overwriting their inputs.
+  // Only sync form from radio data when the card is collapsed AND not in push-freeze window.
   useEffect(() => {
-    if (!expanded) setForm(radioToForm(radio, mmeIpDefault));
+    if (!expanded && Date.now() > pushFreezeUntil.current) {
+      setForm(radioToForm(radio, mmeIpDefault));
+    }
   }, [radio, mmeIpDefault, expanded]);
 
   const set = (patch: Partial<SercommForm>) => setForm(f => ({ ...f, ...patch }));
+
+  // ─── EARFCN validation ────────────────────────────────────────────────────
+  const EARFCN_MIN = 55340;
+  const EARFCN_MAX = 56640;
+  const CA_SPACING = 198;
+
+  const earfcn1Num  = parseInt(form.earfcn,  10);
+  const earfcn2Num  = parseInt(form.earfcn2, 10);
+  const earfcn1Valid = !isNaN(earfcn1Num) && earfcn1Num >= EARFCN_MIN && earfcn1Num <= EARFCN_MAX;
+  const earfcn2Valid = !isNaN(earfcn2Num) && earfcn2Num >= EARFCN_MIN && earfcn2Num <= EARFCN_MAX;
+  const caSpacingValid = !form.caEnable || (earfcn1Valid && earfcn2Valid && Math.abs(earfcn2Num - earfcn1Num) === CA_SPACING);
+  const earfcnError = form.caEnable && earfcn1Valid && earfcn2Valid && !caSpacingValid
+    ? `CA requires EARFCN spacing of exactly ${CA_SPACING} (got ${Math.abs(earfcn2Num - earfcn1Num)})`
+    : (!earfcn1Valid && form.earfcn)
+    ? `EARFCN C1 must be ${EARFCN_MIN}–${EARFCN_MAX} (Band 48)`
+    : (form.caEnable && !earfcn2Valid && form.earfcn2)
+    ? `EARFCN C2 must be ${EARFCN_MIN}–${EARFCN_MAX} (Band 48)`
+    : null;
+
+  // Auto-suggest EARFCN2 when CA is enabled and EARFCN1 is valid
+  const handleEarfcn1Change = (val: string) => {
+    const n = parseInt(val, 10);
+    if (form.caEnable && !isNaN(n) && n >= EARFCN_MIN && n + CA_SPACING <= EARFCN_MAX) {
+      set({ earfcn: val, earfcn2: String(n + CA_SPACING) });
+    } else {
+      set({ earfcn: val });
+    }
+  };
 
   const handleReboot = async () => {
     if (!confirm(`Reboot ${radio.serial}?\n\nThe radio will be unreachable for ~2 minutes.`)) return;
@@ -205,8 +253,8 @@ const SercommRadioRow: React.FC<{
     navigator.geolocation.getCurrentPosition(
       pos => {
         set({
-          latitude:  Math.round(pos.coords.latitude  * 1_000_000).toString(),
-          longitude: Math.round(pos.coords.longitude * 1_000_000).toString(),
+          latitude:  pos.coords.latitude.toFixed(6),
+          longitude: pos.coords.longitude.toFixed(6),
         });
         toast.success(`Location set: ${pos.coords.latitude.toFixed(5)}°, ${pos.coords.longitude.toFixed(5)}°`);
         setLocating(false);
@@ -220,6 +268,10 @@ const SercommRadioRow: React.FC<{
     const input = formToInput(form);
     if (!input.mmeIp || !input.mcc || !input.mnc || !input.tac) {
       toast.error('MCC, MNC, TAC and MME IP are required');
+      return;
+    }
+    if (earfcnError) {
+      toast.error(earfcnError);
       return;
     }
     setPreviewLoading(true);
@@ -239,7 +291,14 @@ const SercommRadioRow: React.FC<{
           serial={radio.serial}
           tasks={previewTasks}
           onClose={() => setPreviewTasks(null)}
-          onSuccess={() => { setPreviewTasks(null); setExpanded(false); onRefresh(); }}
+          onSuccess={() => {
+            // Freeze form for 90s so the poll doesn't reload stale GenieACS cache
+            // values before the radio has rebooted and reported back its new state.
+            pushFreezeUntil.current = Date.now() + 120_000;
+            setPreviewTasks(null);
+            setExpanded(false);
+            setTimeout(() => onRefresh(), 15_000);
+          }}
         />
       )}
 
@@ -315,10 +374,23 @@ const SercommRadioRow: React.FC<{
                 Radio Configuration
               </p>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                <div><label className="nms-label">Carrier Number</label>
-                  <select className="nms-input" value={form.carrierNumber} onChange={e => set({ carrierNumber: e.target.value })}>
-                    <option value="1">1 — Single</option>
-                    <option value="2">2 — Dual CA</option>
+                <div><label className="nms-label">Carrier Number <span className="text-nms-text-dim font-normal">(X_000E8F_Cell_Number)</span></label>
+                  <select className="nms-input" value={form.carrierNumber} onChange={e => {
+                    const v = e.target.value;
+                    const enabling = v === '2';
+                    set({
+                      carrierNumber: v,
+                      caEnable: enabling,
+                      // Clear C2 fields when switching to single carrier
+                      // Populate C2 fields with sensible defaults when switching to CA
+                      earfcn2:       enabling ? (form.earfcn2 || String(parseInt(form.earfcn) + 198)) : '',
+                      pci2:          enabling ? (form.pci2   || String(parseInt(form.pci1) + 1))     : '',
+                      freqBand2:     enabling ? (form.freqBand2 || form.freqBand1)                   : '',
+                      cellIdentity2: enabling ? (form.cellIdentity2 || String(parseInt(form.cellIdentity) + 1)) : '',
+                    });
+                  }}>
+                    <option value="1">1 — Single Carrier</option>
+                    <option value="2">2 — Dual Carrier (CA)</option>
                   </select></div>
                 <div><label className="nms-label">Bandwidth (MHz)</label>
                   <select className="nms-input" value={form.bandwidth} onChange={e => set({ bandwidth: e.target.value })}>
@@ -333,20 +405,46 @@ const SercommRadioRow: React.FC<{
                     <option value="GNSS">GNSS (GPS)</option>
                     <option value="PTP">PTP (1588)</option>
                   </select></div>
-                <div><label className="nms-label">Freq Band</label>
-                  <input className="nms-input font-mono" placeholder="48,48" value={form.freqBand} onChange={e => set({ freqBand: e.target.value })} /></div>
-                <div><label className="nms-label">EARFCN (C1)</label>
-                  <input className="nms-input font-mono" placeholder="55340" value={form.earfcn} onChange={e => set({ earfcn: e.target.value })} /></div>
-                <div><label className="nms-label">EARFCN (C2)</label>
-                  <input className="nms-input font-mono" placeholder="55538" value={form.earfcn2} onChange={e => set({ earfcn2: e.target.value })} /></div>
+                <div><label className="nms-label">Freq Band (C1)</label>
+                  <input className="nms-input font-mono" placeholder="48" value={form.freqBand1} onChange={e => set({ freqBand1: e.target.value })} /></div>
+                <div><label className="nms-label">Freq Band (C2)</label>
+                  <input className="nms-input font-mono" placeholder="48" value={form.freqBand2} onChange={e => set({ freqBand2: e.target.value })} /></div>
+                <div>
+                  <label className="nms-label">EARFCN (C1)</label>
+                  <input
+                    className={clsx('nms-input font-mono', !earfcn1Valid && form.earfcn && 'border-red-500/60 focus:border-red-500')}
+                    placeholder="56000"
+                    value={form.earfcn}
+                    onChange={e => handleEarfcn1Change(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="nms-label">EARFCN (C2) {form.caEnable && <span className="text-nms-text-dim font-normal">— auto C1+198</span>}</label>
+                  <input
+                    className={clsx('nms-input font-mono', form.caEnable && !caSpacingValid && earfcn2Valid && 'border-amber-500/60 focus:border-amber-500')}
+                    placeholder="56198"
+                    value={form.earfcn2}
+                    onChange={e => set({ earfcn2: e.target.value })}
+                    disabled={form.caEnable && earfcn1Valid}
+                    title={form.caEnable ? `Must be C1 + ${CA_SPACING} = ${earfcn1Valid ? earfcn1Num + CA_SPACING : '?'}` : ''}
+                  />
+                </div>
+                {earfcnError && (
+                  <div className="col-span-2 flex items-center gap-2 text-xs text-red-400">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    {earfcnError}
+                  </div>
+                )}
                 <div><label className="nms-label">Cell Identity</label>
                   <input className="nms-input font-mono" placeholder="138777000" value={form.cellIdentity} onChange={e => set({ cellIdentity: e.target.value })} /></div>
                 <div><label className="nms-label">Cell Identity 2</label>
                   <input className="nms-input font-mono" placeholder="138777001" value={form.cellIdentity2} onChange={e => set({ cellIdentity2: e.target.value })} /></div>
-                <div><label className="nms-label">PCI</label>
-                  <input className="nms-input font-mono" placeholder="361,362" value={form.pci} onChange={e => set({ pci: e.target.value })} /></div>
+                <div><label className="nms-label">PCI (C1)</label>
+                  <input className="nms-input font-mono" placeholder="361" value={form.pci1} onChange={e => set({ pci1: e.target.value })} /></div>
+                <div><label className="nms-label">PCI (C2)</label>
+                  <input className="nms-input font-mono" placeholder="362" value={form.pci2} onChange={e => set({ pci2: e.target.value })} /></div>
                 <div><label className="nms-label">TX Power (dBm)</label>
-                  <input className="nms-input font-mono" placeholder="13,13" value={form.txPower} onChange={e => set({ txPower: e.target.value })} /></div>
+                  <input className="nms-input font-mono" placeholder="13" value={form.txPower} onChange={e => set({ txPower: e.target.value })} /></div>
               </div>
               <div className="flex flex-wrap gap-5 mt-3">
                 <label className="flex items-center gap-2 cursor-pointer opacity-60">
@@ -356,14 +454,18 @@ const SercommRadioRow: React.FC<{
                   </LabelWithTooltip>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer group">
-                  <input type="checkbox" checked={form.caEnable} onChange={e => set({ caEnable: e.target.checked })}
+                  <input type="checkbox" checked={form.caEnable} onChange={e => {
+                    const v = e.target.checked;
+                    set({
+                      caEnable: v, carrierNumber: v ? '2' : '1',
+                      earfcn2:       v ? (form.earfcn2 || String(parseInt(form.earfcn) + 198)) : '',
+                      pci2:          v ? (form.pci2   || String(parseInt(form.pci1) + 1))     : '',
+                      freqBand2:     v ? (form.freqBand2 || form.freqBand1)                   : '',
+                      cellIdentity2: v ? (form.cellIdentity2 || String(parseInt(form.cellIdentity) + 1)) : '',
+                    });
+                  }}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
                   <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">Carrier Aggregation</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer group">
-                  <input type="checkbox" checked={form.contiguousCC} onChange={e => set({ contiguousCC: e.target.checked })}
-                    className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">Contiguous CC</span>
                 </label>
               </div>
             </div>
@@ -890,7 +992,7 @@ export function FemtoConfigTab() {
           <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
           <div className="text-xs text-nms-text-dim space-y-1">
             <p><span className="font-semibold text-nms-text">Push Config via ACS</span> shows a preview of the exact GenieACS NBI API calls — you can edit the JSON before confirming.</p>
-            <p>Sequence: setParameterValues (all params, radio self-reboots on invasive changes) → setParameterValues (AdminState = 1, fires after reboot). AdminState resets on every boot.</p>
+            <p>Sequence: setParameterValues (all params, queued) → reboot (explicit, wakes radio) → setParameterValues (AdminState = 1, fires on first inform after reboot). CA_Enable and Cell_Number only take effect after reboot via their _InUse shadow params.</p>
             <p>Enter the radio's MAC address above to generate SSH root and debug WebUI credentials automatically.</p>
           </div>
         </div>

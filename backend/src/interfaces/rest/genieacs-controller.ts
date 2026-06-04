@@ -77,11 +77,15 @@ interface SercommProvisionInput {
 }
 
 function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasServerUrl?: string): NbiTask[] {
+  // All tasks use connection_request so GenieACS delivers them reliably.
+  // The radio informs every 5s so extra connection_request attempts are harmless.
+  // Using queueUrl (no connection_request) caused Tasks 2+3 to silently not deliver.
   const plmn = `${input.mcc}${input.mnc}`;
   // Magma: calc_bandwidth_rbs = str(int(5 * bandwidth_mhz)) → '100' as xsd:string
   const bwRbs = String(parseInt(input.bandwidth) * 5);
-  // Magma boolean encoding: str(int(True)) = '1', str(int(False)) = '0'
-  const bool = (v: boolean) => v ? '1' : '0';
+  // Boolean helpers
+  const bool  = (v: boolean) => v ? '1'    : '0';     // xsd:boolean as int (most params)
+  const boolT = (v: boolean) => v ? 'True' : 'False'; // xsd:boolean as True/False (SAS params)
 
   const params: Array<[string, string, string]> = [
     // ── Management server (configuration_init._set_management_server) ────────────
@@ -138,35 +142,50 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}CellConfig.LTE.RAN.RF.EARFCNDL`,                                    input.earfcn, 'xsd:int'         ],
     // EARFCNUL: NOT set by Magma for TDD, but set here for dual carrier
     [`${SFAP}CellConfig.LTE.RAN.RF.EARFCNUL`,                                    input.earfcn, 'xsd:int'         ],
-    // Carrier 2 EARFCNs (Sercomm vendor extension)
-    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDL2`,                         input.earfcn2,'xsd:int'         ],
-    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNUL2`,                         input.earfcn2,'xsd:int'         ],
+    // Carrier 2 EARFCNs — only push when earfcn2 is set (CA mode)
+    // Empty string as xsd:int causes faultCode 9007 and aborts the entire task
+    ...(input.earfcn2 ? [
+      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDL2`,  input.earfcn2, 'xsd:int'] as [string,string,string],
+      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNUL2`,  input.earfcn2, 'xsd:int'] as [string,string,string],
+    ] : []),
+    // EARFCNDLConfigList / EARFCNULConfigList: comma-separated list matching EarfcnList
+    // Must match EARFCNDL,EARFCNDL2 exactly or radio rejects the CA config
+    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDLConfigList`,                input.earfcn2 ? `${input.earfcn},${input.earfcn2}` : input.earfcn, 'xsd:string'],
+    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNULConfigList`,                input.earfcn2 ? `${input.earfcn},${input.earfcn2}` : input.earfcn, 'xsd:string'],
 
     // ── Bandwidth (configuration_init._set_bandwidth) ───────────────────────
     // DL/UL_BANDWIDTH: TrParameterType.STRING → xsd:string
     // Magma: calc_bandwidth_rbs(20) = str(int(5*20)) = '100'
     [`${SFAP}CellConfig.LTE.RAN.RF.DLBandwidth`,                                 bwRbs,        'xsd:string'      ],
     [`${SFAP}CellConfig.LTE.RAN.RF.ULBandwidth`,                                 bwRbs,        'xsd:string'      ],
-    // Carrier 2 bandwidths (Sercomm vendor extension)
-    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_DLBandwidth2`,                      bwRbs,        'xsd:string'      ],
-    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_ULBandwidth2`,                      bwRbs,        'xsd:string'      ],
+    // Carrier 2 bandwidths — only push in CA mode
+    ...(input.earfcn2 ? [
+      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_DLBandwidth2`, bwRbs, 'xsd:string'] as [string,string,string],
+      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_ULBandwidth2`, bwRbs, 'xsd:string'] as [string,string,string],
+    ] : []),
 
     // PCI → xsd:string (comma-separated '361,362')
     [`${SFAP}CellConfig.LTE.RAN.RF.PhyCellID`,                                   input.pci,    'xsd:string'      ],
     // BAND → xsd:unsignedInt (NOTE: postprocessor deletes BAND in DP mode, but sets it in non-DP)
     [`${SFAP}CellConfig.LTE.RAN.RF.FreqBandIndicator`,                           input.freqBand.split(',')[0] || '48', 'xsd:unsignedInt'],
-    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_FreqBandIndicator2`,                input.freqBand.split(',')[1] || '48', 'xsd:unsignedInt'],
-    // TX power (Sercomm vendor extension) → xsd:string (comma-separated '13,13')
-    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_TxPowerConfig`,                     input.txPower,'xsd:string'      ],
+    // FreqBandIndicator2 — only push in CA mode
+    ...(input.earfcn2 ? [
+      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_FreqBandIndicator2`, input.freqBand.split(',')[1] || input.freqBand.split(',')[0] || '48', 'xsd:unsignedInt'] as [string,string,string],
+    ] : []),
+    // TX power (Sercomm vendor extension) → xsd:string
+    // NOTE: Radio accepts a single value '13' even for CA — NOT comma-separated
+    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_TxPowerConfig`,                     input.txPower.split(',')[0],'xsd:string'],
     // CELL_ID → xsd:unsignedInt (DEFAULT_CELL_IDENTITY = 138777000)
     [`${SFAP}CellConfig.LTE.RAN.Common.CellIdentity`,                            input.cellIdentity,  'xsd:unsignedInt'],
-    // CA_CELL_ID = cell_id + 1 → xsd:string (Sercomm vendor extension)
-    [`${SFAP}CellConfig.LTE.RAN.Common.X_000E8F_CellIdentity2`,                 input.cellIdentity2, 'xsd:string' ],
+  ];
 
-    // ── TDD subframe (configuration_init._set_tdd_subframe_config) ──────────
-    // SUBFRAME_ASSIGNMENT: TrParameterType.BOOLEAN → xsd:boolean
-    // Unit test confirms val_type='boolean', data='2' is what radio reports
-    // Magma sends str(int(2)) = '2' as xsd:boolean
+  // CA_CELL_ID = cell_id + 1 → xsd:unsignedInt (Sercomm vendor extension)
+  // Only push if we have a valid value to avoid 9002 internal error
+  if (input.cellIdentity2) {
+    params.push([`${SFAP}CellConfig.LTE.RAN.Common.X_000E8F_CellIdentity2`, input.cellIdentity2, 'xsd:unsignedInt']);
+  }
+
+  params.push(
     [`${SFAP}CellConfig.LTE.RAN.PHY.TDDFrame.SubFrameAssignment`,                '2',          'xsd:boolean'     ],
     // SPECIAL_SUBFRAME_PATTERN: TrParameterType.INT → xsd:int
     [`${SFAP}CellConfig.LTE.RAN.PHY.TDDFrame.SpecialSubframePatterns`,           '7',          'xsd:int'         ],
@@ -186,20 +205,24 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}REM.X_000E8F_tfcsManagerConfig.ntpSyncEnable`,                      '1',                              'xsd:boolean'],
 
     // ── CA (CarrierAggregationParameters) ─────────────────────────────────
-    // CA_ENABLE: default=False → xsd:boolean → '0'/'1'
-    [`${SFAP}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_CA_Enable`,             bool(input.caEnable),              'xsd:boolean'],
-    // CA_CARRIER_NUMBER: default=1 → xsd:int
-    [`${SFAP}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_Cell_Number`,           input.carrierNumber,               'xsd:int'    ],
+    // NOTE: CA_Enable and Cell_Number are intentionally NOT set here.
+    // They are sent in postRebootParams (Task 2) after the self-reboot
+    // so they are committed to flash correctly.
+
+    // ── SAS ExtendFreqA (CA mode — auto-select channel and bandwidth per carrier) ─
+    // Must always be True for the radio to work correctly, regardless of CA setting
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ExtendFreqA.Enable`,                  'True',                            'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ExtendFreqA.AutoSelectChannelAndBandwidth`, 'True',                       'xsd:boolean'],
 
     // ── SAS (SASParameters) ─────────────────────────────────────────────
-    // SAS_ENABLE → xsd:boolean
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.Enable`,                               bool(input.sasEnable),                             'xsd:boolean'],
-    // SAS_METHOD: 0=Direct SAS, 1=Domain Proxy
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.Method`,                               input.sasMethod,                                   'xsd:boolean'],
+    // SAS_ENABLE → xsd:boolean (Sercomm uses True/False not 1/0)
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.Enable`,                               boolT(input.sasEnable),                            'xsd:boolean'],
+    // SAS_METHOD: 0=Direct SAS, 1=Domain Proxy → xsd:int NOT xsd:boolean
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.Method`,                               input.sasMethod,                                   'xsd:int'    ],
     // SAS_SERVER_URL — HTTPS on port 8443 for Sercomm radios
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.Server`,                               sasServerUrl || '',                                'xsd:string' ],
     // SAS_PEER_CERT_VERIFY — configurable, default disabled for self-signed certs
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.PeerCertVerifyEnable`,                 input.sasPeerCertVerify ? '1' : '0',               'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.PeerCertVerifyEnable`,                 boolT(input.sasPeerCertVerify),                    'xsd:boolean'],
     // SAS_USER_ID → xsd:string (UserContactInformation)
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`,               input.sasUserId || '',                             'xsd:string' ],
     // SAS_FCC_ID → xsd:string
@@ -213,20 +236,27 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     // SAS_LOCATION: indoor or outdoor
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.Location`,                             input.sasLocation,                                 'xsd:string' ],
     // SAS_MANUFACTURER_PREFIX_ENABLE → prepends 'Sercomm-' to serial
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ManufacturerPrefixEnable`,             input.sasManufacturerPrefix ? '1' : '0',           'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ManufacturerPrefixEnable`,             boolT(input.sasManufacturerPrefix),                'xsd:boolean'],
     // SAS_USER_ID_SELECT_METHOD: 0=Manual server URL
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.UserIDSelectMethod`,                   '0',                                               'xsd:int'    ],
+    // SAS_EARFCN_LIST: comma-separated EARFCNs the radio will request grants for
+    // This is what drives the SAS frequency request — NOT EARFCNDL
+    // Format: 'earfcn1,earfcn2' for CA, 'earfcn1' for single carrier
+    // Must be set or Sercomm falls back to a default (often 3690-3700 MHz)
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.EarfcnList`,                           input.earfcn2 ? `${input.earfcn},${input.earfcn2}` : input.earfcn, 'xsd:string'],
+    // SAS_EARFCN_SELECT_METHOD: 1=SAS picks from EarfcnList
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.EarfcnSelectMethod`,                   '1',                                               'xsd:int'    ],
     // SAS_HEIGHT_TYPE: AGL or AMSL
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.HeightType`,                           input.sasHeightType,                               'xsd:string' ],
     // SAS_HIGH_ACCURACY_LAT/LONG: microdegrees as xsd:string
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.HighAccuracyLatitude`,                 input.latitude,                                    'xsd:string' ],
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.HighAccuracyLongitude`,                input.longitude,                                   'xsd:string' ],
     // SAS_LOCATION_SOURCE: 0=Manual, 1=GPS (HighAccuracyLocationEnable)
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.HighAccuracyLocationEnable`,           input.sasLocationSource === '1' ? '1' : '0',       'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.HighAccuracyLocationEnable`,           'True',                                            'xsd:boolean'],
     // CPI = Certified Professional Installer (required for Cat B outdoor, not Cat A indoor)
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.CPIEnable`,                            input.sasCpiEnable ? '1' : '0',                    'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.CPIEnable`,                            boolT(input.sasCpiEnable),                         'xsd:boolean'],
     // Single-Step vs Multi-Step: false=Single-Step (REG-Conditional in request), true=Multi-Step (pre-loaded in SAS)
-    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.CPIInstallParamSuppliedEnable`,        input.sasInstallMethod === '1' ? '1' : '0',        'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.CPIInstallParamSuppliedEnable`,        boolT(input.sasInstallMethod === '1'),             'xsd:boolean'],
     // SAS_ANTENNA_GAIN → xsd:int (is_invasive=True in Magma)
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.AntennaGain`,                          '5',                               'xsd:int'    ],
     // SAS_MAX_EIRP (Carrier 1 & 2) → xsd:int (set by SAS/DP in Magma, we use max -137 = unset)
@@ -234,25 +264,27 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.MaxEirpMHz_Carrier2`,                  '-137',                            'xsd:int'    ],
 
     // ── Location ────────────────────────────────────────────────────────────
-    // GPS_LAT/LONG: transform_for_magma.gps_tr181 → xsd:string
-    ['Device.FAP.GPS.LockedLatitude',                                             input.latitude,                    'xsd:string' ],
-    ['Device.FAP.GPS.LockedLongitude',                                            input.longitude,                   'xsd:string' ],
-    ['Device.FAP.Location.X_000E8F_LocationInfoInUse_Latitude',                  input.latitude,                    'xsd:string' ],
-    ['Device.FAP.Location.X_000E8F_LocationInfoInUse_Longitude',                 input.longitude,                   'xsd:string' ],
+    // NOTE: Device.FAP.GPS.LockedLatitude/Longitude and LocationInfoInUse_Lat/Long
+    // are read-only status fields — do NOT write to them (9002 Internal error)
+    // Location is set via X_000E8F_SAS.HighAccuracyLatitude/Longitude above
     ['Device.FAP.Location.X_000E8F_LocationInfoSourceSavedFile_Enable',          '1',                               'xsd:boolean'],
     ['Device.FAP.GPS.X_000E8F_Elevation',                                        '0',                               'xsd:int'    ],
+  );
+
+  // Params that must survive the invasive self-reboot — sent AFTER reboot
+  const postRebootParams: Array<[string, string, string]> = [
+    [`${SFAP}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_CA_Enable`,   boolT(input.caEnable),   'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_Cell_Number`, input.carrierNumber,     'xsd:int'    ],
+    [`${SFAP}FAPControl.LTE.AdminState`,                               '1',                     'xsd:boolean'],
   ];
 
   return [
-    // Task 1 — all params except AdminState
-    // Invasive params (AntennaGain, CELL_Freq_Contiguous) trigger self-reboot on Sercomm
+    // Task 1 — all params
     { url: taskUrl, body: { name: 'setParameterValues', parameterValues: params } },
-    // Task 2 — ADMIN_STATE last, queued to fire on first inform after self-reboot
-    // Magma: ADMIN_STATE → xsd:boolean → str(int(True)) = '1'
-    // AdminState resets to '0' on every boot — must always be re-set after config push
-    { url: taskUrl, body: { name: 'setParameterValues', parameterValues: [
-      [`${SFAP}FAPControl.LTE.AdminState`, '1', 'xsd:boolean'],
-    ]}},
+    // Task 2 — CA + AdminState, fires after self-reboot on first connection_request response
+    { url: taskUrl, body: { name: 'setParameterValues', parameterValues: postRebootParams } },
+    // Task 3 — force GenieACS to re-walk RRMConfig so cache reflects new CA_Enable value
+    { url: taskUrl, body: { name: 'refreshObject', objectName: `${SFAP}FAPControl.LTE.X_000E8F_RRMConfig` } },
   ];
 }
 
@@ -298,6 +330,13 @@ export function buildProvisionTasks(nbiUrl: string, encodedId: string, input: Ba
     [`${FAP}X_COM.LTE.startPci`,                                            '0',     'xsd:unsignedInt' ],
     [`${FAP}X_COM.LTE.SelfConfig.EARFCNEnable`,                             'false', 'xsd:boolean'     ],
     [`${FAP}X_COM.LTE.SelfConfig.PhyCellIdEnable`,                          'false', 'xsd:boolean'     ],
+    // ── REM scan — disable on boot ─────────────────────────────────────────
+    // The radio scans Band 7 (2600 MHz) by default on boot. In SAS mode 2 the OAM
+    // state machine requires remScanDone=1 before it will allow SAS_RADIO_ENABLE
+    // to stick. Since Band 7 is never found in CBRS deployments the scan stays
+    // Indeterminate forever, remScanDone never becomes 1, and SAS_RADIO_ENABLE
+    // gets reset to 0 every time. Disabling REM scan on boot fixes this.
+    [`${FAP}REM.LTE.InServiceHandling`,                                     'Disabled', 'xsd:string'  ],
     ['Device.DeviceInfo.X_COM_GpsSyncEnable',                               'true',  'xsd:boolean'     ],
     ['Device.ManagementServer.PeriodicInformEnable',                        'true',  'xsd:boolean'     ],
     ['Device.ManagementServer.PeriodicInformInterval',                      '5',     'xsd:unsignedInt' ],
@@ -326,11 +365,15 @@ export function buildProvisionTasks(nbiUrl: string, encodedId: string, input: Ba
     { url: taskUrl, body: { name: 'setParameterValues', parameterValues: params } },
     { url: taskUrl, body: { name: 'reboot' } },
     // X_COM_RadioEnable resets to false on every boot — must be re-set after reboot
+    // SAS.RadioEnable also resets — only set it if SAS is enabled
     {
       url:  taskUrl,
       body: {
         name: 'setParameterValues',
-        parameterValues: [[`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, 'true', 'xsd:boolean']],
+        parameterValues: [
+          [`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, 'true', 'xsd:boolean'],
+          ...(input.sasEnableMode !== '0' ? [['Device.DeviceInfo.SAS.RadioEnable', 'true', 'xsd:boolean'] as [string,string,string]] : []),
+        ],
       },
     },
   ];
@@ -436,6 +479,23 @@ export function createGenieacsRouter(
 ): Router {
   const router = Router();
 
+  // ── GET /api/genieacs/tasks/:deviceId ───────────────────────────────────
+  // Proxies GenieACS NBI /tasks endpoint for a specific device
+  router.get('/tasks/:deviceId', async (req: Request, res: Response) => {
+    const { deviceId } = req.params;
+    try {
+      const resp = await fetch(
+        `${nbiUrl}/tasks?query=${encodeURIComponent(JSON.stringify({ device: deviceId }))}&sort=${encodeURIComponent(JSON.stringify({ timestamp: -1 }))}`
+      );
+      if (!resp.ok) throw new Error(`GenieACS NBI returned HTTP ${resp.status}`);
+      const tasks = await resp.json();
+      res.json({ success: true, tasks: Array.isArray(tasks) ? tasks : [] });
+    } catch (err) {
+      logger.error({ err: String(err), deviceId }, 'Failed to fetch tasks');
+      res.status(502).json({ success: false, error: String(err), tasks: [] });
+    }
+  });
+
   // ── GET /api/genieacs/devices/sercomm ───────────────────────────────────
   // Returns only Sercomm/FreedomFi devices filtered by Manufacturer field
   router.get('/devices/sercomm', async (_req: Request, res: Response) => {
@@ -463,6 +523,7 @@ export function createGenieacsRouter(
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_CELL_Freq_Contiguous`,
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Enable`,
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Location`,
+        `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`,
         `${SERCOMM_FAP}REM.X_000E8F_tfcsManagerConfig.primSrc`,
         'Device.FAP.GPS.LockedLatitude',
         'Device.FAP.GPS.LockedLongitude',
@@ -516,6 +577,7 @@ export function createGenieacsRouter(
           contiguousCC: getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_CELL_Freq_Contiguous`),
           sasEnable:    getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Enable`),
           sasLocation:  getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Location`) || 'indoor',
+          sasUserId:    getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`),
           latitude:     getParam(d, 'Device.FAP.GPS.LockedLatitude'),
           longitude:    getParam(d, 'Device.FAP.GPS.LockedLongitude'),
         };
@@ -534,6 +596,7 @@ export function createGenieacsRouter(
     const { deviceId } = req.params;
     const input        = req.body as SercommProvisionInput;
     const sasServerUrl = req.body.sasServerUrl as string | undefined;
+    logger.info({ sasUserId: input.sasUserId, sasEnable: input.sasEnable }, 'Sercomm preview-sercomm received');
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
     const tasks        = buildSercommTasks(taskUrl, input, sasServerUrl);
@@ -777,18 +840,22 @@ export function createGenieacsRouter(
     logger.info({ deviceId, enable }, 'Setting RF on radio');
 
     try {
-      // Queue RF enable — fires on next inform
-      await nbiPost(taskUrl, {
-        name: 'setParameterValues',
-        parameterValues: [[`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, String(enable), 'xsd:boolean']],
-      });
-      // Also send with connection_request to wake radio immediately
-      const r = await nbiPost(`${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`, {
-        name: 'setParameterValues',
-        parameterValues: [[`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, String(enable), 'xsd:boolean']],
-      });
+      // Check if SAS is enabled on this radio before deciding what to set
+      const devResp = await fetch(`${nbiUrl}/devices?query=${encodeURIComponent(JSON.stringify({ _id: deviceId }))}&projection=${encodeURIComponent('Device.DeviceInfo.SAS.enableMode')}`);
+      const devData = devResp.ok ? (await devResp.json()) as Record<string,any>[] : [];
+      const sasEnableMode = devData[0]?.Device?.DeviceInfo?.SAS?.enableMode?._value;
+      const sasEnabled = sasEnableMode != null && String(sasEnableMode) !== '0';
+
+      const parameterValues: [string, string, string][] = [
+        [`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, String(enable), 'xsd:boolean'],
+      ];
+      if (sasEnabled) {
+        parameterValues.push(['Device.DeviceInfo.SAS.RadioEnable', String(enable), 'xsd:boolean']);
+      }
+
+      const r = await nbiPost(taskUrl, { name: 'setParameterValues', parameterValues });
       if (!r.ok) throw new Error(`RF set failed (${r.status}): ${r.text}`);
-      await auditLogger.log({ action, user, target: deviceId, details: `RF ${enable ? 'enabled' : 'disabled'}`, success: true });
+      await auditLogger.log({ action, user, target: deviceId, details: `RF ${enable ? 'enabled' : 'disabled'}${sasEnabled ? ' (+ SAS.RadioEnable)' : ''}`, success: true });
       res.json({ success: true, message: `RF ${enable ? 'enabled' : 'disabled'}.` });
     } catch (err) {
       await auditLogger.log({ action, user, target: deviceId, details: String(err), success: false });
@@ -802,20 +869,36 @@ export function createGenieacsRouter(
     const user       = (req as any).user?.username ?? 'unknown';
 
     try {
-      const listResp = await fetch(`${nbiUrl}/devices?projection=_id`);
+      const listResp = await fetch(`${nbiUrl}/devices?projection=${encodeURIComponent('_id,_deviceId,Device.DeviceInfo.SAS.enableMode')}`);
       if (!listResp.ok) throw new Error(`Failed to list devices: ${listResp.status}`);
-      const devices = (await listResp.json()) as Record<string, any>[];
+      const allDevices = (await listResp.json()) as Record<string, any>[];
+
+      // Filter to Baicells only (OUI 48BF74) — Sercomm uses AdminState not X_COM_RadioEnable
+      const baicellsDevices = allDevices.filter(d => {
+        const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
+        const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
+        return oui === '48BF74' || mfr.includes('baicells');
+      });
+
+      logger.info({ count: baicellsDevices.length, enable }, 'RF all — Baicells only');
 
       const results = await Promise.allSettled(
-        devices.map(async (d) => {
-          const id        = d._id as string;
-          const encodedId = encodeDeviceId(id);
-          const taskUrl   = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
-          const r         = await nbiPost(taskUrl, {
-            name: 'setParameterValues',
-            parameterValues: [[`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, String(enable), 'xsd:boolean']],
-          });
-          if (!r.ok) throw new Error(`${id}: RF set failed (${r.status})`);
+        baicellsDevices.map(async (d) => {
+          const id          = d._id as string;
+          const encodedId   = encodeDeviceId(id);
+          const taskUrl     = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
+          // Check SAS enableMode from the device data we already have
+          const sasEnableMode = d?.Device?.DeviceInfo?.SAS?.enableMode?._value;
+          const sasEnabled    = sasEnableMode != null && String(sasEnableMode) !== '0';
+          const parameterValues: [string, string, string][] = [
+            [`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, String(enable), 'xsd:boolean'],
+          ];
+          if (sasEnabled) {
+            parameterValues.push(['Device.DeviceInfo.SAS.RadioEnable', String(enable), 'xsd:boolean']);
+          }
+          const r = await nbiPost(taskUrl, { name: 'setParameterValues', parameterValues });
+          if (!r.ok) throw new Error(`${id}: RF set failed (${r.status}): ${r.text}`);
+          logger.info({ id, enable, sasEnabled, status: r.status }, 'RF set on Baicells radio');
           return id;
         }),
       );
@@ -826,11 +909,11 @@ export function createGenieacsRouter(
       await auditLogger.log({
         action:  'radio_rf_all',
         user,
-        details: `RF ${enable ? 'enabled' : 'disabled'} on ${devices.length} radios. Failures: ${failed.length}`,
+        details: `RF ${enable ? 'enabled' : 'disabled'} on ${baicellsDevices.length} Baicells radios. Failures: ${failed.length}`,
         success,
       });
 
-      res.json({ success, affected: devices.length, failures: failed });
+      res.json({ success, affected: baicellsDevices.length, failures: failed });
     } catch (err) {
       await auditLogger.log({ action: 'radio_rf_all', user, details: String(err), success: false });
       res.status(502).json({ success: false, error: String(err) });

@@ -325,17 +325,28 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
             {formatLastInform(radio.lastInform)}
           </span>
           <span className="text-xs font-mono"
-            title={form.sasEnableMode === '2' ? 'EARFCN reported by radio — in SAS mode 2 this reflects the SAS-granted frequency' : 'EARFCN'}>
-            {radio.sasEnableMode === '2'
-              ? <span className={clsx(
-                  radio.earfcn && parseInt(radio.earfcn) >= 55240 && parseInt(radio.earfcn) <= 56739
-                    ? 'text-nms-accent' : 'text-amber-400'
-                )}>
-                  EARFCN {radio.earfcn || '—'}
-                  {radio.sasEnableMode === '2' && <span className="text-nms-text-dim ml-1">(SAS)</span>}
-                </span>
-              : <span className="text-nms-text-dim">EARFCN {radio.earfcn || '—'}</span>
-            }
+            title={radio.sasEnableMode === '2'
+              ? `SAS-granted EARFCN calculated from req ${radio.sasReqLowFrequency}–${radio.sasReqHighFrequency} MHz`
+              : 'EARFCN from TR-069'}>
+            {(() => {
+              if (radio.sasEnableMode === '2') {
+                // Calculate EARFCN from center of SAS req frequency range
+                const low  = parseFloat(radio.sasReqLowFrequency  || '0');
+                const high = parseFloat(radio.sasReqHighFrequency || '0');
+                if (low > 0 && high > 0) {
+                  // Values from radio are in MHz (3550-3700 range)
+                  const centerMhz = (low + high) / 2;
+                  const earfcn = Math.round(55240 + (centerMhz - 3550) * 10);
+                  return (
+                    <span className="text-nms-accent">
+                      EARFCN {earfcn}
+                      <span className="text-nms-text-dim ml-1">(SAS)</span>
+                    </span>
+                  );
+                }
+              }
+              return <span className="text-nms-text-dim">EARFCN {radio.earfcn || '—'}</span>;
+            })()}
           </span>
           <span className="text-xs text-nms-text-dim font-mono">PCI {radio.pci || '—'}</span>
           {/* Per-row action buttons — stop propagation so they don't expand the row */}

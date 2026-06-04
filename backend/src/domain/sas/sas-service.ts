@@ -93,6 +93,48 @@ export class SasService {
     this.logger.info('SAS service initialized');
   }
 
+  // ─── Last request tracker (in-memory, debug tool) ──────────────────────
+  // Stores the most recent frequency range each CBSD requested.
+  // Keyed by cbsdId. Used by the Freq Debug view on the dashboard.
+  private lastRequests = new Map<string, {
+    serial:      string;
+    fccId:       string;
+    ip:          string;
+    lowFrequency:  number;
+    highFrequency: number;
+    type:        'spectrumInquiry' | 'grant';
+    ts:          Date;
+  }>();
+
+  // Cache of CA channel pairs per cbsdId — populated from narrow CA inquiries
+  // Used to return matching channels in wide scan responses for Sercomm CA
+  private caChannelCache = new Map<string, Array<{ low: number; high: number }>>();
+
+  recordLastRequest(
+    cbsdId:   string,
+    serial:   string,
+    fccId:    string,
+    ip:       string,
+    low:      number,
+    high:     number,
+    type:     'spectrumInquiry' | 'grant',
+  ): void {
+    this.lastRequests.set(cbsdId, { serial, fccId, ip, lowFrequency: low, highFrequency: high, type, ts: new Date() });
+  }
+
+  getLastRequests(): Array<{
+    cbsdId:       string;
+    serial:       string;
+    fccId:        string;
+    ip:           string;
+    lowFrequency:  number;
+    highFrequency: number;
+    type:         string;
+    ts:           Date;
+  }> {
+    return Array.from(this.lastRequests.entries()).map(([cbsdId, v]) => ({ cbsdId, ...v }));
+  }
+
   // ─── Channel slot assignment ──────────────────────────────────────────────
   // Divides the configured band into equal slots and assigns each CBSD a unique
   // non-overlapping slot within its interference coordination group.
@@ -113,16 +155,33 @@ export class SasService {
     band:      SasFrequencyBand,
     slotWidthHz: number,
   ): Promise<{ low: number; high: number }> {
+    // Check if the group has custom slots defined
+    const groupPolicy = groupId ? await this.groupPolicies.findOne({ _id: groupId }) : null;
+    if (Array.isArray(groupPolicy?.customSlots)) {
+      // customSlots = [] means give the FULL band to every CBSD (no slicing)
+      if (groupPolicy.customSlots.length === 0) {
+        return { low: band.lowFrequency, high: band.highFrequency };
+      }
+      // Custom slots defined — assign deterministically by serial index
+      const slots = groupPolicy.customSlots;
+      if (slots.length === 1) return { low: slots[0].low, high: slots[0].high };
+      const allCbsds   = await this.cbsds.find({ state: 'REGISTERED' }).toArray();
+      const groupCbsds = allCbsds.filter(c =>
+        c.groupingParam?.some(p => p.groupType === 'INTERFERENCE_COORDINATION' && p.groupId === groupId)
+      );
+      const sorted  = [...groupCbsds].sort((a, b) =>
+        (a.cbsdSerialNumber ?? a.cbsdId).localeCompare(b.cbsdSerialNumber ?? b.cbsdId)
+      );
+      const idx     = sorted.findIndex(c => c.cbsdId === cbsdId);
+      const slotIdx = idx >= 0 ? idx % slots.length : 0;
+      return { low: slots[slotIdx].low, high: slots[slotIdx].high };
+    }
+    // Default: auto-compute equal-width slots from maxBandwidthMhz
     const slots = this.computeSlots(band, slotWidthHz);
     if (slots.length === 0) return { low: band.lowFrequency, high: band.highFrequency };
     if (slots.length === 1) return slots[0];
 
-    // Deterministic slot assignment — sort all registered CBSDs in the same
-    // interference coordination group by serial number (cbsdSerialNumber).
-    // Serial never changes across re-registrations, so slot assignment is
-    // stable even after Clear DB + reboot cycles.
     const allCbsds = await this.cbsds.find({ state: 'REGISTERED' }).toArray();
-
     const groupCbsds = groupId
       ? allCbsds.filter(c =>
           c.groupingParam?.some(
@@ -130,14 +189,12 @@ export class SasService {
           )
         )
       : allCbsds;
-
-    // Sort by serial number — stable and hardware-bound
     const sorted  = [...groupCbsds].sort((a, b) =>
       (a.cbsdSerialNumber ?? a.cbsdId).localeCompare(b.cbsdSerialNumber ?? b.cbsdId)
     );
     const idx     = sorted.findIndex(c => c.cbsdId === cbsdId);
     const slotIdx = idx >= 0 ? idx % slots.length : 0;
-    this.logger.trace({ cbsdId, serial: sorted[idx]?.cbsdSerialNumber, groupId, slotIdx, total: sorted.length, slots: slots.length }, 'Deterministic slot assigned');
+    this.logger.info({ cbsdId, serial: sorted[idx]?.cbsdSerialNumber, groupId, slotIdx, total: sorted.length, slots: slots.length, allSerials: sorted.map(c => c.cbsdSerialNumber) }, 'Deterministic slot assigned');
     return slots[slotIdx];
   }
 
@@ -200,10 +257,10 @@ export class SasService {
 
   // ─── Policy CRUD ──────────────────────────────────────────────────────────────────────
   async listGroupPolicies(): Promise<GroupBandPolicy[]> { return this.groupPolicies.find({}).toArray(); }
-  async setGroupPolicy(groupId: string, bandId: string, notes?: string): Promise<GroupBandPolicy> {
-    const p: GroupBandPolicy = { _id: groupId, bandId, notes, updatedAt: new Date() };
+  async setGroupPolicy(groupId: string, bandId: string, notes?: string, customSlots?: import('./sas-types').GroupBandSlot[]): Promise<GroupBandPolicy> {
+    const p: GroupBandPolicy = { _id: groupId, bandId, notes, customSlots, updatedAt: new Date() };
     await this.groupPolicies.replaceOne({ _id: groupId }, p, { upsert: true });
-    this.logger.info({ groupId, bandId }, 'Group band policy set'); return p;
+    this.logger.info({ groupId, bandId, customSlots: customSlots?.length ?? 'auto' }, 'Group band policy set'); return p;
   }
   async deleteGroupPolicy(groupId: string): Promise<boolean> {
     return (await this.groupPolicies.deleteOne({ _id: groupId })).deletedCount > 0;
@@ -286,6 +343,7 @@ export class SasService {
             airInterface:      req.airInterface       ?? existing.airInterface,
             installationParam: req.installationParam  ?? existing.installationParam,
             measCapability:    req.measCapability     ?? existing.measCapability,
+            groupingParam:     req.groupingParam      ?? existing.groupingParam,
             state:             'REGISTERED' as const,
             lastSeen:          new Date(),
           }},
@@ -338,6 +396,8 @@ export class SasService {
 
       let unsupported = false;
       for (const fr of req.inquiredSpectrum ?? []) {
+        // Record last requested freq for debug view
+        this.recordLastRequest(req.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, '', fr.lowFrequency, fr.highFrequency, 'spectrumInquiry');
         // Check using 3-level resolution: CBSD override > group policy > global bands
         const resolvedBand = await this.resolveBand(cfg, cbsd, fr.lowFrequency, fr.highFrequency);
         if (!resolvedBand) {
@@ -348,21 +408,189 @@ export class SasService {
       }
       if (unsupported) continue;
 
-      // Return only the CBSD's resolved band(s) as available channels
-      // Use the first inquired spectrum range for resolution (representative)
-      const firstFr = req.inquiredSpectrum?.[0];
-      const resolvedBand = firstFr
-        ? await this.resolveBand(cfg, cbsd, firstFr.lowFrequency, firstFr.highFrequency)
-        : null;
-      const bands = cfg.frequencyBands ?? [];
-      const availableChannel: AvailableChannel[] = resolvedBand
-        ? [{ frequencyRange: { lowFrequency: resolvedBand.lowFrequency, highFrequency: resolvedBand.highFrequency }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: resolvedBand.maxEirp ?? cfg.maxEirpGAA }]
-        : bands.length > 0
-          ? bands.map(b => ({ frequencyRange: { lowFrequency: b.lowFrequency, highFrequency: b.highFrequency }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: b.maxEirp ?? cfg.maxEirpGAA }))
-          : [{ frequencyRange: { lowFrequency: cfg.allowedBandLow, highFrequency: cfg.allowedBandHigh }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: cfg.maxEirpGAA }];
+      // Return one availableChannel per inquired spectrum entry.
+      // WInnForum spec: the SAS returns what's available in each inquired range.
+      //
+      // Two cases:
+      // 1. Wide inquiry (radio asking for full band, e.g. Baicells 3560–3620 MHz):
+      //    Return the entire band — the radio will pick a frequency and request a grant.
+      //    Slot assignment happens deterministically at grant time.
+      //
+      // 2. Narrow inquiry (radio asking for a specific channel, e.g. Sercomm CA
+      //    sending two 20 MHz entries, one per carrier):
+      //    Return the specific slot that overlaps the inquired range so the
+      //    radio knows exactly which channel it will get.
+      const availableChannels: AvailableChannel[] = [];
+
+      // Detect if this is a CA narrow inquiry (multiple entries each <= slotWidth)
+      const allEntries = req.inquiredSpectrum ?? [];
+      const isNarrowCA = allEntries.length > 1;
+
+      // Cache narrow CA inquiry channels for Sercomm so the wide scan can echo them back
+      if (isNarrowCA && cbsd.fccId?.startsWith('P27-')) {
+        const band0 = await this.resolveBand(cfg, cbsd, allEntries[0].lowFrequency, allEntries[0].highFrequency);
+        if (band0) {
+          const slotW = (band0.maxBandwidthMhz ?? 20) * 1_000_000;
+          const narrowEntries = allEntries.filter(e => (e.highFrequency - e.lowFrequency) <= slotW * 1.1);
+          if (narrowEntries.length > 1) {
+            this.caChannelCache.set(req.cbsdId, narrowEntries.map(e => ({
+              low:  Math.max(e.lowFrequency,  band0.lowFrequency),
+              high: Math.min(e.highFrequency, band0.highFrequency),
+            })));
+          }
+        }
+      }
+
+      for (const fr of allEntries) {
+        const band = await this.resolveBand(cfg, cbsd, fr.lowFrequency, fr.highFrequency);
+        if (!band) continue;
+        const slotWidthHz = (band.maxBandwidthMhz ?? 20) * 1_000_000;
+        const inquiredWidthHz = fr.highFrequency - fr.lowFrequency;
+
+        if (inquiredWidthHz <= slotWidthHz * 1.1) {
+          // Narrow inquiry — echo back the exact requested range clamped to band.
+          // If the inquiry falls outside the radio's assigned band, clamp to band
+          // boundaries so the radio gets redirected to valid spectrum rather than
+          // echoing back an out-of-band frequency that will fail at grant time.
+          const overlaps = fr.lowFrequency < band.highFrequency && fr.highFrequency > band.lowFrequency;
+          if (overlaps) {
+            availableChannels.push({
+              frequencyRange: {
+                lowFrequency:  Math.max(fr.lowFrequency,  band.lowFrequency),
+                highFrequency: Math.min(fr.highFrequency, band.highFrequency),
+              },
+              channelType: 'GAA' as const,
+              ruleApplied: 'FCC_PART_96',
+              maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
+            });
+          } else {
+            // Inquiry is entirely outside this band — redirect to the correct slot
+            // within the assigned band, offset by entry index so CA gets two
+            // distinct non-overlapping slots rather than the same slot twice.
+            const entryIndex = allEntries.indexOf(fr);
+            const slotStart  = band.lowFrequency + entryIndex * slotWidthHz;
+            const slotEnd    = Math.min(slotStart + slotWidthHz, band.highFrequency);
+            this.logger.info({ cbsdId: req.cbsdId, reqLow: fr.lowFrequency, reqHigh: fr.highFrequency, bandLow: band.lowFrequency, slotStart, slotEnd, entryIndex }, 'Sercomm CA inquiry outside assigned band — redirecting to band slot');
+            availableChannels.push({
+              frequencyRange: { lowFrequency: slotStart, highFrequency: slotEnd },
+              channelType: 'GAA' as const,
+              ruleApplied: 'FCC_PART_96',
+              maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
+            });
+          }
+        } else if (cbsd.fccId?.startsWith('P27-')) {
+          // Sercomm wide scan: return the full band as a single channel.
+          // The narrow CA inquiry immediately follows and the radio uses that
+          // result for grant requests. UNSUPPORTED_SPECTRUM causes deregistration.
+          availableChannels.push({
+            frequencyRange: { lowFrequency: band.lowFrequency, highFrequency: band.highFrequency },
+            channelType: 'GAA' as const,
+            ruleApplied: 'FCC_PART_96',
+            maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
+          });
+        } else {
+          // Baicells wide scan: return whole band
+          availableChannels.push({
+            frequencyRange: { lowFrequency: band.lowFrequency, highFrequency: band.highFrequency },
+            channelType: 'GAA' as const,
+            ruleApplied: 'FCC_PART_96',
+            maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
+          });
+        }
+      }
+
+      // Skip fallback and response push if unsupported was set in the channel loop
+      if (unsupported) continue;
+
+      // Fallback: if no inquiredSpectrum, return the full resolved band
+      if (availableChannels.length === 0) {
+        const firstFr = req.inquiredSpectrum?.[0];
+        const resolvedBand = firstFr
+          ? await this.resolveBand(cfg, cbsd, firstFr.lowFrequency, firstFr.highFrequency)
+          : null;
+        const bands = cfg.frequencyBands ?? [];
+        const fallback: AvailableChannel[] = resolvedBand
+          ? [{ frequencyRange: { lowFrequency: resolvedBand.lowFrequency, highFrequency: resolvedBand.highFrequency }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: resolvedBand.maxEirp ?? cfg.maxEirpGAA }]
+          : bands.length > 0
+            ? bands.map(b => ({ frequencyRange: { lowFrequency: b.lowFrequency, highFrequency: b.highFrequency }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: b.maxEirp ?? cfg.maxEirpGAA }))
+            : [{ frequencyRange: { lowFrequency: cfg.allowedBandLow, highFrequency: cfg.allowedBandHigh }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: cfg.maxEirpGAA }];
+        availableChannels.push(...fallback);
+      }
+
+      // Sercomm Single-Step mode (CPIInstallParamSuppliedEnable=False + Method=0):
+      // The firmware never sends a /grant request. It expects grants embedded
+      // in the spectrumInquiry response via grantInfo (WinnForum Instant Grant).
+      // Two separate grantInfo entries required for CA — one per carrier,
+      // with frequencies matching EXACTLY what the radio requested.
+      const isSercommSingleStep = false; // grantInfo disabled
+      // Do NOT collapse channels for Sercomm — the firmware reads freq[0] as the
+      // combined span of ALL returned channels and expects ONE grant covering that
+      // entire span. Collapse to a single channel before adding grantInfo.
+      if (isSercommSingleStep && availableChannels.length > 1) {
+        const low  = Math.min(...availableChannels.map(c => c.frequencyRange.lowFrequency));
+        const high = Math.max(...availableChannels.map(c => c.frequencyRange.highFrequency));
+        availableChannels.splice(0, availableChannels.length, {
+          frequencyRange: { lowFrequency: low, highFrequency: high },
+          channelType:    'GAA' as const,
+          ruleApplied:    'FCC_PART_96',
+          maxEirp:        availableChannels[0].maxEirp,
+        });
+      }
+      if (isSercommSingleStep && availableChannels.length > 0) {
+        const now             = new Date();
+        const cfg2            = cfg; // alias for clarity
+        const grantExpireTime = new Date(now.getTime() + cfg2.grantExpireHours * 3_600_000);
+        const channelsWithGrants: (AvailableChannel & { grantInfo?: any })[] = [];
+        for (const ch of availableChannels) {
+          const low  = ch.frequencyRange.lowFrequency;
+          const high = ch.frequencyRange.highFrequency;
+          // Reuse existing grant only if it covers exactly this frequency range
+          const existing = await this.grants.findOne({
+            cbsdId: req.cbsdId,
+            state:  { $in: ['GRANTED', 'AUTHORIZED'] },
+            'operationParam.operationFrequencyRange.lowFrequency':  ch.frequencyRange.lowFrequency,
+            'operationParam.operationFrequencyRange.highFrequency': ch.frequencyRange.highFrequency,
+          });
+          let grantId: string;
+          if (existing) {
+            grantId = existing.grantId;
+            // Refresh expire time
+            await this.grants.updateOne({ grantId }, { $set: { state: 'AUTHORIZED', lastHeartbeat: now, transmitExpireTime: new Date(now.getTime() + cfg2.heartbeatInterval * 3 * 1_000), grantExpireTime } });
+          } else {
+            grantId = uuidv4();
+            await this.grants.insertOne({
+              grantId,
+              cbsdId:             req.cbsdId,
+              state:              'AUTHORIZED',
+              channelType:        'GAA',
+              operationParam:     { maxEirp: ch.maxEirp ?? cfg2.maxEirpGAA, operationFrequencyRange: { lowFrequency: low, highFrequency: high } },
+              grantExpireTime,
+              heartbeatInterval:  cfg2.heartbeatInterval,
+              transmitExpireTime: new Date(now.getTime() + cfg2.heartbeatInterval * 3 * 1_000),
+              lastHeartbeat:      now,
+              createdAt:          now,
+            });
+            const earfcn = Math.round(55240 + (((low + high) / 2) / 1e6 - 3550) * 10);
+            this.logger.info({ cbsdId: req.cbsdId, grantId, lowFrequency: low, highFrequency: high, earfcn }, 'Sercomm instant grant issued via spectrumInquiry');
+          }
+          const grantExpireIso = grantExpireTime.toISOString().replace(/\.\d+Z$/, 'Z');
+          channelsWithGrants.push({
+            ...ch,
+            grantInfo: {
+              grantId,
+              grantExpireTime: grantExpireIso,
+            },
+          });
+        }
+        await this.cbsds.updateOne({ cbsdId: req.cbsdId }, { $set: { lastSeen: new Date() } });
+        this.logger.trace({ cbsdId: req.cbsdId, channelCount: channelsWithGrants.length }, 'Sercomm spectrumInquiry response with grantInfo');
+        responses.push({ cbsdId: req.cbsdId, availableChannel: channelsWithGrants, response: makeResponse(RC.SUCCESS) });
+        continue;
+      }
 
       await this.cbsds.updateOne({ cbsdId: req.cbsdId }, { $set: { lastSeen: new Date() } });
-      responses.push({ cbsdId: req.cbsdId, availableChannel, response: makeResponse(RC.SUCCESS) });
+      this.logger.trace({ cbsdId: req.cbsdId, channelCount: availableChannels.length, channels: availableChannels.map(c => `${(c.frequencyRange.lowFrequency/1e6).toFixed(1)}-${(c.frequencyRange.highFrequency/1e6).toFixed(1)}MHz`) }, 'spectrumInquiry response');
+      responses.push({ cbsdId: req.cbsdId, availableChannel: availableChannels, response: makeResponse(RC.SUCCESS) });
     }
 
     return responses;
@@ -390,10 +618,12 @@ export class SasService {
         continue;
       }
 
-      // GPS lock delay — hold off granting until GPS has had time to lock.
-      // Keyed by fccId:serial so re-registrations don't reset the clock.
+      // GPS lock delay — Baicells BaiBLQ firmware re-grants after GPS locks.
+      // Skip this delay for Sercomm radios (FCC ID P27-SCE4255W) — they are
+      // indoor units with no GPS lock sequence.
+      const isSercomm = cbsd.fccId?.startsWith('P27-');
       const msSinceReg = this.msSinceFirstSeen(cbsd.fccId, cbsd.cbsdSerialNumber);
-      if (msSinceReg < SasService.GPS_LOCK_DELAY_MS) {
+      if (!isSercomm && msSinceReg < SasService.GPS_LOCK_DELAY_MS) {
         const waitSec = Math.ceil((SasService.GPS_LOCK_DELAY_MS - msSinceReg) / 1000);
         this.logger.info({ cbsdId: req.cbsdId, msSinceReg, waitSec }, 'GPS lock delay — holding grant');
         responses.push({ cbsdId: req.cbsdId, response: makeResponse(RC.UNSUPPORTED_SPECTRUM) });
@@ -401,6 +631,9 @@ export class SasService {
       }
 
       const { lowFrequency, highFrequency } = req.operationParam.operationFrequencyRange;
+
+      // Record last requested freq for debug view
+      this.recordLastRequest(req.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, '', lowFrequency, highFrequency, 'grant');
 
       // Find the best matching configured band using 3-level policy resolution
       const matchedBand = await this.resolveBand(cfg, cbsd, lowFrequency, highFrequency);
@@ -415,12 +648,16 @@ export class SasService {
         continue;
       }
 
-      // Check for existing active grant on overlapping frequency
+      // Check for existing active grant covering the same carrier.
+      // Use a 5 MHz minimum overlap threshold to avoid false positives with CA
+      // radios where two adjacent carriers share a boundary (e.g. 3616-3636 and
+      // 3635-3655 overlap by only 1 MHz — these are distinct carriers).
+      const MIN_OVERLAP_HZ  = 5_000_000; // 5 MHz — more than any CA boundary overlap
       const existingGrant = await this.grants.findOne({
         cbsdId: req.cbsdId,
         state:  { $in: ['GRANTED', 'AUTHORIZED'] },
-        'operationParam.operationFrequencyRange.lowFrequency':  { $lt: highFrequency },
-        'operationParam.operationFrequencyRange.highFrequency': { $gt: lowFrequency },
+        'operationParam.operationFrequencyRange.lowFrequency':  { $lt: highFrequency - MIN_OVERLAP_HZ },
+        'operationParam.operationFrequencyRange.highFrequency': { $gt: lowFrequency  + MIN_OVERLAP_HZ },
       });
       if (existingGrant) {
         // Grant exists — return it regardless of state so radio can heartbeat it
@@ -437,24 +674,42 @@ export class SasService {
         continue;
       }
 
-      // Use matched band's EIRP limit, falling back to global
-      const requestedEirp = req.operationParam.maxEirp;
-      const bandMaxEirp   = matchedBand.maxEirp ?? cfg.maxEirpGAA;
-      const maxEirp       = (requestedEirp <= 0) ? bandMaxEirp : Math.min(requestedEirp, bandMaxEirp);
-
-      // Assign a unique non-overlapping channel slot deterministically.
-      // Slot is based on cbsdId sort position within the interference group —
-      // guaranteed unique and race-condition-proof.
+      // For CA radios (Sercomm) the requested range is a specific 20 MHz channel
+      // that may be offset by a few hundred kHz from our slot boundary.
+      // At grant time we honour the radio's exact requested range as long as it
+      // fits within the matched band — this avoids the radio rejecting the grant
+      // because the frequency doesn't match its configured EARFCN.
       const slotWidthHz = (matchedBand.maxBandwidthMhz ?? cfg.defaultGrantBandwidthMhz ?? 20) * 1_000_000;
+      const requestedWidthHz = highFrequency - lowFrequency;
       const groupId     = cbsd.groupingParam?.find(p => p.groupType === 'INTERFERENCE_COORDINATION')?.groupId;
-      const slot        = await this.assignChannelSlot(req.cbsdId, groupId, matchedBand, slotWidthHz);
 
-      const grantLow    = slot.low;
-      const clampedHigh = slot.high;
+      let grantLow: number;
+      let clampedHigh: number;
+
+      if (requestedWidthHz <= slotWidthHz * 1.1) {
+        // Narrow request (single CA carrier or specific channel)
+        grantLow    = Math.max(lowFrequency,  matchedBand.lowFrequency);
+        clampedHigh = Math.min(highFrequency, matchedBand.highFrequency);
+      } else if (isSercomm) {
+        // Sercomm CA wide grant: honour the exact requested range spanning both carriers
+        // The radio requests a grant covering the full combined CA span (e.g. 3616–3655.8)
+        grantLow    = Math.max(lowFrequency,  matchedBand.lowFrequency);
+        clampedHigh = Math.min(highFrequency, matchedBand.highFrequency);
+      } else {
+        // Wide request (Baicells full-band) — assign deterministic slot
+        const slot = await this.assignChannelSlot(req.cbsdId, groupId, matchedBand, slotWidthHz);
+        grantLow    = slot.low;
+        clampedHigh = slot.high;
+      }
 
       const grantId         = uuidv4();
       const now             = new Date();
       const grantExpireTime = new Date(now.getTime() + cfg.grantExpireHours * 3_600_000);
+
+      // EIRP: use band limit, fall back to global
+      const requestedEirp = req.operationParam.maxEirp;
+      const bandMaxEirp   = matchedBand.maxEirp ?? cfg.maxEirpGAA;
+      const maxEirp       = (requestedEirp <= 0) ? bandMaxEirp : Math.min(requestedEirp, bandMaxEirp);
 
       await this.grants.insertOne({
         grantId,
@@ -516,7 +771,7 @@ export class SasService {
         continue;
       }
 
-      if (grant.state === 'TERMINATED' || new Date() > grant.grantExpireTime) {
+      if (grant.state === 'TERMINATED') {
         responses.push({
           cbsdId:             req.cbsdId,
           grantId:            req.grantId,
@@ -526,16 +781,22 @@ export class SasService {
         continue;
       }
 
-      const now                = new Date();
+      // If the grant has expired but the radio is still heartbeating,
+      // renew it inline rather than returning TERMINATED_GRANT.
+      // This prevents a race window between the grant keeper and the radio's
+      // heartbeat where the radio would unnecessarily relinquish and re-register.
+      const now = new Date();
+      const isExpired = now > grant.grantExpireTime;
       // transmitExpireTime must be well beyond the next heartbeat due time.
       // The radio must heartbeat BEFORE this expires or it stops transmitting.
       // We give 3× the heartbeat interval — this covers GPS init sequences
       // (which can take several minutes) without being dangerously permissive.
       const transmitExpireTime = new Date(now.getTime() + cfg.heartbeatInterval * 3 * 1_000);
-      let newGrantExpireTime   = grant.grantExpireTime;
-      if (req.grantRenew) {
-        newGrantExpireTime = new Date(now.getTime() + cfg.grantExpireHours * 3_600_000);
-      }
+      this.logger.debug({ cbsdId: req.cbsdId, heartbeatInterval: cfg.heartbeatInterval, transmitExpireMs: cfg.heartbeatInterval * 3 * 1_000, transmitExpireTime }, 'Heartbeat transmit expire debug');
+      // Always renew if expired — radio is clearly still alive and heartbeating
+      let newGrantExpireTime = (req.grantRenew || isExpired)
+        ? new Date(now.getTime() + cfg.grantExpireHours * 3_600_000)
+        : grant.grantExpireTime;
 
       await this.grants.updateOne(
         { grantId: req.grantId },
@@ -552,10 +813,19 @@ export class SasService {
         cbsdId:             req.cbsdId,
         grantId:            req.grantId,
         transmitExpireTime: sasFmt(transmitExpireTime),
-        heartbeatInterval:  cfg.heartbeatInterval,
+        // Per WInnForum reference SAS (fake_sas.py): minimal response.
+        // Only cbsdId, grantId, transmitExpireTime and response are returned.
+        // heartbeatInterval and grantExpireTime are optional and omitted to
+        // match reference SAS behavior exactly.
         response:           makeResponse(RC.SUCCESS),
       };
+      // Only add grantExpireTime when radio explicitly requests renewal
       if (req.grantRenew) resp.grantExpireTime = sasFmt(newGrantExpireTime);
+
+      // Log if radio is stuck in GRANTED state (not transmitting)
+      if (req.operationState === 'GRANTED') {
+        this.logger.debug({ cbsdId: req.cbsdId, grantId: req.grantId }, 'Radio heartbeating in GRANTED state — not yet transmitting (X_COM_RadioEnable may be False)');
+      }
 
       responses.push(resp);
     }
@@ -661,30 +931,85 @@ export class SasService {
       ? cfg.frequencyBands
       : [{ id: 'legacy', label: 'Default', lowFrequency: cfg.allowedBandLow, highFrequency: cfg.allowedBandHigh, maxBandwidthMhz: cfg.defaultGrantBandwidthMhz ?? 20 } as SasFrequencyBand];
 
+    // Build a reverse map: bandId -> groupIds that are assigned to it
+    const allGroupPolicies = await this.groupPolicies.find({}).toArray();
+    const bandGroupMap = new Map<string, string[]>(); // bandId -> groupIds[]
+    for (const gp of allGroupPolicies) {
+      if (!gp.bandId) continue;
+      const existing = bandGroupMap.get(gp.bandId) ?? [];
+      existing.push(gp._id);
+      bandGroupMap.set(gp.bandId, existing);
+    }
+
     const bandResults = configBands.map(band => {
       const slotW = (band.maxBandwidthMhz ?? 20) * 1_000_000;
       const slots = this.computeSlots(band, slotW);
+      const assignedGroupIds = bandGroupMap.get(band.id) ?? [];
+
+      // Filter active grants to only those belonging to this band's assigned groups
+      // and whose frequency overlaps this band.
+      const bandGrants = activeGrants.filter(g => {
+        const gLow  = g.operationParam.operationFrequencyRange.lowFrequency;
+        const gHigh = g.operationParam.operationFrequencyRange.highFrequency;
+        // Must overlap this band
+        if (gLow >= band.highFrequency || gHigh <= band.lowFrequency) return false;
+        // If band has assigned groups, filter by group
+        if (assignedGroupIds.length > 0) {
+          const cbsd    = cbsdMap.get(g.cbsdId);
+          const groupId = cbsd?.groupingParam?.find(
+            p => p.groupType === 'INTERFERENCE_COORDINATION'
+          )?.groupId;
+          if (!groupId || !assignedGroupIds.includes(groupId)) return false;
+        }
+        return true;
+      });
+
+      // Map slots — for display purposes, match each slot to a grant that
+      // overlaps it by at least 50% of the slot width (center-of-mass match).
+      // This handles grants that don't align exactly to slot boundaries.
+      const slotResults = slots.map(s => {
+        const sMid = (s.low + s.high) / 2;
+        const centerMhz = sMid / 1e6;
+        const earfcn    = Math.round(55240 + (centerMhz - 3550) * 10);
+
+        // Find the grant whose center frequency is closest to this slot's center
+        // and overlaps this slot by at least 50%
+        let bestGrant: SasGrant | undefined;
+        let bestOverlap = 0;
+        for (const g of bandGrants) {
+          const gLow  = g.operationParam.operationFrequencyRange.lowFrequency;
+          const gHigh = g.operationParam.operationFrequencyRange.highFrequency;
+          const overlapLow  = Math.max(gLow,  s.low);
+          const overlapHigh = Math.min(gHigh, s.high);
+          const overlapHz   = Math.max(0, overlapHigh - overlapLow);
+          const overlapPct  = overlapHz / slotW;
+          if (overlapPct > bestOverlap && overlapPct >= 0.4) {
+            bestOverlap = overlapPct;
+            bestGrant   = g;
+          }
+        }
+
+        const cbsd    = bestGrant ? cbsdMap.get(bestGrant.cbsdId) : undefined;
+        const groupId = cbsd?.groupingParam?.find(
+          p => p.groupType === 'INTERFERENCE_COORDINATION'
+        )?.groupId;
+
+        return {
+          low: s.low, high: s.high, earfcn,
+          ...(bestGrant ? { cbsdId: bestGrant.cbsdId, state: bestGrant.state } : {}),
+          ...(cbsd      ? { serial: cbsd.cbsdSerialNumber, fccId: cbsd.fccId } : {}),
+          ...(groupId   ? { groupId } : {}),
+        };
+      });
 
       return {
-        bandLow:     band.lowFrequency,
-        bandHigh:    band.highFrequency,
-        label:       band.label,
-        slotWidthHz: slotW,
-        slots: slots.map(s => {
-          const centerHz  = (s.low + s.high) / 2;
-          const centerMhz = centerHz / 1e6;
-          const earfcn    = Math.round(55240 + (centerMhz - 3550) * 10);
-          const grant     = activeGrants.find(g =>
-            g.operationParam.operationFrequencyRange.lowFrequency  >= s.low - 1 &&
-            g.operationParam.operationFrequencyRange.highFrequency <= s.high + 1,
-          );
-          const cbsd = grant ? cbsdMap.get(grant.cbsdId) : undefined;
-          return {
-            low: s.low, high: s.high, earfcn,
-            ...(grant ? { cbsdId: grant.cbsdId, state: grant.state } : {}),
-            ...(cbsd  ? { serial: cbsd.cbsdSerialNumber, fccId: cbsd.fccId } : {}),
-          };
-        }),
+        bandLow:          band.lowFrequency,
+        bandHigh:         band.highFrequency,
+        label:            band.label,
+        slotWidthHz:      slotW,
+        bandId:           band.id,
+        assignedGroupIds,
+        slots:            slotResults,
       };
     });
 
@@ -805,22 +1130,24 @@ export class SasService {
       const now    = new Date();
       const cutoff = new Date(now.getTime() + cfg.heartbeatInterval * 2 * 1_000);
       // Only touch grants the radio hasn't heartbeated recently (>3 min ago)
-      // This prevents the keeper from interfering with grants the radio is managing
       const recentCutoff = new Date(now.getTime() - 3 * 60 * 1_000);
 
+      // Also renew grants that have already expired (grantExpireTime in the past)
+      // but are still in AUTHORIZED/GRANTED state — this handles the case where
+      // the radio stopped heartbeating (e.g. reboot) and the grant expired while
+      // the keeper was running, leaving it stuck in an expired-but-AUTHORIZED state.
       const grants = await this.grants.find({
         state: { $in: ['GRANTED', 'AUTHORIZED'] },
-        grantExpireTime: { $gt: now },
         $and: [
           {
             $or: [
               { transmitExpireTime: { $lt: cutoff } },
               { transmitExpireTime: { $exists: false } },
               { state: 'GRANTED' },
+              { grantExpireTime: { $lt: now } }, // also catch already-expired grants
             ],
           },
           {
-            // Only touch if radio hasn't heartbeated in the last 3 minutes
             $or: [
               { lastHeartbeat: { $lt: recentCutoff } },
               { lastHeartbeat: { $exists: false } },
@@ -836,12 +1163,16 @@ export class SasService {
       const transmitExpireTime = new Date(now.getTime() + cfg.heartbeatInterval * 3 * 1_000);
 
       for (const grant of grants) {
+        const newGrantExpireTime = new Date(now.getTime() + cfg.grantExpireHours * 3_600_000);
         await this.grants.updateOne(
           { grantId: grant.grantId },
           { $set: {
             state:             'AUTHORIZED',
             lastHeartbeat:     now,
             transmitExpireTime,
+            // Always renew grantExpireTime — keeper is the fallback when the radio
+            // stops heartbeating, so we must keep the grant alive indefinitely.
+            grantExpireTime:   newGrantExpireTime,
           }},
         );
         this.logger.trace(

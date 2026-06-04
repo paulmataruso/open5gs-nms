@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Shield, Radio, Wifi, Server, Settings, RefreshCw,
   AlertCircle, CheckCircle, Activity, ScrollText, Trash2, Plus, BookOpen, X, Download, Lock,
@@ -435,29 +435,40 @@ const SLOT_COLORS = [
   '#84cc16', // lime
 ];
 
-function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz }: {
-  slots:       Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string }>;
-  bandLow:     number;
-  bandHigh:    number;
-  slotWidthHz: number;
+function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds }: {
+  slots:          Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
+  bandLow:        number;
+  bandHigh:       number;
+  slotWidthHz:    number;
+  filterGroupIds?: string[]; // if set, only show slots whose groupId is in this list
 }) {
   const bandWidthHz = bandHigh - bandLow;
   const bandMhz     = bandWidthHz / 1e6;
   const lowMhz      = bandLow  / 1e6;
   const highMhz     = bandHigh / 1e6;
 
+  // Filter slots: if filterGroupIds is set, dim slots from other groups
+  const visibleSlots = filterGroupIds && filterGroupIds.length > 0
+    ? slots.map(s => (s.cbsdId && s.groupId && !filterGroupIds.includes(s.groupId))
+        ? { ...s, cbsdId: undefined, serial: undefined, fccId: undefined, state: undefined, groupId: undefined, _dimmed: true }
+        : { ...s, _dimmed: false })
+    : slots.map(s => ({ ...s, _dimmed: false }));
+
   // Map cbsdId -> color index for consistent coloring
   const cbsdColorMap = new Map<string, number>();
   let colorIdx = 0;
-  for (const s of slots) {
+  for (const s of visibleSlots) {
     if (s.cbsdId && !cbsdColorMap.has(s.cbsdId)) {
       cbsdColorMap.set(s.cbsdId, colorIdx % SLOT_COLORS.length);
       colorIdx++;
     }
   }
 
-  const usedSlots   = slots.filter(s => s.cbsdId);
-  const unusedSlots = slots.filter(s => !s.cbsdId);
+  const usedSlots   = visibleSlots.filter(s => s.cbsdId);
+  const unusedSlots = visibleSlots.filter(s => !s.cbsdId);
+  const dimmedCount = filterGroupIds && filterGroupIds.length > 0
+    ? slots.filter(s => s.cbsdId && s.groupId && !filterGroupIds.includes(s.groupId)).length
+    : 0;
 
   return (
     <div className="space-y-3">
@@ -486,7 +497,7 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz }: {
           return (
             <div key={s.cbsdId} className="absolute inset-y-0 flex flex-col items-center justify-center px-1 overflow-hidden"
               style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color + '33', borderLeft: `2px solid ${color}`, borderRight: `2px solid ${color}` }}
-              title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}–${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}`}>
+              title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}–${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}>
               <span className="text-xs font-bold truncate w-full text-center" style={{ color }}>{label}</span>
               <span className="text-xs font-mono truncate w-full text-center" style={{ color: color + 'cc' }}>{(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}</span>
               {isAuth && <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]" />}
@@ -495,7 +506,7 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz }: {
         })}
 
         {/* Slot divider lines */}
-        {slots.slice(0, -1).map((s, i) => {
+        {visibleSlots.slice(0, -1).map((s, i) => {
           const leftPct = ((s.high - bandLow) / bandWidthHz) * 100;
           return <div key={i} className="absolute inset-y-0 w-px bg-nms-border/60" style={{ left: `${leftPct}%` }} />;
         })}
@@ -538,6 +549,12 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz }: {
             <div className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-sm bg-nms-text-dim/20 border border-nms-border" />
               <span className="text-xs text-nms-text-dim">{unusedSlots.length} unassigned slot{unusedSlots.length > 1 ? 's' : ''}</span>
+            </div>
+          )}
+          {dimmedCount > 0 && (
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-sm bg-nms-text-dim/10 border border-dashed border-nms-border" />
+              <span className="text-xs text-nms-text-dim/60">{dimmedCount} grant{dimmedCount > 1 ? 's' : ''} from other group{dimmedCount > 1 ? 's' : ''} (hidden)</span>
             </div>
           )}
         </div>
@@ -605,18 +622,22 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz }: {
   );
 }
 
-// ─── Unified Spectrum Chart — all bands + all radios on one 3550–3700 MHz plot ──
-function UnifiedSpectrumChart({ bands }: {
+// ─── Stacked Band Chart — one row per band, all on same 3550–3700 MHz axis ──
+// Each row only shows grants from the groups assigned to that band.
+// This cleanly handles overlapping bands without visual collision.
+function StackedBandChart({ bands }: {
   bands: Array<{
     bandLow: number; bandHigh: number; label: string; slotWidthHz: number;
-    slots: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string }>;
+    bandId: string; assignedGroupIds: string[];
+    slots: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
   }>;
 }) {
-  const FULL_LOW  = 3_550_000_000;
-  const FULL_HIGH = 3_700_000_000;
+  const FULL_LOW   = 3_550_000_000;
+  const FULL_HIGH  = 3_700_000_000;
   const FULL_WIDTH = FULL_HIGH - FULL_LOW;
+  const pct = (hz: number) => ((hz - FULL_LOW) / FULL_WIDTH) * 100;
 
-  // Assign consistent colors to each CBSD across all bands
+  // Assign stable colors per CBSD across all bands
   const cbsdColorMap = new Map<string, number>();
   let colorIdx = 0;
   for (const band of bands) {
@@ -627,114 +648,135 @@ function UnifiedSpectrumChart({ bands }: {
     }
   }
 
-  // Collect all active grants across all bands
-  const allActive = bands.flatMap(b => b.slots.filter(s => s.cbsdId));
-  const allSlots  = bands.flatMap(b => b.slots);
-
-  const pct = (hz: number) => ((hz - FULL_LOW) / FULL_WIDTH) * 100;
-
   // Tick marks every 10 MHz
   const ticks: number[] = [];
   for (let f = 3560; f <= 3700; f += 10) ticks.push(f * 1e6);
 
+  const totalGrants = bands.reduce((acc, b) => {
+    const groupFilter = b.assignedGroupIds.length > 0 ? b.assignedGroupIds : null;
+    return acc + b.slots.filter(s => s.cbsdId && (!groupFilter || (s.groupId && groupFilter.includes(s.groupId)))).length;
+  }, 0);
+
   return (
-    <div className="space-y-3">
-      {/* Chart */}
-      <div className="relative h-16 rounded-lg overflow-hidden bg-nms-surface border border-nms-border">
+    <div className="space-y-2">
+      {bands.map((band, bi) => {
+        const bandColor = SLOT_COLORS[bi % SLOT_COLORS.length];
+        const groupFilter = band.assignedGroupIds.length > 0 ? band.assignedGroupIds : null;
 
-        {/* Band background shading */}
-        {bands.map((b, i) => (
-          <div key={i} className="absolute inset-y-0 border-x border-nms-accent/20"
-            style={{
-              left:    `${pct(b.bandLow)}%`,
-              width:   `${pct(b.bandHigh) - pct(b.bandLow)}%`,
-              background: `${SLOT_COLORS[i % SLOT_COLORS.length]}08`,
-            }}
-          />
-        ))}
+        // Slots to render in this row — only this band's assigned group
+        const rowSlots = band.slots.filter(s =>
+          !groupFilter || !s.cbsdId || !s.groupId || groupFilter.includes(s.groupId)
+        );
+        const activeInRow = rowSlots.filter(s => s.cbsdId);
 
-        {/* Unassigned slot hatching */}
-        {allSlots.filter(s => !s.cbsdId).map((s, i) => (
-          <div key={i} className="absolute inset-y-0"
-            style={{ left: `${pct(s.low)}%`, width: `${pct(s.high) - pct(s.low)}%` }}>
-            <div className="w-full h-full opacity-10"
-              style={{ backgroundImage: 'repeating-linear-gradient(-45deg,#6b7280 0,#6b7280 1px,transparent 0,transparent 50%)', backgroundSize: '5px 5px' }} />
-          </div>
-        ))}
-
-        {/* Active grants */}
-        {allActive.map(s => {
-          const color = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
-          const label = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
-          return (
-            <div key={s.cbsdId} className="absolute inset-y-0 flex flex-col items-center justify-center px-1 overflow-hidden"
-              style={{
-                left:            `${pct(s.low)}%`,
-                width:           `${pct(s.high) - pct(s.low)}%`,
-                backgroundColor: color + '33',
-                borderLeft:      `2px solid ${color}`,
-                borderRight:     `2px solid ${color}`,
-              }}
-              title={`${s.serial ?? s.cbsdId}
-${(s.low/1e6).toFixed(1)}–${(s.high/1e6).toFixed(1)} MHz
-EARFCN ${s.earfcn}
-${s.state}`}>
-              <span className="text-xs font-bold truncate w-full text-center" style={{ color }}>{label}</span>
-              <span className="text-xs font-mono truncate w-full text-center" style={{ color: color + 'cc' }}>
-                {(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}
-              </span>
-              {s.state === 'AUTHORIZED' && <div className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]" />}
+        return (
+          <div key={bi} className="flex items-stretch gap-2">
+            {/* Band label — left side */}
+            <div className="w-32 shrink-0 flex flex-col justify-center">
+              <p className="text-xs font-semibold truncate" style={{ color: bandColor }}>{band.label}</p>
+              <p className="text-xs font-mono text-nms-text-dim/60">
+                {(band.bandLow/1e6).toFixed(0)}–{(band.bandHigh/1e6).toFixed(0)} MHz
+              </p>
+              {band.assignedGroupIds.length > 0 && (
+                <p className="text-xs text-purple-400/70 truncate" title={band.assignedGroupIds.join(', ')}>
+                  {band.assignedGroupIds.join(', ')}
+                </p>
+              )}
             </div>
-          );
-        })}
 
-        {/* Band boundary lines */}
-        {bands.map((b, i) => (
-          <div key={i} className="absolute inset-y-0 w-px bg-nms-accent/30"
-            style={{ left: `${pct(b.bandLow)}%` }} />
-        ))}
-      </div>
+            {/* Chart row */}
+            <div className="flex-1 relative h-12 rounded overflow-hidden bg-nms-surface border border-nms-border">
+              {/* Band span indicator */}
+              <div className="absolute inset-y-0 pointer-events-none"
+                style={{
+                  left:       `${pct(band.bandLow)}%`,
+                  width:      `${pct(band.bandHigh) - pct(band.bandLow)}%`,
+                  background: `${bandColor}08`,
+                  borderLeft:  `1px solid ${bandColor}40`,
+                  borderRight: `1px solid ${bandColor}40`,
+                }}
+              />
 
-      {/* Tick labels */}
-      <div className="relative h-4">
-        {ticks.map(hz => (
-          <span key={hz} className="absolute text-xs font-mono text-nms-text-dim -translate-x-1/2"
-            style={{ left: `${pct(hz)}%` }}>
-            {(hz/1e6).toFixed(0)}
-          </span>
-        ))}
-        <span className="absolute right-0 text-xs font-mono text-nms-text-dim">MHz</span>
-      </div>
+              {/* Unassigned slot hatching within band */}
+              {rowSlots.filter(s => !s.cbsdId).map((s, i) => (
+                <div key={i} className="absolute inset-y-0"
+                  style={{ left: `${pct(s.low)}%`, width: `${pct(s.high) - pct(s.low)}%` }}>
+                  <div className="w-full h-full opacity-15"
+                    style={{ backgroundImage: 'repeating-linear-gradient(-45deg,#6b7280 0,#6b7280 1px,transparent 0,transparent 50%)', backgroundSize: '5px 5px' }} />
+                </div>
+              ))}
 
-      {/* Band labels */}
-      <div className="relative h-4">
-        {bands.map((b, i) => {
-          const centerPct = (pct(b.bandLow) + pct(b.bandHigh)) / 2;
-          const color = SLOT_COLORS[i % SLOT_COLORS.length];
-          return (
-            <span key={i} className="absolute text-xs font-medium -translate-x-1/2"
-              style={{ left: `${centerPct}%`, color }}>
-              {b.label}
+              {/* Active grants */}
+              {activeInRow.map(s => {
+                const color = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
+                const label = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
+                return (
+                  <div key={s.cbsdId}
+                    className="absolute inset-y-0 flex flex-col items-center justify-center px-0.5 overflow-hidden"
+                    style={{
+                      left:            `${pct(s.low)}%`,
+                      width:           `${pct(s.high) - pct(s.low)}%`,
+                      backgroundColor: color + '33',
+                      borderLeft:      `2px solid ${color}`,
+                      borderRight:     `2px solid ${color}`,
+                    }}
+                    title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}
+                  >
+                    <span className="text-xs font-bold truncate w-full text-center leading-tight" style={{ color }}>{label}</span>
+                    <span className="text-xs font-mono truncate w-full text-center leading-tight" style={{ color: color + 'cc' }}>
+                      {(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}
+                    </span>
+                    {s.state === 'AUTHORIZED' && (
+                      <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_4px_rgba(74,222,128,0.9)]" />
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Tick lines */}
+              {ticks.map(hz => (
+                <div key={hz} className="absolute inset-y-0 w-px bg-nms-border/20"
+                  style={{ left: `${pct(hz)}%` }} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Shared x-axis tick labels */}
+      <div className="flex items-stretch gap-2">
+        <div className="w-32 shrink-0" />
+        <div className="flex-1 relative h-4">
+          {ticks.map(hz => (
+            <span key={hz} className="absolute text-xs font-mono text-nms-text-dim -translate-x-1/2"
+              style={{ left: `${pct(hz)}%` }}>
+              {(hz/1e6).toFixed(0)}
             </span>
-          );
-        })}
+          ))}
+          <span className="absolute right-0 text-xs font-mono text-nms-text-dim">MHz</span>
+        </div>
       </div>
 
-      {/* Legend */}
-      {allActive.length > 0 && (
+      {/* Legend — all active grants across all rows */}
+      {totalGrants > 0 && (
         <div className="flex flex-wrap gap-3 pt-1">
-          {allActive.map(s => {
-            const color = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
-            return (
-              <div key={s.cbsdId} className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color + '55', border: `1.5px solid ${color}` }} />
-                <span className="text-xs text-nms-text-dim">
-                  {s.serial ? s.serial.slice(-8) : s.cbsdId?.slice(0, 8)}
-                  <span className="font-mono ml-1 text-nms-text-dim/60">{(s.low/1e6).toFixed(1)}–{(s.high/1e6).toFixed(1)} MHz</span>
-                  {s.state === 'AUTHORIZED' && <span className="ml-1 text-green-400">●</span>}
-                </span>
-              </div>
-            );
+          {bands.map((band, bi) => {
+            const groupFilter = band.assignedGroupIds.length > 0 ? band.assignedGroupIds : null;
+            return band.slots
+              .filter(s => s.cbsdId && (!groupFilter || !s.groupId || groupFilter.includes(s.groupId)))
+              .map(s => {
+                const color = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
+                return (
+                  <div key={`${bi}-${s.cbsdId}`} className="flex items-center gap-1.5">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color + '55', border: `1.5px solid ${color}` }} />
+                    <span className="text-xs text-nms-text-dim">
+                      {s.serial ? s.serial.slice(-8) : s.cbsdId?.slice(0, 8)}
+                      <span className="font-mono ml-1 text-nms-text-dim/60">{(s.low/1e6).toFixed(1)}–{(s.high/1e6).toFixed(1)} MHz</span>
+                      {s.state === 'AUTHORIZED' && <span className="ml-1 text-green-400">●</span>}
+                    </span>
+                  </div>
+                );
+              });
           })}
         </div>
       )}
@@ -744,7 +786,7 @@ ${s.state}`}>
         &nbsp;·&nbsp;
         Configured bands: <span className="font-mono text-nms-text">{bands.length}</span>
         &nbsp;·&nbsp;
-        Active grants: <span className="font-mono text-nms-text">{allActive.length}</span>
+        Active grants: <span className="font-mono text-nms-text">{totalGrants}</span>
       </p>
     </div>
   );
@@ -829,6 +871,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   const [cbsdPolicies,  setCbsdPolicies]  = useState<Record<string, string>>({}); // "fccId:serial" -> bandId
   const [cbsdNotes,     setCbsdNotes]     = useState<Record<string, string>>({});
   const [groupNotes,    setGroupNotes]    = useState<Record<string, string>>({});
+  const [groupCustomSlots, setGroupCustomSlots] = useState<Record<string, Array<{low:number;high:number;label?:string}> | undefined>>({});
   const [saving,        setSaving]        = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
@@ -836,6 +879,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
       const [gp, cp] = await Promise.all([sasApi.listGroupPolicies(), sasApi.listCbsdPolicies()]);
       setGroupPolicies(Object.fromEntries(gp.map((p: any) => [p._id, p.bandId])));
       setGroupNotes(Object.fromEntries(gp.map((p: any) => [p._id, p.notes ?? ''])));
+      setGroupCustomSlots(Object.fromEntries(gp.map((p: any) => [p._id, p.customSlots])));
       setCbsdPolicies(Object.fromEntries(cp.map((p: any) => [p._id, p.bandId])));
       setCbsdNotes(Object.fromEntries(cp.map((p: any) => [p._id, p.notes ?? ''])));
     } catch { /* silent */ }
@@ -859,11 +903,11 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(1);
 
-  const saveGroupPolicy = async (groupId: string, bandId: string) => {
+  const saveGroupPolicy = async (groupId: string, bandId: string, customSlots?: Array<{low:number;high:number;label?:string}>) => {
     setSaving(s => ({ ...s, [groupId]: true }));
     try {
       if (!bandId) { await sasApi.deleteGroupPolicy(groupId); }
-      else         { await sasApi.setGroupPolicy(groupId, bandId, groupNotes[groupId]); }
+      else         { await sasApi.setGroupPolicy(groupId, bandId, groupNotes[groupId], customSlots); }
       await load();
       toast.success(`Group "${groupId}" policy saved`);
     } catch { toast.error('Failed to save group policy'); }
@@ -946,21 +990,6 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
             const members = groups[groupId] ?? [];
             const currentBandId = groupPolicies[groupId] ?? '';
             const isSaving = saving[groupId];
-            // Compute slot preview for each member
-            const band = bands.find(b => b.id === currentBandId);
-            const slotWidth = band ? band.maxBandwidthMhz * 1_000_000 : 0;
-            const slots: Array<{ low: number; high: number; earfcn: number }> = [];
-            if (band && slotWidth > 0) {
-              let cur = band.lowFrequency;
-              while (cur + slotWidth <= band.highFrequency + 1) {
-                const center = (cur + cur + slotWidth) / 2;
-                slots.push({ low: cur, high: cur + slotWidth, earfcn: Math.round(55240 + (center / 1e6 - 3550) * 10) });
-                cur += slotWidth;
-              }
-            }
-            const sortedMembers = [...members].sort((a, b) =>
-              (a.cbsdSerialNumber ?? a.cbsdId).localeCompare(b.cbsdSerialNumber ?? b.cbsdId)
-            );
             return (
               <div key={groupId} className="nms-card space-y-3">
                 <div className="flex items-start justify-between gap-4">
@@ -978,47 +1007,159 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                         onChange={e => setGroupNotes(n => ({ ...n, [groupId]: e.target.value }))} />
                     </div>
                   </div>
-                  <button onClick={() => saveGroupPolicy(groupId, currentBandId)} disabled={isSaving}
+                  <button onClick={() => saveGroupPolicy(groupId, currentBandId, groupCustomSlots[groupId])} disabled={isSaving}
                     className="nms-btn-primary text-xs flex items-center gap-1.5 shrink-0 mt-0.5">
                     {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
                     {currentBandId ? 'Save Band Assignment' : 'Clear Assignment'}
                   </button>
                 </div>
-                {/* Slot assignment preview */}
-                {slots.length > 0 && (
-                  <div className="border border-nms-border rounded-lg overflow-hidden">
-                    <div className="bg-nms-surface-2 px-3 py-1.5 border-b border-nms-border">
-                      <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Slot Assignment Preview (sorted by serial)</p>
+                {/* Custom slots editor — shown whenever a band is assigned */}
+                {currentBandId && (() => {
+                  const band = bands.find(b => b.id === currentBandId);
+                  const customSlots = groupCustomSlots[groupId];
+                  // undefined = auto mode (use maxBandwidthMhz), [] = full band, [...] = custom slots
+                  const isFullBand = Array.isArray(customSlots) && customSlots.length === 0;
+                  const isCustom   = Array.isArray(customSlots) && customSlots.length > 0;
+                  const isAuto     = customSlots === undefined;
+
+                  // Compute display slots — what will actually appear in spectrumInquiry responses
+                  const displaySlots: Array<{low:number;high:number;label?:string}> = isFullBand
+                    ? band ? [{ low: band.lowFrequency, high: band.highFrequency, label: 'Full Band' }] : []
+                    : isCustom
+                      ? customSlots
+                      : band ? (() => {
+                          const bw = band.maxBandwidthMhz * 1_000_000;
+                          const auto: Array<{low:number;high:number;label?:string}> = [];
+                          let cur = band.lowFrequency, i = 1;
+                          while (cur + bw <= band.highFrequency + 1) {
+                            auto.push({ low: cur, high: cur + bw, label: `Slot ${i++}` });
+                            cur += bw;
+                          }
+                          return auto;
+                        })() : [];
+
+                  const autoSlice = (mhz: number) => {
+                    if (!band) return;
+                    const bw = mhz * 1_000_000;
+                    const slices: Array<{low:number;high:number;label?:string}> = [];
+                    let cur = band.lowFrequency, i = 1;
+                    while (cur + bw <= band.highFrequency + 1) {
+                      slices.push({ low: cur, high: cur + bw, label: `${mhz} MHz Slot ${i++}` });
+                      cur += bw;
+                    }
+                    setGroupCustomSlots(s => ({ ...s, [groupId]: slices }));
+                  };
+
+                  return (
+                    <div className="border border-nms-border rounded-lg p-3 space-y-3">
+                      {/* Header + mode indicator */}
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Slot Configuration</p>
+                          {isFullBand && <span className="text-xs bg-purple-500/15 text-purple-300 border border-purple-500/30 rounded px-1.5 py-0.5">Full Band</span>}
+                          {isCustom   && <span className="text-xs bg-nms-accent/10 text-nms-accent border border-nms-accent/20 rounded px-1.5 py-0.5">{customSlots.length} custom slot{customSlots.length !== 1 ? 's' : ''}</span>}
+                          {isAuto     && <span className="text-xs bg-nms-surface-2 text-nms-text-dim border border-nms-border rounded px-1.5 py-0.5">Auto ({band?.maxBandwidthMhz ?? 20} MHz)</span>}
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {/* Auto-slice buttons */}
+                          <span className="text-xs text-nms-text-dim">Slice by:</span>
+                          {[5, 10, 20, 40].map(mhz => (
+                            <button key={mhz} type="button" onClick={() => autoSlice(mhz)}
+                              className="text-xs font-mono text-nms-accent border border-nms-accent/30 rounded px-2 py-0.5 hover:bg-nms-accent/10 transition-colors">
+                              {mhz} MHz
+                            </button>
+                          ))}
+                          <span className="text-nms-border">|</span>
+                          <button type="button"
+                            onClick={() => setGroupCustomSlots(s => ({ ...s, [groupId]: [] }))}
+                            className={`text-xs border rounded px-2 py-0.5 transition-colors ${
+                              isFullBand
+                                ? 'text-purple-300 border-purple-500/40 bg-purple-500/10'
+                                : 'text-purple-400 border-purple-500/30 hover:bg-purple-500/10'
+                            }`}>
+                            Full Band
+                          </button>
+                          {!isAuto && (
+                            <button type="button"
+                              onClick={() => setGroupCustomSlots(s => ({ ...s, [groupId]: undefined }))}
+                              className="text-xs text-nms-text-dim border border-nms-border rounded px-2 py-0.5 hover:text-amber-400 transition-colors">
+                              Reset Auto
+                            </button>
+                          )}
+                          {(isCustom || isAuto) && (
+                            <button type="button"
+                              onClick={() => setGroupCustomSlots(s => ({ ...s, [groupId]: [...displaySlots] }))}
+                              className="text-xs text-nms-text-dim border border-nms-border rounded px-2 py-0.5 hover:text-nms-text transition-colors">
+                              + Add Slot
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Slot rows — always visible */}
+                      {isFullBand ? (
+                        <div className="px-3 py-2 rounded bg-purple-500/10 border border-purple-500/20">
+                          <p className="text-xs text-purple-300">Every CBSD in this group receives the entire band: <span className="font-mono">{band ? `${(band.lowFrequency/1e6).toFixed(1)}–${(band.highFrequency/1e6).toFixed(1)} MHz` : ''}</span> — no slicing.</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {displaySlots.map((slot, si) => (
+                            <div key={si} className="flex items-center gap-2 px-2 py-1.5 rounded border border-nms-border bg-nms-surface-2 text-xs">
+                              <span className="text-nms-text-dim w-16 shrink-0 font-mono">{si + 1}.</span>
+                              <input
+                                className="nms-input text-xs w-28 py-0.5"
+                                placeholder="Label"
+                                value={slot.label ?? ''}
+                                onChange={e => {
+                                  const next = [...displaySlots];
+                                  next[si] = { ...next[si], label: e.target.value };
+                                  setGroupCustomSlots(s => ({ ...s, [groupId]: next }));
+                                }}
+                              />
+                              <input
+                                className="nms-input font-mono text-xs w-32 py-0.5"
+                                type="number" placeholder="Low Hz"
+                                value={slot.low}
+                                onChange={e => {
+                                  const next = [...displaySlots];
+                                  next[si] = { ...next[si], low: Number(e.target.value) };
+                                  setGroupCustomSlots(s => ({ ...s, [groupId]: next }));
+                                }}
+                              />
+                              <span className="text-nms-text-dim">–</span>
+                              <input
+                                className="nms-input font-mono text-xs w-32 py-0.5"
+                                type="number" placeholder="High Hz"
+                                value={slot.high}
+                                onChange={e => {
+                                  const next = [...displaySlots];
+                                  next[si] = { ...next[si], high: Number(e.target.value) };
+                                  setGroupCustomSlots(s => ({ ...s, [groupId]: next }));
+                                }}
+                              />
+                              <span className="text-nms-text-dim font-mono text-xs w-16">{((slot.high - slot.low)/1e6).toFixed(1)} MHz</span>
+                              <button type="button"
+                                onClick={() => {
+                                  const next = displaySlots.filter((_, i) => i !== si);
+                                  setGroupCustomSlots(s => ({ ...s, [groupId]: next }));
+                                }}
+                                className="text-nms-text-dim hover:text-red-400 ml-auto shrink-0" title="Delete slot">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                          {displaySlots.length === 0 && (
+                            <p className="text-xs text-nms-text-dim italic px-2">No slots — use the slice buttons above or add manually.</p>
+                          )}
+                        </div>
+                      )}
+
+                      {!isAuto && (
+                        <p className="text-xs text-amber-400/80">Unsaved — click Save Band Assignment to apply these slots.</p>
+                      )}
                     </div>
-                    <table className="w-full text-xs">
-                      <thead className="bg-nms-surface-2/50">
-                        <tr>
-                          <th className="px-3 py-2 text-left text-nms-text-dim font-medium">Slot</th>
-                          <th className="px-3 py-2 text-left text-nms-text-dim font-medium">Frequency</th>
-                          <th className="px-3 py-2 text-left text-nms-text-dim font-medium">EARFCN</th>
-                          <th className="px-3 py-2 text-left text-nms-text-dim font-medium">Assigned CBSD</th>
-                          <th className="px-3 py-2 text-left text-nms-text-dim font-medium">FCC ID</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-nms-border">
-                        {slots.map((s, i) => {
-                          const member = sortedMembers[i % sortedMembers.length];
-                          return (
-                            <tr key={i} className="hover:bg-nms-surface-2/40">
-                              <td className="px-3 py-2 font-mono text-nms-text-dim">Slot {i + 1}</td>
-                              <td className="px-3 py-2 font-mono text-nms-text">{mhz(s.low)}–{mhz(s.high)} MHz</td>
-                              <td className="px-3 py-2 font-mono text-nms-accent">{s.earfcn}</td>
-                              <td className="px-3 py-2 font-mono">
-                                {member ? <span className="text-nms-text">{member.cbsdSerialNumber}</span> : <span className="text-nms-text-dim italic">unassigned</span>}
-                              </td>
-                              <td className="px-3 py-2 font-mono text-nms-text-dim">{member?.fccId ?? ''}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             );
           })}
@@ -1151,19 +1292,43 @@ export function SASPage() {
   const [config, setConfig]   = useState<any>(null);
   const [slots, setSlots]     = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab]         = useState<'dashboard' | 'config' | 'policy' | 'api' | 'logs'>('dashboard');
+  const [tab, setTab]         = useState<'dashboard' | 'config' | 'policy' | 'api'>('dashboard');
+  const [verbose, setVerboseState] = useState(false);
+
+  const toggleVerbose = async () => {
+    try {
+      const result = await sasApi.setVerbose(!verbose);
+      setVerboseState(result.verbose);
+      toast.success(`SAS logging: ${result.verbose ? 'verbose' : 'sparse'}`);
+    } catch { toast.error('Failed to toggle verbose logging'); }
+  };
+
+  useEffect(() => {
+    sasApi.getVerbose().then(r => setVerboseState(r.verbose)).catch(() => {});
+  }, []);
   const [saving, setSaving]   = useState(false);
   const [cfgForm, setCfgForm] = useState<any>(null);
   const [showRefModal, setShowRefModal] = useState(false);
-
   const [paused, setPaused]   = useState(false);
   const [cert, setCert]       = useState<{ exists: boolean; size?: number; modified?: string; message?: string } | null>(null);
-
-  // Fetch pause status and cert info on load
   useEffect(() => {
     sasApi.getStatus().then(s => setPaused(s.paused)).catch(() => {});
     sasApi.getCert().then(c => setCert(c)).catch(() => {});
   }, []);
+
+  const [showFreqDebug, setShowFreqDebug] = useState(false);
+  const [freqDebugData, setFreqDebugData]   = useState<any[]>([]);
+  const [freqDebugLoading, setFreqDebugLoading] = useState(false);
+
+  const openFreqDebug = async () => {
+    setFreqDebugLoading(true);
+    setShowFreqDebug(true);
+    try {
+      const data = await sasApi.getLastRequests();
+      setFreqDebugData(data);
+    } catch { toast.error('Failed to load freq debug data'); }
+    finally { setFreqDebugLoading(false); }
+  };
 
   const [cbsdSort, setCbsdSort] = useState<'asc' | 'desc' | null>('asc');
 
@@ -1174,11 +1339,7 @@ export function SASPage() {
     const bLow = bg?.operationParam?.operationFrequencyRange?.lowFrequency ?? Infinity;
     return cbsdSort === 'asc' ? aLow - bLow : bLow - aLow;
   });
-  const [logs, setLogs]               = useState<string>('');
-  const [logLines, setLogLines]       = useState(200);
-  const [logFilter, setLogFilter]     = useState('');
-  const [logsLoading, setLogsLoading] = useState(false);
-  const logRef = useRef<HTMLPreElement>(null);
+  // SAS logs moved to Unified Logs page — use the SAS Logs button there
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -1206,28 +1367,6 @@ export function SASPage() {
     const t = setInterval(() => load(true), 15_000);
     return () => clearInterval(t);
   }, [load]);
-
-  const loadLogs = useCallback(async (silent = false) => {
-    if (!silent) setLogsLoading(true);
-    try {
-      const data = await sasApi.getLogs(logLines);
-      setLogs(data);
-      setTimeout(() => {
-        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-      }, 50);
-    } catch {
-      if (!silent) setLogs('Failed to fetch logs');
-    } finally {
-      if (!silent) setLogsLoading(false);
-    }
-  }, [logLines]);
-
-  useEffect(() => { if (tab === 'logs') loadLogs(); }, [tab, logLines]);
-  useEffect(() => {
-    if (tab !== 'logs') return;
-    const t = setInterval(() => loadLogs(true), 5000);
-    return () => clearInterval(t);
-  }, [tab, loadLogs]);
 
   const saveConfig = async () => {
     setSaving(true);
@@ -1266,7 +1405,6 @@ export function SASPage() {
     config:    'Configuration',
     policy:    'Band Assignment',
     api:       'API Reference',
-    logs:      'Logs',
   };
 
   return (
@@ -1275,62 +1413,177 @@ export function SASPage() {
       {/* EARFCN Reference modal */}
       {showRefModal && <EarfcnReferenceModal onClose={() => setShowRefModal(false)} />}
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
-            <Shield className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold text-nms-text">Spectrum Access System</h1>
-            <p className="text-xs text-nms-text-dim">WinnForum CBRS SAS-CBSD Interface — WINNF-TS-0016 V1.2.7</p>
+      {/* Freq Debug modal */}
+      {showFreqDebug && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowFreqDebug(false)} />
+          <div className="relative z-10 bg-nms-bg border border-nms-border rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-nms-border shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-nms-accent/20 border border-nms-accent/30 flex items-center justify-center">
+                  <Activity className="w-4 h-4 text-nms-accent" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-nms-text">Last Requested Frequencies</h2>
+                  <p className="text-xs text-nms-text-dim">Most recent spectrumInquiry / grant frequency per radio — resets on restart</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={openFreqDebug} disabled={freqDebugLoading}
+                  className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text text-xs flex items-center gap-1">
+                  <RefreshCw className={clsx('w-3.5 h-3.5', freqDebugLoading && 'animate-spin')} />
+                  Refresh
+                </button>
+                <button onClick={() => setShowFreqDebug(false)} className="text-nms-text-dim hover:text-nms-text">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            {/* Body */}
+            <div className="overflow-y-auto flex-1 p-4">
+              {freqDebugLoading && (
+                <div className="flex items-center justify-center h-32 text-nms-text-dim">
+                  <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
+                </div>
+              )}
+              {!freqDebugLoading && freqDebugData.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-32 text-nms-text-dim">
+                  <Activity className="w-7 h-7 mb-2 opacity-30" />
+                  <p className="text-sm">No requests recorded yet</p>
+                  <p className="text-xs mt-1">Radios must send at least one spectrumInquiry or grant request after this page loads</p>
+                </div>
+              )}
+              {!freqDebugLoading && freqDebugData.length > 0 && (
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-nms-border text-nms-text-dim">
+                      <th className="text-left py-2 pr-4">Serial</th>
+                      <th className="text-left py-2 pr-4">Radio IP</th>
+                      <th className="text-left py-2 pr-4">Requested Low</th>
+                      <th className="text-left py-2 pr-4">Requested High</th>
+                      <th className="text-left py-2 pr-4">BW</th>
+                      <th className="text-left py-2 pr-4">Type</th>
+                      <th className="text-left py-2">Last Seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {freqDebugData.map(r => {
+                      const lowMhz   = (r.lowFrequency  / 1e6).toFixed(1);
+                      const highMhz  = (r.highFrequency / 1e6).toFixed(1);
+                      const bwMhz    = ((r.highFrequency - r.lowFrequency) / 1e6).toFixed(0);
+                      const lowEarfcn  = Math.round(55240 + (r.lowFrequency  / 1e6 - 3550) * 10);
+                      const highEarfcn = Math.round(55240 + (r.highFrequency / 1e6 - 3550) * 10);
+                      return (
+                        <tr key={r.cbsdId} className="border-b border-nms-border/50 hover:bg-nms-surface-2">
+                          <td className="py-2 pr-4 font-mono text-nms-accent">{r.serial}</td>
+                          <td className="py-2 pr-4 font-mono text-nms-text-dim">{r.ip || '—'}</td>
+                          <td className="py-2 pr-4">
+                            <span className="font-mono text-nms-text">{lowMhz} MHz</span>
+                            <span className="text-nms-text-dim ml-1.5 font-mono text-xs">{lowEarfcn}</span>
+                          </td>
+                          <td className="py-2 pr-4">
+                            <span className="font-mono text-nms-text">{highMhz} MHz</span>
+                            <span className="text-nms-text-dim ml-1.5 font-mono text-xs">{highEarfcn}</span>
+                          </td>
+                          <td className="py-2 pr-4 font-mono text-nms-text-dim">{bwMhz} MHz</td>
+                          <td className="py-2 pr-4">
+                            <span className={clsx(
+                              'px-1.5 py-0.5 rounded text-xs font-medium',
+                              r.type === 'grant' ? 'bg-amber-500/10 text-amber-400' : 'bg-blue-500/10 text-blue-400'
+                            )}>{r.type}</span>
+                          </td>
+                          <td className="py-2 text-nms-text-dim">{new Date(r.ts).toLocaleTimeString()}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         </div>
-        <button onClick={() => load()} disabled={loading}
-          className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text flex items-center gap-2 text-sm">
-          <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
-          Refresh
-        </button>
-        <button
-          onClick={async () => {
-            if (!confirm('Clear all SAS grants and CBSDs?\n\nThis deletes all grants and registered CBSDs from the database. Radios will re-register on next contact.')) return;
-            try {
-              const r = await sasApi.reset();
-              toast.success(`Cleared — deleted ${r.deletedGrants} grants, ${r.deletedCbsds} CBSDs`);
-              load(true);
-            } catch { toast.error('Clear failed'); }
-          }}
-          className="nms-btn border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 flex items-center gap-2 text-sm">
-          <Trash2 className="w-4 h-4" />
-          Clear DB
-        </button>
-        <button
-          onClick={async () => {
-            try {
-              if (paused) {
-                await sasApi.resume();
-                setPaused(false);
-                toast.success('SAS resumed — radios will re-register');
-              } else {
-                await sasApi.pause();
-                setPaused(true);
-                toast.success('SAS paused — radios will stop transmitting');
-              }
-            } catch { toast.error('Failed to change SAS state'); }
-          }}
-          className={clsx(
-            'nms-btn border flex items-center gap-2 text-sm',
-            paused
-              ? 'border-green-500/40 text-green-400 hover:bg-green-500/10'
-              : 'border-red-500/40 text-red-400 hover:bg-red-500/10'
-          )}>
-          {paused ? <>▶ Resume SAS</> : <>⏸ Pause SAS</>}
-        </button>
+      )}
+
+      {/* Header */}
+      <div className="space-y-2">
+        {/* Single row: title + all buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-3 mr-auto">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center shrink-0">
+              <Shield className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold text-nms-text">Spectrum Access System</h1>
+              <p className="text-xs text-nms-text-dim">WinnForum CBRS SAS-CBSD Interface — WINNF-TS-0016 V1.2.7</p>
+            </div>
+          </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={toggleVerbose}
+            className={clsx(
+              'nms-btn text-xs flex items-center gap-1 border',
+              verbose
+                ? 'border-amber-500/40 text-amber-400 bg-amber-500/5 hover:bg-amber-500/10'
+                : 'border-nms-border text-nms-text-dim hover:text-nms-text'
+            )}
+          >
+            <ScrollText className="w-3.5 h-3.5" />
+            {verbose ? 'Verbose ON' : 'Verbose OFF'}
+          </button>
+          <button onClick={openFreqDebug}
+            className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-accent flex items-center gap-1 text-xs">
+            <Activity className="w-3.5 h-3.5" />
+            Freq Debug
+          </button>
+          <button onClick={() => load()} disabled={loading}
+            className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text flex items-center gap-1 text-xs">
+            <RefreshCw className={clsx('w-3.5 h-3.5', loading && 'animate-spin')} />
+            Refresh
+          </button>
+          <button
+            onClick={async () => {
+              if (!confirm('Clear all SAS grants and CBSDs?\n\nThis deletes all grants and registered CBSDs from the database. Radios will re-register on next contact.')) return;
+              try {
+                const r = await sasApi.reset();
+                toast.success(`Cleared — deleted ${r.deletedGrants} grants, ${r.deletedCbsds} CBSDs`);
+                load(true);
+              } catch { toast.error('Clear failed'); }
+            }}
+            className="nms-btn border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 flex items-center gap-1 text-xs">
+            <Trash2 className="w-3.5 h-3.5" />
+            Clear DB
+          </button>
+          <button
+            onClick={async () => {
+              try {
+                if (paused) {
+                  await sasApi.resume();
+                  setPaused(false);
+                  toast.success('SAS resumed — radios will re-register');
+                } else {
+                  await sasApi.pause();
+                  setPaused(true);
+                  toast.success('SAS paused — radios will stop transmitting');
+                }
+              } catch { toast.error('Failed to change SAS state'); }
+            }}
+            className={clsx(
+              'nms-btn border flex items-center gap-1 text-xs',
+              paused
+                ? 'border-green-500/40 text-green-400 hover:bg-green-500/10'
+                : 'border-red-500/40 text-red-400 hover:bg-red-500/10'
+            )}>
+            {paused ? <>▶ Resume</> : <>⏸ Pause</>}
+          </button>
+        </div>
+        </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex flex-wrap gap-1 bg-nms-surface rounded-lg p-1 w-fit">
-        {(['dashboard', 'config', 'policy', 'api', 'logs'] as const).map(t => (
+      <div className="flex justify-center">
+        <div className="flex flex-wrap gap-1 bg-nms-surface rounded-lg p-1">
+        {(['dashboard', 'config', 'policy', 'api'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={clsx(
               'px-3 py-1.5 rounded-md text-sm font-medium transition-all',
@@ -1341,6 +1594,7 @@ export function SASPage() {
             {TAB_LABELS[t]}
           </button>
         ))}
+        </div>
       </div>
 
       {/* ── Dashboard ── */}
@@ -1371,26 +1625,33 @@ export function SASPage() {
                   const bandList = slots.bands ?? [{ bandLow: slots.bandLow, bandHigh: slots.bandHigh, label: 'Band', slotWidthHz: slots.slotWidthHz, slots: slots.slots }];
                   return (
                     <div className="space-y-6">
-                      {/* Per-band charts */}
+                      {/* Per-band charts — each filtered to its assigned groups only */}
                       {bandList.map((band: any, i: number) => (
                         <div key={i}>
                           <p className="text-xs font-medium text-nms-text-dim mb-2">
                             {band.label}
                             <span className="text-nms-text-dim/60 font-mono ml-2">{(band.bandLow/1e6).toFixed(1)}–{(band.bandHigh/1e6).toFixed(1)} MHz</span>
+                            {band.assignedGroupIds?.length > 0 && (
+                              <span className="ml-2 text-purple-400/80">— group: {band.assignedGroupIds.join(', ')}</span>
+                            )}
                           </p>
-                          <SpectrumChart slots={band.slots} bandLow={band.bandLow} bandHigh={band.bandHigh} slotWidthHz={band.slotWidthHz} />
+                          <SpectrumChart
+                            slots={band.slots}
+                            bandLow={band.bandLow}
+                            bandHigh={band.bandHigh}
+                            slotWidthHz={band.slotWidthHz}
+                            filterGroupIds={band.assignedGroupIds?.length > 0 ? band.assignedGroupIds : undefined}
+                          />
                         </div>
                       ))}
-                      {/* Unified view — only show when there are multiple bands */}
-                      {bandList.length > 1 && (
-                        <div>
-                          <p className="text-xs font-medium text-nms-text-dim mb-2">
-                            All Bands — Full CBRS View
-                            <span className="text-nms-text-dim/60 font-mono ml-2">3550–3700 MHz</span>
-                          </p>
-                          <UnifiedSpectrumChart bands={bandList} />
-                        </div>
-                      )}
+                      {/* Stacked full CBRS view — always shown, one row per band */}
+                      <div>
+                        <p className="text-xs font-medium text-nms-text-dim mb-2">
+                          All Bands — Full CBRS View
+                          <span className="text-nms-text-dim/60 font-mono ml-2">3550–3700 MHz</span>
+                        </p>
+                        <StackedBandChart bands={bandList} />
+                      </div>
                     </div>
                   );
                 })()
@@ -1697,8 +1958,6 @@ export function SASPage() {
       {tab === 'policy' && (
         <BandPolicyTab config={config} cbsds={cbsds} />
       )}
-
-      {/* ── API Reference ── */}
       {tab === 'api' && (
         <div className="space-y-4">
           <div className="nms-card space-y-3">
@@ -1731,56 +1990,6 @@ export function SASPage() {
               </div>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ── Logs ── */}
-      {tab === 'logs' && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
-              <ScrollText className="w-4 h-4 text-nms-accent" />
-              SAS Request Logs
-            </h2>
-            <div className="flex items-center gap-2">
-              <input
-                className="nms-input font-mono text-xs h-7 w-48"
-                placeholder="Filter by CBSD ID…"
-                value={logFilter}
-                onChange={e => setLogFilter(e.target.value)}
-              />
-              <select value={logLines} onChange={e => setLogLines(Number(e.target.value))} className="nms-input text-xs py-1 px-2 h-7 w-28">
-                <option value={50}>Last 50</option>
-                <option value={200}>Last 200</option>
-                <option value={500}>Last 500</option>
-                <option value={1000}>Last 1000</option>
-              </select>
-              <button onClick={() => loadLogs()} disabled={logsLoading}
-                className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text flex items-center gap-1.5 text-xs h-7 px-2">
-                <RefreshCw className={clsx('w-3.5 h-3.5', logsLoading && 'animate-spin')} />
-                Refresh
-              </button>
-            </div>
-          </div>
-          <div className="nms-card p-0 overflow-hidden">
-            {logsLoading && !logs && <div className="flex items-center justify-center h-32 text-nms-text-dim text-sm"><RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading logs…</div>}
-            {!logsLoading && !logs && (
-              <div className="flex flex-col items-center justify-center h-32 text-nms-text-dim border border-dashed border-nms-border rounded-lg">
-                <ScrollText className="w-6 h-6 mb-1.5 opacity-30" />
-                <p className="text-sm">No SAS log entries yet</p>
-                <p className="text-xs mt-1">Logs appear when CBSDs connect and send requests</p>
-              </div>
-            )}
-            {logs && (
-            <pre ref={logRef} className="font-mono text-xs text-nms-text-dim leading-relaxed p-4 overflow-auto max-h-[60vh] whitespace-pre-wrap break-all bg-nms-bg rounded-lg">
-            {logFilter
-                ? logs.split('\n').filter(line => line.toLowerCase().includes(logFilter.toLowerCase())).join('\n') || '(no lines match filter)'
-                  : logs
-              }
-            </pre>
-          )}
-          </div>
-          <p className="text-xs text-nms-text-dim">Auto-refreshes every 5 seconds. Shows only SAS protocol messages.</p>
         </div>
       )}
 

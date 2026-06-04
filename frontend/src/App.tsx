@@ -16,6 +16,7 @@ import { SuciManagementPage } from './components/suci/SuciManagementPage';
 import { UserManagementPage } from './components/users/UserManagementPage';
 import { MetricsPage } from './components/metrics/MetricsPage';
 import { SASPage } from './pages/SASPage';
+import { TimeServerPage } from './pages/TimeServerPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 
@@ -67,6 +68,8 @@ function App(): JSX.Element {
         return <MetricsPage />;
       case 'sas':
         return <SASPage />;
+      case 'time-server':
+        return <TimeServerPage />;
       case 'users':
         return <UserManagementPage />;
       default:
