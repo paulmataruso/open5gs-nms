@@ -992,12 +992,11 @@ export class SasService {
         const gHigh = g.operationParam.operationFrequencyRange.highFrequency;
         // Must overlap this band
         if (gLow >= band.highFrequency || gHigh <= band.lowFrequency) return false;
-        // If band has assigned groups, filter by group
+        // If band has assigned groups, filter by group — use effectiveGroupId so
+        // manual group assignments (e.g. Nokia) are respected, not just groupingParam.
         if (assignedGroupIds.length > 0) {
           const cbsd    = cbsdMap.get(g.cbsdId);
-          const groupId = cbsd?.groupingParam?.find(
-            p => p.groupType === 'INTERFERENCE_COORDINATION'
-          )?.groupId;
+          const groupId = cbsd ? effectiveGroupId(cbsd) : undefined;
           if (!groupId || !assignedGroupIds.includes(groupId)) return false;
         }
         return true;

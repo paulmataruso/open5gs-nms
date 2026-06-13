@@ -47,8 +47,7 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 - Internet access for Docker builds (npm registry)
 - Open ports:
   - `8888/tcp` — NMS web interface
-  - `3001/tcp` — Backend API (internal, proxied by nginx)
-  - `3002/tcp` — WebSocket (internal, proxied by nginx)
+  - `3001/tcp` — Backend API and WebSocket (internal, proxied by nginx)
 
 ---
 
@@ -58,24 +57,17 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ```bash
 sudo apt update
-sudo apt install -y iptables-persistent conntrack tshark python3 python3-pip
+sudo apt install -y iptables-persistent conntrack tshark python3 python3-pip chrony frr frr-pythontools
 ```
 
 - **`iptables-persistent`** — Saves and restores iptables NAT rules across reboots.
 - **`conntrack`** — Connection tracking tools required by Open5GS UPF and SGW-U.
 - **`tshark`** — Network packet analyser (retained as fallback).
 - **`python3` / `python3-pip`** — Required for pysim/suci-keytool.
+- **`chrony`** — NTP daemon managed by the NMS Time Server page. Provides accurate time sync to radios and UEs.
+- **`frr` / `frr-pythontools`** — FRRouting daemon suite required by the L3 Routing page for EIGRP/OSPF/BGP. `frr-pythontools` is needed for `frr-reload.py`.
 
-Then install pysim:
-
-```bash
-sudo git clone https://gitea.osmocom.org/sim-card/pysim.git /opt/pysim
-sudo pip3 install pycryptodome pyosmocom --break-system-packages
-```
-
-- **pysim** — Cloned to `/opt/pysim`. The NMS uses `contrib/suci-keytool.py` from this repo for SUCI key generation and public key extraction.
-- **`pycryptodome`** — ECC key generation library used by suci-keytool.
-- **`pyosmocom`** — Osmocom utilities library used by suci-keytool (`osmocom.utils`).
+> **Note:** FRR 8.4.x eigrpd has a known bug where `distribute-list` is silently dropped. The NMS works around this using zebra-level `ip protocol eigrp route-map` filtering. If you need full outbound route filtering, consider using OSPF or BGP instead.
 
 ---
 
@@ -273,7 +265,6 @@ CONFIG_PATH=/etc/open5gs
 BACKUP_PATH=/etc/open5gs/backups/config
 MONGO_BACKUP_PATH=/etc/open5gs/backups/mongodb
 LOG_LEVEL=info
-WS_PORT=3002
 HOST_SYSTEMCTL_PATH=/usr/bin/systemctl
 ```
 
@@ -301,10 +292,12 @@ docker compose logs -f
 **Expected output:**
 
 ```
-open5gs-nms-nginx     | ... nginx started
-open5gs-nms-backend   | ... Server listening on port 3001
-open5gs-nms-backend   | ... WebSocket server listening on port 3002
-open5gs-nms-frontend  | ... Frontend server ready
+open5gs-nms-nginx       | ... nginx started
+open5gs-nms-backend     | ... HTTP server started
+open5gs-nms-backend     | ... Authenticated WebSocket upgrade handler registered
+open5gs-nms-frontend    | ... Frontend server ready
+open5gs-prometheus      | ... Starting Prometheus Server
+open5gs-grafana         | ... HTTP Server Listen
 ```
 
 Press `Ctrl+C` to exit log view.
@@ -408,6 +401,29 @@ The network topology will automatically populate once your services are configur
    - **Green** = service active
    - **Red** = service inactive
 
+### Configure Time Server (NTP)
+
+The NMS manages Chrony directly to provide NTP to your radios and UEs.
+
+1. Navigate to the **Time Server** page.
+2. Verify Chrony is running and synced to an upstream reference.
+3. Add your upstream NTP servers/pools if needed.
+4. Add your radio and UE subnets to **Allowed Client Networks** (e.g. `10.0.1.0/24`).
+5. Click **Save & Restart**.
+
+> Accurate time sync is critical for CBRS radios — GPS-locked radios require the server clock to be within a few hundred milliseconds.
+
+### Migrate to L3 Routing (Optional)
+
+If you want to move from flat L2 service IPs to a fully routed L3 design using FRR:
+
+1. Navigate to the **L3 Routing** page.
+2. Read the **Pre-flight Requirements & Architecture Overview** accordion before starting — it covers the 3 required interfaces, router-side prerequisites, and known FRR limitations.
+3. Follow the step-by-step migration wizard (Phases 0–6).
+4. A full backup is taken at Phase 0 and rollback is available at every step.
+
+> **Requires:** 3 separate network interfaces (management, current service interface, L3 transit uplink) and a pre-configured upstream router.
+
 ---
 
 ## Verification
@@ -421,11 +437,15 @@ docker compose ps
 **Expected output (all should show "Up"):**
 
 ```
-NAME                    STATUS
-open5gs-nms-nginx       Up
-open5gs-nms-backend     Up (healthy)
-open5gs-nms-frontend    Up (healthy)
+NAME                      STATUS
+open5gs-nms-nginx         Up
+open5gs-nms-backend       Up (healthy)
+open5gs-nms-frontend      Up (healthy)
+open5gs-prometheus        Up
+open5gs-grafana           Up
 ```
+
+> `monitoring-init` and `cert-init` are one-shot containers that exit after completing setup — a status of `Exited (0)` for these is normal and expected.
 
 ### Health Check
 
@@ -435,7 +455,7 @@ curl http://localhost:3001/api/health
 # Expected: {"status":"ok","timestamp":"2026-..."}
 
 # Frontend check
-curl http://localhost:8080
+curl http://localhost:8888
 # Expected: HTML response
 ```
 
@@ -589,7 +609,9 @@ docker exec open5gs-nms-backend systemctl status open5gs-nrfd
    sudo iptables -t nat -A POSTROUTING -s 10.45.0.0/16 ! -o ogstun -j MASQUERADE
    ```
 
-5. **Test with a UE** — Provision a subscriber, connect a UE (phone or modem), verify registration in the logs, and check active sessions in the topology view.
+5. **Configure NTP** — Navigate to the **Time Server** page, verify Chrony is synced, and add your radio/UE subnets to Allowed Client Networks.
+
+6. **Test with a UE** — Provision a subscriber, connect a UE (phone or modem), verify registration in the logs, and check active sessions in the topology view.
 
 ### Production Deployment
 

@@ -484,9 +484,10 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
   const lowMhz      = bandLow  / 1e6;
   const highMhz     = bandHigh / 1e6;
 
-  // Filter slots: if filterGroupIds is set, dim slots from other groups
+  // Filter slots: if filterGroupIds is set, hide slots not belonging to any assigned group.
+  // Slots with no groupId are also hidden — ungrouped radios have no business in a group-filtered band.
   const visibleSlots = filterGroupIds && filterGroupIds.length > 0
-    ? slots.map(s => (s.cbsdId && s.groupId && !filterGroupIds.includes(s.groupId))
+    ? slots.map(s => (s.cbsdId && (!s.groupId || !filterGroupIds.includes(s.groupId)))
         ? { ...s, cbsdId: undefined, serial: undefined, fccId: undefined, state: undefined, groupId: undefined, _dimmed: true }
         : { ...s, _dimmed: false })
     : slots.map(s => ({ ...s, _dimmed: false }));
@@ -504,7 +505,7 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
   const usedSlots   = visibleSlots.filter(s => s.cbsdId);
   const unusedSlots = visibleSlots.filter(s => !s.cbsdId);
   const dimmedCount = filterGroupIds && filterGroupIds.length > 0
-    ? slots.filter(s => s.cbsdId && s.groupId && !filterGroupIds.includes(s.groupId)).length
+    ? slots.filter(s => s.cbsdId && (!s.groupId || !filterGroupIds.includes(s.groupId))).length
     : 0;
 
   return (
@@ -755,7 +756,7 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
             }
           } else {
             for (const g of grants) {
-              if (!groupFilter || !g.groupId || groupFilter.includes(g.groupId)) {
+              if (!groupFilter || (g.groupId && groupFilter.includes(g.groupId))) {
                 expandedEntries.push({ ...s, ...g });
               }
             }
@@ -919,7 +920,7 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
           {bands.map((band, bi) => {
             const groupFilter = band.assignedGroupIds.length > 0 ? band.assignedGroupIds : null;
             return band.slots
-              .filter(s => s.cbsdId && (!groupFilter || !s.groupId || groupFilter.includes(s.groupId)))
+              .filter(s => s.cbsdId && (!groupFilter || (s.groupId && groupFilter.includes(s.groupId))))
               .map(s => {
                 const color = getColor(s.cbsdId!);
                 return (

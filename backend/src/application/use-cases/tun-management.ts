@@ -14,11 +14,13 @@ export interface TunInterface {
 export interface TunCreateInput { name: string; ip: string; prefix: number; }
 export interface TunEditInput   { ip: string;  prefix: number; }
 
-const SYSTEMD_DIR = '/etc/systemd/system';
+const NETWORKD_DIR = '/etc/systemd/network';
+const NMS_PREFIX   = '10-nms-';
 
+// Valid Linux interface name: starts with a letter, 1–15 chars, letters/digits/hyphen/underscore.
 function validateName(name: string): void {
-  if (!/^ogstun[0-9]+$/.test(name))
-    throw new Error(`Invalid name "${name}". Must match ogstun[0-9]+ (e.g. ogstun2).`);
+  if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,14}$/.test(name))
+    throw new Error(`Invalid interface name "${name}". Must start with a letter, max 15 chars, letters/digits/hyphen/underscore only.`);
 }
 function validateIp(ip: string): void {
   if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip))
@@ -28,36 +30,32 @@ function validatePrefix(p: number): void {
   if (p < 1 || p > 32) throw new Error(`Invalid prefix ${p}. Must be 1-32.`);
 }
 
-// Systemd oneshot service — persists the TUN across reboots.
-// ip addr add on a TUN without an open fd works fine; the address sticks
-// at the kernel level. The interface just shows NO-CARRIER until a process
-// opens it (Open5GS UPF via dev: in config).
-function serviceContent(name: string, ip: string, prefix: number): string {
+// systemd-networkd .netdev — creates the TUN device at boot.
+function netdevContent(name: string): string {
   return [
     '# Managed by open5gs-nms — do not edit manually',
-    '[Unit]',
-    `Description=TUN interface ${name} for Open5GS multi-APN`,
-    'After=network-pre.target',
-    'Before=network.target',
-    '',
-    '[Service]',
-    'Type=oneshot',
-    'RemainAfterExit=yes',
-    `ExecStart=/sbin/ip tuntap add name ${name} mode tun`,
-    `ExecStart=/sbin/ip addr add ${ip}/${prefix} dev ${name}`,
-    `ExecStart=/sbin/ip link set ${name} up`,
-    `ExecStop=/sbin/ip link set ${name} down`,
-    `ExecStop=/sbin/ip link delete ${name}`,
-    '',
-    '[Install]',
-    'WantedBy=multi-user.target',
+    '[NetDev]',
+    `Name=${name}`,
+    'Kind=tun',
     '',
   ].join('\n');
 }
 
-function serviceName(ifaceName: string): string {
-  return `open5gs-tun-${ifaceName}.service`;
+// systemd-networkd .network — assigns the IP address.
+function networkContent(name: string, ip: string, prefix: number): string {
+  return [
+    '# Managed by open5gs-nms — do not edit manually',
+    '[Match]',
+    `Name=${name}`,
+    '',
+    '[Network]',
+    `Address=${ip}/${prefix}`,
+    '',
+  ].join('\n');
 }
+
+function netdevPath(name: string):  string { return `${NETWORKD_DIR}/${NMS_PREFIX}${name}.netdev`; }
+function networkPath(name: string): string { return `${NETWORKD_DIR}/${NMS_PREFIX}${name}.network`; }
 
 export class TunManagementUseCase {
   constructor(
@@ -87,18 +85,17 @@ export class TunManagementUseCase {
     await this.hostFs(`echo '${b64}' | base64 -d > ${filePath}`);
   }
 
-  // Check systemd is available (used for persistence via oneshot services)
+  // Check systemd-networkd is active (required for .netdev/.network persistence)
   async checkNetworkdActive(): Promise<boolean> {
     try {
-      const r = await this.hostExecutor.executeCommand('systemctl', ['is-system-running']);
-      const state = r.stdout.trim();
-      return state === 'running' || state === 'degraded'; // degraded still works
+      const r = await this.hostExecutor.executeCommand('systemctl', ['is-active', 'systemd-networkd']);
+      return r.stdout.trim() === 'active';
     } catch { return false; }
   }
 
   async list(): Promise<TunInterface[]> {
     const [linkR, addrR] = await Promise.all([
-      this.ipNet('-o link show'),
+      this.ipNet('-o link show type tun'),
       this.ipNet('-o addr show'),
     ]);
 
@@ -106,31 +103,32 @@ export class TunManagementUseCase {
     // TUN interfaces always show "state DOWN" due to NO-CARRIER even when UP flag is set.
     const stateMap = new Map<string, 'up' | 'down'>();
     for (const line of linkR.stdout.split('\n')) {
-      const m = line.match(/^\d+:\s+(ogstun[^:@\s]*)/);
+      const m = line.match(/^\d+:\s+([^:@\s]+)/);
       if (!m) continue;
       const flagsMatch = line.match(/<([^>]+)>/);
       const flags = flagsMatch ? flagsMatch[1].split(',') : [];
       stateMap.set(m[1], flags.includes('UP') ? 'up' : 'down');
     }
 
-    // Parse addr: IPv4 assignments
+    // Parse addr: IPv4 assignments (all interfaces; filtered below by allNames)
     const addrMap = new Map<string, { ip: string; prefix: number }>();
     for (const line of addrR.stdout.split('\n')) {
-      const m = line.match(/^\d+:\s+(ogstun[^\s]*)\s+inet\s+(\d+\.\d+\.\d+\.\d+)\/(\d+)/);
+      const m = line.match(/^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)\/(\d+)/);
       if (!m) continue;
       addrMap.set(m[1], { ip: m[2], prefix: parseInt(m[3]) });
     }
 
-    // NMS-managed: check for our systemd service files
+    // NMS-managed: detect from .netdev files written by this NMS
     const managedNames = new Set<string>();
     try {
       const out = await this.hostFs(
-        `ls ${SYSTEMD_DIR}/open5gs-tun-ogstun*.service 2>/dev/null | sed 's/.*open5gs-tun-//; s/\\.service//' || true`,
+        `ls ${NETWORKD_DIR}/${NMS_PREFIX}*.netdev 2>/dev/null | sed 's|.*/||; s|^${NMS_PREFIX}||; s|\\.netdev$||' || true`,
       );
       for (const n of out.split('\n').map(s => s.trim()).filter(Boolean)) managedNames.add(n);
     } catch {}
 
-    const allNames = new Set<string>([...stateMap.keys(), ...managedNames, 'ogstun']);
+    // Display: managed interfaces + the default ogstun (created by Open5GS UPF)
+    const allNames = new Set<string>([...managedNames, 'ogstun']);
     return [...allNames].sort().map(name => ({
       name,
       ip:      addrMap.get(name)?.ip     || '',
@@ -147,12 +145,10 @@ export class TunManagementUseCase {
     const { name, ip, prefix } = input;
     this.logger.info({ name, ip, prefix }, 'Creating TUN interface');
 
-    // Write systemd service for persistence across reboots
-    const svcPath = `${SYSTEMD_DIR}/${serviceName(name)}`;
-    await this.writeHostFile(svcPath, serviceContent(name, ip, prefix));
-
-    // Enable so it starts at boot
-    await this.hostFs(`systemctl daemon-reload && systemctl enable ${serviceName(name)}`);
+    // Write .netdev + .network pair for persistence across reboots
+    await this.writeHostFile(netdevPath(name),  netdevContent(name));
+    await this.writeHostFile(networkPath(name), networkContent(name, ip, prefix));
+    await this.hostFs('networkctl reload 2>/dev/null || true');
 
     // Apply live: delete if exists, create fresh, assign IP, bring up
     await this.ipNet(`link delete ${name} 2>/dev/null || true`);
@@ -171,10 +167,9 @@ export class TunManagementUseCase {
     const { ip, prefix } = input;
     this.logger.info({ name, ip, prefix }, 'Editing TUN interface');
 
-    // Update service file
-    const svcPath = `${SYSTEMD_DIR}/${serviceName(name)}`;
-    await this.writeHostFile(svcPath, serviceContent(name, ip, prefix));
-    await this.hostFs('systemctl daemon-reload');
+    // Rewrite .network file with updated address
+    await this.writeHostFile(networkPath(name), networkContent(name, ip, prefix));
+    await this.hostFs('networkctl reload 2>/dev/null || true');
 
     // Apply live
     await this.ipNet(`addr flush dev ${name} 2>/dev/null || true`);
@@ -187,11 +182,9 @@ export class TunManagementUseCase {
     validateName(name);
     this.logger.info({ name }, 'Deleting TUN interface');
 
-    // Disable and remove service
-    const svc = serviceName(name);
-    await this.hostFs(`systemctl disable --now ${svc} 2>/dev/null || true`);
-    await this.hostFs(`rm -f ${SYSTEMD_DIR}/${svc}`);
-    await this.hostFs('systemctl daemon-reload');
+    // Remove .netdev + .network pair and reload networkd
+    await this.hostFs(`rm -f ${netdevPath(name)} ${networkPath(name)}`);
+    await this.hostFs('networkctl reload 2>/dev/null || true');
 
     // Remove live interface
     await this.ipNet(`link set ${name} down 2>/dev/null || true`);

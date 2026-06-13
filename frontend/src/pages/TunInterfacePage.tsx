@@ -24,7 +24,7 @@ function TunModal({ mode, initial, suggestedName, onSave, onClose }: ModalProps)
 
   const handleSave = async () => {
     const p = parseInt(prefix);
-    if (!name.match(/^ogstun[0-9]+$/)) { toast.error('Name must match ogstun[0-9]+ (e.g. ogstun2)'); return; }
+    if (!name.match(/^[a-zA-Z][a-zA-Z0-9_-]{0,14}$/)) { toast.error('Name must start with a letter, max 15 chars, letters/digits/hyphen/underscore only'); return; }
     if (!ip.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) { toast.error('Enter a valid IPv4 address'); return; }
     if (isNaN(p) || p < 1 || p > 32) { toast.error('Prefix must be between 1 and 32'); return; }
     setSaving(true);
@@ -42,7 +42,7 @@ function TunModal({ mode, initial, suggestedName, onSave, onClose }: ModalProps)
           <div>
             <label className="nms-label">Interface Name</label>
             <input className="nms-input font-mono" value={name} onChange={e => setName(e.target.value)} disabled={mode === 'edit'} placeholder="ogstun2" />
-            <p className="text-xs text-nms-text-dim mt-1">Must match <span className="font-mono">ogstun[0-9]+</span> — e.g. <span className="font-mono">ogstun2</span>, <span className="font-mono">ogstun3</span></p>
+            <p className="text-xs text-nms-text-dim mt-1">Any valid Linux interface name — starts with a letter, max 15 chars, e.g. <span className="font-mono">ogstun2</span>, <span className="font-mono">upf-ims</span>, <span className="font-mono">tun_data</span></p>
           </div>
           <div>
             <label className="nms-label">Gateway IP Address</label>
@@ -179,8 +179,8 @@ export function TunInterfacePage() {
             TUN Interfaces
           </h1>
           <p className="text-sm text-nms-text-dim mt-1">
-            Manage ogstun TUN interfaces for multi-APN deployments.
-            Changes are applied immediately and persisted via systemd-networkd.
+            Manage TUN interfaces for multi-APN deployments.
+            Changes are applied immediately and persisted via systemd-networkd (.netdev + .network pairs).
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -200,9 +200,9 @@ export function TunInterfacePage() {
         <div className="p-4 rounded-lg border border-amber-500/30 bg-amber-500/10 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-semibold text-amber-300">systemd is not available</p>
+            <p className="text-sm font-semibold text-amber-300">systemd-networkd is not active</p>
             <p className="text-xs text-nms-text-dim mt-1">
-              Interface changes will apply immediately but <strong>will not persist across reboots</strong>.
+              Interface changes will apply immediately but <strong>will not persist across reboots</strong>. Enable systemd-networkd to activate persistence.
             </p>
           </div>
         </div>
@@ -213,8 +213,10 @@ export function TunInterfacePage() {
         <Info className="w-4 h-4 text-nms-accent shrink-0 mt-0.5" />
         <span>
           The default <span className="font-mono text-nms-text">ogstun</span> is created by Open5GS and cannot be deleted here.
-          Create additional interfaces (ogstun2, ogstun3...) for multi-APN setups and set the matching{' '}
+          Create additional interfaces with any valid name for multi-APN setups and set the matching{' '}
           <span className="font-mono text-nms-text">dev:</span> field in your UPF session config.
+          Each interface is persisted via a <span className="font-mono text-nms-text">.netdev</span> +{' '}
+          <span className="font-mono text-nms-text">.network</span> pair in <span className="font-mono text-nms-text">/etc/systemd/network/</span>.
         </span>
       </div>
 
@@ -296,12 +298,12 @@ export function TunInterfacePage() {
                               {iface.state === 'up' ? <ArrowDown className="w-4 h-4" /> : <ArrowUp className="w-4 h-4" />}
                             </button>
                           )}
-                          {!iface.default && (
+                          {!iface.default && iface.managed && (
                             <button onClick={() => setModal({ mode: 'edit', iface })} disabled={acting} title="Edit IP" className="p-1.5 rounded text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2 transition-colors">
                               <Pencil className="w-4 h-4" />
                             </button>
                           )}
-                          {!iface.default && (
+                          {!iface.default && iface.managed && (
                             <button onClick={() => setConfirmDelete(iface.name)} disabled={acting} title="Delete" className="p-1.5 rounded text-nms-text-dim hover:text-nms-red hover:bg-red-500/10 transition-colors">
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -321,7 +323,7 @@ export function TunInterfacePage() {
       {networkdActive && (
         <div className="text-xs text-nms-text-dim flex items-center gap-2">
           <CheckCircle className="w-3.5 h-3.5 text-nms-green" />
-          systemd is active — NMS-managed interfaces persist across reboots via <span className="font-mono">/etc/systemd/system/open5gs-tun-*.service</span>
+          systemd-networkd is active — NMS-managed interfaces persist across reboots via <span className="font-mono">/etc/systemd/network/10-nms-*.netdev</span> + <span className="font-mono">*.network</span>
         </div>
       )}
 
