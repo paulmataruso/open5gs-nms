@@ -95,7 +95,10 @@ export class TunManagementUseCase {
 
   async list(): Promise<TunInterface[]> {
     const [linkR, addrR] = await Promise.all([
-      this.ipNet('-o link show type tun'),
+      // Use `ip link show` without `type tun` — older kernels (pre-5.x) don't
+      // populate IFLA_INFO_KIND for TUN devices, so `type tun` returns nothing
+      // even when ogstun is live. We filter to only names we care about below.
+      this.ipNet('-o link show'),
       this.ipNet('-o addr show'),
     ]);
 

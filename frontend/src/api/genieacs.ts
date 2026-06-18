@@ -95,8 +95,10 @@ export interface SercommRadio {
   sasEnable:     string;
   sasLocation:   string;
   sasUserId:     string;
+  icgGroupId:    string;
   latitude:      string;
   longitude:     string;
+  enable256QAM:  string;
 }
 
 export interface SercommProvisionInput {
@@ -123,10 +125,14 @@ export interface SercommProvisionInput {
   sasLocationSource: string;
   sasHeightType: string;
   sasUserId: string;
+  sasIcgGroupId: string;
   sasPeerCertVerify: boolean;
   sasServerUrl?: string;
   latitude: string;
   longitude: string;
+  cipheringAlgorithmList:  string;
+  integrityAlgorithmList:  string;
+  enable256QAM: boolean;
 }
 
 export interface NbiTask {
@@ -167,6 +173,11 @@ export const genieacsApi = {
 
   forceRefresh: async (deviceId: string): Promise<{ success: boolean; message: string }> => {
     const { data } = await api.post(`/refresh/${encodeURIComponent(deviceId)}`);
+    return data;
+  },
+
+  refreshSercomm: async (deviceId: string): Promise<{ success: boolean; message: string }> => {
+    const { data } = await api.post(`/refresh-sercomm/${encodeURIComponent(deviceId)}`);
     return data;
   },
 

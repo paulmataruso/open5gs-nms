@@ -3,8 +3,10 @@ import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle,
   ChevronRight, RotateCcw, Eye, Shield, Play, Settings, BookOpen, ChevronDown,
   Filter, Plus, Trash2, ArrowDown, ArrowUp, Activity, Radio, GitBranch, Terminal,
+  Globe, Layers,
 } from 'lucide-react';
-import { frrApi } from '../api/frr';
+import { frrApi, UeSubnet } from '../api/frr';
+import { TunInterfacePage } from './TunInterfacePage';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 
@@ -634,9 +636,170 @@ function RunningConfigPanel({ config }: { config: string | null | undefined }) {
   );
 }
 
+// ─── UE Subnet Routing panel ──────────────────────────────────────────────────
+
+function UeSubnetPanel({ storedSubnets, hasRollback, onApplied }: {
+  storedSubnets: UeSubnet[];
+  hasRollback: boolean;
+  onApplied: () => void;
+}) {
+  const [discovered, setDiscovered]   = useState<UeSubnet[]>([]);
+  const [selected, setSelected]       = useState<Set<string>>(new Set(storedSubnets.map(u => u.subnet)));
+  const [discovering, setDiscovering] = useState(false);
+  const [log, setLog]                 = useState('');
+  const [applying, setApplying]       = useState(false);
+  const [didDiscover, setDidDiscover] = useState(false);
+
+  const streamFetch = async (fetchFn: () => Promise<Response>, successMsg: string) => {
+    setApplying(true);
+    setLog('');
+    try {
+      const resp = await fetchFn();
+      const reader = resp.body?.getReader();
+      const decoder = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          setLog(prev => prev + decoder.decode(value));
+        }
+      }
+      toast.success(successMsg);
+      onApplied();
+    } catch (err: any) { toast.error(`Failed: ${err.message}`); }
+    finally { setApplying(false); }
+  };
+
+  const discover = async () => {
+    setDiscovering(true);
+    try {
+      const r = await frrApi.discoverUeSubnets();
+      setDiscovered(r.subnets);
+      setDidDiscover(true);
+      if (r.subnets.length === 0) toast.error('No IPv4 UE subnets found in upf.yaml');
+      else toast.success(`Found ${r.subnets.length} UE subnet(s)`);
+    } catch { toast.error('Discovery failed'); }
+    finally { setDiscovering(false); }
+  };
+
+  const toggle = (subnet: string) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(subnet) ? next.delete(subnet) : next.add(subnet);
+      return next;
+    });
+  };
+
+  const apply = async () => {
+    const toApply = discovered.filter(u => selected.has(u.subnet));
+    await streamFetch(
+      () => frrApi.applyUeSubnets(toApply),
+      `Applied ${toApply.length} UE subnet(s) — NAT removed, FORWARD rules added`
+    );
+  };
+
+  const rollback = async () => {
+    if (!confirm(
+      'Roll back UE subnet routing?\n\n' +
+      '• Removes iptables FORWARD rules\n' +
+      '• Restores NAT MASQUERADE rules that were removed\n' +
+      '• Removes UE subnets from FRR advertisement\n\n' +
+      'UEs will route via NAT again.'
+    )) return;
+    await streamFetch(frrApi.rollbackUeSubnets, 'Rolled back — NAT restored, FORWARD rules removed');
+  };
+
+  const displaySubnets = didDiscover ? discovered : storedSubnets;
+
+  return (
+    <div className="nms-card space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Globe className="w-4 h-4 text-nms-accent" />
+          <h2 className="text-sm font-semibold text-nms-text">UE Subnet Routing</h2>
+          {storedSubnets.length > 0 && (
+            <span className="text-xs text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">
+              {storedSubnets.length} active
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {hasRollback && (
+            <button onClick={rollback} disabled={applying}
+              className="nms-btn-ghost flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300">
+              {applying ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+              Rollback (restore NAT)
+            </button>
+          )}
+          <button onClick={discover} disabled={discovering || applying}
+            className="nms-btn-ghost flex items-center gap-1.5 text-xs">
+            {discovering ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+            Discover from upf.yaml
+          </button>
+        </div>
+      </div>
+
+      <p className="text-xs text-nms-text-dim">
+        Advertise UE IP pools via {'{'}EIGRP/OSPF/BGP{'}'} without NAT. On apply: existing MASQUERADE rules are removed and
+        stored for rollback, ip_forward is enabled, and FORWARD rules are added. One-click rollback restores everything.
+      </p>
+
+      {hasRollback && (
+        <div className="flex items-start gap-2 text-xs bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+          <span className="text-amber-300">
+            Rollback available — NAT rules are stored and can be restored. Click <strong>Rollback (restore NAT)</strong> to reverse all changes.
+          </span>
+        </div>
+      )}
+
+      {displaySubnets.length === 0 && !didDiscover ? (
+        <div className="text-center py-5 border border-dashed border-nms-border rounded-lg">
+          <Globe className="w-5 h-5 text-nms-text-dim/30 mx-auto mb-2" />
+          <p className="text-xs text-nms-text-dim">Click "Discover from upf.yaml" to load UE subnets</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {displaySubnets.map(u => (
+            <label key={u.subnet} className="flex items-center gap-3 bg-nms-bg border border-nms-border rounded-lg px-3 py-2.5 cursor-pointer hover:border-nms-accent/40 transition-colors select-none">
+              <input type="checkbox" checked={selected.has(u.subnet)} onChange={() => toggle(u.subnet)}
+                className="w-4 h-4 rounded border-nms-border shrink-0" />
+              <div className="flex-1 min-w-0">
+                <span className="font-mono text-sm text-nms-text">{u.subnet}</span>
+                <span className="text-xs text-nms-text-dim ml-3">via {u.dev}</span>
+                {u.dnn && <span className="text-xs text-nms-accent ml-2">dnn: {u.dnn}</span>}
+                {u.gateway && <span className="text-xs text-nms-text-dim ml-2">gw {u.gateway}</span>}
+              </div>
+              {storedSubnets.some(s => s.subnet === u.subnet) && (
+                <span className="text-xs text-green-400 shrink-0">active</span>
+              )}
+            </label>
+          ))}
+        </div>
+      )}
+
+      {didDiscover && displaySubnets.length > 0 && (
+        <div className="flex items-center gap-3 pt-1 border-t border-nms-border">
+          <button onClick={apply} disabled={applying || selected.size === 0}
+            className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40">
+            {applying ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
+            Apply {selected.size > 0 ? `(${selected.size} subnet${selected.size > 1 ? 's' : ''})` : ''}
+          </button>
+          <p className="text-xs text-nms-text-dim">
+            Removes MASQUERADE rules · adds FORWARD rules · updates FRR
+          </p>
+        </div>
+      )}
+
+      {log && <LogTerminal lines={log} />}
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function FRRPage() {
+  const [pageTab, setPageTab] = useState<'routing' | 'tun'>('routing');
   const [detection, setDetection]   = useState<any>(null);
   const [migState,  setMigState]    = useState<any>(null);
   const [interfaces, setInterfaces] = useState<IfaceInfo[]>([]);
@@ -653,6 +816,8 @@ export function FRRPage() {
   const [reconfigMode, setReconfigMode]   = useState(false);
   const [neighborTimer, setNeighborTimer] = useState<ReturnType<typeof setInterval> | null>(null);
   const [routeFilters, setRouteFiltersState] = useState<RouteFilter[]>([]);
+  const [storedUeSubnets, setStoredUeSubnets] = useState<UeSubnet[]>([]);
+  const [hasUeRollback, setHasUeRollback]     = useState(false);
 
   const [mgmtIface,    setMgmtIface]    = useState('');
   const [transitIface, setTransitIface] = useState('');
@@ -708,6 +873,8 @@ export function FRRPage() {
       setMigState(st);
       // frrApi.getState() returns data.state directly — st IS the state object, not {state: ...}
       if (st?.routeFilters !== undefined) { setRouteFiltersState(st.routeFilters); }
+      if (st?.ueSubnets        !== undefined) { setStoredUeSubnets(st.ueSubnets ?? []); }
+      setHasUeRollback(!!(st?.ueSubnetsRollback));
       if (ifaces.mgmtInterface && !mgmtIface) setMgmtIface(ifaces.mgmtInterface);
       // Also read phase/config back from state so wizard is in sync
       if (st?.protocol)          setProtocol(st.protocol);
@@ -774,15 +941,9 @@ export function FRRPage() {
     bgpLocal, setBgpLocal, bgpPeer, setBgpPeer, bgpPeerIp, setBgpPeerIp, bgpHop, setBgpHop, bgpNHS, setBgpNHS,
   };
 
-  if (loading) return (
-    <div className="p-6 flex items-center justify-center h-64 text-nms-text-dim">
-      <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading FRR status…
-    </div>
-  );
-
   return (
     <div className="p-6 space-y-6">
-      {showWarning && (
+      {pageTab === 'routing' && showWarning && (
         <SafetyWarningModal
           onAccept={() => { setWarningAccepted(true); localStorage.setItem('frr-warning-accepted', '1'); setShowWarning(false); }}
           onCancel={() => setShowWarning(false)}
@@ -792,33 +953,60 @@ export function FRRPage() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-semibold font-display">FRR / L3 Routing</h1>
-          <p className="text-sm text-nms-text-dim mt-1">Migrate from flat L2 service IPs to routed L3 with FRR + Virtual Service Interfaces</p>
+          <h1 className="text-2xl font-semibold font-display">L3 Routing</h1>
+          <p className="text-sm text-nms-text-dim mt-1">FRR routing migration and TUN interface management</p>
         </div>
-        <div className="flex gap-2 flex-wrap">
-          <button onClick={() => load()} disabled={acting} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className={clsx('w-4 h-4', acting && 'animate-spin')} /> Refresh
-          </button>
-          {currentPhase !== 'INIT' && !isComplete && (
-            <button onClick={() => runStream(frrApi.rollback, 'Rollback')} disabled={acting}
-              className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400">
-              <RotateCcw className="w-4 h-4" /> Rollback
+        {pageTab === 'routing' && (
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={() => load()} disabled={acting} className="nms-btn-ghost flex items-center gap-2 text-sm">
+              <RefreshCw className={clsx('w-4 h-4', acting && 'animate-spin')} /> Refresh
             </button>
-          )}
-          <button
-            onClick={async () => {
-              if (confirm('Reset migration state to INIT?\n\nOnly resets the wizard counter — no network changes.')) {
-                await frrApi.resetState();
-                localStorage.removeItem('frr-warning-accepted');
-                setWarningAccepted(false);
-                await load();
-              }
-            }}
-            className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400">
-            <XCircle className="w-4 h-4" /> Reset state
-          </button>
-        </div>
+            {currentPhase !== 'INIT' && !isComplete && (
+              <button onClick={() => runStream(frrApi.rollback, 'Rollback')} disabled={acting}
+                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400">
+                <RotateCcw className="w-4 h-4" /> Rollback
+              </button>
+            )}
+            <button
+              onClick={async () => {
+                if (confirm('Reset migration state to INIT?\n\nOnly resets the wizard counter — no network changes.')) {
+                  await frrApi.resetState();
+                  localStorage.removeItem('frr-warning-accepted');
+                  setWarningAccepted(false);
+                  await load();
+                }
+              }}
+              className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400">
+              <XCircle className="w-4 h-4" /> Reset state
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Page tabs */}
+      <div className="flex border-b border-nms-border">
+        {([
+          { id: 'routing', label: 'L3 Routing',     Icon: GitBranch },
+          { id: 'tun',     label: 'TUN Interfaces', Icon: Layers    },
+        ] as const).map(({ id, label, Icon }) => (
+          <button key={id} onClick={() => setPageTab(id)}
+            className={clsx('flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
+              pageTab === id
+                ? 'border-nms-accent text-nms-accent'
+                : 'border-transparent text-nms-text-dim hover:text-nms-text'
+            )}>
+            <Icon className="w-4 h-4" /> {label}
+          </button>
+        ))}
+      </div>
+
+      {pageTab === 'tun' && <TunInterfacePage />}
+
+      {pageTab === 'routing' && (loading ? (
+        <div className="flex items-center justify-center h-64 text-nms-text-dim">
+          <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading FRR status…
+        </div>
+      ) : <>
 
       <ArchitectureCard />
 
@@ -980,6 +1168,11 @@ export function FRRPage() {
 
           <RunningConfigPanel config={detection.runningConfig} />
         </div>
+      )}
+
+      {/* UE Subnet Routing */}
+      {frrRunning && (
+        <UeSubnetPanel storedSubnets={storedUeSubnets} hasRollback={hasUeRollback} onApplied={() => load(true)} />
       )}
 
       {/* Reconfigure panel */}
@@ -1326,7 +1519,8 @@ export function FRRPage() {
             </div>
           </div>
         )}
-      </>
+      </> {/* end migration wizard fragment */}
+      </>)} {/* end routing tab */}
     </div>
   );
 }

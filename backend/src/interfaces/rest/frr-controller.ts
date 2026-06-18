@@ -3,6 +3,7 @@ import { execFile, exec } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
@@ -30,8 +31,16 @@ const HOST_STATE_FILE = '/proc/1/root/etc/open5gs-nms/frr-migration-state.json';
 const HOST_FRR_CONF   = '/proc/1/root/etc/frr/frr.conf';
 const HOST_DAEMONS    = '/proc/1/root/etc/frr/daemons';
 const BACKUP_DIR      = '/proc/1/root/etc/open5gs-nms/frr-backup';
+const HOST_UPF_YAML   = '/proc/1/root/etc/open5gs/upf.yaml';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface UeSubnet {
+  subnet: string;
+  gateway?: string;
+  dnn?: string;
+  dev: string;
+}
 
 export type MigrationPhase =
   | 'INIT' | 'BACKUP_CREATED' | 'FRR_INSTALLED' | 'TRANSIT_CONFIGURED'
@@ -63,6 +72,8 @@ export interface MigrationState {
   serviceMappings: ServiceMapping[];
   routeFilters: RouteFilter[];
   routeFilterBackup?: RouteFilter[];
+  ueSubnets?: UeSubnet[];
+  ueSubnetsRollback?: { removedNatRules: string[] };
   backupTimestamp: string | null;
   log: Array<{ ts: string; phase: MigrationPhase; msg: string; ok: boolean }>;
   updatedAt: string;
@@ -147,12 +158,14 @@ function generateEigrpTransitConfig(cfg: Record<string, any>, transitNetCidr: st
   ].join('\n');
 }
 
-function generateEigrpConfig(cfg: Record<string, any>, services: ServiceMapping[], transitIface: string, version: string, hostname: string, mgmtIface: string, filters: RouteFilter[] = []): string {
+function generateEigrpConfig(cfg: Record<string, any>, services: ServiceMapping[], transitIface: string, version: string, hostname: string, mgmtIface: string, filters: RouteFilter[] = [], ueSubnets: UeSubnet[] = []): string {
   // FRR 8.4.x eigrpd bug: redistribute connected and redistribute static are both broken.
   // Use explicit network statements for each VSI /32 instead.
+  const ueDev = [...new Set(ueSubnets.map(u => u.dev || 'ogstun'))];
   const passiveIfaces = [
     mgmtIface,
     ...services.map(s => s.dummyName),
+    ...ueDev,
   ].filter(Boolean);
 
   const inFilters  = filters.filter(f => f.direction === 'in');
@@ -163,6 +176,7 @@ function generateEigrpConfig(cfg: Record<string, any>, services: ServiceMapping[
     `router eigrp ${cfg.as}`,
     `  network ${cfg.transitCidr ?? '192.168.253.0/30'}`,
     ...services.map(s => `  network ${s.ip}/32`),
+    ...ueSubnets.map(u => `  network ${u.subnet}`),
     ...passiveIfaces.map(i => `  passive-interface ${i}`),
   ];
 
@@ -181,12 +195,14 @@ function generateEigrpConfig(cfg: Record<string, any>, services: ServiceMapping[
   ].join('\n');
 }
 
-function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[], transitIface: string, transitCidr: string, version: string, hostname: string, filters: RouteFilter[] = []): string {
+function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[], transitIface: string, transitCidr: string, version: string, hostname: string, filters: RouteFilter[] = [], ueSubnets: UeSubnet[] = []): string {
+  const ueDev = [...new Set(ueSubnets.map(u => u.dev || 'ogstun'))];
+  const allPassive = [...(cfg.passiveInterfaces ?? []), ...ueDev];
   const lines = [
     ...frrHeader(version, hostname),
     `router ospf ${cfg.processId}`,
     ...(cfg.routerId ? [`  ospf router-id ${cfg.routerId}`] : []),
-    ...(cfg.passiveInterfaces ?? []).map((i: string) => `  passive-interface ${i}`),
+    ...allPassive.map((i: string) => `  passive-interface ${i}`),
   ];
 
   if (cfg.redistributeMethod === 'redistribute') {
@@ -195,6 +211,7 @@ function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[]
     lines.push(`  network ${transitCidr} area ${cfg.area}`);
     for (const svc of services) lines.push(`  network ${svc.ip}/32 area ${cfg.area}`);
   }
+  for (const u of ueSubnets) lines.push(`  network ${u.subnet} area ${cfg.area}`);
   lines.push('exit', '!', `interface ${transitIface}`, `  ip ospf network ${cfg.networkType}`, `  ip ospf area ${cfg.area}`, '!');
 
   if (cfg.redistributeMethod === 'redistribute') {
@@ -223,7 +240,7 @@ function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[]
   return lines.join('\n');
 }
 
-function generateBgpConfig(cfg: Record<string, any>, services: ServiceMapping[], version: string, hostname: string, filters: RouteFilter[] = []): string {
+function generateBgpConfig(cfg: Record<string, any>, services: ServiceMapping[], version: string, hostname: string, filters: RouteFilter[] = [], ueSubnets: UeSubnet[] = []): string {
   const lines = [
     ...frrHeader(version, hostname),
     `router bgp ${cfg.localAs}`,
@@ -234,6 +251,7 @@ function generateBgpConfig(cfg: Record<string, any>, services: ServiceMapping[],
     '  !',
     '  address-family ipv4 unicast',
     ...services.map(svc => `    network ${svc.ip}/32`),
+    ...ueSubnets.map(u => `    network ${u.subnet}`),
     ...(cfg.nextHopSelf ? [`    neighbor ${cfg.peerIp} next-hop-self`] : []),
     `    neighbor ${cfg.peerIp} activate`,
     ...(filters.filter(f => f.direction === 'in').length > 0  ? [`    neighbor ${cfg.peerIp} route-map NMS_IN in`]  : []),
@@ -266,9 +284,10 @@ async function generateFrrConfig(state: MigrationState): Promise<string> {
     return `${net}/${prefixLen}`;
   })();
 
-  if (protocol === 'eigrp') return generateEigrpConfig({ ...protocolConfig, transitCidr: transitNetCidr }, serviceMappings, transitInterface, version, hostname, mgmtInterface ?? '', state.routeFilters ?? []);
-  if (protocol === 'ospf')  return generateOspfConfig(protocolConfig, serviceMappings, transitInterface, transitCidr ?? '', version, hostname, state.routeFilters ?? []);
-  if (protocol === 'bgp')   return generateBgpConfig(protocolConfig, serviceMappings, version, hostname, state.routeFilters ?? []);
+  const ueSubnets = state.ueSubnets ?? [];
+  if (protocol === 'eigrp') return generateEigrpConfig({ ...protocolConfig, transitCidr: transitNetCidr }, serviceMappings, transitInterface, version, hostname, mgmtInterface ?? '', state.routeFilters ?? [], ueSubnets);
+  if (protocol === 'ospf')  return generateOspfConfig(protocolConfig, serviceMappings, transitInterface, transitCidr ?? '', version, hostname, state.routeFilters ?? [], ueSubnets);
+  if (protocol === 'bgp')   return generateBgpConfig(protocolConfig, serviceMappings, version, hostname, state.routeFilters ?? [], ueSubnets);
   return '';
 }
 
@@ -1278,9 +1297,9 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         write('Daemons file updated.\n');
       }
 
-      write('Reloading FRR...\n');
+      write('Restarting FRR...\n');
       await new Promise<void>((resolve, reject) => {
-        exec(`nsenter -t 1 -m -u -i -p -- systemctl reload frr`, (err) => err ? reject(err) : resolve());
+        exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
       });
 
       write('\n✅ FRR reconfigured successfully.\n');
@@ -1288,6 +1307,252 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       res.end();
     } catch (err) {
       write(`\n❌ Error: ${String(err)}\n`);
+      res.end();
+    }
+  });
+
+  // ── GET /api/frr/ue-subnets ──────────────────────────────────────────────────
+  // Read UE subnets from the host's upf.yaml and return IPv4 session pools.
+  router.get('/ue-subnets', async (_req: Request, res: Response) => {
+    try {
+      if (!fs.existsSync(HOST_UPF_YAML)) {
+        return res.json({ success: true, subnets: [], stored: loadState().ueSubnets ?? [] });
+      }
+      const content = fs.readFileSync(HOST_UPF_YAML, 'utf-8');
+      const parsed  = yaml.load(content) as any;
+      const sessions: any[] = parsed?.upf?.session ?? [];
+      const subnets: UeSubnet[] = sessions
+        .filter((s: any) => s?.subnet && !s.subnet.includes(':'))  // skip IPv6
+        .map((s: any): UeSubnet => ({
+          subnet:  s.subnet,
+          gateway: s.gateway,
+          dnn:     s.dnn,
+          dev:     s.dev || 'ogstun',
+        }));
+      res.json({ success: true, subnets, stored: loadState().ueSubnets ?? [] });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // ── POST /api/frr/ue-subnets/apply ───────────────────────────────────────────
+  // Save selected UE subnets, remove NAT MASQUERADE rules, add FORWARD rules,
+  // update FRR config. Stores removed NAT rules in state for one-click rollback.
+  router.post('/ue-subnets/apply', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.flushHeaders();
+    const write = (msg: string) => res.write(msg);
+
+    try {
+      const subnets: UeSubnet[] = req.body.subnets ?? [];
+
+      write(`Saving ${subnets.length} UE subnet(s) to state...\n`);
+      const state = loadState();
+      state.ueSubnets = subnets;
+
+      const removedNatRules: string[] = [];
+
+      if (subnets.length > 0) {
+        // ── 1. Remove NAT MASQUERADE rules for selected subnets ──────────────
+        write('\nScanning nat POSTROUTING chain for MASQUERADE rules...\n');
+        const { stdout: natOut } = await nsenter('iptables', ['-t', 'nat', '-S', 'POSTROUTING']).catch(() => ({ stdout: '' }));
+
+        for (const u of subnets) {
+          const matching = natOut.split('\n').filter(line =>
+            line.trim().startsWith('-A POSTROUTING') &&
+            line.includes(u.subnet) &&
+            line.toUpperCase().includes('MASQUERADE')
+          );
+          for (const rule of matching) {
+            const ruleArgs = rule.trim().split(/\s+/).slice(2); // args after "-A POSTROUTING"
+            await nsenter('iptables', ['-t', 'nat', '-D', 'POSTROUTING', ...ruleArgs]).catch(e => {
+              write(`  Warning: could not remove ${rule.trim()}: ${String(e)}\n`);
+            });
+            removedNatRules.push(rule.trim());
+            write(`  Removed NAT rule: ${rule.trim()}\n`);
+          }
+          if (matching.length === 0) {
+            write(`  No MASQUERADE rule found for ${u.subnet} — nothing to remove.\n`);
+          }
+        }
+
+        // ── 2. Enable ip_forward ─────────────────────────────────────────────
+        write('\nChecking ip_forward...\n');
+        const { stdout: ipfwd } = await nsenter('cat', ['/proc/sys/net/ipv4/ip_forward']).catch(() => ({ stdout: '0' }));
+        if (ipfwd.trim() === '1') {
+          write('ip_forward already enabled.\n');
+        } else {
+          await nsenter('sysctl', ['-w', 'net.ipv4.ip_forward=1']);
+          write('Enabled ip_forward.\n');
+        }
+
+        // ── 3. Add FORWARD rules for tunnel interface(s) ────────────────────
+        const devs = [...new Set(subnets.map(u => u.dev || 'ogstun'))];
+        for (const dev of devs) {
+          write(`\nApplying iptables FORWARD rules for ${dev}...\n`);
+          const outOk = await nsenter('iptables', ['-C', 'FORWARD', '-i', dev, '-j', 'ACCEPT']).then(() => true).catch(() => false);
+          if (outOk) {
+            write(`  -i ${dev} ACCEPT already exists.\n`);
+          } else {
+            await nsenter('iptables', ['-A', 'FORWARD', '-i', dev, '-j', 'ACCEPT']);
+            write(`  Added: -A FORWARD -i ${dev} -j ACCEPT\n`);
+          }
+          const inOk = await nsenter('iptables', ['-C', 'FORWARD', '-o', dev, '-j', 'ACCEPT']).then(() => true).catch(() => false);
+          if (inOk) {
+            write(`  -o ${dev} ACCEPT already exists.\n`);
+          } else {
+            await nsenter('iptables', ['-A', 'FORWARD', '-o', dev, '-j', 'ACCEPT']);
+            write(`  Added: -A FORWARD -o ${dev} -j ACCEPT\n`);
+          }
+        }
+      }
+
+      // Persist iptables rules so changes survive reboot (iptables-persistent)
+      write('\nPersisting iptables rules to /etc/iptables/rules.v4...\n');
+      try {
+        const { stdout: savedRules } = await nsenter('iptables-save', []);
+        fs.writeFileSync('/proc/1/root/etc/iptables/rules.v4', savedRules, 'utf-8');
+        write('Saved.\n');
+      } catch (e) {
+        write(`Warning: could not persist iptables rules: ${String(e)}\n`);
+      }
+
+      // Save rollback info (overwrite any previous — apply always creates fresh rollback)
+      state.ueSubnetsRollback = { removedNatRules };
+      saveState(state);
+
+      // ── 4. Regenerate and reload FRR ────────────────────────────────────────
+      const frrActive = await new Promise<boolean>(resolve => {
+        const c = exec(`nsenter -t 1 -m -u -i -p -- systemctl is-active frr`);
+        let out = ''; c.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
+        c.on('close', () => resolve(out.trim() === 'active'));
+      });
+
+      if (frrActive) {
+        write('\nRegenerating FRR config...\n');
+        const config = await generateFrrConfig(state);
+        if (fs.existsSync(HOST_FRR_CONF)) {
+          const ts = new Date().toISOString().replace(/[:.]/g, '-');
+          fs.copyFileSync(HOST_FRR_CONF, `${HOST_FRR_CONF}.backup-${ts}`);
+        }
+        fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+        write('Written /etc/frr/frr.conf\n');
+        write('Restarting FRR...\n');
+        await new Promise<void>((resolve, reject) => {
+          exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
+        });
+        write('FRR restarted.\n');
+      } else {
+        write('FRR is not running — config saved but not applied.\n');
+      }
+
+      await auditLogger.log({ action: 'frr_ue_subnets', user, details: subnets.map(u => u.subnet).join(', ') || 'cleared', success: true });
+      write('\nDone.\n');
+      res.end();
+    } catch (err) {
+      write(`\nError: ${String(err)}\n`);
+      res.end();
+    }
+  });
+
+  // ── POST /api/frr/ue-subnets/rollback ────────────────────────────────────────
+  // Reverse a previous apply: remove FORWARD rules, restore NAT MASQUERADE rules,
+  // clear UE subnets from FRR config.
+  router.post('/ue-subnets/rollback', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.flushHeaders();
+    const write = (msg: string) => res.write(msg);
+
+    try {
+      const state = loadState();
+      const rollback = state.ueSubnetsRollback;
+      const activeSubnets = state.ueSubnets ?? [];
+
+      // ── 1. Remove FORWARD rules for each active tunnel interface ─────────
+      const devs = [...new Set(activeSubnets.map(u => u.dev || 'ogstun'))];
+      if (devs.length > 0) {
+        write('Removing iptables FORWARD rules...\n');
+        for (const dev of devs) {
+          await nsenter('iptables', ['-D', 'FORWARD', '-i', dev, '-j', 'ACCEPT']).then(() => {
+            write(`  Removed: -D FORWARD -i ${dev} -j ACCEPT\n`);
+          }).catch(() => {
+            write(`  -i ${dev} rule not found (already gone).\n`);
+          });
+          await nsenter('iptables', ['-D', 'FORWARD', '-o', dev, '-j', 'ACCEPT']).then(() => {
+            write(`  Removed: -D FORWARD -o ${dev} -j ACCEPT\n`);
+          }).catch(() => {
+            write(`  -o ${dev} rule not found (already gone).\n`);
+          });
+        }
+      }
+
+      // ── 2. Restore NAT MASQUERADE rules ──────────────────────────────────
+      if (rollback && rollback.removedNatRules.length > 0) {
+        write('\nRestoring NAT MASQUERADE rules...\n');
+        for (const rule of rollback.removedNatRules) {
+          const ruleArgs = rule.trim().split(/\s+/).slice(2); // args after "-A POSTROUTING"
+          // Check it doesn't already exist before re-adding
+          const exists = await nsenter('iptables', ['-t', 'nat', '-C', 'POSTROUTING', ...ruleArgs]).then(() => true).catch(() => false);
+          if (exists) {
+            write(`  Already exists: ${rule}\n`);
+          } else {
+            await nsenter('iptables', ['-t', 'nat', '-A', 'POSTROUTING', ...ruleArgs]);
+            write(`  Restored: ${rule}\n`);
+          }
+        }
+      } else {
+        write('\nNo NAT rules were stored — nothing to restore.\n');
+      }
+
+      // Persist iptables rules so changes survive reboot (iptables-persistent)
+      write('\nPersisting iptables rules to /etc/iptables/rules.v4...\n');
+      try {
+        const { stdout: savedRules } = await nsenter('iptables-save', []);
+        fs.writeFileSync('/proc/1/root/etc/iptables/rules.v4', savedRules, 'utf-8');
+        write('Saved.\n');
+      } catch (e) {
+        write(`Warning: could not persist iptables rules: ${String(e)}\n`);
+      }
+
+      // ── 3. Clear UE subnets from state and regenerate FRR config ─────────
+      state.ueSubnets = [];
+      state.ueSubnetsRollback = undefined;
+      saveState(state);
+      write('\nCleared UE subnets from state.\n');
+
+      const frrActive = await new Promise<boolean>(resolve => {
+        const c = exec(`nsenter -t 1 -m -u -i -p -- systemctl is-active frr`);
+        let out = ''; c.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
+        c.on('close', () => resolve(out.trim() === 'active'));
+      });
+
+      if (frrActive) {
+        write('Regenerating FRR config (UE subnets removed)...\n');
+        const config = await generateFrrConfig(state);
+        if (fs.existsSync(HOST_FRR_CONF)) {
+          const ts = new Date().toISOString().replace(/[:.]/g, '-');
+          fs.copyFileSync(HOST_FRR_CONF, `${HOST_FRR_CONF}.backup-${ts}`);
+        }
+        fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+        write('Written /etc/frr/frr.conf\n');
+        write('Restarting FRR...\n');
+        await new Promise<void>((resolve, reject) => {
+          exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
+        });
+        write('FRR restarted.\n');
+      } else {
+        write('FRR is not running — config cleared from state.\n');
+      }
+
+      await auditLogger.log({ action: 'frr_ue_subnets', user, details: 'rollback', success: true });
+      write('\nRollback complete.\n');
+      res.end();
+    } catch (err) {
+      write(`\nError: ${String(err)}\n`);
       res.end();
     }
   });

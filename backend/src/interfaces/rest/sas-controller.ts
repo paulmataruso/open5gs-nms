@@ -346,7 +346,9 @@ export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genie
         return res.json({ success: true, status });
       }
 
-      const rfMap = new Map<string, boolean | null>();
+      // Separate maps per vendor — matching logic differs between them.
+      const baiRfMap = new Map<string, boolean | null>(); // keyed by hwSerial == SAS cbsdSerialNumber
+      const scRfMap  = new Map<string, boolean | null>(); // keyed by hwSerial; SAS serial is "Sercomm-<hwSerial>"
       const FAP = 'Device.Services.FAPService.1.';
 
       function getParam(device: Record<string, any>, dotPath: string): string {
@@ -366,47 +368,51 @@ export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genie
           const devices = (await baiResp.json()) as Record<string, any>[];
           const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
           for (const d of devices) {
-            const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
             const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
-            if (oui !== '48BF74' && !mfr.includes('baicells')) continue;
-            const serial = d._id as string;
+            const oui = (d._deviceId?._OUI ?? '').toUpperCase();
+            if (!mfr.includes('baicells') && oui !== '48BF74') continue;
+            const hwSerial   = (d._deviceId?._SerialNumber ?? d._id) as string;
             const lastInform = d._lastInform ?? null;
-            const isOnline = lastInform && lastInform > fiveMinAgo;
-            const rfEnable = getParam(d, `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`);
-            const opState  = getParam(d, `${FAP}FAPControl.LTE.OpState`);
-            rfMap.set(serial, !isOnline ? null : (rfEnable === 'true' && opState === 'true'));
+            const isOnline   = lastInform && lastInform > fiveMinAgo;
+            const rfEnable   = getParam(d, `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`);
+            const opState    = getParam(d, `${FAP}FAPControl.LTE.OpState`);
+            baiRfMap.set(hwSerial, !isOnline ? null : (rfEnable === 'true' && opState === 'true'));
           }
         }
       } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Baicells query failed'); }
 
+      // Sercomm/Moso only — X_000E8F_eNB_Status is the authoritative RF indicator.
+      // ACS hwSerial == _deviceId._SerialNumber (e.g. "2206CW5000768").
+      // SAS cbsdSerialNumber format: "Sercomm-<hwSerial>".
       try {
-        const scProjection = ['_id', '_lastInform', '_deviceId', 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status', `${FAP}FAPControl.LTE.AdminState`].join(',');
+        const scProjection = ['_id', '_lastInform', '_deviceId', 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status'].join(',');
         const scResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(scProjection)}`);
         if (scResp.ok) {
           const devices = (await scResp.json()) as Record<string, any>[];
           const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
           for (const d of devices) {
-            const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
             const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
-            if (oui !== '000E8F' && !mfr.includes('sercomm') && !mfr.includes('freedomfi')) continue;
-            const serial = d._id as string;
+            const oui = (d._deviceId?._OUI ?? '').toUpperCase();
+            if (!mfr.includes('sercomm') && !mfr.includes('freedomfi') && !mfr.includes('moso') && oui !== '000E8F') continue;
+            const hwSerial   = (d._deviceId?._SerialNumber ?? d._id) as string;
             const lastInform = d._lastInform ?? null;
-            const isOnline = lastInform && lastInform > fiveMinAgo;
+            const isOnline   = lastInform && lastInform > fiveMinAgo;
             const enbStatus  = getParam(d, 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status');
-            const adminState = getParam(d, `${FAP}FAPControl.LTE.AdminState`);
-            rfMap.set(serial, !isOnline ? null : (enbStatus.toUpperCase() === 'SUCCESS' || adminState === '1' || adminState === 'true'));
+            scRfMap.set(hwSerial, !isOnline ? null : (enbStatus.toUpperCase() === 'SUCCESS'));
           }
         }
       } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Sercomm query failed'); }
 
+      // Match each SAS CBSD to the right ACS RF reading.
+      // Sercomm cbsdSerialNumber is "Sercomm-<hwSerial>"; Baicells cbsdSerialNumber IS the hwSerial.
+      // Try scRfMap first using the last dash-delimited segment; fall back to baiRfMap with full serial.
       const status = cbsds.map(c => {
         let rfOn: boolean | null = null;
-        for (const [gSerial, gRf] of rfMap.entries()) {
-          if (gSerial === c.cbsdSerialNumber || gSerial.endsWith(c.cbsdSerialNumber) ||
-              c.cbsdSerialNumber.endsWith(gSerial) || gSerial.includes(c.cbsdSerialNumber) ||
-              c.cbsdSerialNumber.includes(gSerial)) {
-            rfOn = gRf; break;
-          }
+        const hwSerial = c.cbsdSerialNumber.split('-').pop()!;
+        if (scRfMap.has(hwSerial)) {
+          rfOn = scRfMap.get(hwSerial)!;
+        } else if (baiRfMap.has(c.cbsdSerialNumber)) {
+          rfOn = baiRfMap.get(c.cbsdSerialNumber)!;
         }
         return { cbsdId: c.cbsdId, serial: c.cbsdSerialNumber, fccId: c.fccId, rfOn };
       });

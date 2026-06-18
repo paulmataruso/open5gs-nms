@@ -10,7 +10,6 @@ import { SubscriberPage } from './components/subscribers/SubscriberPage';
 import { AuditPage } from './components/audit/AuditPage';
 import { BackupPage } from './pages/BackupPage';
 import { LogsPage } from './pages/LogsPage';
-import { TunInterfacePage } from './pages/TunInterfacePage';
 import { AutoConfigPage } from './pages/AutoConfigPage';
 import { SuciManagementPage } from './components/suci/SuciManagementPage';
 import { UserManagementPage } from './components/users/UserManagementPage';
@@ -59,8 +58,6 @@ function App(): JSX.Element {
         return <BackupPage />;
       case 'logs':
         return <LogsPage />;
-      case 'tun-interfaces':
-        return <TunInterfacePage />;
       case 'auto-config':
         return <AutoConfigPage />;
       case 'suci':

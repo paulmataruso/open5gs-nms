@@ -32,7 +32,8 @@ export type AuditAction =
   | 'frr_advertise'
   | 'frr_cutover'
   | 'frr_confirm'
-  | 'frr_rollback';
+  | 'frr_rollback'
+  | 'frr_ue_subnets';
 
 export interface AuditLogEntry {
   id: string;

@@ -3,6 +3,7 @@ import {
   Radio, MapPin, Wifi, Server, Locate, AlertCircle, Terminal, Monitor,
   Eye, EyeOff, HelpCircle, Send, RefreshCw, ChevronDown, ChevronUp,
   Clock, ExternalLink, Copy, Check, RotateCw, WifiOff,
+  GripVertical, X, Plus, Shield,
 } from 'lucide-react';
 import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
 import { configApi, genieacsApi, SercommRadio, SercommProvisionInput, NbiTask } from '../../api';
@@ -86,8 +87,12 @@ interface SercommForm {
   sasHeightType: string;       // 'AGL' or 'AMSL'
   sasServerUrl: string;
   sasUserId: string;
+  sasIcgGroupId: string;
   sasPeerCertVerify: boolean;
   latitude: string; longitude: string;
+  cipheringAlgorithms:  string[];
+  integrityAlgorithms:  string[];
+  enable256QAM: boolean;
 }
 
 function radioToForm(r: SercommRadio, mmeIpFallback = ''): SercommForm {
@@ -135,9 +140,13 @@ function radioToForm(r: SercommRadio, mmeIpFallback = ''): SercommForm {
     sasHeightType:         'AGL',
     sasServerUrl:          DEFAULT_SERCOMM_SAS_URL,
     sasUserId:             r.sasUserId || cellId1,
+    sasIcgGroupId:         r.icgGroupId || '',
     sasPeerCertVerify:     false,
     latitude:              latDecimal,
     longitude:             lonDecimal,
+    cipheringAlgorithms:  ['EEA0', '128-EEA1', '128-EEA2'],
+    integrityAlgorithms:  ['128-EIA1', '128-EIA2'],
+    enable256QAM: r.enable256QAM === '1' || r.enable256QAM?.toLowerCase() === 'true',
   };
 }
 
@@ -164,11 +173,88 @@ function formToInput(f: SercommForm): SercommProvisionInput {
     sasLocationSource: f.sasLocationSource,
     sasHeightType: f.sasHeightType,
     sasUserId: f.sasUserId.trim(),
+    sasIcgGroupId: f.sasIcgGroupId.trim(),
     sasPeerCertVerify: f.sasPeerCertVerify,
     latitude:  f.latitude.trim()  ? String(Math.round(parseFloat(f.latitude)  * 1_000_000)) : '',
     longitude: f.longitude.trim() ? String(Math.round(parseFloat(f.longitude) * 1_000_000)) : '',
+    cipheringAlgorithmList:  f.cipheringAlgorithms.join(','),
+    integrityAlgorithmList:  f.integrityAlgorithms.join(','),
+    enable256QAM: f.enable256QAM,
   };
 }
+
+// ─── Algorithm drag-and-drop lists ────────────────────────────────────────────
+const ALL_CIPHERING = ['EEA0', '128-EEA1', '128-EEA2'];
+const ALL_INTEGRITY = ['128-EIA1', '128-EIA2'];
+
+interface AlgorithmDndListProps {
+  label: string;
+  trParam: string;
+  allOptions: string[];
+  active: string[];
+  onChange: (next: string[]) => void;
+}
+
+const AlgorithmDndList: React.FC<AlgorithmDndListProps> = ({ label, trParam, allOptions, active, onChange }) => {
+  const dragIdx = useRef<number | null>(null);
+
+  const reorder = (fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    const next = [...active];
+    const [item] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, item);
+    onChange(next);
+  };
+
+  const remove = (item: string) => onChange(active.filter(a => a !== item));
+  const add    = (item: string) => onChange([...active, item]);
+
+  const available = allOptions.filter(o => !active.includes(o));
+
+  return (
+    <div>
+      <label className="nms-label">
+        {label} <span className="text-nms-text-dim font-normal">({trParam})</span>
+      </label>
+      <div className="flex flex-col gap-1 min-h-[2.5rem] mt-1 p-1.5 rounded border border-nms-border bg-nms-bg">
+        {active.length === 0 && (
+          <p className="text-xs text-nms-text-dim italic px-1">No algorithms selected</p>
+        )}
+        {active.map((item, idx) => (
+          <div
+            key={item}
+            draggable
+            onDragStart={() => { dragIdx.current = idx; }}
+            onDragOver={e => e.preventDefault()}
+            onDrop={() => { if (dragIdx.current !== null) reorder(dragIdx.current, idx); dragIdx.current = null; }}
+            className="flex items-center gap-2 px-2 py-1 rounded bg-nms-surface border border-nms-border cursor-grab active:cursor-grabbing select-none"
+          >
+            <GripVertical className="w-3.5 h-3.5 text-nms-text-dim flex-shrink-0" />
+            <span className="text-xs font-mono text-nms-text flex-1">{item}</span>
+            <span className="text-xs text-nms-text-dim">{idx + 1}</span>
+            <button onClick={() => remove(item)} className="text-nms-text-dim hover:text-red-400 transition-colors ml-1">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ))}
+      </div>
+      {available.length > 0 && (
+        <div className="flex gap-1.5 mt-1 flex-wrap">
+          {available.map(item => (
+            <button
+              key={item}
+              onClick={() => add(item)}
+              className="flex items-center gap-1 px-2 py-0.5 text-xs font-mono rounded border border-dashed border-nms-border text-nms-text-dim hover:text-nms-accent hover:border-nms-accent transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              {item}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 // ─── Single radio row ──────────────────────────────────────────────────────────
 const SercommRadioRow: React.FC<{
@@ -181,18 +267,34 @@ const SercommRadioRow: React.FC<{
   const [locating, setLocating]             = useState(false);
   const [rebooting, setRebooting]           = useState(false);
   const [rfBusy, setRfBusy]                 = useState(false);
+  const [summoning, setSummoning]           = useState(false);
   const [previewTasks, setPreviewTasks]     = useState<NbiTask[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  // After a push, freeze form for 90s to prevent the poll from re-loading
-  // stale GenieACS cache values (e.g. CA_Enable still True before radio reports back)
-  const pushFreezeUntil = useRef<number>(0);
+  // After a push, freeze form for 90s to prevent the poll from re-loading stale GenieACS cache values.
+  const pushFreezeUntil  = useRef<number>(0);
+  // Set to true after a summon so the next radio update syncs the form even while expanded.
+  const syncOnNextUpdate = useRef(false);
 
-  // Only sync form from radio data when the card is collapsed AND not in push-freeze window.
   useEffect(() => {
-    if (!expanded && Date.now() > pushFreezeUntil.current) {
+    if ((!expanded || syncOnNextUpdate.current) && Date.now() > pushFreezeUntil.current) {
       setForm(radioToForm(radio, mmeIpDefault));
+      syncOnNextUpdate.current = false;
     }
   }, [radio, mmeIpDefault, expanded]);
+
+  const handleExpand = async () => {
+    const opening = !expanded;
+    setExpanded(e => !e);
+    if (!opening) return;
+    // Summon the radio so GenieACS gets fresh param values immediately.
+    setSummoning(true);
+    try {
+      await genieacsApi.refreshSercomm(radio.id);
+      syncOnNextUpdate.current = true;
+      setTimeout(onRefresh, 6000);
+    } catch { /* non-critical — form still shows cached values */ }
+    finally { setSummoning(false); }
+  };
 
   const set = (patch: Partial<SercommForm>) => setForm(f => ({ ...f, ...patch }));
 
@@ -306,7 +408,7 @@ const SercommRadioRow: React.FC<{
         {/* Summary row */}
         <button
           className="w-full flex items-center gap-3 px-4 py-3 bg-nms-surface hover:bg-nms-surface-2 transition-colors text-left"
-          onClick={() => setExpanded(e => !e)}
+          onClick={handleExpand}
         >
           <RfDot status={radio.rfStatus} />
           <Radio className="w-4 h-4 text-nms-accent flex-shrink-0" />
@@ -319,7 +421,13 @@ const SercommRadioRow: React.FC<{
             <Clock className="w-3 h-3" />
             {formatLastInform(radio.lastInform)}
           </span>
-          {expanded && (
+          {summoning && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/20 flex items-center gap-1">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              syncing
+            </span>
+          )}
+          {expanded && !summoning && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/20 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
               editing
@@ -467,6 +575,13 @@ const SercommRadioRow: React.FC<{
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
                   <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">Carrier Aggregation</span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer group">
+                  <input type="checkbox" checked={form.enable256QAM} onChange={e => set({ enable256QAM: e.target.checked })}
+                    className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
+                  <LabelWithTooltip tooltip="Sets PDSCH.X_000E8F_Enable256QAM — enables 256QAM downlink modulation when UE supports it">
+                    <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">256QAM DL</span>
+                  </LabelWithTooltip>
+                </label>
               </div>
             </div>
 
@@ -536,7 +651,7 @@ const SercommRadioRow: React.FC<{
               </div>
               <p className="text-xs text-nms-text-dim mt-1">Decimal degrees — converted to microdegrees automatically on push.</p>
 
-              {/* Row 4 — User ID + Server URL */}
+              {/* Row 4 — User ID + Server URL + ICG Group ID */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                 <div>
                   <label className="nms-label">SAS User ID <span className="text-nms-text-dim font-normal">(UserContactInformation)</span></label>
@@ -546,6 +661,10 @@ const SercommRadioRow: React.FC<{
                   <label className="nms-label">SAS Server URL</label>
                   <input className="nms-input font-mono text-xs" value={form.sasServerUrl} onChange={e => set({ sasServerUrl: e.target.value })} placeholder="https://172.16.0.168:8443/sas/v1.2" />
                 </div>
+              </div>
+              <div className="mt-3">
+                <label className="nms-label">ICG Group ID <span className="text-nms-text-dim font-normal">(ICGGroupId — interference coordination group name sent to SAS)</span></label>
+                <input className="nms-input font-mono" value={form.sasIcgGroupId} onChange={e => set({ sasIcgGroupId: e.target.value })} placeholder="Leave blank for no group" />
               </div>
 
               {/* Row 5 — Checkboxes */}
@@ -578,6 +697,33 @@ const SercommRadioRow: React.FC<{
                     Enable SAS
                   </span>
                 </label>
+              </div>
+            </div>
+
+            {/* Security Algorithms */}
+            <div>
+              <p className="text-xs font-semibold text-nms-text mb-2 flex items-center gap-2">
+                <Shield className="w-3.5 h-3.5 text-nms-accent" />
+                Security Algorithms
+              </p>
+              <p className="text-xs text-nms-text-dim mb-3">
+                Drag to reorder — first item has highest priority. Click <strong className="text-nms-text">+</strong> to restore a removed algorithm.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <AlgorithmDndList
+                  label="Ciphering Algorithms"
+                  trParam="AllowedCipheringAlgorithmList"
+                  allOptions={ALL_CIPHERING}
+                  active={form.cipheringAlgorithms}
+                  onChange={v => set({ cipheringAlgorithms: v })}
+                />
+                <AlgorithmDndList
+                  label="Integrity Algorithms"
+                  trParam="AllowedIntegrityProtectionAlgorithmList"
+                  allOptions={ALL_INTEGRITY}
+                  active={form.integrityAlgorithms}
+                  onChange={v => set({ integrityAlgorithms: v })}
+                />
               </div>
             </div>
 
@@ -770,7 +916,7 @@ export function FemtoConfigTab() {
                     `femto_cli sset Device.ManagementServer.URL="http://${window.location.hostname}:7547"`,
                     'femto_cli sset Device.ManagementServer.EnableCWMP="1"',
                     'femto_cli sset Device.ManagementServer.PeriodicInformEnable="1"',
-                    'femto_cli sset Device.ManagementServer.PeriodicInformInterval="5"',
+                    'femto_cli sset Device.ManagementServer.PeriodicInformInterval="3600"',
                     'femto_cli fsave',
                     'reboot',
                   ].map((cmd, i) => (

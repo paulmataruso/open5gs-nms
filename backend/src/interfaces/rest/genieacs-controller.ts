@@ -72,9 +72,13 @@ interface SercommProvisionInput {
   sasLocationSource: string;    // '0'=Manual, '1'=GPS
   sasHeightType: string;        // 'AGL' or 'AMSL'
   sasUserId: string;
+  sasIcgGroupId: string;
   sasPeerCertVerify: boolean;
   latitude: string;
   longitude: string;
+  cipheringAlgorithmList:  string;
+  integrityAlgorithmList:  string;
+  enable256QAM: boolean;
 }
 
 function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasServerUrl?: string): NbiTask[] {
@@ -126,6 +130,10 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_CFG_MMEIdList`,             '{1}',        'xsd:string'      ],
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_PLMNID_Priority`,           '6',          'xsd:unsignedInt' ],
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_Selected_MME_ByPriority`,   '1',          'xsd:boolean'     ],
+
+    // ── Security algorithms (configuration_init._set_security) ──────────────
+    [`${SFAP}CellConfig.LTE.EPC.AllowedCipheringAlgorithmList`,              input.cipheringAlgorithmList, 'xsd:string'],
+    [`${SFAP}CellConfig.LTE.EPC.AllowedIntegrityProtectionAlgorithmList`,    input.integrityAlgorithmList, 'xsd:string'],
 
     // ── Gateway / S1 (configuration_init._set_s1_connection) ────────────────
     // MME_IP → xsd:string
@@ -190,6 +198,8 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}CellConfig.LTE.RAN.PHY.TDDFrame.SubFrameAssignment`,                '2',          'xsd:boolean'     ],
     // SPECIAL_SUBFRAME_PATTERN: TrParameterType.INT → xsd:int
     [`${SFAP}CellConfig.LTE.RAN.PHY.TDDFrame.SpecialSubframePatterns`,           '7',          'xsd:int'         ],
+    // 256QAM downlink modulation (PDSCH)
+    [`${SFAP}CellConfig.LTE.RAN.PHY.PDSCH.X_000E8F_Enable256QAM`,               bool(input.enable256QAM), 'xsd:boolean'],
 
     // ── Misc (FreedomFiOneMiscParameters) ────────────────────────────────
     // WEB_UI_ENABLE: default=False → xsd:boolean → '0'
@@ -226,6 +236,7 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.PeerCertVerifyEnable`,                 boolT(input.sasPeerCertVerify),                    'xsd:boolean'],
     // SAS_USER_ID → xsd:string (UserContactInformation)
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`,               input.sasUserId || '',                             'xsd:string' ],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ICGGroupId`,                           input.sasIcgGroupId || '',                         'xsd:string' ],
     // SAS_FCC_ID → xsd:string
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.FCCIdentificationNumber`,              'P27-SCE4255W',                                    'xsd:string' ],
     // SAS_CATEGORY: A or B
@@ -340,7 +351,7 @@ export function buildProvisionTasks(nbiUrl: string, encodedId: string, input: Ba
     [`${FAP}REM.LTE.InServiceHandling`,                                     'Disabled', 'xsd:string'  ],
     ['Device.DeviceInfo.X_COM_GpsSyncEnable',                               'true',  'xsd:boolean'     ],
     ['Device.ManagementServer.PeriodicInformEnable',                        'true',  'xsd:boolean'     ],
-    ['Device.ManagementServer.PeriodicInformInterval',                      '5',     'xsd:unsignedInt' ],
+    ['Device.ManagementServer.PeriodicInformInterval',                      '3600',  'xsd:unsignedInt' ],
     // ── SAS (Device.DeviceInfo.SAS.*) ──────────────────────────────────────────
     ['Device.DeviceInfo.SAS.enableMode',              input.sasEnableMode,                              'xsd:unsignedInt'],
     ['Device.DeviceInfo.SAS.RadioEnable',             input.sasEnableMode !== '0' ? 'true' : 'false',   'xsd:boolean'  ],
@@ -525,7 +536,10 @@ export function createGenieacsRouter(
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Enable`,
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Location`,
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`,
+        `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.ICGGroupId`,
         `${SERCOMM_FAP}REM.X_000E8F_tfcsManagerConfig.primSrc`,
+        `${SERCOMM_FAP}CellConfig.LTE.RAN.PHY.PDSCH.X_000E8F_Enable256QAM`,
+        `${SERCOMM_FAP}CellConfig.LTE.RAN.PHY.PUSCH.Enable64QAM`,
         'Device.FAP.GPS.LockedLatitude',
         'Device.FAP.GPS.LockedLongitude',
         'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status',
@@ -579,8 +593,11 @@ export function createGenieacsRouter(
           sasEnable:    getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Enable`),
           sasLocation:  getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.Location`) || 'indoor',
           sasUserId:    getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`),
+          icgGroupId:   getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_SAS.ICGGroupId`),
           latitude:     getParam(d, 'Device.FAP.GPS.LockedLatitude'),
           longitude:    getParam(d, 'Device.FAP.GPS.LockedLongitude'),
+          enable256QAM: getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.PHY.PDSCH.X_000E8F_Enable256QAM`),
+          enable64QAM:  getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.PHY.PUSCH.Enable64QAM`),
         };
       });
 
@@ -774,6 +791,51 @@ export function createGenieacsRouter(
       res.json({ success: true, message: 'Connection request sent — device will inform shortly.' });
     } catch (err) {
       logger.error({ deviceId, err: String(err) }, 'Force refresh failed');
+      res.status(502).json({ success: false, error: String(err) });
+    }
+  });
+
+  // ── POST /api/genieacs/refresh-sercomm/:deviceId ─────────────────────────
+  // Summons a Sercomm radio via connection_request + getParameterValues so
+  // GenieACS fetches the latest param values from the radio immediately.
+  router.post('/refresh-sercomm/:deviceId', requireAdmin, async (req: Request, res: Response) => {
+    const { deviceId } = req.params;
+    const encodedId    = encodeDeviceId(deviceId);
+    const SFAP_        = 'Device.Services.FAPService.1.';
+    const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?connection_request`;
+    try {
+      const r = await nbiPost(taskUrl, {
+        name: 'getParameterValues',
+        parameterNames: [
+          `${SFAP_}CellConfig.LTE.EPC.TAC`,
+          `${SFAP_}CellConfig.LTE.EPC.PLMNList.1.PLMNID`,
+          `${SFAP_}FAPControl.LTE.Gateway.S1SigLinkServerList`,
+          `${SFAP_}CellConfig.LTE.RAN.RF.EARFCNDL`,
+          `${SFAP_}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDL2`,
+          `${SFAP_}CellConfig.LTE.RAN.RF.DLBandwidth`,
+          `${SFAP_}CellConfig.LTE.RAN.RF.PhyCellID`,
+          `${SFAP_}CellConfig.LTE.RAN.RF.FreqBandIndicator`,
+          `${SFAP_}CellConfig.LTE.RAN.RF.X_000E8F_TxPowerConfig`,
+          `${SFAP_}CellConfig.LTE.RAN.Common.CellIdentity`,
+          `${SFAP_}CellConfig.LTE.RAN.Common.X_000E8F_CellIdentity2`,
+          `${SFAP_}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_CA_Enable`,
+          `${SFAP_}FAPControl.LTE.X_000E8F_RRMConfig.X_000E8F_Cell_Number`,
+          `${SFAP_}FAPControl.LTE.X_000E8F_SAS.Enable`,
+          `${SFAP_}FAPControl.LTE.X_000E8F_SAS.Location`,
+          `${SFAP_}FAPControl.LTE.X_000E8F_SAS.UserContactInformation`,
+          `${SFAP_}REM.X_000E8F_tfcsManagerConfig.primSrc`,
+          `${SFAP_}CellConfig.LTE.RAN.PHY.PDSCH.X_000E8F_Enable256QAM`,
+          `${SFAP_}CellConfig.LTE.RAN.PHY.PUSCH.Enable64QAM`,
+          'Device.FAP.GPS.LockedLatitude',
+          'Device.FAP.GPS.LockedLongitude',
+          'Device.IP.Interface.1.IPv4Address.1.IPAddress',
+          'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status',
+        ],
+      });
+      if (!r.ok) throw new Error(`connection_request failed (${r.status}): ${r.text}`);
+      res.json({ success: true, message: 'Sercomm summon sent — device will inform shortly.' });
+    } catch (err) {
+      logger.error({ deviceId, err: String(err) }, 'Sercomm refresh failed');
       res.status(502).json({ success: false, error: String(err) });
     }
   });

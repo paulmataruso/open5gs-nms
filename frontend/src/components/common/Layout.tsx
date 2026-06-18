@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network, FileText,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Layers, Shield, Clock, GitBranch, Zap,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, Clock, GitBranch, Zap,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
@@ -21,7 +21,6 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
-  { id: 'tun-interfaces', label: 'TUN Interfaces', icon: Layers },
   { id: 'subscribers', label: 'Subscribers', icon: Users },
   { id: 'suci', label: 'SUCI Keys', icon: Key },
   { id: 'backup', label: 'Backup & Restore', icon: Database },

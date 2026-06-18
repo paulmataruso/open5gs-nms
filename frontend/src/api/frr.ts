@@ -32,4 +32,24 @@ export const frrApi = {
   neighbor:   () => fetch('/api/frr/migration/neighbor',    { method: 'POST', credentials: 'include' }),
   cutover:    () => fetch('/api/frr/migration/cutover',     { method: 'POST', credentials: 'include' }),
   rollback:   () => fetch('/api/frr/migration/rollback',    { method: 'POST', credentials: 'include' }),
+
+  discoverUeSubnets: async (): Promise<{ subnets: UeSubnet[]; stored: UeSubnet[] }> => {
+    const { data } = await api.get('/ue-subnets');
+    return data;
+  },
+  applyUeSubnets: (subnets: UeSubnet[]) => fetch('/api/frr/ue-subnets/apply', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subnets }),
+  }),
+  rollbackUeSubnets: () => fetch('/api/frr/ue-subnets/rollback', {
+    method: 'POST', credentials: 'include',
+  }),
 };
+
+export interface UeSubnet {
+  subnet: string;
+  gateway?: string;
+  dnn?: string;
+  dev: string;
+}

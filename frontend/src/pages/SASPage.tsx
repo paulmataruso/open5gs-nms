@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Shield, Radio, Wifi, Server, Settings, RefreshCw,
   AlertCircle, CheckCircle, Activity, ScrollText, Trash2, Plus, BookOpen, X, Download, Lock, Users,
+  ChevronDown, ChevronUp,
 } from 'lucide-react';
 import { sasApi } from '../api/sas';
 import { interfaceApi } from '../api';
@@ -1031,6 +1032,10 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   const [groupCustomSlots, setGroupCustomSlots] = useState<Record<string, Array<{low:number;high:number;label?:string}> | undefined>>({});
   const [manualGroups,  setManualGroups]  = useState<Array<{ _id: string; cbsdIds: string[] }>>([]);
   const [saving,        setSaving]        = useState<Record<string, boolean>>({});
+  const [expandedMembers, setExpandedMembers] = useState<Set<string>>(new Set());
+  const toggleMembers = (groupId: string) => setExpandedMembers(s => {
+    const n = new Set(s); n.has(groupId) ? n.delete(groupId) : n.add(groupId); return n;
+  });
 
   const load = useCallback(async () => {
     try {
@@ -1065,14 +1070,17 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(1);
 
-  const saveGroupPolicy = async (groupId: string, bandId: string, customSlots?: Array<{low:number;high:number;label?:string}>) => {
+  const saveGroup = async (groupId: string) => {
+    const mg = manualGroups.find(g => g._id === groupId);
+    const bandId = groupPolicies[groupId] ?? '';
     setSaving(s => ({ ...s, [groupId]: true }));
     try {
-      if (!bandId) { await sasApi.deleteGroupPolicy(groupId); }
-      else         { await sasApi.setGroupPolicy(groupId, bandId, groupNotes[groupId], customSlots); }
+      if (mg) await sasApi.setManualGroup(mg._id, mg.cbsdIds);
+      if (bandId) await sasApi.setGroupPolicy(groupId, bandId, groupNotes[groupId], groupCustomSlots[groupId]);
+      else        await sasApi.deleteGroupPolicy(groupId).catch(() => {});
       await load();
-      toast.success(`Group "${groupId}" policy saved`);
-    } catch { toast.error('Failed to save group policy'); }
+      toast.success(`Group "${groupId}" saved`);
+    } catch { toast.error('Failed to save group'); }
     finally { setSaving(s => ({ ...s, [groupId]: false })); }
   };
 
@@ -1139,151 +1147,154 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
         <p><span className="text-nms-text-dim">3. Global default</span> — SAS picks the best-matching band based on what frequency the radio asks for</p>
       </div>
 
-      {/* ── Manual Group Assignments ── */}
+      {/* ── Interference Groups ── */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-nms-text flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" />
-            Manual Group Assignments
-            <span className="text-xs text-nms-text-dim font-normal">— for radios that don’t send a group ID (e.g. Nokia)</span>
+            <span className="w-2.5 h-2.5 rounded-full bg-purple-400 inline-block" />
+            Interference Groups
           </h3>
           <button onClick={() => {
-            const id = `manual-group-${Date.now()}`;
+            const id = `group-${Date.now()}`;
             setManualGroups(g => [...g, { _id: id, cbsdIds: [] }]);
+            setExpandedMembers(s => new Set([...s, id]));
           }} className="nms-btn-ghost flex items-center gap-1.5 text-xs">
             <Plus className="w-3.5 h-3.5" /> New Group
           </button>
         </div>
-        <p className="text-xs text-nms-text-dim">Create interference groups manually and assign CBSDs to them. These assignments take priority over group IDs sent by the radio during registration. Use this for radios like Nokia that don’t include a groupingParam.</p>
+        <p className="text-xs text-nms-text-dim">Radios in the same interference coordination group are all served spectrum from the assigned band. Create manual groups for radios that don't send a native group ID (e.g. Nokia). Manual group assignments take priority over native IDs.</p>
+        {groupIds.length === 0 && <p className="text-xs text-nms-text-dim italic">No interference groups yet — create one above or wait for CBSDs to register with a group ID.</p>}
+        {groupIds.map(groupId => {
+          const manualEntry = manualGroups.find(mg => mg._id === groupId);
+          const isManual = !!manualEntry;
+          const nativeMembers = groups[groupId] ?? [];
+          const allMembers = [
+            ...nativeMembers,
+            ...(manualEntry?.cbsdIds ?? [])
+              .map(id => cbsds.find(c => c.cbsdId === id))
+              .filter(Boolean)
+              .filter(c => !nativeMembers.find(n => n.cbsdId === c!.cbsdId)),
+          ];
+          const currentBandId = groupPolicies[groupId] ?? '';
+          const isSaving = saving[groupId];
+          const showMembers = expandedMembers.has(groupId);
+          return (
+            <div key={groupId} className="nms-card space-y-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0 space-y-2">
 
-        {manualGroups.length === 0 && (
-          <p className="text-xs text-nms-text-dim italic">No manual groups configured.</p>
-        )}
-
-        {manualGroups.map((mg, mi) => (
-          <div key={mg._id} className="nms-card space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex-1 space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-nms-text-dim shrink-0">Group ID:</span>
-                  <input
-                    value={mg._id}
-                    onChange={e => setManualGroups(gs => gs.map((g, i) => i === mi ? { ...g, _id: e.target.value } : g))}
-                    className="nms-input font-mono text-xs flex-1"
-                    placeholder="e.g. nokia-sector-a"
-                  />
-                </div>
-                <div>
-                  <p className="text-xs text-nms-text-dim mb-1">Assign CBSDs to this group:</p>
-                  <div className="space-y-1">
-                    {cbsds.map(c => {
-                      const isAssigned = mg.cbsdIds.includes(c.cbsdId);
-                      const assignedElsewhere = !isAssigned && manualGroups.some((g, i) => i !== mi && g.cbsdIds.includes(c.cbsdId));
-                      return (
-                        <label key={c.cbsdId} className={clsx('flex items-center gap-2 cursor-pointer text-xs p-1.5 rounded hover:bg-nms-surface-2', assignedElsewhere && 'opacity-50')}>
-                          <input type="checkbox"
-                            checked={isAssigned}
-                            disabled={assignedElsewhere}
-                            onChange={e => setManualGroups(gs => gs.map((g, i) => i !== mi ? g : {
-                              ...g,
-                              cbsdIds: e.target.checked
-                                ? [...g.cbsdIds, c.cbsdId]
-                                : g.cbsdIds.filter(id => id !== c.cbsdId)
-                            }))}
-                            className="w-3.5 h-3.5 rounded"
-                          />
-                          <span className="font-mono text-nms-accent">{c.cbsdSerialNumber}</span>
-                          <span className="text-nms-text-dim">{c.fccId}</span>
-                          {(() => {
-                            const hasNativeGroup = c.groupingParam?.some((p: any) => p.groupType === 'INTERFERENCE_COORDINATION');
-                            if (hasNativeGroup) return <span className="text-green-400/60 text-xs">(has native group)</span>;
-                            return <span className="text-amber-400/70 text-xs">(no native group)</span>;
-                          })()}
-                          {assignedElsewhere && <span className="text-red-400/70 text-xs">— assigned to another group</span>}
-                        </label>
-                      );
-                    })}
-                    {cbsds.length === 0 && <p className="text-xs text-nms-text-dim italic">No CBSDs registered yet.</p>}
+                  {/* Group name row */}
+                  <div className="flex items-center gap-2">
+                    {isManual ? (
+                      <input
+                        value={manualEntry._id}
+                        onChange={e => setManualGroups(gs => gs.map(g => g._id === groupId ? { ...g, _id: e.target.value } : g))}
+                        className="nms-input font-mono text-xs flex-1"
+                        placeholder="e.g. nokia-sector-a"
+                      />
+                    ) : (
+                      <p className="text-xs font-semibold text-purple-400 font-mono flex-1">{groupId}</p>
+                    )}
+                    <span className={clsx(
+                      'text-xs px-1.5 py-0.5 rounded shrink-0 border',
+                      isManual ? 'bg-amber-500/15 text-amber-400 border-amber-500/20' : 'bg-purple-500/15 text-purple-400 border-purple-500/20',
+                    )}>{isManual ? 'Manual' : 'Native'}</span>
                   </div>
-                </div>
-              </div>
-              <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={async () => {
-                    setSaving(s => ({ ...s, [`mg-${mi}`]: true }));
-                    try {
-                      await sasApi.setManualGroup(mg._id, mg.cbsdIds);
-                      await load();
-                      toast.success(`Group “${mg._id}” saved`);
-                    } catch { toast.error('Failed to save group'); }
-                    finally { setSaving(s => ({ ...s, [`mg-${mi}`]: false })); }
-                  }}
-                  disabled={!!saving[`mg-${mi}`] || !mg._id.trim()}
-                  className="nms-btn-primary text-xs flex items-center gap-1.5"
-                >
-                  {saving[`mg-${mi}`] ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
-                  Save
-                </button>
-                <button
-                  onClick={async () => {
-                    if (!confirm(`Delete manual group “${mg._id}”?`)) return;
-                    try {
-                      await sasApi.deleteManualGroup(mg._id);
-                      await load();
-                      toast.success('Group deleted');
-                    } catch { toast.error('Failed to delete group'); }
-                  }}
-                  className="nms-btn-ghost text-xs text-red-400 flex items-center gap-1"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
 
-      {/* ── Interference Groups ── */}
-      {groupIds.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-sm font-semibold text-nms-text flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-purple-400 inline-block" />
-            Interference Groups
-            <span className="text-xs text-nms-text-dim font-normal">— assign a band to all radios in a group at once</span>
-          </h3>
-          <p className="text-xs text-nms-text-dim">Radios in the same interference coordination group will all be served spectrum from the assigned band. Each radio gets a unique non-overlapping slot within that band.</p>
-          {groupIds.map(groupId => {
-            const members = [
-              ...(groups[groupId] ?? []),
-              ...(manualGroups.find(mg => mg._id === groupId)?.cbsdIds ?? []).map(id => cbsds.find(c => c.cbsdId === id)).filter(Boolean).filter(c => !groups[groupId]?.find(g => g.cbsdId === c!.cbsdId)),
-            ];
-            const currentBandId = groupPolicies[groupId] ?? '';
-            const isSaving = saving[groupId];
-            return (
-              <div key={groupId} className="nms-card space-y-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-purple-400 mb-1">
-                      Group: <span className="font-mono">{groupId}</span>
-                      <span className="text-nms-text-dim font-normal ml-2">({members.length} radio{members.length !== 1 ? 's' : ''})</span>
-                    </p>
+                  {/* Members summary + manage button */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-nms-text-dim">{allMembers.length} radio{allMembers.length !== 1 ? 's' : ''}:</span>
+                    {allMembers.slice(0, 5).map(c => (
+                      <span key={c!.cbsdId} className="text-xs font-mono text-nms-accent bg-nms-surface px-1.5 py-0.5 rounded border border-nms-border">{c!.cbsdSerialNumber}</span>
+                    ))}
+                    {allMembers.length > 5 && <span className="text-xs text-nms-text-dim">+{allMembers.length - 5} more</span>}
+                    {allMembers.length === 0 && <span className="text-xs text-nms-text-dim italic">no members yet</span>}
+                    {isManual && (
+                      <button onClick={() => toggleMembers(groupId)}
+                        className="text-xs text-nms-accent hover:text-nms-accent/80 flex items-center gap-1 ml-auto">
+                        <Users className="w-3 h-3" />
+                        {showMembers ? 'Done' : 'Add / Remove Radios'}
+                        {showMembers ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                      </button>
+                    )}
+                  </div>
+
+                  {/* CBSD picker panel */}
+                  {isManual && showMembers && (
+                    <div className="border border-nms-border rounded-lg p-2 bg-nms-bg space-y-1">
+                      {cbsds.length === 0 && <p className="text-xs text-nms-text-dim italic px-1">No CBSDs registered yet.</p>}
+                      {cbsds.map(c => {
+                        const isAssigned = manualEntry.cbsdIds.includes(c.cbsdId);
+                        const assignedElsewhere = !isAssigned && manualGroups.some(g => g._id !== groupId && g.cbsdIds.includes(c.cbsdId));
+                        return (
+                          <label key={c.cbsdId} className={clsx('flex items-center gap-2 cursor-pointer text-xs p-1.5 rounded hover:bg-nms-surface-2', assignedElsewhere && 'opacity-50')}>
+                            <input type="checkbox"
+                              checked={isAssigned}
+                              disabled={assignedElsewhere}
+                              onChange={e => setManualGroups(gs => gs.map(g => g._id !== groupId ? g : {
+                                ...g,
+                                cbsdIds: e.target.checked ? [...g.cbsdIds, c.cbsdId] : g.cbsdIds.filter(id => id !== c.cbsdId),
+                              }))}
+                              className="w-3.5 h-3.5 rounded"
+                            />
+                            <span className="font-mono text-nms-accent">{c.cbsdSerialNumber}</span>
+                            <span className="text-nms-text-dim">{c.fccId}</span>
+                            {c.groupingParam?.some((p: any) => p.groupType === 'INTERFERENCE_COORDINATION')
+                              ? <span className="text-green-400/60 text-xs">(has native group)</span>
+                              : <span className="text-amber-400/70 text-xs">(no native group)</span>}
+                            {assignedElsewhere && <span className="text-red-400/70 text-xs ml-auto">in another group</span>}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Band selector */}
+                  <div>
                     <label className="nms-label text-xs">Serve spectrum from this band</label>
                     <BandSelect value={currentBandId} onChange={v => setGroupPolicies(p => ({ ...p, [groupId]: v }))} />
-                    {!currentBandId && <p className="text-xs text-amber-400 mt-1">Currently using global default — select a band above and click Save to pin this group to a specific band.</p>}
-                    <SlotPreview bandId={currentBandId} memberCount={members.length} />
+                    {!currentBandId && <p className="text-xs text-amber-400 mt-1">Using global default — select a band above and click Save to pin this group.</p>}
+                    <SlotPreview bandId={currentBandId} memberCount={allMembers.length} />
                     <div className="mt-2">
                       <input className="nms-input text-xs" placeholder="Notes (optional)" value={groupNotes[groupId] ?? ''}
                         onChange={e => setGroupNotes(n => ({ ...n, [groupId]: e.target.value }))} />
                     </div>
                   </div>
-                  <button onClick={() => saveGroupPolicy(groupId, currentBandId, groupCustomSlots[groupId])} disabled={isSaving}
-                    className="nms-btn-primary text-xs flex items-center gap-1.5 shrink-0 mt-0.5">
-                    {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
-                    {currentBandId ? 'Save Band Assignment' : 'Clear Assignment'}
-                  </button>
                 </div>
-                {/* Custom slots editor — shown whenever a band is assigned */}
-                {currentBandId && (() => {
+
+                {/* Save + Delete */}
+                <div className="flex gap-2 shrink-0 mt-0.5">
+                  <button
+                    onClick={() => saveGroup(groupId)}
+                    disabled={isSaving || (isManual && !manualEntry._id.trim())}
+                    className="nms-btn-primary text-xs flex items-center gap-1.5"
+                  >
+                    {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                    Save
+                  </button>
+                  {isManual && (
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`Delete group "${groupId}"?`)) return;
+                        try {
+                          await Promise.all([
+                            sasApi.deleteManualGroup(groupId),
+                            sasApi.deleteGroupPolicy(groupId).catch(() => {}),
+                          ]);
+                          await load();
+                          toast.success('Group deleted');
+                        } catch { toast.error('Failed to delete group'); }
+                      }}
+                      className="nms-btn-ghost text-xs text-red-400 flex items-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Custom slots editor — shown whenever a band is assigned */}
+              {currentBandId && (() => {
                   const band = bands.find(b => b.id === currentBandId);
                   const customSlots = groupCustomSlots[groupId];
                   // undefined = auto mode (use maxBandwidthMhz), [] = full band, [...] = custom slots
@@ -1424,16 +1435,15 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                       )}
 
                       {!isAuto && (
-                        <p className="text-xs text-amber-400/80">Unsaved — click Save Band Assignment to apply these slots.</p>
+                        <p className="text-xs text-amber-400/80">Unsaved — click Save to apply these slots.</p>
                       )}
                     </div>
                   );
                 })()}
-              </div>
-            );
-          })}
-        </div>
-      )}
+            </div>
+          );
+        })}
+      </div>
 
       {/* ── Per-CBSD Overrides ── */}
       <div className="space-y-3">

@@ -1146,15 +1146,16 @@ export class SasService {
 
   // ─── RF status per CBSD ───────────────────────────────────────────────────
   // Returns the last known RF transmit state for every registered CBSD.
-  // Derived from the last heartbeat operationState:
-  //   AUTHORIZED = radio told us it is actively transmitting
-  //   GRANTED    = radio holds a grant but RF is off
-  //   unknown    = no heartbeat received yet (just registered/granted)
+  // Uses server-side grant.state as the primary indicator: the SAS always
+  // sets state=AUTHORIZED on any successful heartbeat, so a heartbeating grant
+  // is considered transmitting. lastOperationState from the radio is stored for
+  // diagnostics but is NOT used for rfOn — some firmware (e.g. Sercomm) sends
+  // operationState=GRANTED even when actively transmitting.
   async getRfStatus(): Promise<Array<{
     cbsdId:     string;
     serial:     string;
     fccId:      string;
-    rfOn:       boolean | null;   // null = unknown
+    rfOn:       boolean | null;   // null = unknown (no heartbeat ever received)
     operationState?: string;
     lastHeartbeat?:  Date;
   }>> {
@@ -1173,10 +1174,8 @@ export class SasService {
     return cbsds.map(c => {
       const grant = grantByCbsd.get(c.cbsdId);
       let rfOn: boolean | null = null;
-      if (grant?.lastOperationState) {
-        rfOn = grant.lastOperationState === 'AUTHORIZED';
-      } else if (grant?.lastHeartbeat) {
-        // Grant has been heartbeated but no operationState stored yet (old data)
+      if (grant?.lastHeartbeat) {
+        // Any heartbeat (radio or keeper) means the SAS has set state=AUTHORIZED.
         rfOn = grant.state === 'AUTHORIZED';
       }
       return {
