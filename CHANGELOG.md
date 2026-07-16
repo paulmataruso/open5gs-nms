@@ -4,6 +4,171 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.9] - 2026-07-16
+
+### Fixed — FRR eigrpd crash-guard patch
+
+- Hand-built patch on top of the from-source FRR 10.6.1 build, closing a long-standing
+  upstream-unfixed bug ([FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943))
+  that crashed the entire `eigrpd` process — and withdrew every EIGRP-learned route,
+  dropping every connected radio's S1AP/N2 association — whenever it fired. Confirmed
+  recurring 3x in 3 days on this deployment (2026-07-12, then twice within 21 minutes on
+  2026-07-15), triggered by events entirely outside this host's control (a dummy
+  interface change, and separately a new EIGRP neighbor adjacency forming elsewhere on
+  the network)
+- Fix: replaces the six `assert(successors)` calls in `eigrpd/eigrp_fsm.c` that abort
+  the process on a real, reachable (not corrupted) topology-table state with a graceful
+  log-and-skip guard — DUAL re-evaluates the affected prefix on the next cycle instead
+  of the whole daemon dying. Does not fix the true root cause (a maintainer-acknowledged
+  FIFO/FILO ordering issue in EIGRP's DUAL FSM, never fully resolved upstream since
+  2017) — only stops it from taking down routing entirely
+- Verified stable for 12+ hours post-deploy with zero crashes, versus 3 crashes in the
+  prior 3 days
+- Full writeup, code, and reapplication steps: **[docs/frr-eigrpd-crash-guard-patch.md](docs/frr-eigrpd-crash-guard-patch.md)**, patch file at `docs/patches/frr-eigrpd-crash-guard.patch`
+
+## [v2.0-beta_0.8] - 2026-07-16
+
+### Added — eSIM Generator (Simlessly API)
+
+- New "Generate eSIM" action on the Subscribers page — per-row (pre-fills from that
+  subscriber's IMSI/K/OPc/MSISDN/ICCID) and a page-level toolbar button (blank entry,
+  with an inline subscriber picker)
+- Builds and sends a real, signed request to the [Simlessly](https://docs.simlessly.com)
+  RSP platform's Single Generate AC API (`POST /api/v2/ac/generate`), returning a real
+  activation code and, optionally, an AC link rendered as a scannable QR image
+- Core fields (ICCID, IMSI, KI, Config Name) always visible; the rest of Simlessly's
+  optional field set (OPC, MSISDN, PLMN lists, IMS params, PIN/PUK/ADM1, SMSP) lives
+  behind a collapsed "Advanced" section
+- The exact request JSON is always shown too, with copy-to-clipboard, independent of
+  whether the live API is called — useful for manual use in other tools
+- Requires `SIMLESSLY_ACCESS_KEY`/`SIMLESSLY_SECRET_KEY` (new env vars, obtained from
+  the Developer module on your own Simlessly account) — the JSON preview works without
+  them, but calling the live API does not. Admin-only action, audit logged
+  (`esim_generate`) on every attempt, since it creates a real, likely billable resource
+- Not yet supported: batch generation, live lookup of Simlessly profile config names,
+  and full profile lifecycle management (query/delete/expire, webhook notifications)
+
+---
+
+## [v2.0-beta_0.7] - 2026-07-11
+
+### Added — New Modules
+
+**IMS / VoLTE — alpha, not production-ready**
+- ⚠️ Early alpha: server-side IMS signaling has been verified with a third-party SIP client, but end-to-end VoLTE on real phones is not confirmed working and will likely require manual configuration beyond what the UI automates
+- Full IMS core integration: P-CSCF/I-CSCF/S-CSCF (Kamailio 5.8.8), PyHSS Diameter HSS, BIND9 DNS, RTPEngine, MariaDB
+- One-click install of Kamailio (built from source with IMS/TLS/MySQL/extra modules), MariaDB, BIND9, RTPEngine, Redis, and PyHSS (cloned from GitHub, Python deps via pip)
+- Configure form wires P-CSCF into SMF (PCO + per-session DNS), writes Cx/Rx Diameter peer XML, generates the IMS DNS zone
+- Subscriber sync pushes IMPI/IMPU identities into PyHSS's `ims_hss_db`
+- **Known limitation:** Android's telephony framework suppresses VoLTE/SIP REGISTER on test PLMNs (MCC 999) — server-side signaling is verified with Linphone; see docs for the Early-IMS test procedure
+
+**SMS over SGs**
+- Osmocom CS-fallback SMS stack: `osmo-stp` + `osmo-hlr` + `osmo-msc`, connected to the MME via the SGs interface (SCTP)
+- One-click package install, service lifecycle (start/stop/restart/enable/disable), subscriber sync (provisions MSISDN into OsmoHLR), and a raw config-file editor for all three `.cfg` files
+- Requires a combined EPS/IMSI attach from the UE — no IMS/VoLTE deployment needed for basic SMS
+
+**UE Validation**
+- Spin up simulated 4G (srsRAN, built from a local Dockerfile) or 5G (UERANSIM) test UEs against your live core to validate attach, PDU session establishment, and idle-mode paging end-to-end without a physical radio
+- Live log tailing, raw log download, and session persistence (survives an NMS backend restart)
+- **Known limitation:** 5G idle-mode paging is unconfirmed — UERANSIM's simulated gNB may not implement an inactivity timer the way srsRAN's eNB does; 5G connected-state reachability is fully verified
+
+**Subscriber Groups**
+- Organize subscribers into named, colored groups on the Subscriber page — purely organizational (MongoDB-only), doesn't touch HSS/MME provisioning
+
+**Sercomm 5G NR (Auto-Config)**
+- New "Sercomm 5G" tab alongside the existing Open5GS/Femto/Baicells tabs — full SCE5164-B48 gNB (CU/DU split) provisioning including TDD slot configuration and SAS parameters
+
+### Added — FRR / L3 Routing
+
+- **Reinstall (Source) tab** — migrates FRR from the Ubuntu apt package (8.4.4, has long-standing eigrpd assertion-crash bugs — [FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943), [#3701](https://github.com/FRRouting/frr/issues/3701)) to a from-source build (10.6.1+, built against libyang), with automatic backup, build, config-restore, and rollback. Fixed a real recurring production issue: `eigrpd` was crash-looping and briefly withdrawing/relearning routes on every restart, causing intermittent SCTP (S1AP/N2) drops across every connected radio
+- **Log-level selector** — dropdown on the L3 Routing page for FRR's 8 syslog severities (emergencies…debugging); writes both `log syslog` and `log file` directives and reloads via `vtysh -b` (no neighbor flap)
+- **FRR log file** — `frr.log` now exists (`log file` directive added to the generated config) and FRR is wired in as a 4th source on the Unified Logs page, alongside Open5GS/Docker/GenieACS
+- **Nav reorganization** — TUN Interfaces and Dummy Interfaces are now sub-tabs of the L3 Routing page instead of separate top-level nav items, grouping all Layer 3 functionality together
+
+### Added — Real-Time Logging
+
+- **Syslog Forwarding** — forwards all Open5GS NF, GenieACS, and FRR logs to a remote syslog server (e.g. Graylog) via rsyslog. Detects/installs rsyslog if missing; writes a dedicated, fully self-owned drop-in file (never edits an existing `rsyslog.conf`); automatically fixes the two host-level gotchas that silently block this (AppArmor confinement, `frr` group read permission) via their own sanctioned override mechanisms
+- **Major Events view** — new "Events" tab showing only classified, meaningful transitions (radio connect/disconnect, 4G attach/detach, 5G register/deregister, PDU session up/down) instead of raw DEBUG noise, across all 16 NF streams at once. Filterable by event type, radio, and IMSI (AND-across, OR-within). Click any event to open a zoomable log-context viewer showing the surrounding raw lines
+- Log source switching now auto-selects that source's services (previously required a manual re-selection every time)
+
+### Changed
+
+- Web UI is now also reachable on port 80 in addition to the configurable `NGINX_PORT` (default 8888)
+- New nginx HTTPS vhost (port 443, `acs.sc.sercomm.com`) relays factory-reset Sercomm radios — which hardcode this ACS URL — into the local GenieACS instance via DNS hijack, without needing to touch the radio's ACS config first
+- SMS/IMS/Validation modules can now be hidden entirely at build time via `.env` flags (`ENABLE_SMS_MODULE`, `ENABLE_IMS_MODULE`, `ENABLE_VALIDATION_MODULE`) — requires a frontend rebuild to take effect
+- Container timezone (`TZ`, default `America/New_York`) is now an explicit env var — several log parsers (Major Events classifier, FRR/GenieACS log streaming) depend on the container's local time matching the host's
+
+### Known Issues / Follow-ups
+
+- `backend/src/interfaces/rest/subscriber-groups-controller.ts`'s mutating routes are missing `requireAdmin` (every other admin-mutation route in this codebase has it) — any authenticated user, not just admins, can currently create/rename/delete subscriber groups. Low severity (doesn't touch real subscriber data) but should be fixed for consistency.
+- The backend's `/var/run/docker.sock` mount changed from read-only to read-write — needs confirmation this is intentional before the next release.
+- The `srsran4g/` Dockerfile (required for the 4G side of UE Validation) and a couple of other runtime-only paths were not yet committed to git as of this writing — check `git status` before relying on a fresh clone to have a working Validation module out of the box.
+
+---
+
+## [v2.0-beta_0.6] - 2026-06-18
+
+### Changed
+
+- **Nav layout** — grouped all Layer 3 functionality (Routing, TUN Interfaces, Dummy Interfaces) under a single "L3 Routing" nav item instead of separate top-level pages
+- **RF status detection** — improved logic for MosoLabs/Sercomm radios
+
+---
+
+## [v2.0-beta_0.5] - 2026-06-13
+
+### Changed — TUN Interfaces
+
+- Interfaces are now persisted via systemd-networkd `.netdev`/`.network` file pairs (`/etc/systemd/network/`) instead of one-shot systemd services — they now survive a reboot
+- Removed the `ogstun[0-9]+` naming restriction — any valid Linux interface name is accepted (letter-start, max 15 chars, alphanumeric/hyphen/underscore)
+- `checkNetworkdActive()` specifically checks that `systemd-networkd` is active on the host
+- Interface listing now uses `ip link show type tun` for accurate TUN-only detection
+- Edit/Delete actions are restricted to NMS-managed interfaces only
+
+### Fixed — SAS Spectrum Chart
+
+- Per-group filtering bug: `getSlotLayout()` now uses `effectiveGroupId()` so manually-assigned groups (e.g. a Nokia radio manually placed in a group) are correctly included in that band's chart row
+- Frontend filter logic was inverted — radios with no `groupId` were bypassing group filters and appearing in every band row instead of none
+
+### Docs
+
+- Added chrony and `frr`/`frr-pythontools` to INSTALL.md prerequisites
+
+---
+
+## [v2.0-beta_0.4] - 2026-06-04
+
+### Security — 10 vulnerabilities fixed
+
+- **(CRITICAL)** `/sas/admin/*` was fully unauthenticated — split into `createSasProtocolRouter` (WInnForum CBSD endpoints only, no auth needed) and `createSasAdminRouter` (all admin routes, `requireAdmin` on every mutating endpoint)
+- WebSocket server is now authenticated — moved from a standalone port 3002 to `noServer:true` on the HTTP server, with the Lucia session cookie validated on the upgrade request before the socket is accepted; unauthenticated connections get HTTP 401
+- `requireAdmin` added to all three femtocell routes (derive-credentials, probe, provision)
+- Python code injection eliminated in the femto controller — string-interpolated `pythonRun()` calls replaced with `execFileAsync` argv calls; strict MAC/IPv4 validation added
+- `requireAdmin` added to all 11 mutating GenieACS routes
+- SSRF fix in `/execute-tasks` — the client-supplied `url` field was removed from the task type; the URL is now always constructed server-side
+- Sensitive-data routes (`/subscribers/export`, `/backup/full/download`, `/logs/download`, `/logs/debug-bundle`) now require admin
+- Zip Slip prevention in backup restore — archive members are enumerated and validated (rejects absolute paths, `..` components, symlinks, hardlinks, devices) before extraction
+- Shell injection fix in log-download tar — `bash -c` replaced with `execFileAsync` argv calls; container names validated against an allowlist
+- Auth route ordering fix — `/logout` and `/me` were always returning 401 because the auth router was mounted before `authMiddleware`
+
+### Fixed — FRR / L3 Routing
+
+- Route filters not loading on refresh (`frrApi.getState()` return shape mismatch)
+- EIGRP `distribute-list` isn't supported in FRR 8.4.x — switched to zebra-level `ip protocol eigrp route-map` for inbound filtering
+- FRR restart used instead of reload when applying filters (`eigrpd` was crashing on SIGHUP with `distribute-list` present — a known FRR 8.4.4 bug)
+- OSPF/BGP config generators now correctly wire route filters (were generated but never applied)
+- Read-only "Active Configuration" summary card shown once migration is complete, replacing the editable form
+- Live Routing Status redesigned: status badge, stat pills, neighbor cards, topology table, collapsible running-config panel
+- Auto VSI filter button creates/updates an outbound permit filter directly from VSI mappings
+
+### Other
+
+- Full backup now includes `frr.conf` and `daemons`
+- "Stop 5G" no longer stops SMF/UPF (shared between 4G and 5G in Open5GS 2.7+)
+- Prometheus container now runs as `65534:65534`, fixing a `queries.active` permission-denied panic on restart
+
+---
+
 ## [v2.0-beta_0.3] - 2026-06-04
 
 ### Fixed

@@ -9,13 +9,17 @@ Detailed documentation for all Open5GS NMS features.
 1. [Configuration Management](#configuration-management)
 2. [Network Topology Visualization](#network-topology-visualization)
 3. [Subscriber Management](#subscriber-management)
-4. [SIM Generator](#sim-generator)
-5. [SUCI Key Management](#suci-key-management)
-6. [Service Management](#service-management)
-7. [Auto-Configuration Wizard](#auto-configuration-wizard)
-8. [Real-Time Logging](#real-time-logging)
-9. [Backup & Restore](#backup--restore)
-10. [Audit Trail](#audit-trail)
+4. [eSIM Generator (Simlessly API)](#esim-generator-simlessly-api)
+5. [SIM Generator](#sim-generator)
+6. [SUCI Key Management](#suci-key-management)
+7. [Service Management](#service-management)
+8. [Auto-Configuration Wizard](#auto-configuration-wizard)
+9. [Real-Time Logging](#real-time-logging)
+10. [Backup & Restore](#backup--restore)
+11. [Audit Trail](#audit-trail)
+12. [IMS / VoLTE](#ims--volte)
+13. [SMS over SGs](#sms-over-sgs)
+14. [UE Validation](#ue-validation)
 
 ---
 
@@ -184,6 +188,36 @@ Subscriber:
 - **MongoDB Native** - Direct database access
 - **Schema Validation** - Zod validation before insert
 - **Bulk Import** - CSV import (planned)
+
+### Subscriber Groups
+
+Organize subscribers into named, colored groups (e.g. "Field trial A", "Test devices") for easier browsing of large deployments. Grouped subscribers render clustered under a collapsible group header; ungrouped subscribers list separately below. Purely organizational — backed by its own MongoDB collection, independent of and never touching actual subscriber/HSS data.
+
+---
+
+## eSIM Generator (Simlessly API)
+
+Generates real eSIM activation codes through the [Simlessly](https://docs.simlessly.com) RSP (Remote SIM Provisioning) platform's Single Generate AC API, directly from Open5GS subscriber data.
+
+### Launch points
+
+- **Per-row** — a "Generate eSIM" button on each row of the Subscribers page, pre-fills the modal with that subscriber's IMSI, K, OPc, MSISDN, and ICCID.
+- **Toolbar** — a page-level "Generate eSIM" button opens the same modal blank, with an inline subscriber search/picker, or fully manual entry for an eSIM not tied to any Open5GS subscriber.
+
+### Form fields
+
+Core required fields are always visible: ICCID, IMSI, KI, and Config Name (the name of a profile template you've already created on the Simlessly platform's own UI — this app does not create or list Simlessly profile configs).
+
+Everything else — OPC, MSISDN, HPLMN/EHPLMN/OPLMN/FPLMN lists, SPN, PNN, IMPI/IMPU, PIN1/PIN2/PUK1/PUK2/ADM1, SMSP, and the "Return AC Link" toggle — lives behind a collapsed "Advanced" section. Encryption mode is always plaintext (Simlessly's own default when the field is omitted).
+
+### Generating
+
+- **Generate via Simlessly API** — signs and sends a real request to Simlessly (`POST /api/v2/ac/generate`); on success shows the returned Activation Code, and (if "Return AC Link" was checked) the AC link both as a clickable URL and an embedded QR code image. Requires `SIMLESSLY_ACCESS_KEY`/`SIMLESSLY_SECRET_KEY` to be configured — see [Configuration](configuration.md). Every attempt (success or failure) is audit logged. Admin-only, since it creates a real, likely billable resource on your Simlessly account.
+- **Copy JSON** — the exact request body is also always shown, pretty-printed and single-line, with copy-to-clipboard, for manual use in other tools regardless of whether you call the live API.
+
+### Not yet supported
+
+Batch generation, live lookup of your Simlessly profile config names, and full profile lifecycle management (query/delete/expire, webhook status notifications) are not implemented — Simlessly's API supports these, but this integration currently covers Single Generate AC only.
 
 ---
 
@@ -379,7 +413,7 @@ Creates complete configuration for:
 
 ## Real-Time Logging
 
-Stream logs from Open5GS services and Docker containers in real-time.
+Stream logs from Open5GS services, Docker containers, GenieACS, and FRR in real-time, plus a classified "Major Events" view and forwarding to an external syslog server.
 
 ### Log Sources
 
@@ -387,11 +421,23 @@ Stream logs from Open5GS services and Docker containers in real-time.
 - Stream logs from any of the 16 Open5GS network functions
 - Reads from `/var/log/open5gs/*.log` files
 - Uses `tail -f` for real-time streaming
+- Switching to this source auto-selects nothing by default (you pick which NFs to watch)
 
 **Docker Containers:**
 - Stream logs from NMS Docker containers (backend, frontend, nginx)
 - Uses `docker logs -f --timestamps` for real-time streaming
 - Automatic container discovery
+- A "SAS Logs" quick-select jumps to Docker mode, selects the backend container, and filters to just SAS protocol lines
+
+**GenieACS:**
+- Streams the `genieacs-cwmp-access` and `genieacs-nbi-access` logs
+- Selecting this source auto-selects both files
+- Optional radio filter dropdown narrows to a single device's TR-069 traffic by serial number
+
+**FRR:**
+- Streams `/var/log/frr/frr.log` — all daemons (eigrpd/zebra/mgmtd/staticd) share this one file, so it's a single pseudo-service
+- Selecting this source auto-selects it
+- Log verbosity (emergencies…debugging) is controlled from the L3 Routing page, not here — see [FRR Log Level](#frr-log-level) below
 
 ### Features
 
@@ -452,21 +498,62 @@ Uses WebSocket for log streaming:
 // Subscribe to logs
 {
   type: 'subscribe_logs',
-  source: 'open5gs' | 'docker',
-  services: ['nrf', 'amf'] // or container names
+  source: 'open5gs' | 'docker' | 'genieacs' | 'frr',
+  services: ['nrf', 'amf'], // or container names / genieacs log names / ['frr']
+  filter: 'sas',            // optional server-side content filter
+  // Major Events mode (source is still 'open5gs'):
+  majorEventsOnly: true,
+  imsis: ['999700000053555'],
+  radioIps: ['10.0.2.101'],
+  eventTypes: ['ue_attach', 'pdu_session_up'],
 }
 
 // Receive log entry
 {
   type: 'log_entry',
-  source: 'open5gs' | 'docker',
+  source: 'open5gs' | 'docker' | 'genieacs' | 'frr',
   log: {
     timestamp: '2026-04-14T14:30:45.123Z',
-    service: 'nrf', // or container name
-    message: '[info] NRF started'
+    service: 'nrf', // or container / genieacs / 'frr'
+    message: '[info] NRF started',
+    // present only when majorEventsOnly is set:
+    event: { type: 'ue_attach', imsi: '999700000053555' }
   }
 }
 ```
+
+### Major Events View
+
+A separate "Events" tab (alongside "Live Logs" and "Audit Log") that classifies each open5gs log line into one of 8 event types instead of showing raw DEBUG output:
+
+- `radio_connect` / `radio_disconnect` — eNodeB/gNodeB S1AP/NGAP association up/down
+- `ue_attach` / `ue_detach` — 4G attach/detach
+- `ue_register` / `ue_deregister` — 5G registration/deregistration
+- `pdu_session_up` / `pdu_session_down` — PDU session establishment/teardown
+
+**Filters** (combine as AND-across, OR-within): Event Types, Radios (sourced from radios actually seen connecting/disconnecting in the last 3 days), IMSIs (from the subscriber list). IMSI is normalized across the five different in-line conventions open5gs logs use across NFs (bare, `imsi-`-prefixed, `IMSI[...]`, etc.) so filtering works regardless of which NF logged it.
+
+**Known limitation:** radio IP can only be correlated to radio-connect/disconnect events — PDU session and attach/register events don't carry the originating radio's IP in the raw log line, so those are filtered by IMSI only, not cross-correlated to a specific radio.
+
+**Log Context Viewer:** clicking any event opens a modal showing the raw log lines immediately surrounding it (the DEBUG detail the classifier filtered out), with zoom in/out controls (or +/- keys) to show fewer or more lines on either side.
+
+### FRR Log Level
+
+The L3 Routing page has a dropdown for FRR's 8 syslog-style severities (`emergencies`, `alerts`, `critical`, `errors`, `warnings`, `notifications`, `informational`, `debugging`). Changing it writes both the `log syslog` and `log file` directives in the generated `frr.conf` and reloads via `vtysh -b` — this does not restart the FRR service or flap any routing neighbor, it only changes log verbosity.
+
+### eigrpd Crash-Guard Patch
+
+A hand-built patch on top of the from-source FRR build (see "Reinstall (Source)" above) that stops a long-standing, upstream-unfixed EIGRP bug ([FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943)) from crashing the entire `eigrpd` process — and withdrawing every EIGRP-learned route — when it fires. See **[docs/frr-eigrpd-crash-guard-patch.md](frr-eigrpd-crash-guard-patch.md)** for the full root-cause writeup, code, and reapplication steps.
+
+### Syslog Forwarding
+
+Forwards all Open5GS NF logs, GenieACS access logs, and the FRR log (19 files total) to a remote syslog server (e.g. Graylog), via rsyslog running on the host.
+
+- **Detect / Install** — checks whether rsyslog is installed and running; installs it with one click if not
+- **Configure** — enter a target host, port, and protocol (UDP or TCP); writes a dedicated, fully NMS-owned drop-in file (`/etc/rsyslog.d/71-open5gs-nms-forward.conf`) rather than editing your existing `rsyslog.conf` — safe to use even if you already have rsyslog configured for something else
+- **Validation before apply** — the generated config is syntax-checked with `rsyslogd -N1` before rsyslog is ever restarted, so a bad config can't take down your host's logging
+- **Automatic permission fixes** — rsyslog normally can't read logs outside `/var/log` (AppArmor) or files it doesn't own (like `frr.log`, owned by the `frr` user); both are fixed automatically the first time you configure a target, via the OS's own sanctioned mechanisms (AppArmor local-override file, adding the `syslog` user to the `frr` group)
+- **Disable** — removes the drop-in file and restarts rsyslog; nothing else about your rsyslog setup is touched
 
 ---
 
@@ -584,6 +671,78 @@ Complete logging of all system actions.
 
 ---
 
+## IMS / VoLTE
+
+*(Alpha — not production-ready)* Full IMS core integration for voice-over-LTE and SMS-over-IP.
+
+> ⚠️ **This module is in early alpha testing.** Server-side IMS signaling has been verified with a third-party SIP client, but end-to-end VoLTE on real phones is not confirmed working, and will likely require manual configuration beyond what this page automates (device/carrier-specific IMS provisioning, auth scheme adjustments, etc.). Do not rely on this for a production voice deployment.
+
+### Components
+
+- **P-CSCF / I-CSCF / S-CSCF** — Kamailio 5.8.8, built with IMS, TLS, MySQL, and extra modules
+- **PyHSS** — Python-based Diameter HSS ([nickvsnetworking/pyhss](https://github.com/nickvsnetworking/pyhss)). Installed automatically by the NMS's one-click Install step (cloned from GitHub, Python deps installed via pip) — no separate manual install required
+- **BIND9** — DNS server for the IMS domain zone (`ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org`)
+- **RTPEngine** — media relay
+- **MariaDB** — backing database for PyHSS and the S/I-CSCF
+
+### Workflow
+
+1. **Install** — one-click install of Kamailio, MariaDB, BIND9, RTPEngine, Redis, and PyHSS
+2. **Configure** — wires the P-CSCF address into SMF's PCO and per-session DNS, writes Cx (I/S-CSCF↔PyHSS) and Rx (P-CSCF↔PCRF) Diameter peer XML, generates the IMS DNS zone
+3. **Sync Subscribers** — pushes IMPI/IMPU identities for existing subscribers into PyHSS's `ims_hss_db` (via its REST API)
+4. **Enable/Disable, Start/Stop/Restart** — full lifecycle control from the UI
+
+### Current Status
+
+Server-side signaling is verified: all Diameter connections establish, the IMS APN and P-CSCF PCO delivery work, and a full SIP REGISTER→INVITE call flow has been confirmed with the third-party SIP client Linphone (using Early-IMS auth, since Linphone can't complete an AKA challenge without SIM hardware). **Real-phone VoLTE is not confirmed working** — see the limitation below and the alpha warning above.
+
+**Known limitation:** Android's telephony framework suppresses VoLTE/SIP REGISTER entirely on test PLMNs (MCC 999) — the phone connects to the IMS APN and gets an IP, but the framework never lets it send SIP traffic. This is a device/carrier-policy limitation, not a server-side issue. A phone with a carrier profile that enables VoLTE for your test PLMN, or a third-party SIP client, will work.
+
+---
+
+## SMS over SGs
+
+*(Beta)* Circuit-switched-domain SMS delivery — no IMS/VoLTE deployment required.
+
+### Components
+
+- **OsmoSTP** — SS7/M3UA/SUA signaling transfer point
+- **OsmoHLR** — subscriber database (MSISDN↔IMSI mapping), separate from Open5GS's own subscriber DB
+- **OsmoMSC** — connects to the Open5GS MME via the **SGs interface**, handling SMS delivery for CS-fallback
+
+### Workflow
+
+1. **Install** — one-click install of `osmo-stp`, `osmo-hlr`, `osmo-msc`, `sqlite3`
+2. **Configure** — set the OsmoMSC SGs bind IP, OsmoHLR GSUP bind IP, and optional MME-side SGs IP; writes the `sgsap:` block into `mme.yaml` and restarts the MME
+3. **Sync Subscribers** — provisions MSISDN for existing subscribers into OsmoHLR
+4. **Config Files tab** — Monaco-editor-based raw editor for all three Osmocom `.cfg` files, with per-file Save and Save & Restart
+5. **Enable/Disable, Start/Stop/Restart** — full lifecycle control, plus a live service-status card for all three daemons
+
+Requires the UE to perform a **combined EPS/IMSI attach** (not EPS-only) so the MME establishes the SGs association needed for CS-fallback SMS.
+
+---
+
+## UE Validation
+
+*(Beta)* Simulated 4G/5G test UEs for validating your core network without a physical radio.
+
+### What It Does
+
+Spins up a containerized test UE — **srsRAN** for 4G (eNB+UE in one container, built from a local Dockerfile) or **UERANSIM** for 5G (`free5gc/ueransim` image) — that attaches to your live Open5GS core exactly like a real device would, then runs through: attach, PDU session establishment, an idle period, a ping to trigger paging, and confirms the UE actually wakes up and responds.
+
+### Features
+
+- Live log tailing (gNB/eNB and UE logs) during the run
+- Raw log download for offline analysis
+- Session state persists across an NMS backend restart — a running validation session is reconciled and resumed automatically rather than becoming orphaned
+
+### Current Status
+
+- **4G:** fully verified end-to-end, including idle-mode paging and wake (attach → idle → page → wake → bidirectional ping)
+- **5G:** connected-state reachability fully verified; idle-mode paging is **unconfirmed** — UERANSIM's simulated gNB may not implement an inactivity timer the same way a real eNB does
+
+---
+
 ## Summary
 
 Open5GS NMS provides a complete management solution for Open5GS deployments with:
@@ -592,5 +751,7 @@ Open5GS NMS provides a complete management solution for Open5GS deployments with
 - ✅ Comprehensive subscriber management
 - ✅ Powerful automation tools
 - ✅ Production-ready safety features
+- ✅ Voice (IMS/VoLTE, alpha) and SMS (SGs) modules, both optional
+- ✅ End-to-end validation via simulated test UEs, no physical radio required
 
 For detailed usage instructions, see **[INSTALL.md](../INSTALL.md)** and other documentation.
