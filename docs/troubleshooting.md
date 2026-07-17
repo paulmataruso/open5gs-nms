@@ -983,6 +983,48 @@ echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
 This survives reboots/network changes (no more silent reverts) since `resolv.conf` is
 now a static file, not a symlink `systemd-resolved` manages.
 
+### Specific NFs Still FATAL On Startup Even Though `nslookup` Resolves The FQDN Fine
+
+**Symptom:** after fixing DNS/BIND9 (zone loads, `dig`/`nslookup` return correct
+answers), most migrated NFs start fine, but one or two specific ones (e.g. `amfd`,
+`smfd`) still FATAL-abort at startup with the exact same
+`getaddrinfo(...) failed: Name or service not known` error — even though a manual
+`nslookup <that exact FQDN>` run right afterward succeeds.
+
+**First, rule out a stale failed/start-limit state** — if the affected NF hit its
+FATAL abort *before* DNS was actually fixed, systemd may have hit its restart-limit
+and stopped retrying; it won't auto-retry just because DNS started working
+afterward:
+```
+systemctl status open5gs-amfd open5gs-smfd   # look for "start-limit-hit"
+systemctl reset-failed open5gs-amfd open5gs-smfd
+systemctl restart open5gs-amfd open5gs-smfd
+```
+This is the more common cause when it's *some but not all* NFs affected — the ones
+that happened to be restarted after DNS was fixed come up fine; the ones that
+weren't stay stuck in their old failed state.
+
+**If that doesn't fix it**, this is a real, separate class of DNS bug worth knowing:
+`nslookup`/`dig` speak raw DNS protocol directly and **bypass NSS (Name Service
+Switch) entirely**. `getaddrinfo()` — what Open5GS NFs actually call — instead goes
+through whatever `/etc/nsswitch.conf`'s `hosts:` line says. On a `systemd-resolved`
+host that's often `hosts: files resolve [!UNAVAIL=return] dns` — the `resolve`
+module talks to `systemd-resolved` over D-Bus, completely independent of
+`/etc/resolv.conf`. So it's entirely possible for `nslookup` to succeed (it never
+goes near `resolve`) while `getaddrinfo()` still fails through a stale/misconfigured
+`resolve` NSS path, even after the `systemd-resolved` stub-listener fix above.
+
+**Check:**
+```
+grep ^hosts: /etc/nsswitch.conf
+```
+**Fix** — drop `resolve` so `getaddrinfo()` goes straight through `files dns` (the
+same effective path `nslookup` uses), takes effect immediately, no restart needed:
+```
+sudo sed -i 's/^hosts:.*/hosts: files dns/' /etc/nsswitch.conf
+```
+Then restart whichever NFs were still failing.
+
 ---
 
 ## Performance Issues
