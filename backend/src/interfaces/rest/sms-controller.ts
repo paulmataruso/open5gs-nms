@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import pino from 'pino';
@@ -620,6 +620,72 @@ export function createSmsRouter(
     } catch (err) {
       await auditLogger.log({ action: 'sms_enable', user, details: String(err), success: false });
       res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/sms/uninstall — completely removes SMS-over-SGs: stops+disables osmo-stp/
+  // osmo-hlr/osmo-msc, removes the sgsap block from mme.yaml (restarting MME), deletes
+  // Osmocom config files and the HLR database, and purges the osmo-* packages (not
+  // sqlite3 — a generic system utility, not SMS-specific, left alone on purpose).
+  router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.flushHeaders();
+    const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
+
+    try {
+      write('=== Stopping and disabling Osmocom services ===');
+      for (const svc of ['osmo-msc', 'osmo-hlr', 'osmo-stp']) {
+        await nsenter('systemctl', ['disable', '--now', svc]).catch(() => {});
+      }
+      write('osmo-msc, osmo-hlr, osmo-stp stopped and disabled.');
+
+      write('\n=== Removing sgsap block from mme.yaml ===');
+      if (fs.existsSync(HOST_MME_YAML)) {
+        const raw = fs.readFileSync(HOST_MME_YAML, 'utf-8');
+        fs.writeFileSync(HOST_MME_YAML, replaceSgsapSection(raw, ''), 'utf-8');
+        await nsenter('systemctl', ['restart', 'open5gs-mmed']).catch(() => {});
+        write('sgsap block removed, open5gs-mmed restarted.');
+      } else {
+        write('mme.yaml not found — skipping.');
+      }
+      if (fs.existsSync(HOST_SGSAP_BAK)) {
+        fs.unlinkSync(HOST_SGSAP_BAK);
+        write('Removed saved sgsap backup (.sgsap.bak).');
+      }
+
+      write('\n=== Removing Osmocom config files ===');
+      for (const f of SMS_CONFIG_MANIFEST) {
+        if (fs.existsSync(f.path)) {
+          fs.unlinkSync(f.path);
+          write(`Removed: ${f.label}`);
+        }
+      }
+
+      write('\n=== Removing OsmoHLR database ===');
+      await nsenter('bash', ['-c', `rm -f ${HOST_HLR_DB} ${HOST_HLR_DB}-shm ${HOST_HLR_DB}-wal`]).catch(() => {});
+      write('Removed hlr.db (and -shm/-wal if present).');
+
+      write('\n=== Purging osmo-stp, osmo-hlr, osmo-msc ===');
+      const purge = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--',
+        'bash', '-c', 'DEBIAN_FRONTEND=noninteractive apt-get purge -y osmo-stp osmo-hlr osmo-msc 2>&1 && apt-get autoremove -y 2>&1'],
+        { stdio: ['ignore', 'pipe', 'pipe'] });
+      await new Promise<void>(resolve => {
+        purge.stdout.on('data', (d: Buffer) => write(d.toString()));
+        purge.stderr.on('data', (d: Buffer) => write(d.toString()));
+        purge.on('close', () => resolve());
+      });
+
+      await auditLogger.log({ action: 'sms_uninstall', user, details: 'osmo-stp/hlr/msc removed, sgsap unconfigured', success: true });
+      write('\n✅ SMS-over-SGs fully removed.');
+      res.end();
+    } catch (err) {
+      await auditLogger.log({ action: 'sms_uninstall', user, details: String(err), success: false });
+      write(`\n❌ Uninstall error: ${String(err)}`);
+      res.end();
     }
   });
 

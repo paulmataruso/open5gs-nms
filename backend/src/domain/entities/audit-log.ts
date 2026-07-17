@@ -43,6 +43,7 @@ export type AuditAction =
   | 'frr_source_build_failed'
   | 'frr_source_build_rollback'
   | 'sms_install'
+  | 'sms_uninstall'
   | 'sms_configure'
   | 'sms_sync_subscribers'
   | 'sms_enable'

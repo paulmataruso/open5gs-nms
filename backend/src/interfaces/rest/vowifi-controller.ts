@@ -858,6 +858,16 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
       await nsenter('systemctl', ['daemon-reload']).catch(() => {});
       write('Services stopped, disabled, and unit files removed.');
 
+      write('\n=== Unloading gtp kernel module ===');
+      // Left loaded (and gtp0 with it) after every previous uninstall — osmo-epdg is the
+      // only thing that ever uses it in this deployment, and it's now stopped, so it's
+      // safe to unload. Ignore failure (module may legitimately still be "in use" if
+      // something else on the host happens to depend on it — non-fatal either way).
+      const gtpUnloadResult = await nsenter('bash', ['-c', 'rmmod gtp 2>&1; echo "EXIT:$?"']).catch(() => ({ stdout: '', stderr: '' }));
+      write(gtpUnloadResult.stdout.includes('EXIT:0')
+        ? 'gtp kernel module unloaded.'
+        : `gtp module unload result: ${gtpUnloadResult.stdout.trim() || '(not loaded, or already removed)'}`);
+
       write('\n=== Removing smf.conf S6b peer entry ===');
       if (state.aaaFqdn && fs.existsSync(HOST_SMF_CONF)) {
         if (fs.existsSync(HOST_SMF_CONF_BAK)) {

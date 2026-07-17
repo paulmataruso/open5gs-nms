@@ -4,6 +4,52 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.14] - 2026-07-17
+
+### Added — SMS over SGs uninstall
+
+- New `POST /api/sms/uninstall` + Uninstall button on the SMS page: stops+disables
+  osmo-stp/osmo-hlr/osmo-msc, removes the sgsap block from mme.yaml (restarting
+  open5gs-mmed), deletes the Osmocom config files and the OsmoHLR database, and purges
+  the osmo-stp/osmo-hlr/osmo-msc packages (deliberately not `sqlite3` — a generic system
+  utility, not SMS-specific). Same confirmation-modal + streaming-log UX as VoWiFi's
+  existing uninstall.
+
+### Fixed — VoWiFi uninstall left the `gtp` kernel module loaded
+
+Every previous VoWiFi uninstall left the `gtp` kernel module (and `gtp0`) active on the
+host even though osmo-epdg — the only thing that ever uses it in this deployment — was
+already stopped. Uninstall now runs `rmmod gtp` right after stopping services.
+
+### Added — BIND9 self-healing (real incident found and fixed live, 2026-07-17)
+
+While debugging a live "whole 5G core crash-looping" incident (root cause: DNS/FQDN
+migration's NFs FATAL on startup if their advertise FQDN can't resolve — see
+`docs/troubleshooting.md`), found and fixed the actual underlying causes, then added
+permanent detection + one-click repair so this doesn't require SSH-ing in by hand again:
+
+- **Root cause #1**: `apt purge bind9` wipes `named.conf.local`/`named.conf.options`
+  back to their stock Debian package defaults on reinstall — but the zone *files* under
+  `zones/` survive (the package doesn't own that directory), silently orphaning them.
+- **Root cause #2**: even with BIND itself healthy, `/etc/resolv.conf` can be a
+  `systemd-resolved` stub symlink (127.0.0.53) instead of pointing at BIND (127.0.0.1) —
+  every NF's own `getaddrinfo()` call bypasses BIND entirely in that case, regardless of
+  BIND's own health.
+- **Fix**: `bind-controller.ts` now exposes `GET /api/bind/status` with three new health
+  fields (`undeclaredZones`, `optionsNeedsRepair`, `resolvConfBypassesBind`), plus two
+  new actions: `POST /api/bind/repair` (re-declares any orphaned zone file and
+  re-asserts recursion/allow-query/forwarders/listen-on — safe to call anytime, a no-op
+  if nothing's wrong) and `POST /api/bind/fix-resolver` (disables
+  `systemd-resolved`'s stub listener, repoints `/etc/resolv.conf` at BIND — kept as a
+  separate, explicit action from `/repair` since it changes host-wide DNS behavior, not
+  just BIND's own config). The BIND page shows clear warning banners with one-click fix
+  buttons only when actually needed — verified zero false positives against a real,
+  healthy multi-zone BIND install, and verified both issues for real on two separate
+  hosts before this fix (one via live SSH debugging, one caught proactively on the dev
+  host by the same new detection logic).
+
+---
+
 ## [v2.0-beta_0.13] - 2026-07-17
 
 ### Fixed — nginx fails to start on a fresh install

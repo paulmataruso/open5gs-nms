@@ -37,6 +37,7 @@ export const smsApi = {
   stop:            async () => { const { data } = await api.post('/stop'); return data; },
   restart:         async () => { const { data } = await api.post('/restart'); return data; },
   install:         () => fetch('/api/sms/install', { method: 'POST', credentials: 'include' }),
+  uninstall:       () => fetch('/api/sms/uninstall', { method: 'POST', credentials: 'include' }),
   getConfigs:        async (): Promise<{ files: SmsConfigFile[] }> => { const { data } = await api.get('/configs'); return data; },
   getConfigContent:  async (filePath: string): Promise<{ content: string; exists: boolean }> => {
     const { data } = await api.get('/configs/content', { params: { path: filePath } }); return data;

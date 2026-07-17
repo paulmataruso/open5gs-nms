@@ -104,6 +104,45 @@ export function BindPage() {
     }
   };
 
+  const [repairing, setRepairing] = useState(false);
+  const [fixingResolver, setFixingResolver] = useState(false);
+
+  const handleRepair = async () => {
+    setRepairing(true);
+    try {
+      const r = await bindApi.repair();
+      if (r.success) {
+        toast.success(r.zonesRepaired?.length
+          ? `Repaired — re-declared: ${r.zonesRepaired.join(', ')}`
+          : 'Repaired — options re-asserted (recursion/forwarders/listen-on).');
+        loadStatus();
+      } else {
+        toast.error(r.error ?? 'Repair failed');
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? 'Repair failed');
+    } finally {
+      setRepairing(false);
+    }
+  };
+
+  const handleFixResolver = async () => {
+    setFixingResolver(true);
+    try {
+      const r = await bindApi.fixResolver();
+      if (r.success) {
+        toast.success('System resolver now points at BIND — DNSStubListener disabled, resolv.conf pinned to 127.0.0.1.');
+        loadStatus();
+      } else {
+        toast.error(r.error ?? 'Fix failed');
+      }
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? 'Fix failed');
+    } finally {
+      setFixingResolver(false);
+    }
+  };
+
   const doInstall = async () => {
     setInstalling(true);
     setInstallLog('');
@@ -283,6 +322,47 @@ export function BindPage() {
           <pre className="bg-nms-bg rounded p-3 text-xs font-mono text-green-300 max-h-64 overflow-y-auto whitespace-pre-wrap border border-nms-border">
             {installLog || 'Waiting for output...'}
           </pre>
+        </div>
+      )}
+
+      {status?.installed && (status.undeclaredZones.length > 0 || status.optionsNeedsRepair) && (
+        <div className="flex items-start gap-3 p-4 rounded-lg border border-red-500/40 bg-red-500/5">
+          <XCircle className="w-5 h-5 text-red-400 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-red-300">BIND config needs repair</p>
+            <p className="text-xs text-nms-text-dim mt-0.5">
+              {status.undeclaredZones.length > 0 && (
+                <>Zone file{status.undeclaredZones.length > 1 ? 's' : ''} on disk with no matching entry in{' '}
+                <code>named.conf.local</code>: <span className="font-mono">{status.undeclaredZones.join(', ')}</span>. </>
+              )}
+              {status.optionsNeedsRepair && 'named.conf.options is missing recursion/allow-query/forwarders/listen-on. '}
+              This usually means <code>named.conf.local</code>/<code>named.conf.options</code> got reset to
+              stock defaults (e.g. an <code>apt purge bind9</code>) — the zone data itself is intact, just
+              not declared. Every NF that resolves its own FQDN at startup will crash-loop until this is fixed.
+            </p>
+            <button onClick={handleRepair} disabled={repairing} className="nms-btn text-xs px-3 py-1.5 mt-2 disabled:opacity-40 flex items-center gap-2">
+              {repairing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : null} Repair Now
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status?.installed && status.resolvConfBypassesBind && (
+        <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-500/40 bg-amber-500/5">
+          <XCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-300">System resolver bypasses BIND</p>
+            <p className="text-xs text-nms-text-dim mt-0.5">
+              <code>/etc/resolv.conf</code> doesn't point at BIND (127.0.0.1) — likely <code>systemd-resolved</code>'s
+              stub listener (127.0.0.53) is answering instead. Even with BIND itself perfectly healthy, every NF's
+              own DNS resolution at startup (<code>getaddrinfo()</code>) goes through the system resolver, not BIND
+              directly — so this silently breaks FQDN resolution regardless of BIND's own state. This changes
+              host-wide DNS behavior, not just BIND's config, so it's a separate action from the repair above.
+            </p>
+            <button onClick={handleFixResolver} disabled={fixingResolver} className="nms-btn text-xs px-3 py-1.5 mt-2 disabled:opacity-40 flex items-center gap-2">
+              {fixingResolver ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : null} Fix System Resolver
+            </button>
+          </div>
         </div>
       )}
 

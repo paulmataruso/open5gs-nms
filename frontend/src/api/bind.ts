@@ -7,6 +7,9 @@ export interface BindStatus {
   installed: boolean;
   running: boolean;
   fileCount: number;
+  undeclaredZones: string[];
+  optionsNeedsRepair: boolean;
+  resolvConfBypassesBind: boolean;
 }
 
 export interface BindFile {
@@ -44,6 +47,15 @@ export const bindApi = {
   getListenOn: async (): Promise<{ listenOn: string[] }> => { const { data } = await api.get('/listen-on'); return data; },
   saveListenOn: async (listenOn: string[]): Promise<{ success: boolean }> => {
     const { data } = await api.put('/listen-on', { listenOn });
+    return data;
+  },
+
+  repair: async (): Promise<{ success: boolean; zonesRepaired?: string[]; error?: string }> => {
+    const { data } = await api.post('/repair');
+    return data;
+  },
+  fixResolver: async (): Promise<{ success: boolean; error?: string }> => {
+    const { data } = await api.post('/fix-resolver');
     return data;
   },
 };

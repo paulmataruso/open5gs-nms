@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw,
-  Terminal, RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown, Send,
+  Terminal, RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown, Send, Trash2,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -284,6 +284,9 @@ export function SMSPage() {
   const [acting,     setActing]     = useState(false);
   const [streamLog,  setStreamLog]  = useState('');
   const [syncResult, setSyncResult] = useState<{ synced: number; failed: string[]; removed?: number } | null>(null);
+  const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallLog, setUninstallLog] = useState('');
 
   // Send test SMS
   const [testTo,      setTestTo]      = useState('');
@@ -342,6 +345,30 @@ export function SMSPage() {
       toast.error(`Install failed: ${err.message}`);
     } finally {
       setActing(false);
+    }
+  };
+
+  const handleUninstall = async () => {
+    setShowUninstallConfirm(false);
+    setUninstalling(true);
+    setUninstallLog('');
+    try {
+      const resp = await smsApi.uninstall();
+      const reader = resp.body?.getReader();
+      const dec = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          setUninstallLog(prev => prev + dec.decode(value, { stream: true }));
+        }
+      }
+      toast.success('SMS-over-SGs removed');
+      await load(true);
+    } catch (err: any) {
+      toast.error(`Uninstall failed: ${err.message}`);
+    } finally {
+      setUninstalling(false);
     }
   };
 
@@ -477,6 +504,13 @@ export function SMSPage() {
               >
                 <RotateCw className={`w-4 h-4 ${acting ? 'animate-spin' : ''}`} /> Restart
               </button>
+              <button
+                onClick={() => setShowUninstallConfirm(true)}
+                disabled={acting || uninstalling}
+                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" /> Uninstall
+              </button>
               <div className="w-px h-6 bg-nms-border" />
             </>
           )}
@@ -485,6 +519,49 @@ export function SMSPage() {
           </button>
         </div>
       </div>
+
+      {showUninstallConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-nms-surface border border-nms-border rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <Trash2 className="w-5 h-5 text-red-400 shrink-0" />
+              <h2 className="text-base font-semibold text-nms-text">Uninstall SMS over SGs</h2>
+            </div>
+            <p className="text-sm text-nms-text-dim mb-3 leading-relaxed">This completely removes SMS-over-SGs and all traces of it:</p>
+            <ul className="text-xs text-nms-text-dim space-y-1 mb-4 pl-4 list-disc">
+              <li>Stop and disable osmo-stp, osmo-hlr, and osmo-msc</li>
+              <li>Remove the sgsap block from mme.yaml and restart open5gs-mmed</li>
+              <li>Delete osmo-stp.cfg, osmo-hlr.cfg, and osmo-msc.cfg</li>
+              <li>Delete the OsmoHLR subscriber database (hlr.db)</li>
+              <li>Purge the osmo-stp/osmo-hlr/osmo-msc packages (sqlite3 is left installed — shared system utility)</li>
+            </ul>
+            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 mb-5">
+              This does not touch subscriber MSISDNs in Open5GS/MongoDB, and does not affect
+              SMS over IMS if that's separately configured — only this SGs-path stack. Cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowUninstallConfirm(false)} className="flex-1 nms-btn-ghost text-sm py-2">Cancel</button>
+              <button onClick={handleUninstall} className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-semibold hover:bg-red-500/20 transition-colors">
+                <Trash2 className="w-3.5 h-3.5" /> Uninstall
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(uninstalling || uninstallLog) && (
+        <div className="nms-card">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-red-400" />
+              <span className="text-sm font-semibold text-nms-text">Uninstall Log</span>
+              {uninstalling && <span className="text-xs text-amber-400 animate-pulse">running…</span>}
+            </div>
+            {!uninstalling && <button onClick={() => setUninstallLog('')} className="nms-btn-ghost text-xs">Clear</button>}
+          </div>
+          <LogTerminal lines={uninstallLog} />
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="flex justify-center">

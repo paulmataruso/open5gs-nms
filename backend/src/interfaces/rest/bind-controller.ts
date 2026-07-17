@@ -99,6 +99,110 @@ export function writeListenOn(ips: string[]): void {
   fs.writeFileSync(NAMED_OPTIONS_PATH, raw, 'utf-8');
 }
 
+function ensureRecursionAndAllowQuery(): boolean {
+  if (!fs.existsSync(NAMED_OPTIONS_PATH)) return false;
+  let raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
+  let changed = false;
+  if (!/recursion\s+yes\s*;/.test(raw)) {
+    raw = raw.replace(/\}\s*;?\s*$/, '\trecursion yes;\n};\n');
+    changed = true;
+  }
+  if (!/allow-query\s*\{[^}]*\}\s*;/.test(raw)) {
+    raw = raw.replace(/\}\s*;?\s*$/, '\tallow-query { any; };\n};\n');
+    changed = true;
+  }
+  if (changed) fs.writeFileSync(NAMED_OPTIONS_PATH, raw, 'utf-8');
+  return changed;
+}
+
+// ─── Self-healing: recover from `apt purge bind9` (or any other event that resets
+// named.conf.{local,options} to their stock package defaults) without losing zones ───
+// Real incident (2026-07-17): a manual `apt purge bind9` wiped both conf files back to
+// the stock Ubuntu template, but the zone *files* under zones/ survived (they aren't
+// owned by the Debian package) — every 5GC NF that resolves its own advertise FQDN at
+// startup crash-looped until this was manually repaired. This makes that repair a
+// one-click, self-detecting action instead of requiring someone to SSH in and rebuild
+// both conf files by hand.
+const ZONE_FILE_RE = /^(.+)\.zone$/;
+
+function zoneFilesOnDisk(): string[] {
+  const zonesDir = `${HOST_BIND_DIR}/zones`;
+  if (!fs.existsSync(zonesDir)) return [];
+  return fs.readdirSync(zonesDir)
+    .map(f => f.match(ZONE_FILE_RE)?.[1])
+    .filter((name): name is string => !!name);
+}
+
+function zonesDeclaredInNamedLocal(): Set<string> {
+  const namedLocalPath = `${HOST_BIND_DIR}/named.conf.local`;
+  if (!fs.existsSync(namedLocalPath)) return new Set();
+  const raw = fs.readFileSync(namedLocalPath, 'utf-8');
+  const names = new Set<string>();
+  const re = /zone\s+"([^"]+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw))) names.add(m[1]);
+  return names;
+}
+
+export interface BindHealth {
+  installed: boolean;
+  undeclaredZones: string[];       // zone files on disk with no zone{} block in named.conf.local
+  optionsNeedsRepair: boolean;     // missing recursion/allow-query/forwarders/listen-on
+  resolvConfBypassesBind: boolean; // /etc/resolv.conf doesn't route through BIND on 127.0.0.1
+}
+
+function checkBindHealth(): BindHealth {
+  const installed = fs.existsSync('/proc/1/root/usr/sbin/named');
+  const onDisk = new Set(zoneFilesOnDisk());
+  const declared = zonesDeclaredInNamedLocal();
+  const undeclaredZones = [...onDisk].filter(z => !declared.has(z));
+
+  let optionsNeedsRepair = true;
+  if (fs.existsSync(NAMED_OPTIONS_PATH)) {
+    const raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
+    optionsNeedsRepair = !/recursion\s+yes\s*;/.test(raw)
+      || !/allow-query\s*\{[^}]*\}\s*;/.test(raw)
+      || !/forwarders\s*\{[^}]*\}\s*;/.test(raw)
+      || !/listen-on\s*\{[^}]*127\.0\.0\.1/.test(raw);
+  }
+
+  let resolvConfBypassesBind = false;
+  try {
+    const resolvPath = '/proc/1/root/etc/resolv.conf';
+    const real = fs.existsSync(resolvPath) ? fs.readFileSync(resolvPath, 'utf-8') : '';
+    // systemd-resolved's stub (127.0.0.53) answering first means BIND is bypassed even
+    // if BIND itself is perfectly healthy — the actual getaddrinfo() path never reaches it.
+    const firstNameserver = real.match(/^nameserver\s+(\S+)/m)?.[1];
+    resolvConfBypassesBind = firstNameserver !== undefined && firstNameserver !== '127.0.0.1';
+  } catch { /* leave false if unreadable */ }
+
+  return { installed, undeclaredZones, optionsNeedsRepair, resolvConfBypassesBind };
+}
+
+function repairZonesAndOptions(): { zonesRepaired: string[] } {
+  const namedLocalPath = `${HOST_BIND_DIR}/named.conf.local`;
+  const health = checkBindHealth();
+
+  if (health.undeclaredZones.length > 0) {
+    let raw = fs.existsSync(namedLocalPath) ? fs.readFileSync(namedLocalPath, 'utf-8') : '';
+    for (const zoneName of health.undeclaredZones) {
+      const zoneBlock = `\nzone "${zoneName}" {\n    type master;\n    file "/etc/bind/zones/${zoneName}.zone";\n};\n`;
+      raw = raw.trimEnd() + '\n' + zoneBlock;
+    }
+    fs.mkdirSync(path.dirname(namedLocalPath), { recursive: true });
+    fs.writeFileSync(namedLocalPath, raw.trimStart(), 'utf-8');
+  }
+
+  if (health.optionsNeedsRepair) {
+    const existingForwarders = readForwarders();
+    writeForwarders(existingForwarders.length > 0 ? existingForwarders : ['8.8.8.8', '8.8.4.4']);
+    writeListenOn(readListenOn());
+    ensureRecursionAndAllowQuery();
+  }
+
+  return { zonesRepaired: health.undeclaredZones };
+}
+
 export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
@@ -158,8 +262,72 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
       const active = installed
         ? await nsenter('systemctl', ['is-active', 'bind9']).then(r => r.stdout.trim() === 'active').catch(() => false)
         : false;
-      res.json({ success: true, installed, running: active, fileCount: listBindFiles().length });
+      const health = checkBindHealth();
+      res.json({
+        success: true, installed, running: active, fileCount: listBindFiles().length,
+        undeclaredZones: health.undeclaredZones,
+        optionsNeedsRepair: health.optionsNeedsRepair,
+        resolvConfBypassesBind: health.resolvConfBypassesBind,
+      });
     } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /repair — self-heal named.conf.local/named.conf.options after they've been
+  // reset to stock (e.g. `apt purge bind9` wipes conffiles but not the zones/ directory,
+  // which the package doesn't own). Re-declares any zone file found on disk that's
+  // missing its zone{} block, and re-asserts recursion/allow-query/forwarders/listen-on
+  // if any are missing. Safe to call anytime — a no-op if nothing needs fixing.
+  router.post('/repair', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const { zonesRepaired } = repairZonesAndOptions();
+      await nsenter('systemctl', ['restart', 'bind9']);
+      await auditLogger.log({
+        action: 'bind_config_save', user, target: 'repair',
+        details: `zones repaired: ${zonesRepaired.join(', ') || 'none'}`, success: true,
+      });
+      res.json({ success: true, zonesRepaired });
+    } catch (err) {
+      await auditLogger.log({ action: 'bind_config_save', user, target: 'repair', details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /fix-resolver — separate, explicit action from /repair: disables
+  // systemd-resolved's stub listener and replaces /etc/resolv.conf with a static file
+  // pointing straight at BIND. This changes host-wide DNS resolution behavior (not just
+  // BIND's own config), so it's deliberately not bundled into /repair — the operator
+  // should consciously opt into it. Real incident (2026-07-17): even with BIND itself
+  // perfectly healthy, getaddrinfo() (what every NF actually calls) was still bypassing
+  // it entirely because /etc/resolv.conf pointed at systemd-resolved's 127.0.0.53 stub.
+  router.post('/fix-resolver', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const resolvedConfPath = '/proc/1/root/etc/systemd/resolved.conf';
+      if (fs.existsSync(resolvedConfPath)) {
+        let raw = fs.readFileSync(resolvedConfPath, 'utf-8');
+        raw = /^#?DNSStubListener=/m.test(raw)
+          ? raw.replace(/^#?DNSStubListener=.*/m, 'DNSStubListener=no')
+          : raw.trimEnd() + '\nDNSStubListener=no\n';
+        fs.writeFileSync(resolvedConfPath, raw, 'utf-8');
+      }
+      await nsenter('systemctl', ['restart', 'systemd-resolved']).catch(() => {});
+      // resolv.conf is normally a symlink into systemd-resolved's territory —
+      // fs.writeFileSync() would follow it and overwrite systemd-resolved's own stub
+      // file instead of replacing the symlink itself (which it would just regenerate
+      // later, silently undoing this fix). Unlink first, exactly like the manual fix.
+      const resolvConfPath = '/proc/1/root/etc/resolv.conf';
+      try {
+        const st = fs.lstatSync(resolvConfPath);
+        if (st.isSymbolicLink() || st.isFile()) fs.unlinkSync(resolvConfPath);
+      } catch { /* doesn't exist yet — fine */ }
+      fs.writeFileSync(resolvConfPath, 'nameserver 127.0.0.1\n', 'utf-8');
+      await auditLogger.log({ action: 'bind_config_save', user, target: 'fix-resolver', success: true });
+      res.json({ success: true });
+    } catch (err) {
+      await auditLogger.log({ action: 'bind_config_save', user, target: 'fix-resolver', details: String(err), success: false });
       res.status(500).json({ success: false, error: String(err) });
     }
   });
