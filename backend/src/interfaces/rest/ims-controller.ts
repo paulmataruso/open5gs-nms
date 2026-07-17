@@ -7,6 +7,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
+import { readListenOn, writeListenOn } from './bind-controller';
 
 const execFileAsync = promisify(execFile);
 
@@ -793,19 +794,6 @@ _sip._tcp.scscf  IN SRV 0 0 ${p.scscfPort} scscf
 ; NAPTR records for P-CSCF discovery (RFC 3455)
 pcscf IN NAPTR 10 0 "s" "SIP+D2T" "" _sip._tcp.pcscf
 pcscf IN NAPTR 20 0 "s" "SIP+D2U" "" _sip._udp.pcscf
-`;
-}
-
-function bindNamedOptions(dnsIp: string): string {
-  return `options {
-\tdirectory "/var/cache/bind";
-\tlisten-on { 127.0.0.1; ${dnsIp}; };
-\tlisten-on-v6 { ::1; };
-\tallow-query { any; };
-\trecursion yes;
-\tforwarders { 8.8.8.8; 8.8.4.4; };
-\tdnssec-validation no;
-};
 `;
 }
 
@@ -1672,8 +1660,12 @@ export function createImsRouter(
       fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${zoneName}.zone`,
         bindZoneFile({ imsDomain, dnsIp, hssIp, pcscfIp, icscfIp, scscfIp, pcscfPort, icscfPort, scscfPort }), 'utf-8');
 
-      const namedOptionsPath = `${HOST_BIND_DIR}/named.conf.options`;
-      fs.writeFileSync(namedOptionsPath, bindNamedOptions(dnsIp), 'utf-8');
+      // listen-on itself is owned by the BIND page now (see bind-controller.ts) — it
+      // manages install/forwarders/listen-on for every module sharing this one BIND9
+      // instance, so nothing here overwrites the whole options{} block anymore. We still
+      // need our own dnsIp actually listened on, so merge it in via the same safe upsert
+      // the BIND page's own UI uses, rather than replacing whatever's already configured.
+      writeListenOn([...readListenOn(), dnsIp]);
 
       let namedLocalRaw  = fs.existsSync(`${HOST_BIND_DIR}/named.conf.local`)
         ? fs.readFileSync(`${HOST_BIND_DIR}/named.conf.local`, 'utf-8')
@@ -2218,7 +2210,10 @@ export function createImsRouter(
 
     // 1. Stop and disable all IMS services
     write('=== Stopping IMS services ===\n');
-    const removeSvcs = ['kamailio-smsc', 'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'rtpengine-daemon', 'pyhss-api', 'pyhss-hss', 'pyhss-diameter', 'bind9'];
+    // NOTE: bind9 is deliberately NOT in this list — it's shared infrastructure (VoWiFi's
+    // ePDG zone, the DNS/FQDN migration wizard's 5gc/epc zones, SEPP's advertise FQDN all
+    // depend on it staying up). Only IMS's own zone gets torn down, in step 5 below.
+    const removeSvcs = ['kamailio-smsc', 'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'rtpengine-daemon', 'pyhss-api', 'pyhss-hss', 'pyhss-diameter'];
     for (const svc of removeSvcs) {
       await nsenter('systemctl', ['stop', svc]).catch(() => {});
       await nsenter('systemctl', ['disable', svc]).catch(() => {});
@@ -2333,8 +2328,11 @@ export function createImsRouter(
 
     // 9. Purge all IMS packages
     write('\n=== Purging IMS packages ===\n');
+    // bind9/bind9utils/dnsutils deliberately excluded — see the removeSvcs comment above,
+    // same reasoning: apt-get purge would wipe /etc/bind entirely (VoWiFi's zone, the DNS
+    // migration wizard's zones, everything), not just IMS's own.
     const basePurgePkgs = 'kamailio kamailio-ims-modules kamailio-mysql-modules kamailio-tls-modules kamailio-extra-modules kamailio-utils-modules ' +
-      'rtpengine mariadb-server mariadb-client mariadb-common bind9 bind9utils bind9-utils dnsutils';
+      'rtpengine mariadb-server mariadb-client mariadb-common';
     await spawnStream(
       `DEBIAN_FRONTEND=noninteractive apt-get purge -y ${basePurgePkgs} redis-server 2>&1 || true`
     );

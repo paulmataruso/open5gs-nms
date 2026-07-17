@@ -144,6 +144,7 @@ const INSTALL_STEP_LABELS: Record<string, string> = {
 function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDone: () => void }) {
   const [installLog, setInstallLog] = useState('');
   const [epdgIp, setEpdgIp] = useState('10.0.1.180');
+  const [interfaceMode, setInterfaceMode] = useState<'dummy' | 'existing'>('dummy');
   const [s6bLocalIp, setS6bLocalIp] = useState('127.0.0.10');
   const [gsupPort, setGsupPort] = useState(4223);
   const [busy, setBusy] = useState<'install' | 'configure' | 'start' | null>(null);
@@ -180,7 +181,7 @@ function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDon
   const doConfigure = async () => {
     setBusy('configure');
     try {
-      const r = await vowifiApi.configure({ epdgIp, s6bLocalIp, gsupPort });
+      const r = await vowifiApi.configure({ epdgIp, interfaceMode, s6bLocalIp, gsupPort });
       if (r.ok) toast.success('Configured');
       else toast.error(r.error ?? 'Configure failed');
       onDone();
@@ -272,12 +273,30 @@ function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDon
             {status?.configured ? <CheckCircle className="w-4 h-4" /> : '2'}
           </div>
           <span className="text-sm font-semibold text-nms-text">Configure</span>
-          <span className="text-xs text-nms-text-dim">— creates dummy-epdg, generates all config, adds one smf.conf line, restarts SMF</span>
+          <span className="text-xs text-nms-text-dim">— generates all config, adds one smf.conf line, restarts SMF</span>
+        </div>
+
+        <div>
+          <label className="text-xs text-nms-text-dim block mb-1">ePDG IP source</label>
+          <div className="flex gap-4 text-xs text-nms-text">
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="epdgIfMode" checked={interfaceMode === 'dummy'}
+                onChange={() => setInterfaceMode('dummy')} disabled={!installComplete} />
+              Create a new dummy interface for this IP (default)
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="epdgIfMode" checked={interfaceMode === 'existing'}
+                onChange={() => setInterfaceMode('existing')} disabled={!installComplete} />
+              Use an IP I've already bound myself (loopback or a real interface)
+            </label>
+          </div>
         </div>
 
         <div className="flex items-end gap-3 flex-wrap">
           <div>
-            <label className="text-xs text-nms-text-dim block mb-1">ePDG IP (dummy-epdg)</label>
+            <label className="text-xs text-nms-text-dim block mb-1">
+              ePDG IP {interfaceMode === 'dummy' ? '(will be assigned to a new dummy-epdg interface)' : '(must already be bound to an interface on this host)'}
+            </label>
             <input value={epdgIp} onChange={e => setEpdgIp(e.target.value)} disabled={!installComplete}
               className="nms-input text-sm w-40 font-mono" spellCheck={false} />
           </div>
@@ -292,6 +311,14 @@ function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDon
             {status?.configured ? 'Re-configure' : 'Configure'}
           </button>
         </div>
+        {interfaceMode === 'existing' && (
+          <p className="text-[10px] text-nms-text-dim">
+            This IP is used as-is for osmo-epdg and strongSwan — nothing new is created. Bind it to a
+            loopback alias (<code>ip addr add {epdgIp || '&lt;ip&gt;'}/32 dev lo</code>) or a real LAN
+            interface yourself first (e.g. via systemd-networkd/netplan), or Configure will fail with a
+            clear error rather than silently writing broken config.
+          </p>
+        )}
         <p className="text-[10px] text-nms-text-dim">
           S6b must bind to a loopback address — SMF's own Diameter stack lives on loopback, and Linux
           refuses to route loopback-sourced traffic to a non-loopback local destination even on the same host.
@@ -316,7 +343,7 @@ function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDon
               <SvcBadge label="osmo-epdg" active={status.services['vowifi-osmo-epdg']} />
               <SvcBadge label="charon" active={status.services['vowifi-charon']} />
               <SvcBadge label="GTP module" active={status.gtpModuleLoaded} />
-              <SvcBadge label="dummy-epdg" active={status.dummyInterfaceUp} />
+              {status.epdgInterfaceMode !== 'existing' && <SvcBadge label="dummy-epdg" active={status.dummyInterfaceUp} />}
             </>
           )}
         </div>
@@ -626,7 +653,7 @@ export function VoWiFiPage() {
             <ul className="text-xs text-nms-text-dim space-y-1 mb-4 pl-4 list-disc">
               <li>Stop, disable, and remove the osmo-epdg and charon systemd units</li>
               <li>Remove the S6b peer line from smf.conf and restart SMF</li>
-              <li>Delete the dummy-epdg interface</li>
+              <li>Delete the dummy-epdg interface (only if VoWiFi created one)</li>
               <li>Remove strongSwan, osmo-epdg, and the from-source libosmocore build</li>
               <li>Delete the entire build workdir and all VoWiFi state</li>
             </ul>
@@ -676,7 +703,7 @@ export function VoWiFiPage() {
                 <SvcBadge label="osmo-epdg" active={status.services['vowifi-osmo-epdg']} />
                 <SvcBadge label="charon" active={status.services['vowifi-charon']} />
                 <SvcBadge label="GTP module" active={status.gtpModuleLoaded} />
-                <SvcBadge label="dummy-epdg" active={status.dummyInterfaceUp} />
+                {status.epdgInterfaceMode !== 'existing' && <SvcBadge label="dummy-epdg" active={status.dummyInterfaceUp} />}
                 <SvcBadge label="smf.conf peer" active={status.smfConnectPeerPresent} />
               </div>
               <div className="flex gap-4 mt-3 pt-3 border-t border-nms-border text-xs text-nms-text-dim">

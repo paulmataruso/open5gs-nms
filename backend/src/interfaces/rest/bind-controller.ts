@@ -69,6 +69,36 @@ function writeForwarders(forwarders: string[]): void {
   fs.writeFileSync(NAMED_OPTIONS_PATH, raw, 'utf-8');
 }
 
+// listen-on — the single, shared setting for which local IPs BIND actually binds to.
+// Owned by this page only: IMS/VoWiFi each used to write their own copy of this line
+// whenever their wizard ran, silently clobbering whatever the others (or the user) had
+// set. Now they only manage their own zone files; this is the one place that touches
+// the options{} block's listen-on line.
+export function readListenOn(): string[] {
+  if (!fs.existsSync(NAMED_OPTIONS_PATH)) return ['127.0.0.1'];
+  const raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
+  const m = raw.match(/listen-on\s*\{([^}]*)\}\s*;/);
+  if (!m) return ['127.0.0.1'];
+  const ips = m[1].split(';').map(s => s.trim()).filter(s => IP_RE.test(s));
+  return ips.length > 0 ? ips : ['127.0.0.1'];
+}
+
+export function writeListenOn(ips: string[]): void {
+  // Always keep 127.0.0.1 — every module here (IMS zone verification, VoWiFi, the DNS
+  // migration wizard's own dig checks) assumes BIND answers on loopback regardless of
+  // whatever else is configured.
+  const all = Array.from(new Set(['127.0.0.1', ...ips]));
+  const block = `listen-on { ${all.map(ip => `${ip};`).join(' ')} };`;
+  let raw = fs.existsSync(NAMED_OPTIONS_PATH) ? fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8') : 'options {\n};\n';
+  if (/listen-on\s*\{[^}]*\}\s*;/.test(raw)) {
+    raw = raw.replace(/listen-on\s*\{[^}]*\}\s*;/, block);
+  } else {
+    raw = raw.replace(/\}\s*;?\s*$/, `\t${block}\n};\n`);
+  }
+  fs.mkdirSync(path.dirname(NAMED_OPTIONS_PATH), { recursive: true });
+  fs.writeFileSync(NAMED_OPTIONS_PATH, raw, 'utf-8');
+}
+
 export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
@@ -93,6 +123,31 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
       res.json({ success: true });
     } catch (err) {
       await auditLogger.log({ action: 'bind_config_save', user, target: 'forwarders', details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // Which local IPs BIND actually binds to — the single owner of this setting. IMS and
+  // VoWiFi each build their own zone files, but neither writes listen-on anymore; if a
+  // module needs BIND reachable on a specific IP (e.g. the one served to UEs via SMF
+  // PCO), that IP needs to be added here too, not just referenced in a zone.
+  router.get('/listen-on', (_req: Request, res: Response) => {
+    res.json({ success: true, listenOn: readListenOn() });
+  });
+
+  router.put('/listen-on', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { listenOn } = req.body as { listenOn: string[] };
+    if (!Array.isArray(listenOn) || listenOn.length === 0 || !listenOn.every(ip => IP_RE.test(ip))) {
+      return res.status(400).json({ success: false, error: 'listenOn must be a non-empty array of IPv4 addresses' });
+    }
+    try {
+      writeListenOn(listenOn);
+      await nsenter('systemctl', ['restart', 'bind9']);
+      await auditLogger.log({ action: 'bind_config_save', user, target: 'listen-on', details: listenOn.join(','), success: true });
+      res.json({ success: true });
+    } catch (err) {
+      await auditLogger.log({ action: 'bind_config_save', user, target: 'listen-on', details: String(err), success: false });
       res.status(500).json({ success: false, error: String(err) });
     }
   });
@@ -132,6 +187,22 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
       write('=== Installing BIND9 ===');
       await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils 2>&1');
       fs.mkdirSync(`${HOST_BIND_DIR}/zones`, { recursive: true });
+      // Seed a working baseline only if nothing configured it yet — stock apt-installed
+      // bind9 has no forwarders and recursion left at its package default, which answers
+      // fine for zones we add later but won't usefully resolve the wider internet until
+      // this exists. Never overwrites an existing file — this page owns listen-on/
+      // forwarders going forward, but if the user (or an old install) already customized
+      // this file, leave it alone.
+      if (!fs.existsSync(NAMED_OPTIONS_PATH)) {
+        writeForwarders(['8.8.8.8', '8.8.4.4']);
+        writeListenOn(['127.0.0.1']);
+        let raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
+        if (!/recursion\s+yes\s*;/.test(raw)) {
+          raw = raw.replace(/\}\s*;?\s*$/, '\trecursion yes;\n\tallow-query { any; };\n};\n');
+          fs.writeFileSync(NAMED_OPTIONS_PATH, raw, 'utf-8');
+        }
+        write('Seeded default named.conf.options (recursion on, forwarders 8.8.8.8/8.8.4.4, listen-on 127.0.0.1).');
+      }
       await auditLogger.log({ action: 'bind_install', user, success: true });
       write('\n✅ BIND9 installed.');
       res.end();

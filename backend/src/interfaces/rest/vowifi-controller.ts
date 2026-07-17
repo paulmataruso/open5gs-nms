@@ -46,6 +46,12 @@ export interface VowifiConfigureInput {
   epdgIp?: string;
   s6bLocalIp?: string;
   gsupPort?: number;
+  // 'dummy' (default): create+own a new dummy-epdg interface with epdgIp assigned to it —
+  // the original, always-on behavior. 'existing': skip interface creation entirely and use
+  // epdgIp as-is — for an operator who already bound it to a loopback or a real LAN
+  // interface themselves (any L3-reachable IP works; osmo-epdg/strongSwan only bind to the
+  // IP string, they don't care which interface owns it).
+  interfaceMode?: 'dummy' | 'existing';
 }
 
 interface VowifiState {
@@ -56,6 +62,7 @@ interface VowifiState {
   configured: boolean;
   configuredAt: string | null;
   epdgIp: string | null;
+  epdgInterfaceMode: 'dummy' | 'existing' | null;
   s6bLocalIp: string | null;
   gsupPort: number | null;
   aaaFqdn: string | null;
@@ -66,7 +73,7 @@ function defaultState(): VowifiState {
   return {
     installStatus: 'idle', installStartedAt: null, installCompletedAt: null, installError: null,
     configured: false, configuredAt: null,
-    epdgIp: null, s6bLocalIp: null, gsupPort: null, aaaFqdn: null,
+    epdgIp: null, epdgInterfaceMode: null, s6bLocalIp: null, gsupPort: null, aaaFqdn: null,
     smfConfHadBackup: false,
   };
 }
@@ -521,6 +528,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         configured: state.configured,
         configuredAt: state.configuredAt,
         epdgIp: state.epdgIp,
+        epdgInterfaceMode: state.epdgInterfaceMode,
         s6bLocalIp: state.s6bLocalIp,
         gsupPort: state.gsupPort,
         services: {
@@ -596,6 +604,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
       const epdgIp = body.epdgIp || DEFAULT_EPDG_IP;
       const s6bLocalIp = body.s6bLocalIp || DEFAULT_S6B_LOCAL_IP;
       const gsupPort = Number(body.gsupPort) || DEFAULT_GSUP_PORT;
+      const interfaceMode: 'dummy' | 'existing' = body.interfaceMode === 'existing' ? 'existing' : 'dummy';
 
       if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(epdgIp)) {
         return res.status(400).json({ ok: false, error: 'Invalid epdgIp' });
@@ -604,10 +613,29 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         return res.status(400).json({ ok: false, error: 'S6b local IP must be a loopback (127.0.0.0/8) address — SMF cannot route loopback-sourced Diameter traffic to a non-loopback local destination.' });
       }
 
-      // 1. dummy-epdg interface (persisted across reboots, NOT advertised into EIGRP —
-      // it only needs to be reachable on this host, and EIGRP advertisement was the
-      // trigger for a real eigrpd crash-loop incident on this host).
-      await createDummyInterface(DUMMY_IF_NAME, epdgIp, 24, true);
+      // 1. ePDG local IP. Two modes:
+      //   'dummy'    (default) — create+own a new dummy-epdg interface with epdgIp assigned
+      //              (persisted across reboots, NOT advertised into EIGRP — it only needs to
+      //              be reachable on this host, and EIGRP advertisement was the trigger for a
+      //              real eigrpd crash-loop incident on this host).
+      //   'existing' — the operator already bound epdgIp to a loopback or a real LAN
+      //              interface themselves; skip interface creation entirely and just confirm
+      //              it's actually present on the host before writing config that depends on
+      //              being able to bind to it.
+      if (interfaceMode === 'dummy') {
+        await createDummyInterface(DUMMY_IF_NAME, epdgIp, 24, true);
+      } else {
+        const ipPresent = await nsenter('bash', ['-c', `ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx '${epdgIp}' && echo yes || echo no`])
+          .then(r => r.stdout.trim() === 'yes').catch(() => false);
+        if (!ipPresent) {
+          return res.status(400).json({
+            ok: false,
+            error: `${epdgIp} is not currently assigned to any interface on this host (checked with "ip addr show"). ` +
+              `In "use existing IP" mode you must bind it yourself first — e.g. add it to a LAN interface via ` +
+              `systemd-networkd/netplan, or add it as a loopback alias (ip addr add ${epdgIp}/32 dev lo) — then retry.`,
+          });
+        }
+      }
 
       // 2. Read real HSS/SMF addresses — never hardcode these.
       const hssSwxIp = readFreeDiameterListenOn(HOST_HSS_CONF, '127.0.0.8');
@@ -702,12 +730,12 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
       const newState: VowifiState = {
         ...state, configured: true, configuredAt: new Date().toISOString(),
-        epdgIp, s6bLocalIp, gsupPort, aaaFqdn, smfConfHadBackup,
+        epdgIp, epdgInterfaceMode: interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, smfConfHadBackup,
       };
       saveState(newState);
 
-      await auditLogger.log({ action: 'vowifi_configure', user, details: `epdgIp=${epdgIp} gsupPort=${gsupPort} dnsConfigured=${dnsConfigured}`, success: true });
-      res.json({ ok: true, epdgIp, s6bLocalIp, gsupPort, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, dnsConfigured });
+      await auditLogger.log({ action: 'vowifi_configure', user, details: `epdgIp=${epdgIp} interfaceMode=${interfaceMode} gsupPort=${gsupPort} dnsConfigured=${dnsConfigured}`, success: true });
+      res.json({ ok: true, epdgIp, interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, dnsConfigured });
     } catch (err) {
       await auditLogger.log({ action: 'vowifi_configure', user, details: String(err), success: false });
       res.status(500).json({ ok: false, error: String(err) });
@@ -851,9 +879,13 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         write('No S6b peer entry was ever added to smf.conf — nothing to remove.');
       }
 
-      write('\n=== Removing dummy-epdg interface ===');
-      await deleteDummyInterface(DUMMY_IF_NAME).catch(() => {});
-      write('dummy-epdg removed.');
+      if (state.epdgInterfaceMode === 'existing') {
+        write('\n=== Skipping dummy-epdg removal — configured to use an existing IP, VoWiFi never created an interface ===');
+      } else {
+        write('\n=== Removing dummy-epdg interface ===');
+        await deleteDummyInterface(DUMMY_IF_NAME).catch(() => {});
+        write('dummy-epdg removed.');
+      }
 
       write('\n=== Removing ePDG DNS zone (leaving BIND9 itself installed — shared infrastructure) ===');
       try {

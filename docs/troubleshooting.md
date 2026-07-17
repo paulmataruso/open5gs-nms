@@ -14,9 +14,10 @@ Common issues and solutions for Open5GS NMS deployment and operation.
 6. [Configuration Issues](#configuration-issues)
 7. [Service Management Issues](#service-management-issues)
 8. [Network Issues](#network-issues)
-9. [Performance Issues](#performance-issues)
-10. [Database Issues](#database-issues)
-11. [Getting More Help](#getting-more-help)
+9. [DNS / BIND9 Issues](#dns--bind9-issues)
+10. [Performance Issues](#performance-issues)
+11. [Database Issues](#database-issues)
+12. [Getting More Help](#getting-more-help)
 
 ---
 
@@ -877,6 +878,76 @@ Reinstall (Source)** feature's from-source FRR 10.6.1 build). This has stopped t
 in every case tested so far, but the underlying DUAL FSM inconsistency the patch works
 around is not something this project can fully fix upstream — treat this as a real
 mitigation, not a guarantee it can never recur under a scenario not yet seen.
+
+---
+
+## DNS / BIND9 Issues
+
+### Whole 5G Core Crash-Loops After DNS/FQDN Migration ("Name or service not known" / FATAL)
+
+**Symptom:** every migrated NF (`nrf`, `scp`, `amf`, `smf`, `ausf`, `udm`, `udr`, `pcf`,
+`bsf`, `nssf`, `sepp1` — anything the DNS/FQDN Migration Wizard's Phase C touched) fails
+to start with something like:
+```
+[sock] ERROR: getaddrinfo(0:nrf.5gc.mnc070.mcc999.3gppnetwork.org:7777:0x0) failed: Name or service not known
+[sbi] FATAL: ogs_sbi_context_parse_server_config: Assertion `rv == OGS_OK' failed.
+```
+
+**Cause:** every 5GC NF does a strict, synchronous `getaddrinfo()` on its own
+`sbi.server[].advertise` FQDN at startup and aborts fatally if it can't resolve — this
+isn't SEPP-specific (an earlier assumption in project history), it's true for the whole
+5GC NF set once they're on FQDN addressing. If the `5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org`
+zone isn't actually resolving on this host, **every one of them** crash-loops
+simultaneously, not just one.
+
+**Diagnostic order** (each step rules something out before moving to the next):
+1. Confirm the zone is actually declared: `cat /etc/bind/named.conf.local` — look for a
+   `zone "5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org" { ... };` block pointing at a real file
+   under `/etc/bind/zones/`.
+2. Confirm the zone *file* exists and is syntactically valid:
+   ```
+   ls -la /etc/bind/zones/5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org.zone
+   named-checkzone 5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org /etc/bind/zones/5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org.zone
+   ```
+   `named-checkzone` will point at the exact line if the file is malformed — BIND silently
+   skips a zone it can't parse and keeps serving everything else, which is why some
+   lookups work fine while this one NXDOMAINs.
+3. If both look fine, check BIND's own startup log for a load error it swallowed:
+   ```
+   journalctl -u bind9 --no-pager | grep -i "5gc\|loading master file\|not loaded"
+   ```
+4. Confirm BIND has actually been restarted since the zone was last written — config file
+   changes (`named.conf.local`, `named.conf.options`) are only read at start/reload, not
+   watched live: `systemctl status bind9` (compare "Active since" against when the file
+   was last modified), then `systemctl restart bind9` if in doubt.
+5. Confirm the fix worked before restarting the NFs:
+   `dig @127.0.0.1 nrf.5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org` should return an answer.
+6. Only then restart the crashed NFs — they crash-looped, so `systemctl` may show them as
+   `failed`, not just `inactive`:
+   ```
+   systemctl reset-failed open5gs-nrfd open5gs-scpd open5gs-amfd open5gs-smfd open5gs-ausfd \
+     open5gs-udmd open5gs-udrd open5gs-pcfd open5gs-bsfd open5gs-nssfd open5gs-seppd
+   systemctl restart open5gs-nrfd open5gs-scpd open5gs-amfd open5gs-smfd open5gs-ausfd \
+     open5gs-udmd open5gs-udrd open5gs-pcfd open5gs-bsfd open5gs-nssfd open5gs-seppd
+   ```
+
+**If you need the core running again before finishing the DNS diagnosis:** the DNS
+Migration Wizard's rollback (Backup page, or its own rollback action if a migration
+backup still exists) reverts every NF back to IP-based addressing, which un-blocks
+startup regardless of BIND's state — use this to buy time, then come back to the zone
+issue with no pressure.
+
+**Related, already fixed (2026-07-17):** two real bugs in how modules share this single
+BIND9 instance were found and fixed while chasing this class of issue — see CHANGELOG:
+- IMS's configure step used to unconditionally overwrite the *entire*
+  `named.conf.options` file, silently discarding any custom forwarders/listen-on another
+  module (or the DNS Migration Wizard, or you by hand) had already set. Fixed: `listen-on`
+  is now owned by the **DNS (BIND9) page**, which every module safely merges into instead
+  of overwriting (`bind-controller.ts`'s `writeListenOn()`).
+- IMS's *uninstall* flow used to `systemctl stop/disable` **and** `apt-get purge` `bind9`
+  itself — since BIND is shared infrastructure (VoWiFi's zone, the DNS Migration Wizard's
+  zones, SEPP's advertise FQDN all depend on it), removing IMS used to take the whole DNS
+  layer down with it. Fixed: IMS's uninstall now only ever touches its own `ims.*` zone.
 
 ---
 

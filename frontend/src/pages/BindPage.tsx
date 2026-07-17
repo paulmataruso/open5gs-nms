@@ -26,6 +26,8 @@ export function BindPage() {
   const [acting, setActing]             = useState(false);
   const [forwardersInput, setForwardersInput] = useState('');
   const [savingForwarders, setSavingForwarders] = useState(false);
+  const [listenOnInput, setListenOnInput] = useState('');
+  const [savingListenOn, setSavingListenOn] = useState(false);
 
   const isDirty = content !== originalContent;
 
@@ -49,13 +51,21 @@ export function BindPage() {
     } catch { /* ignore */ }
   }, []);
 
+  const loadListenOn = useCallback(async () => {
+    try {
+      const d = await bindApi.getListenOn();
+      setListenOnInput(d.listenOn.join(', '));
+    } catch { /* ignore */ }
+  }, []);
+
   useEffect(() => {
     loadStatus();
     loadManifest();
     loadForwarders();
+    loadListenOn();
     const interval = setInterval(loadStatus, 8000);
     return () => clearInterval(interval);
-  }, [loadStatus, loadManifest, loadForwarders]);
+  }, [loadStatus, loadManifest, loadForwarders, loadListenOn]);
 
   const handleSaveForwarders = async () => {
     const forwarders = forwardersInput.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
@@ -72,6 +82,25 @@ export function BindPage() {
       toast.error(err?.response?.data?.error ?? 'Failed to save upstream DNS');
     } finally {
       setSavingForwarders(false);
+    }
+  };
+
+  const handleSaveListenOn = async () => {
+    const listenOn = listenOnInput.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const ipRe = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+    if (listenOn.length === 0 || !listenOn.every(ip => ipRe.test(ip))) {
+      toast.error('Enter one or more valid IPv4 addresses, separated by commas');
+      return;
+    }
+    setSavingListenOn(true);
+    try {
+      await bindApi.saveListenOn(listenOn);
+      toast.success('Listen IP(s) saved — BIND9 restarted.');
+      loadListenOn();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? 'Failed to save listen IP(s)');
+    } finally {
+      setSavingListenOn(false);
     }
   };
 
@@ -254,6 +283,33 @@ export function BindPage() {
           <pre className="bg-nms-bg rounded p-3 text-xs font-mono text-green-300 max-h-64 overflow-y-auto whitespace-pre-wrap border border-nms-border">
             {installLog || 'Waiting for output...'}
           </pre>
+        </div>
+      )}
+
+      {status?.installed && (
+        <div className="nms-card">
+          <p className="text-sm font-semibold text-nms-text mb-1">Listen IP(s)</p>
+          <p className="text-xs text-nms-text-dim mb-3">
+            The local IPs BIND actually binds to (<code>listen-on</code> in <code>named.conf.options</code>).
+            This is the single, shared setting for every module that uses this BIND9 instance — IMS/VoWiFi
+            add whatever IP they need here automatically when configured, they no longer overwrite this
+            file wholesale. <code>127.0.0.1</code> is always kept regardless of what you set below.
+          </p>
+          <div className="flex items-end gap-3 flex-wrap">
+            <div className="flex-1 min-w-[240px]">
+              <label className="text-xs text-nms-text-dim block mb-1">Listen IP(s), comma-separated</label>
+              <input
+                value={listenOnInput}
+                onChange={e => setListenOnInput(e.target.value)}
+                placeholder="127.0.0.1, 10.0.1.178"
+                className="nms-input text-sm w-full font-mono"
+                spellCheck={false}
+              />
+            </div>
+            <button onClick={handleSaveListenOn} disabled={savingListenOn} className="nms-btn text-sm px-3 py-1.5 disabled:opacity-40 flex items-center gap-2">
+              {savingListenOn ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : null} Save & Restart
+            </button>
+          </div>
         </div>
       )}
 

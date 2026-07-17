@@ -278,8 +278,10 @@ function ConfigureCard({ status, onDone }: {
       <div className="bg-nms-bg border border-nms-border rounded-xl p-4">
         <p className="text-xs font-semibold text-cyan-400 uppercase tracking-wider mb-3">DNS (BIND9)</p>
         <div className="w-1/2">
-          <IpInput label="Listen IP" value={cfg.dnsIp} onChange={v => setCfg(c => ({ ...c, dnsIp: v }))}
-            hint="Served to UEs via SMF PCO — must be reachable by UEs; use same IP as P-CSCF" />
+          <IpInput label="Zone Server IP" value={cfg.dnsIp} onChange={v => setCfg(c => ({ ...c, dnsIp: v }))}
+            hint="Served to UEs via SMF PCO — must be reachable by UEs; use same IP as P-CSCF. Configuring
+              this automatically adds it to BIND's listen-on list (see the DNS/BIND page to manage that
+              list directly, or add other IPs there without needing to touch this)." />
         </div>
       </div>
 

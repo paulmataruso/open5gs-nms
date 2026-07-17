@@ -40,4 +40,10 @@ export const bindApi = {
     const { data } = await api.put('/forwarders', { forwarders });
     return data;
   },
+
+  getListenOn: async (): Promise<{ listenOn: string[] }> => { const { data } = await api.get('/listen-on'); return data; },
+  saveListenOn: async (listenOn: string[]): Promise<{ success: boolean }> => {
+    const { data } = await api.put('/listen-on', { listenOn });
+    return data;
+  },
 };

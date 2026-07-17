@@ -16,6 +16,7 @@ export interface VowifiStatus {
   configured: boolean;
   configuredAt: string | null;
   epdgIp: string | null;
+  epdgInterfaceMode: 'dummy' | 'existing' | null;
   s6bLocalIp: string | null;
   gsupPort: number | null;
   services: {
@@ -33,6 +34,10 @@ export interface VowifiConfigureInput {
   epdgIp?: string;
   s6bLocalIp?: string;
   gsupPort?: number;
+  // 'dummy' (default): create+own a new dummy-epdg interface with epdgIp assigned.
+  // 'existing': skip interface creation — epdgIp must already be bound to a loopback
+  // alias or a real LAN interface by the operator (any L3-reachable IP works).
+  interfaceMode?: 'dummy' | 'existing';
 }
 
 export interface VowifiConfigFile {
