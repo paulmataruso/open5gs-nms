@@ -37,6 +37,9 @@ export interface SubscriberSession {
     ipv4?: string;   // SMF IPv4 address
     ipv6?: string;   // SMF IPv6 address
   };
+  ipv4_framed_routes?: string[];  // Framed Routing (TS 23.501 §5.6.14) — IPv4 CIDRs routed behind the UE
+  ipv6_framed_routes?: string[];  // Framed Routing — IPv6 prefixes routed behind the UE
+  framed_routes_static?: boolean;  // Auto-manage a static host route (dev resolved from this session's DNN) for the above
 }
 
 export interface SubscriberSlice {
@@ -79,4 +82,15 @@ export interface SubscriberListItem {
   session_count: number;
   ue_ipv4?: string;   // First session UE IPv4 (for sorting/display)
   apn?: string;       // First session APN/DNN (for sorting/display)
+  sessions?: { apn: string; ipv4?: string; framedRoutes?: string[] }[]; // Every session across every slice — a
+  // subscriber with more than one APN (e.g. internet + ims) has more than one IP.
+}
+
+export interface FramedRouteEntry {
+  imsi: string;
+  nickname?: string;
+  apn: string;
+  ipv4: string[];
+  ipv6: string[];
+  static: boolean;
 }

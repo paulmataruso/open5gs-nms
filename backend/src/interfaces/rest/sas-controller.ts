@@ -31,7 +31,7 @@ export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): R
   setVerbose(true);
 
   // ── POST /sas/v1.2/registration ──────────────────────────────────────────
-  router.post('/v1.2/registration', async (req: Request, res: Response) => {
+  router.post(['/v1.2/registration', '/registration'], async (req: Request, res: Response) => {
     if (sas.isPaused()) return res.json({ registrationResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
     logger.info({ body: req.body, ip: req.ip, headers: req.headers }, 'SAS registration request');
     try {
@@ -50,7 +50,7 @@ export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): R
   });
 
   // ── POST /sas/v1.2/spectrumInquiry ───────────────────────────────────────
-  router.post('/v1.2/spectrumInquiry', async (req: Request, res: Response) => {
+  router.post(['/v1.2/spectrumInquiry', '/spectrumInquiry'], async (req: Request, res: Response) => {
     if (sas.isPaused()) return res.json({ spectrumInquiryResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
     logger.trace({ body: req.body, ip: req.ip }, 'SAS spectrumInquiry request');
     try {
@@ -79,7 +79,7 @@ export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): R
   });
 
   // ── POST /sas/v1.2/grant ─────────────────────────────────────────────────
-  router.post('/v1.2/grant', async (req: Request, res: Response) => {
+  router.post(['/v1.2/grant', '/grant'], async (req: Request, res: Response) => {
     if (sas.isPaused()) return res.json({ grantResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
     try {
       const requests: GrantRequest[] = req.body?.grantRequest;
@@ -108,7 +108,7 @@ export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): R
   });
 
   // ── POST /sas/v1.2/heartbeat ─────────────────────────────────────────────
-  router.post('/v1.2/heartbeat', async (req: Request, res: Response) => {
+  router.post(['/v1.2/heartbeat', '/heartbeat'], async (req: Request, res: Response) => {
     if (sas.isPaused()) return res.json({ heartbeatResponse: [{ transmitExpireTime: new Date().toISOString(), response: { responseCode: 500, responseMessage: 'TERMINATED_GRANT' } }] });
     try {
       const requests: HeartbeatRequest[] = req.body?.heartbeatRequest;
@@ -126,7 +126,7 @@ export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): R
   });
 
   // ── POST /sas/v1.2/relinquishment ────────────────────────────────────────
-  router.post('/v1.2/relinquishment', async (req: Request, res: Response) => {
+  router.post(['/v1.2/relinquishment', '/relinquishment'], async (req: Request, res: Response) => {
     logger.info({ body: req.body, ip: req.ip }, 'SAS relinquishment request');
     try {
       const requests: RelinquishmentRequest[] = req.body?.relinquishmentRequest;
@@ -143,7 +143,7 @@ export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): R
   });
 
   // ── POST /sas/v1.2/deregistration ────────────────────────────────────────
-  router.post('/v1.2/deregistration', async (req: Request, res: Response) => {
+  router.post(['/v1.2/deregistration', '/deregistration'], async (req: Request, res: Response) => {
     logger.info({ body: req.body, ip: req.ip }, 'SAS deregistration request');
     try {
       const requests: DeregistrationRequest[] = req.body?.deregistrationRequest;
@@ -347,8 +347,9 @@ export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genie
       }
 
       // Separate maps per vendor — matching logic differs between them.
-      const baiRfMap = new Map<string, boolean | null>(); // keyed by hwSerial == SAS cbsdSerialNumber
-      const scRfMap  = new Map<string, boolean | null>(); // keyed by hwSerial; SAS serial is "Sercomm-<hwSerial>"
+      const baiRfMap  = new Map<string, boolean | null>(); // keyed by hwSerial == SAS cbsdSerialNumber
+      const scRfMap   = new Map<string, boolean | null>(); // keyed by hwSerial; SAS serial is "Sercomm-<hwSerial>"
+      const scNrRfMap = new Map<string, boolean | null>(); // keyed by ACS serial == SAS cbsdSerialNumber (no prefix)
       const FAP = 'Device.Services.FAPService.1.';
 
       function getParam(device: Record<string, any>, dotPath: string): string {
@@ -403,13 +404,36 @@ export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genie
         }
       } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Sercomm query failed'); }
 
+      // Sercomm NR (OUI 00C002) — SCE5164-B48 and similar 5G NR small cells.
+      // SAS cbsdSerialNumber == ACS _SerialNumber directly (no "Sercomm-" prefix).
+      // RF is on when SAS has an active grant (sasState === 'Authorized').
+      try {
+        const scNrProjection = ['_id', '_lastInform', '_deviceId', 'Device.Services.SAS.sasState'].join(',');
+        const scNrResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(scNrProjection)}`);
+        if (scNrResp.ok) {
+          const devices = (await scNrResp.json()) as Record<string, any>[];
+          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+          for (const d of devices) {
+            const oui = (d._deviceId?._OUI ?? '').toUpperCase();
+            if (oui !== '00C002') continue;
+            const hwSerial   = (d._deviceId?._SerialNumber ?? d._id) as string;
+            const lastInform = d._lastInform ?? null;
+            const isOnline   = lastInform && lastInform > fiveMinAgo;
+            const sasState   = getParam(d, 'Device.Services.SAS.sasState');
+            scNrRfMap.set(hwSerial, !isOnline ? null : (sasState === 'Authorized'));
+          }
+        }
+      } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Sercomm NR query failed'); }
+
       // Match each SAS CBSD to the right ACS RF reading.
-      // Sercomm cbsdSerialNumber is "Sercomm-<hwSerial>"; Baicells cbsdSerialNumber IS the hwSerial.
-      // Try scRfMap first using the last dash-delimited segment; fall back to baiRfMap with full serial.
+      // Priority: scNrRfMap (OUI 00C002, NR) → scRfMap (OUI 000E8F, LTE) → baiRfMap (Baicells).
+      // Sercomm LTE serial in SAS: "Sercomm-<hwSerial>"; NR serial: bare hwSerial.
       const status = cbsds.map(c => {
         let rfOn: boolean | null = null;
         const hwSerial = c.cbsdSerialNumber.split('-').pop()!;
-        if (scRfMap.has(hwSerial)) {
+        if (scNrRfMap.has(c.cbsdSerialNumber)) {
+          rfOn = scNrRfMap.get(c.cbsdSerialNumber)!;
+        } else if (scRfMap.has(hwSerial)) {
           rfOn = scRfMap.get(hwSerial)!;
         } else if (baiRfMap.has(c.cbsdSerialNumber)) {
           rfOn = baiRfMap.get(c.cbsdSerialNumber)!;

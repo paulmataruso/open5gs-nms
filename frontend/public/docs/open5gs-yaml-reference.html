@@ -1,0 +1,2970 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open5GS YAML Reference</title>
+<style>
+  /* ── Tokens ── */
+  :root {
+    --bg:         #F4F6FB;
+    --surface:    #FFFFFF;
+    --surface2:   #EDF0F7;
+    --border:     #D8DEEa;
+    --text:       #1B2033;
+    --dim:        #6B7896;
+    --accent:     #2159C8;
+    --accent-lo:  #EBF0FC;
+    --hidden:     #B45309;
+    --hidden-lo:  #FEF3E2;
+    --dep:        #9B1C1C;
+    --dep-lo:     #FEF2F2;
+    --code-bg:    #1C2233;
+    --code-text:  #C8D0E7;
+    --key-col:    #60A5FA;
+    --val-col:    #A8D8A8;
+    --comment-col:#636E8A;
+    --ph-col:     #F9A84D;
+    --bool-col:   #C084FC;
+    --punct-col:  #94A3B8;
+    --tag-4g:     #1D4ED8;
+    --tag-5g:     #7C3AED;
+    --tag-both:   #065F46;
+    --sidebar-w:  240px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #10141E;
+      --surface:   #181D2C;
+      --surface2:  #1E2538;
+      --border:    #262E44;
+      --text:      #D0D8F0;
+      --dim:       #6B7896;
+      --accent:    #4D8EF0;
+      --accent-lo: #1A2540;
+      --hidden:    #F59E0B;
+      --hidden-lo: #1C1500;
+      --dep:       #FCA5A5;
+      --dep-lo:    #1C0808;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#F4F6FB;--surface:#FFFFFF;--surface2:#EDF0F7;--border:#D8DEEA;
+    --text:#1B2033;--dim:#6B7896;--accent:#2159C8;--accent-lo:#EBF0FC;
+    --hidden:#B45309;--hidden-lo:#FEF3E2;--dep:#9B1C1C;--dep-lo:#FEF2F2;
+  }
+  :root[data-theme="dark"] {
+    --bg:#10141E;--surface:#181D2C;--surface2:#1E2538;--border:#262E44;
+    --text:#D0D8F0;--dim:#6B7896;--accent:#4D8EF0;--accent-lo:#1A2540;
+    --hidden:#F59E0B;--hidden-lo:#1C1500;--dep:#FCA5A5;--dep-lo:#1C0808;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Layout ── */
+  .layout {
+    display: flex;
+    min-height: 100vh;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 28px 0 40px;
+    border-right: 1px solid var(--border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .sidebar-header {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .sidebar-header .logo {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 4px;
+  }
+  .sidebar-header h2 {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.3;
+  }
+  .toc-section {
+    padding: 6px 20px 2px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-top: 10px;
+  }
+  .toc-link {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 20px;
+    font-size: 12.5px;
+    color: var(--dim);
+    text-decoration: none;
+    transition: color 0.15s;
+    border-left: 2px solid transparent;
+    margin-left: -1px;
+  }
+  .toc-link:hover { color: var(--text); }
+  .toc-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: var(--accent-lo);
+    font-weight: 600;
+  }
+  .toc-link.toc-sub {
+    padding-left: 34px;
+    font-size: 11.5px;
+  }
+  .toc-link .tag {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .tag-4g { background: var(--tag-4g); color: #fff; }
+  .tag-5g { background: var(--tag-5g); color: #fff; }
+  .tag-both { background: var(--tag-both); color: #fff; }
+
+  /* ── Main content ── */
+  main {
+    flex: 1;
+    min-width: 0;
+    padding: 40px 48px 80px;
+  }
+
+  /* ── Page header ── */
+  .page-header {
+    margin-bottom: 48px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+  }
+  .page-header .eyebrow {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .page-header h1 {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+    color: var(--text);
+    text-wrap: balance;
+    margin-bottom: 14px;
+  }
+  .page-header p {
+    font-size: 14px;
+    color: var(--dim);
+    max-width: 560px;
+    line-height: 1.6;
+  }
+  .meta-badges {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 20px;
+  }
+  .meta-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    font-size: 11.5px;
+    color: var(--dim);
+    background: var(--surface);
+  }
+  .meta-badge .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+  }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 14px 18px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 40px;
+    font-size: 12px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--dim);
+  }
+
+  /* ── Section ── */
+  .section {
+    margin-bottom: 56px;
+  }
+  .section-anchor {
+    display: block;
+    position: relative;
+    top: -24px;
+    visibility: hidden;
+  }
+
+  /* ── Service heading (the aesthetic risk: YAML key as display text) ── */
+  .service-heading {
+    margin-bottom: 24px;
+  }
+  .service-key {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Menlo', monospace;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--key-col);
+    letter-spacing: -0.01em;
+    line-height: 1;
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 6px 14px 8px;
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
+  .service-title {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .service-desc {
+    font-size: 13.5px;
+    color: var(--dim);
+    margin-top: 6px;
+    max-width: 600px;
+  }
+
+  /* Generic h2 for non-service sections */
+  h2.section-h {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.025em;
+    color: var(--text);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-wrap: balance;
+  }
+  h3.sub-h {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 28px 0 12px;
+  }
+  p.body { font-size: 13.5px; color: var(--dim); margin-bottom: 16px; line-height: 1.7; }
+
+  /* ── Tables ── */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  thead tr {
+    background: var(--surface2);
+  }
+  th {
+    padding: 9px 14px;
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  td {
+    padding: 8px 14px;
+    border-top: 1px solid var(--border);
+    vertical-align: top;
+    line-height: 1.5;
+  }
+  tbody tr:hover { background: var(--surface2); }
+  tr.is-hidden { background: var(--hidden-lo) !important; }
+  tr.is-hidden td:first-child { border-left: 3px solid var(--hidden); padding-left: 11px; }
+  tr.is-dep { background: var(--dep-lo) !important; }
+  tr.is-lan { background: var(--accent-lo) !important; }
+  tr.is-lan td:first-child { border-left: 3px solid var(--accent); padding-left: 11px; }
+  td code, th code {
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Menlo', monospace;
+    font-size: 11px;
+    background: var(--surface2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--accent);
+  }
+  tr.is-hidden td code { background: rgba(0,0,0,0.08); }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .badge-hidden { background: var(--hidden); color: white; }
+  .badge-dep { background: var(--dep); color: white; }
+  .badge-new { background: var(--tag-5g); color: white; }
+
+  /* ── Code blocks ── */
+  .code-block {
+    background: var(--code-bg);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+  .code-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--comment-col);
+  }
+  .code-label .dot-row { display: flex; gap: 5px; }
+  .code-label .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-r { background: #FF5F57; }
+  .dot-y { background: #FFBD2E; }
+  .dot-g { background: #28C840; }
+  pre {
+    margin: 0;
+    padding: 18px 20px;
+    overflow-x: auto;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Menlo', monospace;
+    font-size: 12px;
+    line-height: 1.75;
+    color: var(--code-text);
+    tab-size: 2;
+  }
+  /* YAML token colors */
+  .y-key     { color: var(--key-col); }
+  .y-val     { color: var(--val-col); }
+  .y-comment { color: var(--comment-col); font-style: italic; }
+  .y-ph      { color: var(--ph-col); font-style: italic; }
+  .y-bool    { color: var(--bool-col); }
+  .y-str     { color: #F9A84D; }
+  .y-num     { color: #F9A84D; }
+  .y-punct   { color: var(--punct-col); }
+
+  /* ── Callout ── */
+  .callout {
+    padding: 14px 18px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.6;
+    margin-bottom: 20px;
+  }
+  .callout-hidden {
+    background: var(--hidden-lo);
+    border-left: 3px solid var(--hidden);
+    color: var(--text);
+  }
+  .callout-hidden strong { color: var(--hidden); }
+  .callout-info {
+    background: var(--accent-lo);
+    border-left: 3px solid var(--accent);
+    color: var(--text);
+  }
+  .callout-info strong { color: var(--accent); }
+
+  /* ── Divider ── */
+  .divider { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+  /* ── Responsive ── */
+  @media (max-width: 768px) {
+    .layout { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--border); padding: 20px 0 12px; }
+    main { padding: 28px 20px 60px; }
+    .service-key { font-size: 20px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+
+  /* focus */
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <nav class="sidebar" aria-label="Table of contents">
+    <div class="sidebar-header">
+      <div class="logo">Open5GS</div>
+      <h2>YAML Config Reference</h2>
+    </div>
+
+    <div class="toc-section">Global</div>
+    <a class="toc-link" href="#top-level">Top-level keys</a>
+    <a class="toc-link" href="#logger">logger:</a>
+    <a class="toc-link" href="#global">global:</a>
+    <a class="toc-link toc-sub" href="#global-parameter">parameter</a>
+    <a class="toc-link toc-sub" href="#global-sockopt">sockopt</a>
+    <a class="toc-link toc-sub" href="#global-max">max</a>
+    <a class="toc-link toc-sub" href="#global-pool">pool</a>
+    <a class="toc-link" href="#time">time: (shared)</a>
+    <a class="toc-link" href="#serving">serving: (shared)</a>
+    <a class="toc-link" href="#diameter">Diameter / freeDiameter</a>
+
+    <div class="toc-section">4G EPC</div>
+    <a class="toc-link" href="#mme">mme: <span class="tag tag-4g">4G</span></a>
+    <a class="toc-link toc-sub" href="#mme-s1ap">s1ap / gtpc</a>
+    <a class="toc-link toc-sub" href="#mme-identity">gummei / tai</a>
+    <a class="toc-link toc-sub" href="#mme-access-control">access_control / hss_map</a>
+    <a class="toc-link toc-sub" href="#mme-security">security</a>
+    <a class="toc-link toc-sub" href="#mme-emergency">emergency</a>
+    <a class="toc-link toc-sub" href="#mme-sgsap">sgsap (CSFB)</a>
+    <a class="toc-link" href="#hss">hss: <span class="tag tag-4g">4G</span></a>
+    <a class="toc-link toc-sub" href="#hss-hidden">hidden options</a>
+    <a class="toc-link" href="#sgwc">sgwc: <span class="tag tag-4g">4G</span></a>
+    <a class="toc-link" href="#sgwu">sgwu: <span class="tag tag-4g">4G</span></a>
+    <a class="toc-link" href="#pcrf">pcrf: <span class="tag tag-4g">4G</span></a>
+
+    <div class="toc-section">Common</div>
+    <a class="toc-link" href="#smf">smf: <span class="tag tag-both">4G+5G</span></a>
+    <a class="toc-link toc-sub" href="#smf-diameter">diameter / ctf</a>
+    <a class="toc-link toc-sub" href="#smf-pcscf-dns">p-cscf / dns</a>
+    <a class="toc-link toc-sub" href="#smf-security-indication">security_indication</a>
+    <a class="toc-link toc-sub" href="#smf-pfcp">pfcp</a>
+    <a class="toc-link toc-sub" href="#smf-session">session</a>
+    <a class="toc-link" href="#upf">upf: <span class="tag tag-both">4G+5G</span></a>
+    <a class="toc-link toc-sub" href="#upf-session">session</a>
+
+    <div class="toc-section">5G SA Core</div>
+    <a class="toc-link" href="#amf">amf: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link toc-sub" href="#amf-ngap">ngap / guami / tai</a>
+    <a class="toc-link toc-sub" href="#amf-plmn-support">plmn_support / access_control</a>
+    <a class="toc-link toc-sub" href="#amf-security">security</a>
+    <a class="toc-link" href="#nrf">nrf: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#ausf">ausf: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#udm">udm: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link toc-sub" href="#udm-hnet">hnet (SUCI keys)</a>
+    <a class="toc-link" href="#pcf">pcf: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#nssf">nssf: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link toc-sub" href="#nssf-nsi">nsi</a>
+    <a class="toc-link" href="#bsf">bsf: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#udr">udr: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#scp">scp: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link toc-sub" href="#scp-info-domain">info.domain</a>
+    <a class="toc-link" href="#sepp">sepp: <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#sbi">SBI (shared)</a>
+    <a class="toc-link toc-sub" href="#sbi-tls">default.tls</a>
+    <a class="toc-link toc-sub" href="#sbi-server-client">sbi.server / client</a>
+    <a class="toc-link toc-sub" href="#sbi-discovery">discovery</a>
+
+    <div class="toc-section">Reference</div>
+    <a class="toc-link" href="#notes">Notes & Quirks</a>
+    <a class="toc-link" href="#full-example">Full Working Example</a>
+    <a class="toc-link toc-sub" href="#example-lan-vs-loopback">LAN vs. loopback IPs</a>
+    <a class="toc-link toc-sub" href="#example-yaml">Per-Service YAML Files</a>
+    <a class="toc-link toc-sub" href="#example-firewall">Firewall checklist</a>
+  </nav>
+
+  <!-- Main -->
+  <main>
+
+    <!-- Page header -->
+    <div class="page-header">
+      <div class="eyebrow">Source-Derived Reference</div>
+      <h1>Open5GS YAML Configuration</h1>
+      <p>Every YAML key across every Open5GS service — documented and hidden — extracted by source audit of v2.7.7-36-gfcebc6d. Undocumented options not present in official sample configs are marked <span class="badge badge-hidden">hidden</span>.</p>
+      <div class="meta-badges">
+        <span class="meta-badge"><span class="dot" style="background:#2563C4"></span>v2.7.7-36-gfcebc6d</span>
+        <span class="meta-badge"><span class="dot" style="background:#10B981"></span>lib/app/ogs-config.c</span>
+        <span class="meta-badge"><span class="dot" style="background:#7C3AED"></span>All NF context.c files</span>
+        <span class="meta-badge"><span class="dot" style="background:#F59E0B"></span>lib/sbi/context.c</span>
+      </div>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <div class="legend-item"><span class="badge badge-hidden">hidden</span> Not in official sample configs</div>
+      <div class="legend-item"><span class="badge badge-dep">deprecated</span> Parsed but warns at runtime</div>
+      <div class="legend-item"><span style="display:inline-block;width:12px;height:12px;background:var(--hidden-lo);border-left:3px solid var(--hidden);border-radius:2px;flex-shrink:0"></span> Table row = hidden option</div>
+    </div>
+
+    <div class="callout callout-info">
+      This is a key-by-key syntax reference. For what each daemon actually does and how they're wired together, see the <a href="/docs/open5gs-architecture-guide.html" style="color:var(--accent)">Architecture Guide</a> alongside it.
+    </div>
+
+    <!-- ─── TOP LEVEL ─── -->
+    <div class="section">
+      <span class="section-anchor" id="top-level"></span>
+      <h2 class="section-h">Top-Level Keys</h2>
+      <p class="body">Present in all service YAML files. The <code>&lt;nf&gt;</code> block name matches the service: <code>mme</code>, <code>amf</code>, <code>smf</code>, etc. Open5GS loads one YAML per process — in an all-in-one deployment every service block can live in the same file; in a split deployment each service gets its own file with only its own block plus <code>logger</code>/<code>global</code>.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>logger</code></td><td>object</td><td>Logging configuration</td></tr>
+            <tr><td><code>global</code></td><td>object</td><td>Global settings shared across all NFs in the same process</td></tr>
+            <tr><td><code>db_uri</code></td><td>string</td><td>MongoDB URI, e.g. <code>mongodb://localhost/open5gs</code>. Also read from the <code>DB_URI</code> environment variable, which takes precedence when set</td></tr>
+            <tr><td><code>&lt;nf&gt;</code></td><td>object</td><td>Service-specific config block (<code>mme</code>, <code>amf</code>, <code>smf</code>, <code>upf</code>…)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── LOGGER ─── -->
+    <div class="section">
+      <span class="section-anchor" id="logger"></span>
+      <div class="service-heading">
+        <div class="service-key">logger:</div>
+        <div class="service-desc">Parsed in <code>lib/app/ogs-init.c</code>. Applies to whichever service loads this file — each process gets its own log target, so a split deployment typically has a different <code>logger.file.path</code> per YAML file.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>YAML</div>
+        <pre data-yaml>logger:
+  level: info                       # trace | debug | info | warn | error | fatal
+  domain: mme                       # HIDDEN: filter logs to this domain name only
+  file:                             # New format (preferred)
+    path: /var/log/open5gs/mme.log
+    timestamp: true                 # HIDDEN: prepend ISO timestamp to each line
+  default:                          # HIDDEN: default output stream settings
+    timestamp: false                # HIDDEN: suppress timestamp on stdout/default output
+
+# DEPRECATED (still parsed, warns at runtime):
+# logger:
+#   file: /var/log/open5gs/mme.log   # scalar form deprecated in favor of file.path</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Example</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>level</code></td><td>enum</td><td>info</td><td><code>debug</code></td><td>Verbosity floor: <code>trace</code> &lt; <code>debug</code> &lt; <code>info</code> &lt; <code>warn</code> &lt; <code>error</code> &lt; <code>fatal</code>. Drop to <code>debug</code> when chasing a NAS/NGAP decode issue; <code>trace</code> is extremely chatty and mainly used when developing Open5GS itself.</td></tr>
+            <tr><td><code>file.path</code></td><td>string</td><td>—</td><td><code>/var/log/open5gs/amf.log</code></td><td>Absolute path to the log file. If omitted, Open5GS logs to stdout, which is the default in the official Docker images so container log drivers can capture it.</td></tr>
+            <tr class="is-hidden"><td><code>domain</code></td><td>string</td><td>—</td><td><code>gtp</code></td><td>Restrict log output to a single internal logging domain (e.g. <code>gtp</code>, <code>pfcp</code>, <code>nas</code>, <code>sbi</code>). Useful for isolating one subsystem's chatter without wading through the rest at <code>debug</code> level.</td></tr>
+            <tr class="is-hidden"><td><code>file.timestamp</code></td><td>bool</td><td>true</td><td><code>true</code></td><td>Prepend an ISO-8601 timestamp to each log line written to <code>file.path</code>. Turn it off if you're piping into a log shipper that already stamps arrival time and don't want the duplication.</td></tr>
+            <tr class="is-hidden"><td><code>default.timestamp</code></td><td>bool</td><td>true</td><td><code>false</code></td><td>Same as <code>file.timestamp</code> but for the default stdout/stderr stream instead of a file. Journald and most container runtimes already timestamp captured output, so disabling this avoids doubled timestamps in <code>docker logs</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout callout-hidden">
+        <strong>Deprecated form:</strong> <code>logger: { file: /path }</code> (a bare string instead of an object) still parses but logs a deprecation warning on startup. Use <code>logger.file.path</code> going forward.
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── GLOBAL ─── -->
+    <div class="section">
+      <span class="section-anchor" id="global"></span>
+      <div class="service-heading">
+        <div class="service-key">global:</div>
+        <div class="service-desc">Parsed in <code>lib/app/ogs-config.c</code>. These settings apply to <em>all services</em> that load the same config file — in an all-in-one process that means every NF, in a split deployment it means whatever single NF that file's process runs. The <code>parameter:</code> block holds boolean feature flags — the most useful hidden options live here.</div>
+      </div>
+
+      <span class="section-anchor" id="global-parameter"></span>
+      <h3 class="sub-h">global.parameter — boolean feature flags</h3>
+      <div class="callout callout-hidden">
+        <strong>All entries in this table are hidden</strong> — none appear in the official sample configs, and the <code>global.parameter</code> block itself is also absent from samples. They're read directly from source (<code>lib/app/ogs-config.c</code>).
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr class="is-hidden"><td><code>use_openair</code></td><td>bool</td><td>false</td><td>Omits HashMME from the 4G Security Mode Command and the second byte of EPS Network Feature Support. Fixes attach failures (EMM Cause 24) against OpenAirInterface and some early 5G-capable UEs that don't implement HashMME verification per TS 24.301 §5.4.3.4. Set <code>true</code> only if you see repeated SMC rejects in MME logs from a specific UE model.</td></tr>
+            <tr class="is-hidden"><td><code>fake_csfb</code></td><td>bool</td><td>false</td><td>Makes the MME answer SGs-AP CSFB procedures with synthetic success responses even though no real MSC/VLR is connected. Used to validate the LTE-side CSFB call flow in a lab without deploying a circuit-switched core.</td></tr>
+            <tr class="is-hidden"><td><code>use_upg_vpp</code></td><td>bool</td><td>false</td><td>Switches the UPF data plane to UPG-VPP (a DPDK/VPP-based fast path) instead of the built-in kernel TUN-based forwarder. Set this when the UPF needs to sustain multi-Gbps throughput that the kernel path can't hit.</td></tr>
+            <tr class="is-hidden"><td><code>no_pfcp_rr_select</code></td><td>bool</td><td>false</td><td>Disables round-robin UPF selection in the SMF; the first reachable UPF matching the requested DNN is always chosen. Set this in single-UPF deployments to skip the scheduling step, or when one UPF should always be preferred (e.g. it has the better NIC).</td></tr>
+            <tr class="is-hidden"><td><code>no_time_zone_information</code></td><td>bool</td><td>false</td><td>Stops MME/AMF from including the UE Time Zone IE in NAS Attach/Registration Accept. A handful of UE baseband stacks mishandle this IE and misreport local time; disabling it is a targeted workaround rather than something to flip by default.</td></tr>
+            <tr class="is-hidden"><td><code>no_ipv4v6_local_addr_in_packet_filter</code></td><td>bool</td><td>false</td><td>Omits the local IPv4v6 address from PDR packet filters sent over N4/PFCP. Some third-party UPFs reject filter rules containing a local address; enable this as a compatibility workaround when pairing Open5GS SMF with a non-Open5GS UPF.</td></tr>
+            <tr class="is-hidden"><td><code>prefer_ipv4</code></td><td>bool</td><td>false</td><td>When both an IPv4 and IPv6 address are available for the same peer, prefer the IPv4 one. Useful in dual-stack labs where IPv6 routing is present but not fully validated, to avoid flaky IPv6-first connection attempts.</td></tr>
+            <tr class="is-hidden"><td><code>no_ipv4</code></td><td>bool</td><td>false</td><td>Disables IPv4 socket binding network-wide for the process. Set only in an IPv6-only deployment — combining this with an IPv4-only peer address in the same config will simply fail to connect.</td></tr>
+            <tr class="is-hidden"><td><code>no_ipv6</code></td><td>bool</td><td>false</td><td>Disables IPv6 socket binding network-wide for the process. The common case: your host has an IPv6 link-local address that Open5GS would otherwise try to bind, and you want to force IPv4-only operation.</td></tr>
+            <tr class="is-hidden"><td><code>multicast</code></td><td>bool</td><td>false</td><td>Enables multicast socket support on the NF's listening sockets. Relevant mainly for eNB/gNB discovery scenarios or lab setups that rely on multicast-based peer discovery rather than static addressing.</td></tr>
+            <tr class="is-hidden"><td><code>no_hss</code> / <code>no_mme</code> / <code>no_sgwc</code> / <code>no_sgwu</code> / <code>no_pgw</code> / <code>no_pcrf</code> / <code>no_nrf</code> / <code>no_scp</code> / <code>no_sepp</code> / <code>no_amf</code> / <code>no_smf</code> / <code>no_upf</code> / <code>no_ausf</code> / <code>no_udm</code> / <code>no_pcf</code> / <code>no_nssf</code> / <code>no_bsf</code> / <code>no_udr</code></td><td>bool</td><td>false</td><td>Skips the internal service-instance counter/init for that NF. Used when several NF blocks share one config file but you only want a subset of them to actually start in this process — set <code>no_&lt;nf&gt;: true</code> for the ones to skip.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="global-sockopt"></span>
+      <h3 class="sub-h">global.sockopt — socket tuning</h3>
+      <p class="body">Applies as the process-wide socket default. The identical key structure can be repeated as an <code>option:</code> sub-key under any specific server/client address entry (see the Notes section) to override just that one socket.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Example</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>no_delay</code></td><td>bool</td><td><code>true</code></td><td>Sets <code>TCP_NODELAY</code> on all TCP sockets, disabling Nagle's algorithm. Nearly always wanted for control-plane protocols like SBI/HTTP where message latency matters more than packing small writes.</td></tr>
+            <tr><td><code>sctp_nodelay</code></td><td>bool</td><td><code>true</code></td><td>Sets <code>SCTP_NODELAY</code> on S1AP/NGAP SCTP associations, avoiding Nagle-style batching on signaling messages. Leave on for realistic RAN signaling latency.</td></tr>
+            <tr><td><code>tcp_nodelay</code></td><td>bool</td><td><code>true</code></td><td>Alias for <code>no_delay</code>, kept for naming symmetry with <code>sctp_nodelay</code>.</td></tr>
+            <tr><td><code>so_linger.l_onoff</code></td><td>bool</td><td><code>true</code></td><td>Enables <code>SO_LINGER</code> so socket close() blocks until queued data is sent or the linger timer expires, rather than the default abortive close. Helps avoid truncated SBI responses under high connection churn.</td></tr>
+            <tr><td><code>so_linger.l_linger</code></td><td>int (s)</td><td><code>10</code></td><td>Linger duration in seconds when <code>so_linger.l_onoff</code> is set. Keep this small — a large value can stall worker threads waiting on slow clients.</td></tr>
+            <tr><td><code>so_bindtodevice</code></td><td>string</td><td><code>eth1</code></td><td>Binds all of this NF's sockets to a specific network interface name rather than by address, via <code>SO_BINDTODEVICE</code>. Useful on multi-homed hosts where the same IP might route out different interfaces.</td></tr>
+            <tr><td><code>sctp.spp_hbinterval</code></td><td>int (ms)</td><td><code>5000</code></td><td>SCTP heartbeat interval for path liveness checks on S1AP/NGAP associations. Lower it in radio labs with flaky links to detect path failure faster; raise it to reduce signaling overhead on stable production links.</td></tr>
+            <tr><td><code>sctp.spp_sackdelay</code></td><td>int (ms)</td><td><code>200</code></td><td>Delay before sending a SACK for received SCTP chunks. Lowering it trades a little bandwidth for lower perceived latency on S1AP/NGAP.</td></tr>
+            <tr><td><code>sctp.srto_initial</code></td><td>int (ms)</td><td><code>3000</code></td><td>Initial SCTP retransmission timeout. Tune down on low-latency local networks to fail over to path retransmission faster.</td></tr>
+            <tr><td><code>sctp.srto_min</code></td><td>int (ms)</td><td><code>1000</code></td><td>Minimum SCTP RTO — the floor the RTO estimator will not go below even on a very fast link.</td></tr>
+            <tr><td><code>sctp.srto_max</code></td><td>int (ms)</td><td><code>60000</code></td><td>Maximum SCTP RTO — the ceiling the RTO estimator won't exceed, bounding how long the stack waits before giving up on a path.</td></tr>
+            <tr><td><code>sctp.sinit_num_ostreams</code></td><td>int</td><td><code>10</code></td><td>Number of outbound SCTP streams requested at association setup. More streams reduce head-of-line blocking between unrelated S1AP/NGAP procedures on the same association.</td></tr>
+            <tr><td><code>sctp.sinit_max_instreams</code></td><td>int</td><td><code>10</code></td><td>Maximum number of inbound SCTP streams this NF will accept from the peer at association setup.</td></tr>
+            <tr><td><code>sctp.sinit_max_attempts</code></td><td>int</td><td><code>4</code></td><td>Number of INIT retransmission attempts before giving up on establishing the SCTP association.</td></tr>
+            <tr><td><code>sctp.sinit_max_init_timeo</code></td><td>int (ms)</td><td><code>8000</code></td><td>Maximum timeout for the INIT handshake phase of SCTP association setup, independent of the per-attempt RTO.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="global-max"></span>
+      <h3 class="sub-h">global.max — pool size limits</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Example (mid-size deployment)</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>ue</code></td><td>int</td><td>1024</td><td><code>16384</code></td><td>Maximum number of simultaneous UE contexts the process will track (MME/AMF UE contexts, SMF/UPF sessions). Raise this well ahead of your expected subscriber count — it's a hard cap enforced by pre-sized internal pools, not a soft limit.</td></tr>
+            <tr><td><code>peer</code> / <code>enb</code></td><td>int</td><td>64</td><td><code>256</code></td><td>Maximum number of peer/eNB (or gNB) connections the MME/AMF will accept. Set above your actual RAN node count with headroom for planned growth, since exceeding it silently rejects new S1AP/NGAP setup requests.</td></tr>
+            <tr><td><code>gtp_peer</code></td><td>int</td><td>64</td><td><code>128</code></td><td>Maximum number of GTP peer contexts (SGW/UPF/eNB GTP-U or GTP-C endpoints) tracked simultaneously. Relevant mainly to SGWC/SGWU and SMF/UPF pairs with many peer nodes.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="global-pool"></span>
+      <h3 class="sub-h">global.pool — packet buffer pool sizes <span class="badge badge-hidden">hidden</span></h3>
+      <p class="body">All entries here are hidden — the whole <code>global.pool</code> block is absent from official samples. Each key is a byte-size class; the value is how many pre-allocated buffer clusters of that size Open5GS reserves at startup. Under-sizing a class causes allocation fallbacks (and a logged warning) under load; over-sizing simply reserves more resident memory up front.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Example</th><th>Typically backs</th></tr></thead>
+          <tbody>
+            <tr class="is-hidden"><td><code>128</code></td><td>int</td><td>1024</td><td><code>2048</code></td><td>Tiny control messages — SBI header fragments, short Diameter AVPs, NAS IE fragments.</td></tr>
+            <tr class="is-hidden"><td><code>256</code></td><td>int</td><td>1024</td><td><code>2048</code></td><td>Small signaling PDUs — typical S1AP/NGAP procedure messages, short GTP-C control messages.</td></tr>
+            <tr class="is-hidden"><td><code>512</code></td><td>int</td><td>1024</td><td><code>2048</code></td><td>Mid-size signaling — NAS messages with several IEs, PFCP session establishment requests with multiple PDRs/FARs.</td></tr>
+            <tr class="is-hidden"><td><code>1024</code></td><td>int</td><td>1024</td><td><code>4096</code></td><td>Larger control-plane payloads — bulk PFCP rule sets, larger SBI JSON bodies (subscription data, policy responses).</td></tr>
+            <tr class="is-hidden"><td><code>2048</code></td><td>int</td><td>128</td><td><code>1024</code></td><td>Small to mid data-plane packets — GTP-U packets under ~2KB, common for VoIP/signaling-heavy traffic mixes.</td></tr>
+            <tr class="is-hidden"><td><code>8192</code></td><td>int</td><td>128</td><td><code>512</code></td><td>Standard MTU-sized GTP-U payloads — the common case for regular internet-DNN user traffic at a 1400-byte UE MTU.</td></tr>
+            <tr class="is-hidden"><td><code>32768</code></td><td>int</td><td>128</td><td><code>256</code></td><td>Jumbo/reassembled GTP-U payloads — fragmented IP packets reassembled before encapsulation, or larger internal buffers.</td></tr>
+            <tr class="is-hidden"><td><code>big</code></td><td>int</td><td>8</td><td><code>32</code></td><td>The largest buffer class, for full-size GTP-U payloads and bulk transfers; increase cautiously since each cluster reserves the most memory per unit.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── TIME ─── -->
+    <div class="section">
+      <span class="section-anchor" id="time"></span>
+      <h2 class="section-h">Shared <code>time:</code> Section</h2>
+      <p class="body">Appears under the service root block (e.g. <code>mme.time</code>, <code>amf.time</code>). Parsed in <code>lib/app/ogs-config.c</code> and shared across MME, AMF, SMF, and the 5G SBI-based NFs — only the timer sub-keys differ by NF family.</p>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>YAML</div>
+        <pre data-yaml>mme:                      # or amf, smf, any SBI-based NF
+  time:
+    nf_instance:
+      heartbeat: 10           # SBI NF heartbeat interval (seconds)
+      validity: 3600          # NF instance validity duration (seconds)
+    subscription:
+      validity: 86400         # NF subscription validity (seconds)
+    message:
+      duration: 5000          # Message response timeout (milliseconds)
+    handover:
+      duration: 10000         # Handover timeout (milliseconds)
+    # MME-specific:
+    t3402:
+      value: 720              # Seconds; UE re-attach timer (default 720)
+    t3412:
+      value: 3240             # Seconds; periodic TAU timer (default 3240)
+    t3423:
+      value: 720              # Seconds; IMSI detach timer (default 720)
+    # AMF-specific:
+    t3502:
+      value: 720              # Seconds; 5G registration retry timer
+    t3512:
+      value: 3240             # Seconds; 5G periodic registration timer</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>nf_instance.heartbeat</code></td><td>int (s)</td><td>10</td><td>How often this NF sends an SBI heartbeat to keep its NRF registration alive. Shorten it in a lab to see failover/deregistration behavior faster; lengthen it in production to cut SBI chatter.</td></tr>
+            <tr><td><code>nf_instance.validity</code></td><td>int (s)</td><td>3600</td><td>How long the NRF considers this NF's registration valid without a heartbeat before expiring it. Should be several multiples of <code>heartbeat</code> to tolerate transient misses.</td></tr>
+            <tr><td><code>subscription.validity</code></td><td>int (s)</td><td>86400</td><td>Validity duration for SBI subscriptions this NF creates with other NFs (e.g. AMF subscribing to SMF status). Expired subscriptions must be renewed or re-created.</td></tr>
+            <tr><td><code>message.duration</code></td><td>int (ms)</td><td>5000</td><td>Timeout for waiting on a response to an outbound SBI or protocol message before treating the peer as unresponsive.</td></tr>
+            <tr><td><code>handover.duration</code></td><td>int (ms)</td><td>10000</td><td>Timeout budget for a handover procedure to complete before it's aborted and the UE falls back to the source cell/AMF.</td></tr>
+            <tr><td><code>t3402.value</code></td><td>int (s)</td><td>720</td><td>MME-only. After an attach reject, how long the UE (per its NAS timer) waits before retrying attach — mirrored here so the MME's internal timers stay consistent with what it tells the UE.</td></tr>
+            <tr><td><code>t3412.value</code></td><td>int (s)</td><td>3240</td><td>MME-only. Periodic Tracking Area Update interval given to the UE; shortening it increases signaling load but detects silently-dead UEs faster.</td></tr>
+            <tr><td><code>t3423.value</code></td><td>int (s)</td><td>720</td><td>MME-only. IMSI detach/deactivation guard timer.</td></tr>
+            <tr><td><code>t3502.value</code></td><td>int (s)</td><td>720</td><td>AMF-only, the 5G equivalent of T3402 — registration retry timer given to the UE after a registration reject.</td></tr>
+            <tr><td><code>t3512.value</code></td><td>int (s)</td><td>3240</td><td>AMF-only, the 5G equivalent of T3412 — periodic registration update interval.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SERVING (shared) ─── -->
+    <div class="section">
+      <span class="section-anchor" id="serving"></span>
+      <h2 class="section-h">Shared <code>serving:</code> Section</h2>
+      <p class="body">Appears under the root of 5G SBI-based NFs (most prominently NRF) to declare which PLMNs this instance serves. Parsed alongside the rest of the SBI context.</p>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>YAML</div>
+        <pre data-yaml>nrf:                      # most commonly seen on NRF
+  serving:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+    - plmn_id:
+        mcc: "310"
+        mnc: "170"</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Example</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>serving[].plmn_id.mcc</code></td><td>string (3-digit)</td><td><code>"999"</code></td><td>Mobile Country Code this instance serves. <code>999</code> is the 3GPP test/reserved MCC Open5GS ships in its sample configs.</td></tr>
+            <tr><td><code>serving[].plmn_id.mnc</code></td><td>string (2-3 digit)</td><td><code>"70"</code></td><td>Mobile Network Code paired with the MCC. Declare one entry per PLMN for multi-operator/multi-tenant NRF deployments — a second entry with <code>mcc: "310", mnc: "170"</code> lets the same NRF serve a roaming partner's PLMN too.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── DIAMETER ─── -->
+    <div class="section">
+      <span class="section-anchor" id="diameter"></span>
+      <h2 class="section-h">Diameter / FreeDiameter</h2>
+      <p class="body">MME supports only the <code>freeDiameter: &lt;path&gt;</code> form, pointing at a separate freeDiameter XML config. HSS, SMF, and PCRF support both that path reference and inline Diameter configuration keys directly under the service block.</p>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>YAML — inline form (HSS / SMF / PCRF)</div>
+        <pre data-yaml>hss:                        # or smf, pcrf
+  identity: hss.open5gs.org  # Diameter Origin-Host
+  realm: open5gs.org         # Diameter Origin-Realm
+  port: 3868                 # Diameter port (default 3868)
+  sec_port: 5868             # Diameter TLS port
+  listen_on: 127.0.0.5       # Bind Diameter to this address
+  no_fwd: false              # Disable Diameter forwarding agent
+  tc_timer: 30               # Diameter Tc timer (seconds)
+  load_extension:
+    - module: /usr/lib/x86_64-linux-gnu/freeDiameter/dbg_msg_dumps.fdx
+      conf: /etc/freeDiameter/dbg_msg_dumps.conf
+  connect:
+    - identity: mme.open5gs.org
+      port: 3868
+      tc_timer: 30</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>identity</code></td><td>string (FQDN)</td><td>—</td><td>Diameter Origin-Host advertised in every message this node sends — must be a resolvable-looking FQDN even in a lab, since some peers validate its shape.</td></tr>
+            <tr><td><code>realm</code></td><td>string</td><td>—</td><td>Diameter Origin-Realm, typically the domain suffix shared by all nodes in the deployment (e.g. <code>open5gs.org</code>).</td></tr>
+            <tr><td><code>port</code></td><td>int</td><td>3868</td><td>TCP/SCTP port for plaintext Diameter.</td></tr>
+            <tr><td><code>sec_port</code></td><td>int</td><td>5868</td><td>Port for Diameter over TLS, used when peers require encrypted transport.</td></tr>
+            <tr><td><code>listen_on</code></td><td>IP</td><td>—</td><td>Bind address for the Diameter stack. On a multi-homed host, pin this rather than binding to all interfaces.</td></tr>
+            <tr><td><code>no_fwd</code></td><td>bool</td><td>false</td><td>Disables this node's Diameter message-forwarding-agent behavior, so it only originates/terminates messages for itself rather than relaying for other realms.</td></tr>
+            <tr><td><code>tc_timer</code></td><td>int (s)</td><td>30</td><td>Diameter Tc timer — the interval between reconnection attempts to a peer after a failed connection.</td></tr>
+            <tr><td><code>load_extension[].module</code></td><td>string (path)</td><td>—</td><td>Path to a freeDiameter extension shared object, e.g. the built-in <code>dbg_msg_dumps.fdx</code> for wire-level Diameter tracing during debugging.</td></tr>
+            <tr><td><code>load_extension[].conf</code></td><td>string (path)</td><td>—</td><td>Config file passed to the loaded extension module.</td></tr>
+            <tr><td><code>connect[].identity</code></td><td>string (FQDN)</td><td>—</td><td>Origin-Host of a Diameter peer to actively connect to on startup, rather than waiting for it to connect in.</td></tr>
+            <tr><td><code>connect[].port</code></td><td>int</td><td>3868</td><td>Port to connect to on that peer.</td></tr>
+            <tr><td><code>connect[].tc_timer</code></td><td>int (s)</td><td>30</td><td>Per-peer override of the reconnection interval for this specific connect entry.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── MME ─── -->
+    <div class="section">
+      <span class="section-anchor" id="mme"></span>
+      <div class="service-heading">
+        <div class="service-key">mme:</div>
+        <div class="service-title">Mobility Management Entity <span class="tag tag-4g">4G</span></div>
+        <div class="service-desc">Parsed in <code>src/mme/mme-context.c</code>. The central 4G control-plane node — terminates S1AP from the eNB and NAS from the UE, drives GTP-C toward the SGW-C. Notable hidden options: <code>hss_map</code> for multi-HSS routing per PLMN, <code>access_control</code> for per-PLMN rejection, <code>emergency</code> for emergency numbers.</div>
+      </div>
+
+      <span class="section-anchor" id="mme-s1ap"></span>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>mme.yaml</div>
+        <pre data-yaml>mme:
+  freeDiameter: /etc/freeDiameter/mme.conf
+
+  relative_capacity: 100    # Load balancing weight (0-255, default 100)
+
+  s1ap:
+    server:
+      - address: 127.0.0.2   # S1-MME bind address
+        port: 36412          # S1AP port (default 36412)
+        dev: eth0            # Alternative to address: bind to interface
+
+  gtpc:
+    server:
+      - address: 127.0.0.2
+    client:
+      sgwc:
+        - address: 127.0.0.3
+      smf:
+        - address: 127.0.0.4
+      sgsn:                  # HIDDEN: Gn interface to 2G/3G SGSN
+        - address: 10.10.0.20
+
+  gummei:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      mme_gid: 1
+      mme_code: 1
+
+  tai:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      tac: 1
+
+  access_control:            # HIDDEN: per-PLMN UE rejection
+    - plmn_id:
+        mcc: "310"
+        mnc: "170"
+        reject_cause: 11     # EMM cause: PLMN not allowed
+
+  hss_map:                   # HIDDEN: route S6a to different HSS per PLMN
+    - plmn_id:
+        mcc: "310"
+        mnc: "170"
+        host: hss2.example.org
+        realm: example.org
+
+  security:
+    integrity_order:         # EIA algorithm preference (tried in order)
+      - EIA2                 # 128-EIA2 AES (recommended)
+      - EIA1                 # 128-EIA1 SNOW 3G
+      - EIA0                 # Null — no integrity
+    ciphering_order:         # EEA algorithm preference
+      - EEA0                 # Null — no encryption
+      - EEA2                 # 128-EEA2 AES
+      - EEA1                 # 128-EEA1 SNOW 3G
+
+  network_name:
+    full: "Open5GS Network"  # Broadcast to UEs in NAS messages
+    short: "Open5GS"
+
+  mme_name: open5gs-mme0
+
+  time:                      # See shared time section (t3402/t3412/t3423)
+
+  metrics:
+    server:
+      - address: 127.0.0.2
+        port: 9090
+
+  emergency:                 # HIDDEN: emergency call configuration
+    dnn: internet
+    number:
+      - digits: "911"
+        categories:          # police | ambulance | fire | marine | mountain
+          - police
+          - ambulance
+
+  sgsap:                     # CSFB: SGs-AP interface to MSC/VLR
+    client:
+      - address: 127.0.0.88  # MSC/VLR address — use IP, not hostname (DNS at boot)
+        local_address: 127.0.0.2
+        port: 29118
+        map:                 # TAI → LAI mapping
+          tai:
+            plmn_id:
+              mcc: "999"
+              mnc: "70"
+            tac: 1
+          lai:
+            plmn_id:
+              mcc: "999"
+              mnc: "70"
+            lac: 1</pre>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>freeDiameter</code></td><td>string (path)</td><td>—</td><td>Path to the freeDiameter XML config used for the S6a interface to the HSS. This is the only Diameter form the MME accepts — unlike HSS/SMF/PCRF it does not support inline <code>identity</code>/<code>realm</code> keys.</td></tr>
+            <tr><td><code>relative_capacity</code></td><td>int</td><td>100</td><td>Load-balancing weight (0-255) broadcast in the S1AP Setup Response. eNBs that implement MME load balancing steer more UEs toward higher-capacity values — raise it on a beefier MME instance in a multi-MME pool.</td></tr>
+            <tr><td><code>s1ap.server[].address</code></td><td>IP</td><td>—</td><td>Bind address for the S1-MME SCTP listener facing the eNB, e.g. <code>127.0.0.2</code> in the single-host demo topology.</td></tr>
+            <tr><td><code>s1ap.server[].port</code></td><td>int</td><td>36412</td><td>SCTP port for S1AP.</td></tr>
+            <tr><td><code>s1ap.server[].dev</code></td><td>string</td><td>—</td><td>Bind to a named interface (e.g. <code>eth0</code>) instead of a literal address — handy when the interface gets a DHCP address unknown at config time.</td></tr>
+            <tr><td><code>gtpc.server[].address</code></td><td>IP</td><td>—</td><td>MME's own GTP-C bind address, e.g. <code>127.0.0.2</code>.</td></tr>
+            <tr><td><code>gtpc.client.sgwc[].address</code></td><td>IP</td><td>—</td><td>SGW-C GTP-C address the MME sends Create/Modify Session Requests to, e.g. <code>127.0.0.3</code>.</td></tr>
+            <tr><td><code>gtpc.client.smf[].address</code></td><td>IP</td><td>—</td><td>SMF GTP-C address for direct S11-like signaling in combined 4G/5G deployments, e.g. <code>127.0.0.4</code>.</td></tr>
+            <tr class="is-hidden"><td><code>gtpc.client.sgsn[].address</code></td><td>IP</td><td>—</td><td>Gn interface — GTP-C client address for a legacy 2G/3G SGSN, used only when supporting inter-RAT handover/fallback to GERAN/UTRAN.</td></tr>
+            <tr><td><code>gummei[].plmn_id.mcc/mnc</code></td><td>string</td><td>—</td><td>PLMN this MME identity belongs to, e.g. mcc <code>999</code>, mnc <code>70</code> (the Open5GS test PLMN).</td></tr>
+            <tr><td><code>gummei[].mme_gid</code></td><td>int</td><td>—</td><td>MME Group ID (0–65535), part of the GUMMEI that uniquely identifies this MME to eNBs.</td></tr>
+            <tr><td><code>gummei[].mme_code</code></td><td>int</td><td>—</td><td>MME Code (0–255), the final component of the GUMMEI.</td></tr>
+            <tr><td><code>tai[].tac</code></td><td>int</td><td>—</td><td>Tracking Area Code this MME serves for the given PLMN, e.g. <code>1</code>.</td></tr>
+            <tr class="is-hidden"><td><code>access_control[].reject_cause</code></td><td>int</td><td>—</td><td>Rejects UEs from the listed PLMN with a configurable EMM cause code (e.g. <code>11</code> = PLMN not allowed). Useful for MVNO gating in a shared-RAN lab, or for deliberately testing UE reject-cause handling.</td></tr>
+            <tr class="is-hidden"><td><code>hss_map[].plmn_id / host / realm</code></td><td>object</td><td>—</td><td>Routes S6a Diameter to a different HSS Origin-Host/Realm based on the attaching UE's home PLMN, so one MME can serve subscribers whose profiles live on separate HSS instances (e.g. an MVNO's own HSS at <code>hss2.example.org</code>).</td></tr>
+            <tr><td><code>security.integrity_order</code></td><td>list (enum)</td><td>EIA2, EIA1, EIA0</td><td>Ordered NAS/AS integrity algorithm preference offered to the UE. Keep <code>EIA0</code> (null) last and only present at all if you have a specific reason to allow unauthenticated-integrity UEs (e.g. certain emergency-call flows).</td></tr>
+            <tr><td><code>security.ciphering_order</code></td><td>list (enum)</td><td>EEA0, EEA2, EEA1</td><td>Ordered ciphering algorithm preference. The upstream default actually prefers <code>EEA0</code> (null) first for lab compatibility — flip the order to prefer <code>EEA2</code> first in anything resembling production.</td></tr>
+            <tr><td><code>network_name.full</code> / <code>.short</code></td><td>string</td><td>—</td><td>Operator network name strings broadcast to UEs in NAS messages and shown in the phone's carrier display.</td></tr>
+            <tr><td><code>mme_name</code></td><td>string</td><td>—</td><td>Free-text MME identity string used in logging and some Diameter contexts, e.g. <code>open5gs-mme0</code>.</td></tr>
+            <tr><td><code>metrics.server[].address/port</code></td><td>IP / int</td><td>port 9090</td><td>Prometheus metrics endpoint for this MME instance.</td></tr>
+            <tr class="is-hidden"><td><code>emergency.dnn</code></td><td>string</td><td>—</td><td>DNN/APN used for the emergency PDN bearer established during an emergency attach.</td></tr>
+            <tr class="is-hidden"><td><code>emergency.number[].digits</code></td><td>string</td><td>—</td><td>Emergency number string (e.g. <code>"911"</code>, <code>"112"</code>) the MME recognizes and advertises to UEs in Attach Accept for local emergency dialing.</td></tr>
+            <tr class="is-hidden"><td><code>emergency.number[].categories</code></td><td>list (enum)</td><td>—</td><td>Service categories for that number: <code>police</code>, <code>ambulance</code>, <code>fire</code>, <code>marine</code>, <code>mountain</code>. Declare multiple categories per number when one emergency line covers several services.</td></tr>
+            <tr><td><code>sgsap.client[].address</code></td><td>IP</td><td>—</td><td>MSC/VLR address for the CSFB SGs-AP interface. Use a literal IP, not a hostname — DNS is resolved once at process boot, so a hostname that later re-resolves won't be picked up without a restart.</td></tr>
+            <tr><td><code>sgsap.client[].local_address</code></td><td>IP</td><td>—</td><td>MME's own bind address for the SGs-AP connection to the MSC/VLR.</td></tr>
+            <tr><td><code>sgsap.client[].port</code></td><td>int</td><td>29118</td><td>SGs-AP port.</td></tr>
+            <tr><td><code>sgsap.client[].map.tai</code> / <code>.lai</code></td><td>object</td><td>—</td><td>Maps this MME's Tracking Area (TAI) to the 2G/3G Location Area (LAI) the MSC/VLR expects, required so CS paging can locate the UE correctly across the CSFB boundary.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="mme-identity"></span>
+      <span class="section-anchor" id="mme-access-control"></span>
+      <span class="section-anchor" id="mme-security"></span>
+      <span class="section-anchor" id="mme-emergency"></span>
+      <span class="section-anchor" id="mme-sgsap"></span>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── HSS ─── -->
+    <div class="section">
+      <span class="section-anchor" id="hss"></span>
+      <div class="service-heading">
+        <div class="service-key">hss:</div>
+        <div class="service-title">Home Subscriber Server <span class="tag tag-4g">4G</span></div>
+        <div class="service-desc">Parsed in <code>src/hss/hss-context.c</code>. Uses MongoDB for subscriber storage and speaks Diameter S6a to the MME. Shares the inline Diameter keys documented above.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>hss.yaml</div>
+        <pre data-yaml>hss:
+  # Inline Diameter config (or use freeDiameter: path)
+  identity: hss.open5gs.org
+  realm: open5gs.org
+  port: 3868
+
+  diameter_stats_interval: 60  # HIDDEN: log Diameter stats every N seconds
+
+  sms_over_ims: false          # HIDDEN: enable SMS-over-IMS (SH interface)
+
+  use_mongodb_change_stream: false
+  # HIDDEN: use MongoDB change streams for real-time subscriber updates
+  # without polling. Requires MongoDB replica set mode.
+
+  metrics:
+    server:
+      - address: 127.0.0.5
+        port: 9090</pre>
+      </div>
+      <span class="section-anchor" id="hss-hidden"></span>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>identity</code> / <code>realm</code> / <code>port</code></td><td>—</td><td>—</td><td>Standard inline Diameter identity, see the shared Diameter section above.</td></tr>
+            <tr class="is-hidden"><td><code>diameter_stats_interval</code></td><td>int (s)</td><td>0 (off)</td><td>Logs Diameter message-rate statistics every N seconds to help spot abnormal S6a traffic (retry storms, a misbehaving MME). Set to <code>60</code> when diagnosing HSS load.</td></tr>
+            <tr class="is-hidden"><td><code>sms_over_ims</code></td><td>bool</td><td>false</td><td>Enables the SH interface behavior needed for SMS-over-IMS, where the HSS mediates SMS delivery info toward the IMS core rather than only classic circuit-switched SMS via MAP/SGs.</td></tr>
+            <tr class="is-hidden"><td><code>use_mongodb_change_stream</code></td><td>bool</td><td>false</td><td>Uses MongoDB change streams to push subscriber provisioning updates to the HSS in real time instead of polling. Requires MongoDB running in <strong>replica set mode</strong> — pointed at a standalone MongoDB instance, the HSS will error on startup when it tries to open the change stream.</td></tr>
+            <tr><td><code>metrics.server[].address/port</code></td><td>IP / int</td><td>port 9090</td><td>Prometheus metrics endpoint, e.g. <code>127.0.0.5:9090</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SGWC / SGWU ─── -->
+    <div class="section">
+      <span class="section-anchor" id="sgwc"></span>
+      <div class="service-heading">
+        <div class="service-key">sgwc:</div>
+        <div class="service-title">Serving Gateway Control <span class="tag tag-4g">4G</span></div>
+        <div class="service-desc">Parsed in <code>src/sgwc/context.c</code>. Splits the classic SGW into a control-plane node speaking GTP-C to the MME/SMF and PFCP to its paired SGW-U.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>sgwc.yaml</div>
+        <pre data-yaml>sgwc:
+  gtpc:
+    server:
+      - address: 127.0.0.3
+    client:
+      sgwu:
+        - address: 127.0.0.6
+  pfcp:
+    server:
+      - address: 127.0.0.3
+    client:
+      sgwu:
+        - address: 127.0.0.6</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>gtpc.server[].address</code></td><td>IP</td><td>SGW-C's own GTP-C bind address facing the MME, e.g. <code>127.0.0.3</code>.</td></tr>
+            <tr><td><code>gtpc.client.sgwu[].address</code></td><td>IP</td><td>Not actually used for GTP-C to SGW-U (control is via PFCP) — retained for symmetry with other client blocks; the SGW-U's data-plane address is what matters operationally.</td></tr>
+            <tr><td><code>pfcp.server[].address</code></td><td>IP</td><td>SGW-C's N4-like PFCP bind address for controlling its SGW-U, e.g. <code>127.0.0.3</code>.</td></tr>
+            <tr><td><code>pfcp.client.sgwu[].address</code></td><td>IP</td><td>SGW-U's PFCP address the SGW-C sends session establishment/modification rules to, e.g. <code>127.0.0.6</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="sgwu"></span>
+      <div class="service-heading" style="margin-top:32px">
+        <div class="service-key">sgwu:</div>
+        <div class="service-title">Serving Gateway User-plane <span class="tag tag-4g">4G</span></div>
+        <div class="service-desc">Parsed in <code>src/sgwu/context.c</code>. Pure data-plane node: receives PFCP rules from SGW-C and forwards GTP-U packets between eNB and PGW/UPF.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>sgwu.yaml</div>
+        <pre data-yaml>sgwu:
+  pfcp:
+    server:
+      - address: 127.0.0.6
+    client:
+      sgwc:
+        - address: 127.0.0.3
+  gtpu:
+    server:
+      - address: 127.0.0.6
+        dev: eth0            # Optional: bind to interface instead of IP</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>pfcp.server[].address</code></td><td>IP</td><td>SGW-U's PFCP bind address that accepts session rules from SGW-C, e.g. <code>127.0.0.6</code>.</td></tr>
+            <tr><td><code>pfcp.client.sgwc[].address</code></td><td>IP</td><td>SGW-C address this SGW-U reports back to / expects rules from.</td></tr>
+            <tr><td><code>gtpu.server[].address</code></td><td>IP</td><td>GTP-U data-plane bind address facing the eNB and PGW/UPF, e.g. <code>127.0.0.6</code>.</td></tr>
+            <tr><td><code>gtpu.server[].dev</code></td><td>string</td><td>Bind the GTP-U socket to a named interface instead of a literal address, e.g. <code>eth0</code> — useful when the data-plane NIC's IP isn't static at config time.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── PCRF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="pcrf"></span>
+      <div class="service-heading">
+        <div class="service-key">pcrf:</div>
+        <div class="service-title">Policy and Charging Rules Function <span class="tag tag-4g">4G</span></div>
+        <div class="service-desc">Parsed in <code>src/pcrf/pcrf-context.c</code>. Speaks Diameter Gx to the SMF/PGW to install QoS and charging rules for 4G sessions.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>pcrf.yaml</div>
+        <pre data-yaml>pcrf:
+  identity: pcrf.open5gs.org
+  realm: open5gs.org
+  port: 3868
+
+  diameter_stats_interval: 60   # HIDDEN: log Diameter stats every N seconds
+
+  supi_range:                   # HIDDEN: restrict policy to IMSI ranges
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+
+  metrics:
+    server:
+      - address: 127.0.0.9
+        port: 9090</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>identity</code> / <code>realm</code> / <code>port</code></td><td>—</td><td>—</td><td>Standard inline Diameter identity, e.g. <code>pcrf.open5gs.org</code> / <code>open5gs.org</code> / <code>3868</code>.</td></tr>
+            <tr class="is-hidden"><td><code>diameter_stats_interval</code></td><td>int (s)</td><td>0 (off)</td><td>Same as the HSS option of the same name — periodic Diameter traffic-rate logging, useful when diagnosing Gx signaling storms.</td></tr>
+            <tr class="is-hidden"><td><code>supi_range[].plmn_id</code></td><td>object</td><td>—</td><td>Restricts this PCRF instance's policy handling to subscribers from the listed PLMN(s). Used when sharding policy control across multiple PCRF instances by home operator in a multi-tenant deployment.</td></tr>
+            <tr><td><code>metrics.server[].address/port</code></td><td>IP / int</td><td>port 9090</td><td>Prometheus metrics endpoint, e.g. <code>127.0.0.9:9090</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SMF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="smf"></span>
+      <div class="service-heading">
+        <div class="service-key">smf:</div>
+        <div class="service-title">Session Management Function <span class="tag tag-both">4G + 5G</span></div>
+        <div class="service-desc">Parsed in <code>src/smf/context.c</code> and <code>lib/pfcp/context.c</code>. Handles both 4G (Gx/Gy via Diameter, GTP-C S5/S8) and 5G (SBI, N4/PFCP) session management — the single busiest config surface in Open5GS.</div>
+      </div>
+
+      <span class="section-anchor" id="smf-diameter"></span>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>smf.yaml</div>
+        <pre data-yaml>smf:
+  # Diameter for Gx (PCRF) / Gy (OCS):
+  identity: smf.open5gs.org
+  realm: open5gs.org
+
+  ctf:
+    enabled: auto            # auto | yes | no — enable Gy charging
+
+  mtu: 1400                  # MTU for UE PDN sessions
+
+  p-cscf:                    # IMS P-CSCF addresses pushed to UE in PCO
+    - 127.0.1.1              # IPv4 → p_cscf
+    - ::1                    # IPv6 → p_cscf6
+
+  dns:                       # DNS servers pushed to UEs
+    - 8.8.8.8
+    - 8.8.4.4
+
+  security_indication:       # HIDDEN: 5G UP security policy per session
+    integrity_protection_indication: not-needed   # required | preferred | not-needed
+    confidentiality_protection_indication: not-needed
+    maximum_integrity_protected_data_rate_uplink: max-UE-rate
+    maximum_integrity_protected_data_rate_downlink: max-UE-rate
+
+  info:                      # NF profile for NRF registration
+    - s_nssai:
+        - sst: 1
+          sd: "000001"
+          dnn:
+            - internet
+            - ims
+      tai:
+        - plmn_id:
+            mcc: "999"
+            mnc: "70"
+          tac: 1
+
+  gtpc:                      # GTP-C (4G S5/S8)
+    server:
+      - address: 127.0.0.4
+
+  pfcp:                      # PFCP (N4 / Sxb)
+    server:
+      - address: 127.0.0.4
+        dnn: internet        # HIDDEN: bind this PFCP server instance to a DNN
+    client:
+      upf:
+        - address: 127.0.0.7
+          dnn: internet      # Route sessions for this DNN to this UPF
+
+  session:                   # UE IP pool / session routing
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+      dnn: internet          # Also accepts: apn (4G alias)
+      dev: ogstun            # TUN interface
+      range:                 # HIDDEN: sub-range within subnet
+        - 10.45.1.0/24
+
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/smf.key
+        cert: /etc/open5gs/tls/smf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.4
+        port: 7777
+        advertise: smf.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/smf.key
+        cert: /etc/open5gs/tls/smf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nsmf-pdusession
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation
+
+  metrics:
+    server:
+      - address: 127.0.0.4
+        port: 9090</pre>
+      </div>
+
+      <span class="section-anchor" id="smf-pcscf-dns"></span>
+      <span class="section-anchor" id="smf-security-indication"></span>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>identity</code> / <code>realm</code></td><td>—</td><td>—</td><td>Inline Diameter identity for the Gx (PCRF) and Gy (OCS) interfaces, e.g. <code>smf.open5gs.org</code>.</td></tr>
+            <tr><td><code>ctf.enabled</code></td><td>enum</td><td>auto</td><td><code>auto</code> enables Gy online charging only if an OCS peer is reachable; <code>yes</code>/<code>no</code> force it on or off regardless of reachability. Force <code>no</code> in a pure lab with no OCS to avoid session-setup stalls waiting on Gy.</td></tr>
+            <tr><td><code>mtu</code></td><td>int</td><td>1400</td><td>MTU value pushed to the UE for its PDN/PDU session. 1400 leaves headroom under a 1500-byte physical MTU for GTP-U/IPsec encapsulation overhead — raise it only if you've confirmed the full path (transport network, UPF, RAN) tolerates a larger frame.</td></tr>
+            <tr><td><code>p-cscf</code></td><td>list (IP)</td><td>—</td><td>IMS Proxy-CSCF address(es) delivered to the UE via Protocol Configuration Options, e.g. <code>127.0.1.1</code> for IPv4, <code>::1</code> for IPv6 (populates the separate <code>p_cscf6</code> list internally). Required for VoLTE/VoNR deployments; omit entirely for data-only DNNs.</td></tr>
+            <tr><td><code>dns</code></td><td>list (IP)</td><td>—</td><td>DNS resolver addresses pushed to the UE, e.g. <code>8.8.8.8</code> / <code>8.8.4.4</code>. In production, point these at resolvers that can actually reach your DNN's intended destinations rather than public DNS.</td></tr>
+            <tr class="is-hidden"><td><code>security_indication.integrity_protection_indication</code></td><td>enum</td><td>not-needed</td><td>5G user-plane integrity protection requirement for sessions on this DNN: <code>required</code>, <code>preferred</code>, or <code>not-needed</code>. Set <code>required</code> for DNNs carrying sensitive traffic where UP integrity must be enforced end-to-end by the RAN/UPF.</td></tr>
+            <tr class="is-hidden"><td><code>security_indication.confidentiality_protection_indication</code></td><td>enum</td><td>not-needed</td><td>Same as above but for user-plane confidentiality (encryption) rather than integrity.</td></tr>
+            <tr class="is-hidden"><td><code>security_indication.maximum_integrity_protected_data_rate_uplink/downlink</code></td><td>enum</td><td>max-UE-rate</td><td>Caps the uplink/downlink rate that gets UP integrity protection: <code>64kbps</code> or <code>max-UE-rate</code>. Some RAN hardware can only integrity-protect at limited throughput — 64kbps mirrors that hardware ceiling for voice-only integrity protection.</td></tr>
+            <tr><td><code>info[].s_nssai[].sst/sd</code></td><td>int / hex</td><td>—</td><td>Slice/Service Type and optional Slice Differentiator this SMF instance profile advertises to the NRF, e.g. <code>sst: 1, sd: "000001"</code> (eMBB slice #1).</td></tr>
+            <tr><td><code>info[].s_nssai[].dnn</code></td><td>list (string)</td><td>—</td><td>DNNs served under that slice, e.g. <code>internet</code>, <code>ims</code>.</td></tr>
+            <tr><td><code>info[].tai[].plmn_id / tac</code></td><td>object</td><td>—</td><td>Tracking areas this SMF profile is valid for, used by the AMF/NRF to route session establishment requests to an SMF that actually covers the UE's current TAI.</td></tr>
+            <tr><td><code>gtpc.server[].address</code></td><td>IP</td><td>—</td><td>SMF's GTP-C bind address for the 4G S5/S8 interface toward SGW-C, e.g. <code>127.0.0.4</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="smf-pfcp"></span>
+      <h3 class="sub-h">smf.pfcp — N4 / Sxb interface</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>pfcp.server[].address</code></td><td>IP</td><td>SMF's own PFCP bind address, e.g. <code>127.0.0.4</code>.</td></tr>
+            <tr class="is-hidden"><td><code>pfcp.server[].dnn</code> / <code>.apn</code></td><td>string</td><td>Binds this specific PFCP server instance to one DNN. Lets a single SMF process run multiple PFCP listeners, each scoped to a different DNN, when different DNNs need isolated N4 associations (e.g. separate UPF pools per DNN with strict traffic separation).</td></tr>
+            <tr><td><code>pfcp.client.upf[].address</code></td><td>IP</td><td>UPF PFCP peer address this SMF sends session establishment/modification requests to, e.g. <code>127.0.0.7</code>.</td></tr>
+            <tr><td><code>pfcp.client.upf[].dnn</code> / <code>.apn</code></td><td>string</td><td>Routes sessions for this DNN to this particular UPF entry. With multiple UPF entries each scoped to a different DNN, the SMF picks the matching one per session rather than round-robining across all UPFs.</td></tr>
+            <tr><td><code>upf[].address</code></td><td>IP</td><td>Shorthand UPF selection list (as opposed to the full <code>pfcp.client.upf</code> form) for simple single-DNN topologies.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="smf-session"></span>
+      <h3 class="sub-h">smf.session — UE IP pool</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>subnet</code></td><td>CIDR</td><td>UE IP address pool for this DNN, e.g. <code>10.45.0.0/16</code>. Size it for peak concurrent sessions on the DNN plus growth headroom — it can't be resized without a restart.</td></tr>
+            <tr><td><code>gateway</code></td><td>IP</td><td>Gateway address handed to the UE as the default route for the session, e.g. <code>10.45.0.1</code>. Usually the first usable address in <code>subnet</code>.</td></tr>
+            <tr><td><code>dnn</code> / <code>apn</code></td><td>string</td><td>DNN (or its 4G-era alias APN) this subnet serves, e.g. <code>internet</code>. Both keys are accepted interchangeably — see the Notes section.</td></tr>
+            <tr><td><code>dev</code></td><td>string</td><td>TUN interface name the SMF/UPF uses to inject/receive this subnet's traffic on the host, e.g. <code>ogstun</code>.</td></tr>
+            <tr class="is-hidden"><td><code>range</code></td><td>list (CIDR)</td><td>Restricts actual UE address assignment to a sub-range within the declared <code>subnet</code>, e.g. <code>10.45.1.0/24</code> out of a <code>/16</code>. Useful for reserving the rest of the subnet for static assignments or future expansion without renumbering.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── UPF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="upf"></span>
+      <div class="service-heading">
+        <div class="service-key">upf:</div>
+        <div class="service-title">User-Plane Function <span class="tag tag-both">4G + 5G</span></div>
+        <div class="service-desc">Parsed in <code>src/upf/context.c</code> and <code>lib/pfcp/context.c</code>. The GTP-U forwarding node shared by both 4G (as the PGW-U counterpart) and 5G (N3/N6) data planes.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>upf.yaml</div>
+        <pre data-yaml>upf:
+  pfcp:
+    server:
+      - address: 127.0.0.7
+    client:
+      smf:
+        - address: 127.0.0.4
+
+  gtpu:
+    server:
+      - address: 127.0.0.7
+        dev: ogstun
+
+  session:                   # IP pool mirrors SMF session config
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+      dnn: internet
+      dev: ogstun
+      range:                 # HIDDEN: sub-range allocation within subnet
+        - 10.45.1.0/24
+
+  smf:                       # SMF hint for multi-SMF topologies
+    - address: 127.0.0.4
+
+  metrics:
+    server:
+      - address: 127.0.0.7
+        port: 9090</pre>
+      </div>
+      <span class="section-anchor" id="upf-session"></span>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>pfcp.server[].address</code></td><td>IP</td><td>UPF's own N4/PFCP bind address that accepts rules from the SMF, e.g. <code>127.0.0.7</code>.</td></tr>
+            <tr><td><code>pfcp.client.smf[].address</code></td><td>IP</td><td>SMF address this UPF reports node-level PFCP association status to, e.g. <code>127.0.0.4</code>.</td></tr>
+            <tr><td><code>gtpu.server[].address</code></td><td>IP</td><td>GTP-U data-plane bind address for N3 (gNB) and N6 (DN) traffic, e.g. <code>127.0.0.7</code>.</td></tr>
+            <tr><td><code>gtpu.server[].dev</code></td><td>string</td><td>Bind GTP-U to an interface name instead of a literal address.</td></tr>
+            <tr><td><code>session[].subnet/gateway/dnn/dev</code></td><td>—</td><td>Mirrors the SMF's session config — must match so the UPF and SMF agree on which subnet/interface serves which DNN.</td></tr>
+            <tr class="is-hidden"><td><code>session[].range</code></td><td>list (CIDR)</td><td>Same purpose as the SMF-side hidden <code>range</code> key — restricts UE address assignment to a sub-range of the declared subnet.</td></tr>
+            <tr><td><code>smf[].address</code></td><td>IP</td><td>SMF hint used in multi-SMF topologies so this UPF instance knows which SMF(s) it's allowed to accept PFCP associations from, e.g. <code>127.0.0.4</code>.</td></tr>
+            <tr><td><code>metrics.server[].address/port</code></td><td>IP / int</td><td>Prometheus metrics endpoint, port default 9090.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── AMF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="amf"></span>
+      <div class="service-heading">
+        <div class="service-key">amf:</div>
+        <div class="service-title">Access and Mobility Management Function <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/amf/context.c</code>. 5G SA control-plane peer to MME — terminates NGAP from the gNB and 5GMM/5GSM NAS from the UE. Includes ZUC (NIA3/NEA3) algorithm support that is hidden from sample configs.</div>
+      </div>
+
+      <span class="section-anchor" id="amf-ngap"></span>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>amf.yaml</div>
+        <pre data-yaml>amf:
+  ngap:
+    server:
+      - address: 127.0.0.5
+        port: 38412          # Default NGAP port
+
+  guami:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      amf_id:
+        region: 2            # AMF Region ID (0-255)
+        set: 1               # AMF Set ID (0-1023)
+        pointer: 0           # AMF Pointer (0-63)
+
+  tai:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      tac: 1                 # 5G TAC (24-bit integer)
+
+  plmn_support:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      s_nssai:
+        - sst: 1
+          sd: "000001"       # Optional 6-hex Slice Differentiator
+
+  access_control:            # HIDDEN: per-PLMN UE rejection
+    - plmn_id:
+        mcc: "310"
+        mnc: "170"
+        reject_cause: 11     # 5GMM cause code
+
+  security:
+    integrity_order:
+      - NIA2                 # 128-NIA2 AES (recommended)
+      - NIA1                 # 128-NIA1 SNOW 3G
+      - NIA0                 # Null
+      - NIA3                 # HIDDEN: 128-NIA3 ZUC
+    ciphering_order:
+      - NEA0                 # Null
+      - NEA2                 # 128-NEA2 AES
+      - NEA1                 # 128-NEA1 SNOW 3G
+      - NEA3                 # HIDDEN: 128-NEA3 ZUC
+
+  network_name:
+    full: "Open5GS Network"
+    short: "Open5GS"
+
+  amf_name: open5gs-amf0
+
+  time:
+    nf_instance:
+      heartbeat: 10
+      validity: 3600
+    subscription:
+      validity: 86400
+    message:
+      duration: 5000
+    handover:
+      duration: 10000
+    t3502:
+      value: 720             # Seconds; 5G registration retry timer
+    t3512:
+      value: 3240             # Seconds; 5G periodic registration timer
+
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/amf.key
+        cert: /etc/open5gs/tls/amf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.5
+        port: 7777
+        advertise: amf.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/amf.key
+        cert: /etc/open5gs/tls/amf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - namf-comm
+    - namf-mt
+    - namf-loc
+    - namf-oam
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation
+
+  metrics:
+    server:
+      - address: 127.0.0.5
+        port: 9090</pre>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>ngap.server[].address</code></td><td>IP</td><td>—</td><td>Bind address for the N2/NGAP SCTP listener facing the gNB, e.g. <code>127.0.0.5</code>.</td></tr>
+            <tr><td><code>ngap.server[].port</code></td><td>int</td><td>38412</td><td>SCTP port for NGAP.</td></tr>
+            <tr><td><code>guami[].plmn_id</code></td><td>object</td><td>—</td><td>PLMN this AMF identity belongs to, e.g. mcc <code>999</code>, mnc <code>70</code>.</td></tr>
+            <tr><td><code>guami[].amf_id.region</code></td><td>int</td><td>—</td><td>AMF Region ID (0–255), the coarsest level of the GUAMI hierarchy — typically one region per geographic deployment area.</td></tr>
+            <tr><td><code>guami[].amf_id.set</code></td><td>int</td><td>—</td><td>AMF Set ID (0–1023) identifying a pool of AMFs that can serve as each other's backup within a region.</td></tr>
+            <tr><td><code>guami[].amf_id.pointer</code></td><td>int</td><td>—</td><td>AMF Pointer (0–63), the finest-grained component distinguishing individual AMF instances within a set.</td></tr>
+            <tr><td><code>tai[].tac</code></td><td>int (24-bit)</td><td>—</td><td>5G Tracking Area Code — wider than the 4G TAC (16-bit), e.g. <code>1</code>.</td></tr>
+            <tr><td><code>plmn_support[].s_nssai[].sst</code></td><td>int</td><td>—</td><td>Slice/Service Type this AMF supports for the PLMN: <code>1</code>=eMBB, <code>2</code>=URLLC, <code>3</code>=MIoT, <code>4</code>=V2X are the standardized values.</td></tr>
+            <tr><td><code>plmn_support[].s_nssai[].sd</code></td><td>hex (6-digit)</td><td>—</td><td>Optional Slice Differentiator distinguishing multiple slices with the same SST, e.g. <code>"000001"</code>.</td></tr>
+            <tr class="is-hidden"><td><code>access_control[].reject_cause</code></td><td>int</td><td>—</td><td>Same mechanism as MME's <code>access_control</code> — rejects UEs from the listed PLMN with a specific 5GMM cause code, e.g. <code>11</code>.</td></tr>
+            <tr><td><code>security.integrity_order</code></td><td>list (enum)</td><td>NIA2, NIA1, NIA0</td><td>Ordered 5G NAS/AS integrity algorithm preference.</td></tr>
+            <tr class="is-hidden"><td><code>security.integrity_order: NIA3</code></td><td>enum value</td><td>—</td><td>128-NIA3, the ZUC-based integrity algorithm required in some markets (notably China) for regulatory/export reasons. Add it to the preference list only if your UE fleet and regulatory environment specifically require ZUC support.</td></tr>
+            <tr><td><code>security.ciphering_order</code></td><td>list (enum)</td><td>NEA0, NEA2, NEA1</td><td>Ordered 5G ciphering algorithm preference.</td></tr>
+            <tr class="is-hidden"><td><code>security.ciphering_order: NEA3</code></td><td>enum value</td><td>—</td><td>128-NEA3, the ZUC-based ciphering counterpart to NIA3.</td></tr>
+            <tr><td><code>network_name.full</code> / <code>.short</code></td><td>string</td><td>—</td><td>Operator network name strings shown on the UE.</td></tr>
+            <tr><td><code>amf_name</code></td><td>string</td><td>—</td><td>Free-text AMF identity string used in logging and NRF registration, e.g. <code>open5gs-amf0</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <span class="section-anchor" id="amf-plmn-support"></span>
+      <span class="section-anchor" id="amf-security"></span>
+      <p class="body">AMF also carries the full shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block documented in the <a href="#sbi">SBI section</a> below, plus <code>metrics</code> as shown above (default port 9090 on <code>127.0.0.5</code>).</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NRF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nrf"></span>
+      <div class="service-heading">
+        <div class="service-key">nrf:</div>
+        <div class="service-title">Network Repository Function <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/nrf/context.c</code>. The service-discovery registry for the 5G SA core — every other 5G NF registers with and queries it (directly, or indirectly via SCP).</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>nrf.yaml</div>
+        <pre data-yaml>nrf:
+  serving:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+    - plmn_id:
+        mcc: "310"
+        mnc: "170"
+
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/nrf.key
+        cert: /etc/open5gs/tls/nrf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.10
+        port: 7777
+        advertise: nrf.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/nrf.key
+        cert: /etc/open5gs/tls/nrf.crt
+    client:
+      scp:
+        - uri: http://127.0.0.200:7777   # Redundant here — NRF is usually the discovery
+                                          # root, but shown for completeness
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nnrf-nfm
+    - nnrf-disc
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation
+
+  time:
+    nf_instance:
+      heartbeat: 10          # NF heartbeat interval override (seconds)</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>serving[].plmn_id</code></td><td>object</td><td>PLMNs this NRF instance serves — see the shared <a href="#serving">serving section</a> above. Multiple entries let one NRF back several PLMNs (e.g. a home PLMN plus a roaming partner).</td></tr>
+            <tr><td><code>sbi.server[].address/port</code></td><td>IP / int</td><td>NRF's own SBI listener, e.g. <code>127.0.0.10:7777</code>. Every other NF's <code>nrf:</code> client block points here.</td></tr>
+            <tr><td><code>time.nf_instance.heartbeat</code></td><td>int (s)</td><td>NRF-side override of how strictly it expects heartbeats from registered NFs before considering them stale — see the shared <a href="#time">time section</a>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── AUSF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="ausf"></span>
+      <div class="service-heading">
+        <div class="service-key">ausf:</div>
+        <div class="service-title">Authentication Server Function <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/ausf/context.c</code>. Runs the 5G-AKA / EAP-AKA' authentication vectors between UDM and AMF/SEPP — a thin, mostly stateless SBI service with no NF-specific keys of its own beyond the shared SBI block.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>ausf.yaml</div>
+        <pre data-yaml>ausf:
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/ausf.key
+        cert: /etc/open5gs/tls/ausf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.11
+        port: 7777
+        advertise: ausf.open5gs.org  # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/ausf.key
+        cert: /etc/open5gs/tls/ausf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nausf-auth
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation</pre>
+      </div>
+      <p class="body">AUSF has no NF-specific config keys in this source version — everything it needs is the shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block documented in full in the <a href="#sbi">SBI section</a> below. Its own SBI listener conventionally runs on <code>127.0.0.11:7777</code> in the Open5GS demo topology.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── UDM ─── -->
+    <div class="section">
+      <span class="section-anchor" id="udm"></span>
+      <div class="service-heading">
+        <div class="service-key">udm:</div>
+        <div class="service-title">Unified Data Management <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/udm/context.c</code>. The 5G subscriber data front-end (analogous to HSS), plus SUCI de-concealment key management for 5G subscriber-identity privacy.</div>
+      </div>
+      <span class="section-anchor" id="udm-hnet"></span>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>udm.yaml — hidden hnet section</div>
+        <pre data-yaml>udm:
+  hnet:                      # HIDDEN: Home Network public keys for SUCI/SUPI concealment
+    - id: 1                  # Home Network Public Key Identifier (1-255)
+      scheme: 1              # 1 = ECIES Profile A (X25519), 2 = Profile B (secp256r1)
+      key: /etc/open5gs/hnet/hnet1.key   # Private key PEM file
+
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/udm.key
+        cert: /etc/open5gs/tls/udm.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.12
+        port: 7777
+        advertise: udm.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/udm.key
+        cert: /etc/open5gs/tls/udm.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nudm-ueau
+    - nudm-uecm
+    - nudm-sdm
+    - nudm-ueid
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr class="is-hidden"><td><code>hnet[].id</code></td><td>int (1–255)</td><td>—</td><td>Home Network Public Key Identifier (matches the <code>hnPublicKeyIdentifier</code> the UE embeds in its SUCI) — lets the UDM pick the right private key when several are provisioned for key rotation.</td></tr>
+            <tr class="is-hidden"><td><code>hnet[].scheme</code></td><td>int</td><td>—</td><td>SUCI protection scheme: <code>1</code> = ECIES Profile A (Curve25519), <code>2</code> = ECIES Profile B (secp256r1/NIST P-256). Must match the scheme USIMs in the field are provisioned to use — mismatched scheme numbers cause silent SUCI de-concealment failure.</td></tr>
+            <tr class="is-hidden"><td><code>hnet[].key</code></td><td>string (path)</td><td>—</td><td>Path to the Home Network private key PEM file corresponding to <code>id</code>/<code>scheme</code>, used to decrypt the UE's concealed SUPI from its SUCI during initial registration. Treat this file with the same care as any long-term subscriber-identity secret.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">Beyond <code>hnet</code>, UDM carries the standard shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>. Its SBI listener conventionally runs on <code>127.0.0.12:7777</code>.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── PCF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="pcf"></span>
+      <div class="service-heading">
+        <div class="service-key">pcf:</div>
+        <div class="service-title">Policy Control Function <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/pcf/context.c</code>. The 5G SBI-native successor to PCRF — provides session, access/mobility, and UE policy over Npcf.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>pcf.yaml — hidden supi_range</div>
+        <pre data-yaml>pcf:
+  supi_range:                # HIDDEN: restrict policy enforcement to IMSI ranges
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/pcf.key
+        cert: /etc/open5gs/tls/pcf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.13
+        port: 7777
+        advertise: pcf.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/pcf.key
+        cert: /etc/open5gs/tls/pcf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - npcf-am-policy-control
+    - npcf-smpolicycontrol
+    - npcf-ue-policy-control
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation
+
+  metrics:
+    server:
+      - address: 127.0.0.13
+        port: 9090</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr class="is-hidden"><td><code>supi_range[].plmn_id</code></td><td>object</td><td>Restricts this PCF instance's policy enforcement to SUPIs from the listed PLMN(s), e.g. mcc <code>999</code>/mnc <code>70</code>. Used to shard policy control by home operator across multiple PCF instances in a multi-tenant or multi-PLMN deployment, the 5G equivalent of the PCRF's <code>supi_range</code>.</td></tr>
+            <tr><td><code>metrics.server[].address/port</code></td><td>IP / int</td><td>Prometheus metrics endpoint, e.g. <code>127.0.0.13:9090</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">PCF also carries the standard shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NSSF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nssf"></span>
+      <div class="service-heading">
+        <div class="service-key">nssf:</div>
+        <div class="service-title">Network Slice Selection Function <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/nssf/context.c</code>. Helps the AMF pick the right slice (and, for inter-PLMN roaming, the right NSSF at the visited network) via Nnssf.</div>
+      </div>
+      <span class="section-anchor" id="nssf-nsi"></span>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>nssf.yaml</div>
+        <pre data-yaml>nssf:
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/nssf.key
+        cert: /etc/open5gs/tls/nssf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.14
+        port: 7777
+        advertise: nssf.open5gs.org  # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/nssf.key
+        cert: /etc/open5gs/tls/nssf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+      nsi:                   # Network Slice Info endpoints
+        - uri: http://127.0.0.10:7777/nnrf-nfm/v1/nf-instances
+          s_nssai:
+            sst: 1
+            sd: "000001"
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nnssf-nsselection
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>sbi.client.nsi[].uri</code></td><td>URI</td><td>Endpoint (typically an NRF query URI) the NSSF consults to resolve which NF instances serve a given slice, e.g. the NRF's <code>nf-instances</code> discovery path at <code>http://127.0.0.10:7777/nnrf-nfm/v1/nf-instances</code>.</td></tr>
+            <tr><td><code>sbi.client.nsi[].s_nssai.sst/sd</code></td><td>int / hex</td><td>The specific slice this NSI (Network Slice Instance) entry maps to, e.g. <code>sst: 1, sd: "000001"</code> — the NSSF uses this to answer AMF slice-selection queries with the correct instance for the requested S-NSSAI.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">Otherwise carries the standard shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── BSF ─── -->
+    <div class="section">
+      <span class="section-anchor" id="bsf"></span>
+      <div class="service-heading">
+        <div class="service-key">bsf:</div>
+        <div class="service-title">Binding Support Function <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/bsf/context.c</code>. Tracks PCF binding for a given UE/session so a PCF-facing NF (e.g. an AF via NEF) can discover the right PCF instance for policy updates.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>bsf.yaml</div>
+        <pre data-yaml>bsf:
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/bsf.key
+        cert: /etc/open5gs/tls/bsf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.15
+        port: 7777
+        advertise: bsf.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/bsf.key
+        cert: /etc/open5gs/tls/bsf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nbsf-management
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation</pre>
+      </div>
+      <p class="body">BSF has no NF-specific config keys beyond the standard shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>. Its SBI listener conventionally runs on <code>127.0.0.15:7777</code>.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── UDR ─── -->
+    <div class="section">
+      <span class="section-anchor" id="udr"></span>
+      <div class="service-heading">
+        <div class="service-key">udr:</div>
+        <div class="service-title">Unified Data Repository <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/udr/context.c</code>. The MongoDB-backed data store behind UDM/PCF — analogous to the HSS's database role but exposed over SBI (Nudr) instead of Diameter.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>udr.yaml</div>
+        <pre data-yaml>udr:
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/udr.key
+        cert: /etc/open5gs/tls/udr.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.20
+        port: 7777
+        advertise: udr.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/udr.key
+        cert: /etc/open5gs/tls/udr.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nudr-dr
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation</pre>
+      </div>
+      <p class="body">UDR has no NF-specific config keys beyond the standard shared <code>sbi</code> / <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>. Subscriber data itself lives in MongoDB (<code>db_uri</code> at the top level), not in this YAML file.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SCP ─── -->
+    <div class="section">
+      <span class="section-anchor" id="scp"></span>
+      <div class="service-heading">
+        <div class="service-key">scp:</div>
+        <div class="service-title">Service Communication Proxy <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/scp/context.c</code>. The SBI indirect-communication hop that lets NFs reach each other without every NF needing every peer's address — NFs point their own <code>scp:</code> client block at it instead of dialing peers directly.</div>
+      </div>
+      <span class="section-anchor" id="scp-info-domain"></span>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>scp.yaml</div>
+        <pre data-yaml>scp:
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/scp.key
+        cert: /etc/open5gs/tls/scp.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN
+
+  sbi:
+    server:
+      - address: 127.0.0.200
+        port: 7777
+        advertise: scp.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/scp.key
+        cert: /etc/open5gs/tls/scp.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.201:7777   # Next-hop SCP (multi-tier topology)
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.201:7777   # Next-hop SCP chaining (for multi-tier SCP topologies)
+
+  service_name:              # SBI service names this NF advertises
+    - nscp-registration
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation
+
+  info:                       # SCP topology info
+    domain:
+      - name: open5gs
+        fqdn: scp.open5gs.org
+        port:
+          http: 80
+          https: 443
+    port:
+      http: 80
+      https: 443</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>scp</code> (this NF's own)</td><td>list (uri)</td><td>Next-hop SCP entries for chaining multiple SCP tiers — used in larger deployments where a local SCP forwards to a central SCP rather than every SCP reaching every NF directly.</td></tr>
+            <tr><td><code>info.domain[].name</code></td><td>string</td><td>Logical domain/administrative-realm name this SCP represents in its topology info, e.g. <code>open5gs</code>.</td></tr>
+            <tr><td><code>info.domain[].fqdn</code></td><td>string (FQDN)</td><td>FQDN advertised for this SCP domain, e.g. <code>scp.open5gs.org</code>, used by peer NFs/SEPPs resolving where to route indirect SBI traffic.</td></tr>
+            <tr><td><code>info.domain[].port.http/https</code></td><td>int</td><td>Per-domain HTTP/HTTPS ports, letting different SCP domains front different port numbers behind the same proxy tier.</td></tr>
+            <tr><td><code>info.port.http/https</code></td><td>int</td><td>Default HTTP/HTTPS ports for this SCP's own topology info when not overridden per-domain, e.g. <code>80</code>/<code>443</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">SCP also carries the standard shared <code>sbi</code> / <code>nrf</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SEPP ─── -->
+    <div class="section">
+      <span class="section-anchor" id="sepp"></span>
+      <div class="service-heading">
+        <div class="service-key">sepp:</div>
+        <div class="service-title">Security Edge Protection Proxy <span class="tag tag-5g">5G</span></div>
+        <div class="service-desc">Parsed in <code>src/sepp/context.c</code>. Sits at the inter-PLMN roaming boundary and speaks N32 to the visited/home network's SEPP, applying topology hiding and message-level security to inter-operator SBI traffic. <code>sender</code> and <code>receiver</code> are hidden keys identifying each side of the N32 handshake.</div>
+      </div>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>sepp.yaml</div>
+        <pre data-yaml>sepp:
+  sbi:
+    server:
+      - address: 127.0.0.250
+        sender: sepp.home.example        # HIDDEN: SEPP sender identity (own FQDN)
+    client:
+      sepp:
+        - uri: https://sepp.visited.example:7777
+          receiver: sepp.visited.example # HIDDEN: remote SEPP FQDN
+          target_plmn_id:
+            mcc: "310"
+            mnc: "170"
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nsepp-n32
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation
+
+  info:
+    port:
+      http: 80
+      https: 443</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr class="is-hidden"><td><code>sbi.server[].sender</code></td><td>string (FQDN)</td><td>This SEPP's own identity as presented in N32 handshake messages to the peer SEPP, e.g. <code>sepp.home.example</code>. Distinct from the plain SBI server address because N32 identity is a protocol-level field, not just a transport endpoint.</td></tr>
+            <tr class="is-hidden"><td><code>sbi.client.sepp[].receiver</code></td><td>string (FQDN)</td><td>Expected identity of the remote/peer SEPP for this connection, e.g. <code>sepp.visited.example</code>. Mismatches here cause the N32-c handshake to fail, which is the usual first thing to check when two SEPPs won't establish a roaming connection.</td></tr>
+            <tr><td><code>sbi.client.sepp[].uri</code></td><td>URI</td><td>N32-c endpoint of the remote SEPP, e.g. <code>https://sepp.visited.example:7777</code>. Always TLS in any real roaming deployment since this crosses an operator trust boundary.</td></tr>
+            <tr><td><code>sbi.client.sepp[].target_plmn_id</code></td><td>object</td><td>PLMN reached through this specific peer SEPP, e.g. mcc <code>310</code>/mnc <code>170</code> — lets one local SEPP maintain separate N32 connections to multiple roaming partners, each scoped to their PLMN.</td></tr>
+            <tr><td><code>info.port.http/https</code></td><td>int</td><td>Default ports for this SEPP's topology info responses, e.g. <code>80</code>/<code>443</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">SEPP also carries the standard shared <code>nrf</code> / <code>scp</code> / <code>service_name</code> / <code>discovery</code> block — see the <a href="#sbi">SBI section</a>.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SBI ─── -->
+    <div class="section">
+      <span class="section-anchor" id="sbi"></span>
+      <h2 class="section-h">SBI Section (shared — all 5G NFs)</h2>
+      <p class="body">Parsed in <code>lib/sbi/context.c</code>. Every 5G NF (AMF, SMF, NRF, AUSF, UDM, PCF, NSSF, BSF, UDR, SCP, SEPP) has an <code>sbi:</code> block and a <code>default:</code> block for TLS defaults. Several TLS and discovery keys are hidden.</p>
+
+      <span class="section-anchor" id="sbi-tls"></span>
+      <h3 class="sub-h">default.tls — TLS defaults</h3>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>SBI TLS defaults (any 5G NF)</div>
+        <pre data-yaml>&lt;nf&gt;:
+  default:
+    tls:
+      server:
+        scheme: https
+        private_key: /etc/open5gs/tls/nf.key
+        cert: /etc/open5gs/tls/nf.crt
+        sslkeylogfile: /tmp/nf-server.keylog  # HIDDEN: TLS key log for Wireshark
+        verify_client: true
+        verify_client_cacert: /etc/open5gs/tls/ca.crt
+      client:
+        scheme: http
+        insecure_skip_verify: true            # HIDDEN: skip TLS cert verification
+        cacert: /etc/open5gs/tls/ca.crt
+        client_private_key: /etc/open5gs/tls/client.key
+        client_cert: /etc/open5gs/tls/client.crt
+        client_sslkeylogfile: /tmp/nf-client.keylog  # HIDDEN</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>default.tls.server.scheme</code></td><td>enum</td><td>http</td><td>Default scheme (<code>http</code>/<code>https</code>) this NF's SBI server uses when a specific <code>sbi.server[]</code> entry doesn't override it. Open5GS ships defaulting to plain HTTP for lab simplicity — switch to <code>https</code> before anything resembling production.</td></tr>
+            <tr><td><code>default.tls.server.private_key</code> / <code>.cert</code></td><td>string (path)</td><td>—</td><td>Default TLS key/certificate pair for this NF's SBI server, e.g. <code>/etc/open5gs/tls/nf.key</code> / <code>nf.crt</code>.</td></tr>
+            <tr class="is-hidden"><td><code>default.tls.server.sslkeylogfile</code></td><td>string (path)</td><td>—</td><td>Writes per-session TLS master secrets to this file in NSS key-log format. Load it into Wireshark's TLS preferences to decrypt captured SBI traffic during protocol debugging — never enable this outside a lab, since it defeats TLS confidentiality for anyone with file access.</td></tr>
+            <tr><td><code>default.tls.server.verify_client</code></td><td>bool</td><td>false</td><td>Requires mutual TLS — the SBI server demands and validates a client certificate before accepting a connection. Turn on for a zero-trust internal SBI mesh where every NF authenticates via mTLS rather than network-perimeter trust alone.</td></tr>
+            <tr><td><code>default.tls.server.verify_client_cacert</code></td><td>string (path)</td><td>—</td><td>CA certificate bundle used to validate client certificates when <code>verify_client</code> is enabled.</td></tr>
+            <tr><td><code>default.tls.client.scheme</code></td><td>enum</td><td>http</td><td>Default scheme this NF uses when acting as an SBI client toward peers that don't specify their own scheme.</td></tr>
+            <tr class="is-hidden"><td><code>default.tls.client.insecure_skip_verify</code></td><td>bool</td><td>false</td><td>Skips TLS certificate verification entirely on outbound SBI connections. Only for labs without a working internal PKI — using this against a real deployment silently defeats the point of running HTTPS at all.</td></tr>
+            <tr><td><code>default.tls.client.cacert</code></td><td>string (path)</td><td>—</td><td>CA bundle this NF uses to validate peer server certificates on outbound SBI connections.</td></tr>
+            <tr><td><code>default.tls.client.client_private_key</code> / <code>.client_cert</code></td><td>string (path)</td><td>—</td><td>This NF's own client certificate/key pair, presented when a peer server requires mutual TLS.</td></tr>
+            <tr class="is-hidden"><td><code>default.tls.client.client_sslkeylogfile</code></td><td>string (path)</td><td>—</td><td>Client-side counterpart of <code>server.sslkeylogfile</code> — logs TLS keys for outbound connections this NF initiates, for Wireshark decryption during debugging.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="sbi-server-client"></span>
+      <h3 class="sub-h">sbi.server / sbi.client — per-endpoint overrides</h3>
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>SBI server/client (any 5G NF)</div>
+        <pre data-yaml>&lt;nf&gt;:
+  sbi:
+    server:
+      - address: 127.0.0.4
+        port: 7777
+        advertise: smf.open5gs.org   # HIDDEN: advertised address (differs from bind)
+        dev: eth0                    # Alternative to address
+        scheme: https
+        private_key: /etc/open5gs/tls/smf.key
+        cert: /etc/open5gs/tls/smf.crt
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+          resolve: 127.0.0.10        # HIDDEN: DNS override for the URI's host
+          insecure_skip_verify: true # HIDDEN: skip TLS for this NRF only
+          interface: eth1            # HIDDEN: bind outbound connection to interface
+      scp:
+        - uri: http://127.0.0.200:7777
+
+  nrf:
+    - uri: http://127.0.0.10:7777
+
+  scp:
+    - uri: http://127.0.0.200:7777
+
+  service_name:              # SBI service names this NF advertises
+    - nsmf-pdusession
+
+  discovery:
+    delegated:
+      nrf:
+        nfm: no              # HIDDEN: disable NRF NF management delegation
+      scp:
+        next: no             # HIDDEN: disable next-SCP-hop delegation</pre>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Key</th><th>Type</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td><code>sbi.server[].address/port</code></td><td>IP / int</td><td>Bind address and port for this NF's SBI listener, e.g. <code>127.0.0.4:7777</code> for SMF.</td></tr>
+            <tr class="is-hidden"><td><code>sbi.server[].advertise</code></td><td>string (IP/FQDN)</td><td>Address advertised to the NRF during registration, when it differs from the actual bind address — the standard case is a NAT'd or load-balanced NF where peers must dial a public/virtual address (e.g. <code>smf.open5gs.org</code>) instead of the private bind IP.</td></tr>
+            <tr><td><code>sbi.server[].dev</code></td><td>string</td><td>Bind to a named interface instead of a literal address.</td></tr>
+            <tr><td><code>sbi.client.nrf[].uri</code></td><td>URI</td><td>NRF endpoint this NF registers with and queries, e.g. <code>http://127.0.0.10:7777</code>.</td></tr>
+            <tr class="is-hidden"><td><code>sbi.client.nrf[].resolve</code></td><td>IP</td><td>Overrides DNS resolution for the URI's hostname, pinning it to a literal IP. Useful in a lab where <code>/etc/hosts</code> isn't editable but the URI needs a hostname for TLS SNI/cert validation to work.</td></tr>
+            <tr class="is-hidden"><td><code>sbi.client.nrf[].insecure_skip_verify</code></td><td>bool</td><td>Per-peer override of the global TLS-skip-verify default — skip cert checking for just this one NRF connection rather than globally.</td></tr>
+            <tr class="is-hidden"><td><code>sbi.client.nrf[].interface</code></td><td>string</td><td>Binds the outbound connection to this NF to a specific local network interface, e.g. <code>eth1</code> — for multi-homed hosts where outbound SBI traffic must egress a particular NIC.</td></tr>
+            <tr><td><code>sbi.client.scp[]</code></td><td>list</td><td>SCP endpoint(s) this NF routes indirect SBI communication through, same key shape as the <code>nrf</code> client block.</td></tr>
+            <tr><td><code>nrf</code> / <code>scp</code> (top-level shorthand)</td><td>list (uri)</td><td>Simpler shorthand form of <code>sbi.client.nrf</code>/<code>sbi.client.scp</code> for the common case of a single NRF/SCP endpoint without per-entry TLS overrides.</td></tr>
+            <tr><td><code>service_name</code></td><td>list (string)</td><td>SBI service names this NF advertises in its NRF profile, e.g. <code>nsmf-pdusession</code> for SMF — determines which Nnf_* service operations other NFs will discover it for.</td></tr>
+            <tr class="is-hidden"><td><code>discovery.delegated.nrf.nfm</code></td><td><code>no</code></td><td>Disables delegated NF-management discovery via NRF (the SCP's ability to handle NF registration/heartbeat on a NF's behalf). Set <code>no</code> when an NF must manage its own NRF registration directly rather than via an SCP delegation.</td></tr>
+            <tr class="is-hidden"><td><code>discovery.delegated.scp.next</code></td><td><code>no</code></td><td>Disables next-hop SCP delegation, forcing this NF to route directly to its destination instead of relying on an SCP to determine the next hop. Useful when troubleshooting whether an SCP hop is the source of a routing problem.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="section-anchor" id="sbi-discovery"></span>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NOTES ─── -->
+    <div class="section">
+      <span class="section-anchor" id="notes"></span>
+      <h2 class="section-h">Notes & Quirks</h2>
+
+      <h3 class="sub-h">global.parameter placement</h3>
+      <div class="callout callout-info">
+        <strong>Important:</strong> All <code>parameter:</code> flags live under the <code>global:</code> block, <em>not</em> under the service block. Even in a service-specific YAML file like <code>mme.yaml</code>, the parameter must be at <code>global.parameter.use_openair</code>, not <code>mme.parameter.use_openair</code>.
+      </div>
+
+      <h3 class="sub-h">apn vs dnn</h3>
+      <p class="body">In PFCP/session blocks, <code>apn</code> and <code>dnn</code> are accepted interchangeably. <code>dnn</code> is the current 5G name; <code>apn</code> is the 4G legacy alias. Both are parsed identically in <code>lib/pfcp/context.c</code>, so a mixed 4G/5G deployment can use whichever name reads more naturally in each file without any functional difference.</p>
+
+      <h3 class="sub-h">FreeDiameter path vs inline config</h3>
+      <p class="body">MME only supports the <code>freeDiameter: /path/to/file.conf</code> form. HSS, SMF, and PCRF support both the file reference <em>and</em> inline Diameter keys directly under the service block (<code>identity</code>, <code>realm</code>, <code>connect</code>, <code>load_extension</code>, etc.). If you're migrating an MME config's Diameter setup to one of those other services, you can either keep pointing at the same freeDiameter XML file or fold its contents into inline YAML keys — both work.</p>
+
+      <h3 class="sub-h">use_mongodb_change_stream (HSS)</h3>
+      <div class="callout callout-hidden">
+        <strong>Hidden HSS option:</strong> Enables MongoDB change streams for real-time subscriber provisioning updates without polling. Requires MongoDB in <strong>replica set mode</strong> — a standalone MongoDB instance will reject the change stream and the HSS will error on startup. If you're running a single-node MongoDB for a lab, either leave this off or convert that node to a single-member replica set first.
+      </div>
+
+      <h3 class="sub-h">diameter_stats_interval (HSS / PCRF)</h3>
+      <p class="body">Hidden option present on both HSS and PCRF. Logs periodic Diameter message-rate statistics at the given interval in seconds; unset (or <code>0</code>) means the stats logging is off. Turn it on temporarily (e.g. <code>60</code>) when diagnosing S6a or Gx signaling load, then turn it back off — it adds log volume that's rarely useful in steady-state operation.</p>
+
+      <h3 class="sub-h">fake_csfb</h3>
+      <p class="body">When enabled, the MME sends fake SGs-AP responses without a real MSC/VLR. Lets you test CSFB call flows end-to-end on the radio side without commissioning a real circuit-switched core. The UE will see a voice call "succeed" at the LTE signaling layer but nothing happens at the application layer — useful for RAN interop testing, not for anything resembling a real CSFB deployment.</p>
+
+      <h3 class="sub-h">no_pfcp_rr_select</h3>
+      <p class="body">Disables round-robin UPF selection. With this set, SMF always picks the first reachable UPF that matches the DNN. Useful in single-UPF deployments to avoid any scheduling overhead, or when UPF #1 should always be preferred (e.g. it has better hardware or is closer on the network path).</p>
+
+      <h3 class="sub-h">no_time_zone_information</h3>
+      <p class="body">Prevents MME/AMF from including the UE Time Zone IE in NAS Attach/Registration Accept. Some devices behave poorly when this IE is present (misreporting local time or, in rarer cases, rejecting the Accept message outright) — this is a targeted per-device-model workaround rather than a setting to change proactively.</p>
+
+      <h3 class="sub-h">Socket option inheritance</h3>
+      <p class="body">The full <code>sockopt</code> key structure from <code>global.sockopt</code> (see <a href="#global-sockopt">global.sockopt</a>) can also appear as an <code>option:</code> sub-key under any specific server or client address entry across every service — S1AP, NGAP, GTP-C, GTP-U, PFCP, SBI, SGs-AP all accept it the same way. This gives per-interface tuning (e.g. a shorter SCTP heartbeat just on the S1AP link to a flaky eNB) without changing the process-wide default that every other socket inherits.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── FULL WORKING EXAMPLE ─── -->
+    <div class="section">
+      <span class="section-anchor" id="full-example"></span>
+      <h2 class="section-h">Full Working Example — Combined 4G + 5G Core</h2>
+      <p class="body">Everything below is one coherent, deployable configuration exercising every NF this reference covers, wired together into a combined 4G EPC + 5G SA core running on one host — laid out the way Open5GS actually expects it: <strong>one YAML file per daemon</strong>, each under <code>/etc/open5gs/</code>. Every daemon only ever reads its own top-level block plus <code>logger</code>/<code>global</code>, so each file below is self-contained and independently deployable — copy the ones you need for your topology (e.g. skip <code>scp.yaml</code>/<code>sepp.yaml</code> entirely for a single-operator lab) and leave the rest out. What actually matters, and what trips people up, is <strong>which bind addresses have to leave loopback</strong> — that's the focus of this section.</p>
+
+      <span class="section-anchor" id="example-lan-vs-loopback"></span>
+      <h3 class="sub-h">Which IPs must be reachable from your LAN</h3>
+      <p class="body">Every official Open5GS sample config binds everything to <code>127.0.0.x</code> loopback aliases, because in the demo topology every NF runs as a process on the <em>same host</em> and only ever talks to other processes on that same host. That stops working the moment a <strong>real</strong> eNB or gNB enters the picture: it's a separate physical (or virtual) box sitting elsewhere on your network, and loopback addresses are by definition unreachable from anywhere but the host itself. Only four bind addresses actually face the RAN — everything else is pure inter-process plumbing and can stay on loopback indefinitely, even in production, as long as those NFs stay co-located on one host.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>NF</th><th>Key</th><th>Protocol / Port</th><th>Faces</th><th>Exposure</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr class="is-lan"><td><code>mme</code></td><td><code>s1ap.server[].address</code></td><td>SCTP 36412</td><td>eNB</td><td><strong>LAN</strong></td><td>The real eNB's S1AP signaling terminates here. If this stays on <code>127.0.0.2</code>, no physical eNB on your network will ever be able to reach the MME.</td></tr>
+            <tr class="is-lan"><td><code>sgwu</code></td><td><code>gtpu.server[].address</code></td><td>UDP 2152</td><td>eNB (S1-U)</td><td><strong>LAN</strong></td><td>4G user-plane bearer traffic (actual UE data) flows directly between the eNB and this address — it never passes through the MME.</td></tr>
+            <tr class="is-lan"><td><code>amf</code></td><td><code>ngap.server[].address</code></td><td>SCTP 38412</td><td>gNB</td><td><strong>LAN</strong></td><td>The real gNB's NGAP signaling terminates here, exactly like S1AP does for the MME in 4G.</td></tr>
+            <tr class="is-lan"><td><code>upf</code></td><td><code>gtpu.server[].address</code></td><td>UDP 2152</td><td>gNB (N3)</td><td><strong>LAN</strong></td><td>5G user-plane bearer traffic flows directly between the gNB and the UPF over the N3 interface.</td></tr>
+            <tr><td><code>mme</code> ↔ <code>sgwc</code></td><td><code>gtpc.server</code> / <code>gtpc.client.sgwc</code></td><td>UDP 2123</td><td>each other</td><td>loopback</td><td>4G S11 control-plane — both processes run on the same host, nothing outside ever addresses this directly.</td></tr>
+            <tr><td><code>sgwc</code> ↔ <code>sgwu</code>, <code>smf</code> ↔ <code>upf</code></td><td><code>pfcp.server</code> / <code>pfcp.client</code></td><td>UDP 8805</td><td>each other</td><td>loopback</td><td>N4/Sxa PFCP session control — internal to the host in this topology.</td></tr>
+            <tr><td><code>mme</code> ↔ <code>hss</code>, <code>smf</code> ↔ <code>pcrf</code></td><td><code>freeDiameter</code> / <code>identity</code></td><td>SCTP/TCP 3868</td><td>each other</td><td>loopback</td><td>S6a and Gx Diameter signaling — internal to the host.</td></tr>
+            <tr><td>all 5G NFs</td><td><code>sbi.server[].address</code></td><td>HTTP/2, 7777</td><td>each other + NRF</td><td>loopback</td><td>The SBI service mesh is entirely inter-NF — a UE or RAN node never speaks SBI directly.</td></tr>
+            <tr><td><code>hss</code> / <code>udm</code> / <code>udr</code> / <code>pcf</code></td><td><code>db_uri</code></td><td>MongoDB, 27017</td><td>MongoDB</td><td>loopback (or private DB network)</td><td>Subscriber/policy data store — only needs to be reachable by the NFs that query it, never by the RAN or UEs.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout callout-info">
+        <strong>Gotcha if you run 4G and 5G at once on one host:</strong> SGWU's S1-U listener and UPF's N3 listener both default to the <em>same</em> UDP port, 2152. If you point both at the same LAN IP, the second daemon will fail to bind with "address already in use." The fix is to give the RAN-facing interfaces two separate LAN IPs — e.g. add a secondary address to the same NIC (<code>ip addr add 192.168.1.101/24 dev eth0</code>) and dedicate one IP to the 4G RAN segment (S1AP + S1-U) and the other to the 5G RAN segment (NGAP + N3). That's exactly what the example below does.
+      </div>
+
+      <span class="section-anchor" id="example-yaml"></span>
+      <h3 class="sub-h">Per-Service YAML Files</h3>
+      <p class="body">Assumes the host's real LAN-facing NIC has two addresses configured: <code>192.168.1.100</code> for the 4G RAN segment and <code>192.168.1.101</code> for the 5G RAN segment. Replace both with whatever your own host's LAN interface actually uses — everything else stays on the standard Open5GS loopback scheme used throughout this reference. Each file is independently deployable as <code>/etc/open5gs/&lt;name&gt;.yaml</code> and run by its matching daemon (e.g. <code>open5gs-mmed -c /etc/open5gs/mme.yaml</code>).</p>
+
+      <h3 class="sub-h" style="color:var(--tag-4g)">4G EPC files</h3>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>mme.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/mme.log
+
+global:
+  max:
+    ue: 1024
+
+mme:
+  freeDiameter: /etc/freeDiameter/mme.conf
+  s1ap:
+    server:
+      - address: 192.168.1.100       # LAN — real eNB connects here
+  gtpc:
+    server:
+      - address: 127.0.0.2
+    client:
+      sgwc:
+        - address: 127.0.0.3
+  gummei:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      mme_gid: 2
+      mme_code: 1
+  tai:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      tac: 1
+  security:
+    integrity_order: [ EIA2, EIA1, EIA0 ]
+    ciphering_order: [ EEA0, EEA2, EEA1 ]
+  network_name:
+    full: SoftCore
+  mme_name: mme.open5gs.org</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>hss.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/hss.log
+
+db_uri: mongodb://localhost/open5gs
+
+hss:
+  freeDiameter: /etc/freeDiameter/hss.conf</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>sgwc.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/sgwc.log
+
+sgwc:
+  gtpc:
+    server:
+      - address: 127.0.0.3
+    client:
+      sgwu:
+        - address: 127.0.0.6
+  pfcp:
+    server:
+      - address: 127.0.0.3
+    client:
+      sgwu:
+        - address: 127.0.0.6</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>sgwu.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/sgwu.log
+
+sgwu:
+  pfcp:
+    server:
+      - address: 127.0.0.6
+    client:
+      sgwc:
+        - address: 127.0.0.3
+  gtpu:
+    server:
+      - address: 192.168.1.100       # LAN — S1-U user-plane bearer from eNB</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>pcrf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/pcrf.log
+
+pcrf:
+  freeDiameter: /etc/freeDiameter/pcrf.conf</pre>
+      </div>
+
+      <h3 class="sub-h" style="color:var(--tag-both)">Shared control/user plane — 4G + 5G</h3>
+      <p class="body">SMF and UPF serve both cores at once: SMF speaks 4G GTP-C (S5-C, to SGWC) and 5G SBI (to AMF via NRF discovery) out of the same process; UPF terminates both the 4G S5-U path from SGWU and the 5G N3 path straight from the gNB.</p>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>smf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/smf.log
+
+smf:
+  gtpc:
+    server:
+      - address: 127.0.0.4
+    client:
+      sgwc:
+        - address: 127.0.0.3
+  pfcp:
+    server:
+      - address: 127.0.0.4
+    client:
+      upf:
+        - address: 127.0.0.7
+  session:
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+      dnn: internet
+      dev: ogstun
+  dns:
+    - 8.8.8.8
+    - 8.8.4.4
+  sbi:
+    server:
+      - address: 127.0.0.4
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>upf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/upf.log
+
+upf:
+  pfcp:
+    server:
+      - address: 127.0.0.7
+    client:
+      smf:
+        - address: 127.0.0.4
+  gtpu:
+    server:
+      - address: 192.168.1.101       # LAN — N3 user-plane bearer from gNB
+                                      # (also reachable from sgwu on this
+                                      # same host over its LAN address)
+  session:
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+      dnn: internet
+      dev: ogstun</pre>
+      </div>
+
+      <h3 class="sub-h" style="color:var(--tag-5g)">5G SA core files</h3>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>amf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/amf.log
+
+global:
+  max:
+    ue: 1024
+
+amf:
+  ngap:
+    server:
+      - address: 192.168.1.101       # LAN — real gNB connects here
+  guami:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      amf_id:
+        region: 2
+        set: 1
+  tai:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      tac: 1
+  plmn_support:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+      s_nssai:
+        - sst: 1
+  security:
+    integrity_order: [ NIA2, NIA1, NIA0 ]
+    ciphering_order: [ NEA0, NEA2, NEA1 ]
+  network_name:
+    full: SoftCore
+  sbi:
+    server:
+      - address: 127.0.0.5
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>nrf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/nrf.log
+
+nrf:
+  serving:
+    - plmn_id:
+        mcc: "999"
+        mnc: "70"
+  sbi:
+    server:
+      - address: 127.0.0.10
+        port: 7777
+    client:
+      scp:
+        - uri: http://127.0.0.200:7777   # Redundant here — shown for completeness
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>ausf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/ausf.log
+
+ausf:
+  sbi:
+    server:
+      - address: 127.0.0.11
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>udm.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/udm.log
+
+udm:
+  sbi:
+    server:
+      - address: 127.0.0.12
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>pcf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/pcf.log
+
+pcf:
+  sbi:
+    server:
+      - address: 127.0.0.13
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>nssf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/nssf.log
+
+nssf:
+  sbi:
+    server:
+      - address: 127.0.0.14
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+      nsi:
+        - uri: http://127.0.0.10:7777/nnrf-nfm/v1/nf-instances
+          s_nssai:
+            sst: 1
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>bsf.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/bsf.log
+
+bsf:
+  sbi:
+    server:
+      - address: 127.0.0.15
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>udr.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/udr.log
+
+db_uri: mongodb://localhost/open5gs
+
+udr:
+  sbi:
+    server:
+      - address: 127.0.0.20
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <h3 class="sub-h">Optional — roaming / service mesh</h3>
+      <p class="body">Skip both files entirely for a single-operator lab. <code>scp.yaml</code> is only needed if NFs should route SBI traffic indirectly through a proxy instead of discovering each other directly via NRF; <code>sepp.yaml</code> is only needed for inter-PLMN N32 roaming to another operator's core.</p>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>scp.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/scp.log
+
+scp:
+  sbi:
+    server:
+      - address: 127.0.0.200
+        port: 7777
+    client:
+      nrf:
+        - uri: http://127.0.0.10:7777</pre>
+      </div>
+
+      <div class="code-block">
+        <div class="code-label"><div class="dot-row"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>sepp.yaml</div>
+        <pre data-yaml>logger:
+  file:
+    path: /var/log/open5gs/sepp.log
+
+sepp:
+  sbi:
+    server:
+      - address: 127.0.0.250
+        sender: sepp.home.example
+    client:
+      sepp:
+        - uri: https://sepp.visited.example
+          receiver: sepp.visited.example
+          target_plmn_id:
+            mcc: "310"
+            mnc: "170"
+      nrf:
+        - uri: http://127.0.0.10:7777
+      scp:
+        - uri: http://127.0.0.200:7777
+  nrf:
+    - uri: http://127.0.0.10:7777
+  scp:
+    - uri: http://127.0.0.200:7777</pre>
+      </div>
+
+      <div class="callout callout-hidden">
+        <strong>Don't forget the RAN side:</strong> your eNB/gNB (or simulator — UERANSIM, srsRAN, etc.) needs its own configuration pointed at the matching LAN address: eNB → <code>192.168.1.100</code> for both S1AP and S1-U, gNB → <code>192.168.1.101</code> for both NGAP and N3. Use IP addresses there too, never hostnames — several of these links are established before DNS is guaranteed to be up.
+      </div>
+
+      <span class="section-anchor" id="example-firewall"></span>
+      <h3 class="sub-h">Firewall checklist</h3>
+      <p class="body">If the host runs a firewall (iptables/nftables/ufw/security groups), only these need inbound rules from the RAN's network segment — nothing else in the combined config above needs to be opened beyond localhost:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Port</th><th>Protocol</th><th>Direction</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>36412</code></td><td>SCTP</td><td>Inbound, from eNB</td><td>S1AP — 4G MME control-plane</td></tr>
+            <tr><td><code>2152</code></td><td>UDP</td><td>Inbound, from eNB</td><td>GTP-U — 4G S1-U user-plane (on the 4G RAN-segment IP)</td></tr>
+            <tr><td><code>38412</code></td><td>SCTP</td><td>Inbound, from gNB</td><td>NGAP — 5G AMF control-plane</td></tr>
+            <tr><td><code>2152</code></td><td>UDP</td><td>Inbound, from gNB</td><td>GTP-U — 5G N3 user-plane (on the 5G RAN-segment IP)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ── YAML highlighter ──
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function hlVal(v) {
+  // Split off the inline comment FIRST, before any span-injecting regex runs.
+  // (Wrapping code and comment separately means a later regex can never re-match
+  // an already-inserted tag's own class="..." quotes — which was the bug: the
+  // quoted-string regex used to run last and matched the comment/bool span's own
+  // quotes, corrupting the tag into visible text like `"y-comment">`.)
+  let code = v, comment = '';
+  const hashIdx = v.indexOf('#');
+  if (hashIdx !== -1) {
+    code = v.slice(0, hashIdx);
+    comment = v.slice(hashIdx);
+  }
+  // Quoted strings MUST run first, while `code` is still plain text — its regex
+  // matches any "..." pair, so if it ran after placeholder/booleans it would
+  // instead re-match those spans' own class="..." attribute quotes.
+  code = code.replace(/"([^"]*)"/g, '<span class="y-str">"$1"</span>');
+  // placeholder <...>
+  code = code.replace(/(&lt;)([^&]+)(&gt;)/g, '<span class="y-ph">$1$2$3</span>');
+  // booleans
+  code = code.replace(/\b(true|false|null)\b/g, '<span class="y-bool">$1</span>');
+  if (comment) {
+    comment = '<span class="y-comment">' + comment + '</span>';
+  }
+  return code + comment;
+}
+
+function highlightYaml(raw) {
+  const lines = raw.split('\n');
+  return lines.map(line => {
+    // Pure comment line
+    if (/^\s*#/.test(line)) {
+      return '<span class="y-comment">' + esc(line) + '</span>';
+    }
+    // Key: value pattern
+    const km = line.match(/^(\s*)([\w\-\.]+)(\s*:)([ \t]*)(.*)$/);
+    if (km) {
+      const [,indent,key,colon,sp,rest] = km;
+      const valPart = hlVal(esc(rest));
+      return esc(indent) +
+        '<span class="y-key">' + esc(key) + '</span>' +
+        '<span class="y-punct">' + esc(colon) + '</span>' +
+        esc(sp) + valPart;
+    }
+    // List item: - value
+    const lm = line.match(/^(\s*-\s*)(.*)/);
+    if (lm) {
+      return esc(lm[1]) + hlVal(esc(lm[2]));
+    }
+    return esc(line);
+  }).join('\n');
+}
+
+document.querySelectorAll('pre[data-yaml]').forEach(el => {
+  el.innerHTML = highlightYaml(el.textContent || el.innerText);
+});
+
+// ── TOC active state ──
+const sections = document.querySelectorAll('.section-anchor');
+const links = document.querySelectorAll('.toc-link');
+
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const id = e.target.id;
+      links.forEach(l => {
+        const href = l.getAttribute('href');
+        l.classList.toggle('active', href === '#' + id);
+      });
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px' });
+
+sections.forEach(s => obs.observe(s));
+</script>
+</body>
+</html>

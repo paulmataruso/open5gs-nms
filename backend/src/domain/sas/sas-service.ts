@@ -15,13 +15,29 @@ import {
 
 // ─── Band 48 EARFCN helpers (3GPP TS 36.101) ────────────────────────────────
 // F_MHz = 3550 + 0.1 × (EARFCN - 55240)
-// EARFCN = 55240 + 10 × (F_MHz - 3550)
 // EARFCN range: 55240 (3550 MHz) to 56739 (3699.9 MHz)
 function earfcnToMhz(earfcn: number): number {
   return 3550 + 0.1 * (earfcn - 55240);
 }
 function earfcnToHz(earfcn: number): number {
   return Math.round(earfcnToMhz(earfcn) * 1e6);
+}
+function hzToEarfcn(hz: number): number {
+  return Math.round(55240 + (hz / 1e6 - 3550) * 10);
+}
+
+// ─── NR n48 NR-ARFCN helpers (3GPP TS 38.104, FR1 3000–24250 MHz) ────────────
+// F_MHz = 3000 + 0.015 × (NR-ARFCN - 600000)
+// NR-ARFCN = (F_MHz - 3000) / 0.015 + 600000
+// Step = 15 kHz; range: 620000 (3300 MHz) to 653333 (3800 MHz)
+function hzToNrArfcn(hz: number): number {
+  return Math.round((hz / 1e6 - 3000) / 0.015 + 600000);
+}
+
+// Pick the correct ARFCN display label based on radioTechnology
+function cbsdArfcn(centerHz: number, radioTech?: string): { label: string; value: number } {
+  if (radioTech === 'NR') return { label: 'NR-ARFCN', value: hzToNrArfcn(centerHz) };
+  return { label: 'EARFCN', value: hzToEarfcn(centerHz) };
 }
 
 const CBRS_LOW  = 3_550_000_000;  // EARFCN 55240
@@ -34,6 +50,10 @@ export class SasService {
   private groupPolicies!: Collection<GroupBandPolicy>;
   private cbsdPolicies!:  Collection<CbsdBandPolicy>;
   private manualGroups!:  Collection<{ _id: string; cbsdIds: string[]; updatedAt: Date }>;
+  // Sticky per-radio slot assignment — Baicells ("baicells" group) only. See
+  // assignChannelSlot() for why this group needs a persistent assignment
+  // instead of the generic index-into-sorted-registered-list approach.
+  private baicellsSlots!: Collection<{ _id: string; bandId: string; slotIdx: number; cbsdId: string; assignedAt: Date }>;
   private ready = false;
 
   constructor(
@@ -52,6 +72,8 @@ export class SasService {
     this.cbsdPolicies  = db.collection<CbsdBandPolicy>('sas_cbsd_policies');
     this.manualGroups  = db.collection('sas_manual_groups');
     await this.manualGroups.createIndex({ cbsdIds: 1 });
+    this.baicellsSlots = db.collection('sas_baicells_slots');
+    await this.baicellsSlots.createIndex({ bandId: 1 });
 
     await this.cbsds.createIndex({ cbsdId: 1 },                     { unique: true });
     await this.cbsds.createIndex({ cbsdSerialNumber: 1, fccId: 1 });
@@ -100,13 +122,14 @@ export class SasService {
   // Stores the most recent frequency range each CBSD requested.
   // Keyed by cbsdId. Used by the Freq Debug view on the dashboard.
   private lastRequests = new Map<string, {
-    serial:      string;
-    fccId:       string;
-    ip:          string;
+    serial:        string;
+    fccId:         string;
+    ip:            string;
     lowFrequency:  number;
     highFrequency: number;
-    type:        'spectrumInquiry' | 'grant';
-    ts:          Date;
+    type:          'spectrumInquiry' | 'grant';
+    radioTech?:    string;
+    ts:            Date;
   }>();
 
   // Cache of CA channel pairs per cbsdId — populated from narrow CA inquiries
@@ -114,26 +137,28 @@ export class SasService {
   private caChannelCache = new Map<string, Array<{ low: number; high: number }>>();
 
   recordLastRequest(
-    cbsdId:   string,
-    serial:   string,
-    fccId:    string,
-    ip:       string,
-    low:      number,
-    high:     number,
-    type:     'spectrumInquiry' | 'grant',
+    cbsdId:    string,
+    serial:    string,
+    fccId:     string,
+    ip:        string,
+    low:       number,
+    high:      number,
+    type:      'spectrumInquiry' | 'grant',
+    radioTech?: string,
   ): void {
-    this.lastRequests.set(cbsdId, { serial, fccId, ip, lowFrequency: low, highFrequency: high, type, ts: new Date() });
+    this.lastRequests.set(cbsdId, { serial, fccId, ip, lowFrequency: low, highFrequency: high, type, radioTech, ts: new Date() });
   }
 
   getLastRequests(): Array<{
-    cbsdId:       string;
-    serial:       string;
-    fccId:        string;
-    ip:           string;
+    cbsdId:        string;
+    serial:        string;
+    fccId:         string;
+    ip:            string;
     lowFrequency:  number;
     highFrequency: number;
-    type:         string;
-    ts:           Date;
+    type:          string;
+    radioTech?:    string;
+    ts:            Date;
   }> {
     return Array.from(this.lastRequests.entries()).map(([cbsdId, v]) => ({ cbsdId, ...v }));
   }
@@ -158,6 +183,51 @@ export class SasService {
     band:      SasFrequencyBand,
     slotWidthHz: number,
   ): Promise<{ low: number; high: number }> {
+    // Baicells radios only ("baicells" group — the literal groupId the
+    // radios themselves report at registration, see groupingParam). The
+    // generic assignment further below computes a slot from this CBSD's
+    // position in the list of CURRENTLY REGISTERED group members, sorted by
+    // serial — that list isn't stable, since Baicells radios reboot/
+    // re-register intermittently (see the GPS lock delay handling above).
+    // Every register/deregister shifts everyone else's position in it, so
+    // two radios computing their slot against different snapshots of "who's
+    // online right now" can land on the identical slot despite
+    // computeSlots() giving each of them a distinct EARFCN — reproduced
+    // live: two Baicells radios both ended up AUTHORIZED on the same
+    // 3580-3600 MHz slot. Fixed here by persisting each radio's slot
+    // assignment permanently (keyed by fccId:serial, so it's stable across
+    // reboots and even a full SAS "Clear DB") the first time it's granted,
+    // and never handing that slot to a different radio afterward — the next
+    // radio to ask gets the next free slot instead. Scoped strictly to
+    // groupId === 'baicells'; every other group (Sercomm, custom-slot
+    // groups, ungrouped) falls through to the exact unchanged logic below.
+    if (groupId === 'baicells') {
+      const slots = this.computeSlots(band, slotWidthHz);
+      if (slots.length === 0) return { low: band.lowFrequency, high: band.highFrequency };
+      if (slots.length === 1) return slots[0];
+
+      const cbsd = await this.cbsds.findOne({ cbsdId });
+      const key  = cbsd ? `${cbsd.fccId}:${cbsd.cbsdSerialNumber}` : cbsdId;
+
+      const existing = await this.baicellsSlots.findOne({ _id: key, bandId: band.id });
+      if (existing && existing.slotIdx < slots.length) {
+        return slots[existing.slotIdx];
+      }
+
+      const held = new Set(
+        (await this.baicellsSlots.find({ bandId: band.id }).toArray())
+          .filter(a => a.slotIdx < slots.length)
+          .map(a => a.slotIdx),
+      );
+      let slotIdx = 0;
+      while (held.has(slotIdx) && slotIdx < slots.length - 1) slotIdx++;
+
+      const assignment = { _id: key, bandId: band.id, slotIdx, cbsdId, assignedAt: new Date() };
+      await this.baicellsSlots.replaceOne({ _id: key }, assignment, { upsert: true });
+      this.logger.info({ cbsdId, key, bandId: band.id, slotIdx, totalSlots: slots.length }, 'Stable Baicells slot assigned');
+      return slots[slotIdx];
+    }
+
     // Check if the group has custom slots defined
     const groupPolicy = groupId ? await this.groupPolicies.findOne({ _id: groupId }) : null;
     if (Array.isArray(groupPolicy?.customSlots)) {
@@ -427,7 +497,7 @@ export class SasService {
       let unsupported = false;
       for (const fr of req.inquiredSpectrum ?? []) {
         // Record last requested freq for debug view
-        this.recordLastRequest(req.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, '', fr.lowFrequency, fr.highFrequency, 'spectrumInquiry');
+        this.recordLastRequest(req.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, '', fr.lowFrequency, fr.highFrequency, 'spectrumInquiry', cbsd.airInterface?.radioTechnology);
         // Check using 3-level resolution: CBSD override > group policy > global bands
         const resolvedBand = await this.resolveBand(cfg, cbsd, fr.lowFrequency, fr.highFrequency);
         if (!resolvedBand) {
@@ -663,7 +733,7 @@ export class SasService {
       const { lowFrequency, highFrequency } = req.operationParam.operationFrequencyRange;
 
       // Record last requested freq for debug view
-      this.recordLastRequest(req.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, '', lowFrequency, highFrequency, 'grant');
+      this.recordLastRequest(req.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, '', lowFrequency, highFrequency, 'grant', cbsd.airInterface?.radioTechnology);
 
       // Find the best matching configured band using 3-level policy resolution
       const matchedBand = await this.resolveBand(cfg, cbsd, lowFrequency, highFrequency);
@@ -766,9 +836,10 @@ export class SasService {
         response:          makeResponse(RC.SUCCESS),
       });
 
-      const slotMhz = `${(grantLow/1e6).toFixed(1)}–${(clampedHigh/1e6).toFixed(1)} MHz`;
-      const earfcn  = Math.round(55240 + (((grantLow + clampedHigh) / 2) / 1e6 - 3550) * 10);
-      this.logger.info({ cbsdId: req.cbsdId, grantId, lowFrequency: grantLow, highFrequency: clampedHigh, maxEirp, slotMhz, earfcn, groupId }, 'Grant issued');
+      const slotMhz  = `${(grantLow/1e6).toFixed(1)}–${(clampedHigh/1e6).toFixed(1)} MHz`;
+      const centerHz = (grantLow + clampedHigh) / 2;
+      const { label: arfcnLabel, value: arfcnVal } = cbsdArfcn(centerHz, cbsd.airInterface?.radioTechnology);
+      this.logger.info({ cbsdId: req.cbsdId, grantId, lowFrequency: grantLow, highFrequency: clampedHigh, maxEirp, slotMhz, [arfcnLabel]: arfcnVal, groupId }, 'Grant issued');
     }
 
     return responses;
@@ -946,7 +1017,7 @@ export class SasService {
     bands: Array<{
       bandLow: number; bandHigh: number; label: string;
       slotWidthHz: number;
-      slots: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string }>;
+      slots: Array<{ low: number; high: number; earfcn: number; nrArfcn?: number; radioTech?: string; cbsdId?: string; serial?: string; fccId?: string; state?: string }>;
     }>;
     // Legacy flat fields for backward compat
     bandLow: number; bandHigh: number; slotWidthHz: number;
@@ -1006,11 +1077,11 @@ export class SasService {
       // by at least 40%. Multiple CBSDs can share the same frequency (e.g. two
       // Sercomm radios with the same CA channels) — return all of them.
       const slotResults = slots.map(s => {
-        const sMid = (s.low + s.high) / 2;
-        const centerMhz = sMid / 1e6;
-        const earfcn    = Math.round(55240 + (centerMhz - 3550) * 10);
+        const sMid    = (s.low + s.high) / 2;
+        const earfcn  = hzToEarfcn(sMid);
+        const nrArfcn = hzToNrArfcn(sMid);
 
-        const matchingGrants: Array<{ cbsdId: string; serial?: string; fccId?: string; state: string; groupId?: string }> = [];
+        const matchingGrants: Array<{ cbsdId: string; serial?: string; fccId?: string; state: string; groupId?: string; radioTech?: string }> = [];
         for (const g of bandGrants) {
           const gLow  = g.operationParam.operationFrequencyRange.lowFrequency;
           const gHigh = g.operationParam.operationFrequencyRange.highFrequency;
@@ -1019,14 +1090,16 @@ export class SasService {
           const overlapHz   = Math.max(0, overlapHigh - overlapLow);
           const overlapPct  = overlapHz / slotW;
           if (overlapPct >= 0.4) {
-            const cbsd    = cbsdMap.get(g.cbsdId);
-            const groupId = cbsd ? effectiveGroupId(cbsd) : undefined;
+            const cbsd     = cbsdMap.get(g.cbsdId);
+            const groupId  = cbsd ? effectiveGroupId(cbsd) : undefined;
+            const radioTech = cbsd?.airInterface?.radioTechnology;
             matchingGrants.push({
               cbsdId:  g.cbsdId,
               serial:  cbsd?.cbsdSerialNumber,
               fccId:   cbsd?.fccId,
               state:   g.state,
               groupId,
+              radioTech,
             });
           }
         }
@@ -1034,9 +1107,13 @@ export class SasService {
         // For backward compat keep single cbsdId/serial/fccId/state on the slot
         // pointing to the first match, plus a grants[] array for all matches.
         const first = matchingGrants[0];
+        // Show NR-ARFCN for NR devices, LTE EARFCN otherwise
+        const isNR = first?.radioTech === 'NR';
         return {
-          low: s.low, high: s.high, earfcn,
-          ...(first ? { cbsdId: first.cbsdId, state: first.state, serial: first.serial, fccId: first.fccId, groupId: first.groupId } : {}),
+          low: s.low, high: s.high, earfcn, nrArfcn,
+          ...(first ? { cbsdId: first.cbsdId, state: first.state, serial: first.serial, fccId: first.fccId, groupId: first.groupId, radioTech: first.radioTech } : {}),
+          displayArfcn: isNR ? nrArfcn : earfcn,
+          arfcnLabel:   isNR ? 'NR-ARFCN' : 'EARFCN',
           grants: matchingGrants,
         };
       });
@@ -1092,16 +1169,14 @@ export class SasService {
       for (const c of cbsds) cbsdMap.set(c.cbsdId, c);
 
       const lines = activeGrants.map(g => {
-        const cbsd   = cbsdMap.get(g.cbsdId);
-        const serial = cbsd?.cbsdSerialNumber ?? g.cbsdId.slice(0, 8);
-        const low    = (g.operationParam.operationFrequencyRange.lowFrequency  / 1e6).toFixed(1);
-        const high   = (g.operationParam.operationFrequencyRange.highFrequency / 1e6).toFixed(1);
-        const earfcn = Math.round(
-          55240 + (((g.operationParam.operationFrequencyRange.lowFrequency +
-                     g.operationParam.operationFrequencyRange.highFrequency) / 2) / 1e6 - 3550) * 10,
-        );
-        const state  = g.state === 'AUTHORIZED' ? '●' : '○';
-        return `${state} ${serial.slice(-10).padEnd(10)} ${low}-${high}MHz EARFCN:${earfcn}`;
+        const cbsd     = cbsdMap.get(g.cbsdId);
+        const serial   = cbsd?.cbsdSerialNumber ?? g.cbsdId.slice(0, 8);
+        const low      = (g.operationParam.operationFrequencyRange.lowFrequency  / 1e6).toFixed(1);
+        const high     = (g.operationParam.operationFrequencyRange.highFrequency / 1e6).toFixed(1);
+        const centerHz = (g.operationParam.operationFrequencyRange.lowFrequency + g.operationParam.operationFrequencyRange.highFrequency) / 2;
+        const { label: arfcnLabel, value: arfcnVal } = cbsdArfcn(centerHz, cbsd?.airInterface?.radioTechnology);
+        const state    = g.state === 'AUTHORIZED' ? '●' : '○';
+        return `${state} ${serial.slice(-10).padEnd(10)} ${low}-${high}MHz ${arfcnLabel}:${arfcnVal}`;
       });
 
       this.logger.info(`SAS ─ ${activeGrants.length} active grant${activeGrants.length > 1 ? 's' : ''}:\n  ${lines.join('\n  ')}`);

@@ -7,10 +7,11 @@ import { LabelWithTooltip } from '../components/common/UniversalTooltipWrappers'
 import { AUTO_CONFIG_TOOLTIPS } from '../data/tooltips';
 import { FemtoConfigTab } from '../components/autoconfig/FemtoConfigTab';
 import { BaicellsAcsTab } from '../components/autoconfig/BaicellsAcsTab';
+import { SercommNRTab } from '../components/autoconfig/SercommNRTab';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
-type Tab = 'open5gs' | 'femto' | 'baicells';
+type Tab = 'open5gs' | 'femto' | 'baicells' | 'sercomm-nr';
 
 export const AutoConfigPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('open5gs');
@@ -206,21 +207,24 @@ export const AutoConfigPage: React.FC = () => {
   }
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: 'open5gs',  label: 'Open5GS Auto Config',    icon: <Settings className="w-4 h-4" /> },
-    { id: 'femto',    label: 'Sercomm Provisioning',    icon: <Radio className="w-4 h-4" /> },
-    { id: 'baicells', label: 'Baicells Provisioning',   icon: <Radio className="w-4 h-4" /> },
+    { id: 'open5gs',     label: 'Open5GS Auto Config',  icon: <Settings className="w-4 h-4" /> },
+    { id: 'femto',       label: 'Sercomm 4G',            icon: <Radio className="w-4 h-4" /> },
+    { id: 'sercomm-nr',  label: 'Sercomm 5G',            icon: <Radio className="w-4 h-4" /> },
+    { id: 'baicells',    label: 'Baicells Provisioning',  icon: <Radio className="w-4 h-4" /> },
   ];
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold font-display text-nms-text mb-1">Auto Configuration</h1>
-        <p className="text-sm text-nms-text-dim">Network auto-configuration and device provisioning</p>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold font-display text-nms-text">Auto Configuration</h1>
+          <p className="text-sm text-nms-text-dim mt-1">Network auto-configuration and device provisioning</p>
+        </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex justify-center mb-6">
+      <div className="flex justify-center">
         <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
         {TABS.map(tab => (
           <button
@@ -504,8 +508,11 @@ export const AutoConfigPage: React.FC = () => {
         </>
       )}
 
-      {/* Tab: Femtocell Provisioning */}
+      {/* Tab: Sercomm 4G Provisioning */}
       {activeTab === 'femto' && <FemtoConfigTab />}
+
+      {/* Tab: Sercomm 5G NR Provisioning */}
+      {activeTab === 'sercomm-nr' && <SercommNRTab />}
 
       {/* Tab: Baicells ACS Provisioning */}
       {activeTab === 'baicells' && <BaicellsAcsTab />}

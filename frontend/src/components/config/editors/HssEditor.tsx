@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -27,6 +27,11 @@ export function HssEditor({ configs, onChange }: Props): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Home Subscriber Server (HSS)"
+        generation="4G"
+        description="The HSS is the central subscriber database of the 4G core. It stores IMSI identities, authentication credentials (K, OPc, SQN), subscription profiles (allowed APNs, QoS, MSISDN), and mobility data. The MME queries the HSS via Diameter (S6a) to authenticate UEs using EPS-AKA. When IMS is enabled, the HSS also provides multimedia profile data to the CSCFs via Cx/Dx."
+      />
       {fullYaml.db_uri !== undefined && (
         <div>
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Database</h3>

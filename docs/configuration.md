@@ -1,6 +1,6 @@
 # Network Function Configuration Reference
 
-Complete reference for configuring all 16 Open5GS network functions through the NMS.
+Complete reference for configuring all 17 Open5GS network functions through the NMS.
 
 ---
 
@@ -316,6 +316,46 @@ bsf:
       nrf:
         - uri: http://127.0.0.10:7777
 ```
+
+---
+
+### SEPP (Security Edge Protection Proxy)
+
+**Purpose:** N32 roaming interface to a visited PLMN's SEPP — home-network edge for inbound/outbound 5G roaming. Unlike the other 16 NFs, `open5gs-seppd` is already installed and enabled by `apt install open5gs` (config file `/etc/open5gs/sepp1.yaml`, internal YAML key `sepp`); the NMS just adds a proper Config tab for it, included in the standard bulk Apply Config / backup / restart flow.
+
+**Key Configuration:**
+```yaml
+sepp:
+  sbi:
+    server:
+      - address: 127.0.1.250
+        port: 7777
+    client:
+      scp:
+        - uri: http://127.0.0.200:7777
+  n32:
+    server:
+      - sender: sepp1.5gc.mnc070.mcc999.3gppnetwork.org
+        scheme: http               # or https for mutual-TLS
+        address: 127.0.1.250
+        port: 7777
+        n32f:
+          scheme: http
+          address: 127.0.1.251
+          port: 7777
+    client:
+      sepp:
+        - receiver: <visited PLMN's SEPP FQDN>
+          uri: http://<visited N32-c host>:7777
+          n32f:
+            uri: http://<visited N32-f host>:7777
+```
+
+TLS/mutual-TLS on N32 is optional and toggled in the UI, which can also generate a
+self-signed keypair for your home SEPP and export a ready-to-send `sepp.yaml` for the
+visited operator (their config, cross-referenced with your already-configured values and
+public cert). See **[README.md](../README.md#sepp--5g-roaming-n32)** for the full feature
+writeup.
 
 ---
 

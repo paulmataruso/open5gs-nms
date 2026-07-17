@@ -62,7 +62,7 @@ export class ApplyConfigUseCase {
       // Step 2: Generate diff for all 16 services
       const currentConfigs = await this.configRepo.loadAll();
       const diffParts: string[] = [];
-      const allServices = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'] as const;
+      const allServices = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'] as const;
       
       for (const service of allServices) {
         try {
@@ -109,6 +109,7 @@ export class ApplyConfigUseCase {
           { name: 'pcf', new: newConfigs.pcf, existing: existingConfigs.pcf, save: this.configRepo.savePcf.bind(this.configRepo) },
           { name: 'nssf', new: newConfigs.nssf, existing: existingConfigs.nssf, save: this.configRepo.saveNssf.bind(this.configRepo) },
           { name: 'bsf', new: newConfigs.bsf, existing: existingConfigs.bsf, save: this.configRepo.saveBsf.bind(this.configRepo) },
+          { name: 'sepp1', new: newConfigs.sepp1, existing: existingConfigs.sepp1, save: this.configRepo.saveSepp1.bind(this.configRepo) },
           { name: 'mme', new: newConfigs.mme, existing: existingConfigs.mme, save: this.configRepo.saveMme.bind(this.configRepo) },
           { name: 'hss', new: newConfigs.hss, existing: existingConfigs.hss, save: this.configRepo.saveHss.bind(this.configRepo) },
           { name: 'pcrf', new: newConfigs.pcrf, existing: existingConfigs.pcrf, save: this.configRepo.savePcrf.bind(this.configRepo) },
@@ -168,8 +169,31 @@ export class ApplyConfigUseCase {
         this.logger.info({ service, unitName }, 'Restarting service');
 
         try {
+          // MongoDB may run in Docker instead of systemd (e.g. on hosts without AVX).
+          // Detect and restart via docker if that's the case.
+          if (service === 'mongodb') {
+            const containerName = await this.findMongoDockerContainer();
+            if (containerName) {
+              this.logger.info({ containerName }, 'MongoDB running in Docker — restarting container');
+              const dr = await this.hostExecutor.executeLocalCommand('docker', ['restart', containerName]);
+              if (dr.exitCode !== 0) {
+                throw new Error(`docker restart ${containerName}: ${dr.stderr}`);
+              }
+              restartResults.push({ service, success: true });
+              await this.delay(3000); // wait for mongo to accept connections
+              continue;
+            }
+          }
+
           const result = await this.hostExecutor.restartService(unitName);
           if (result.exitCode !== 0) {
+            // If the systemd unit doesn't exist, the service is running outside systemd.
+            // Skip gracefully — no restart needed and no rollback.
+            if (result.stderr?.includes('not found')) {
+              this.logger.warn({ service, unitName }, 'Systemd unit not found — service running outside systemd, skipping restart');
+              restartResults.push({ service, success: true });
+              continue;
+            }
             throw new Error(result.stderr || `Exit code ${result.exitCode}`);
           }
 
@@ -315,5 +339,40 @@ export class ApplyConfigUseCase {
 
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Find a MongoDB container running in Docker on this host.
+  // Detection priority:
+  //   1. Image name contains "mongo" (catches mongo, mongodb, bitnami/mongodb, etc.)
+  //   2. Port mapping matches the MongoDB port from Open5GS db_uri config
+  // Returns the container name, or null if MongoDB is not running in Docker.
+  private async findMongoDockerContainer(): Promise<string | null> {
+    // Read MongoDB port from Open5GS config so we're not hardcoded to 27017.
+    // hss.yaml (4G) and udr.yaml (5G) both carry db_uri: mongodb://host:port/db
+    let mongoPort = 27017;
+    try {
+      const portProbe = await this.hostExecutor.executeLocalCommand('bash', ['-c',
+        `grep -rh 'db_uri:' /proc/1/root/etc/open5gs/*.yaml 2>/dev/null ` +
+        `| grep -oP '(?<=mongodb://)[^/]+' | grep -oP '(?<=:)[0-9]+' | head -1 || true`,
+      ]);
+      const parsed = parseInt(portProbe.stdout.trim(), 10);
+      if (parsed > 0) mongoPort = parsed;
+    } catch { /* keep default 27017 */ }
+
+    const listResult = await this.hostExecutor.executeLocalCommand('bash', ['-c',
+      `docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null || true`,
+    ]);
+    if (!listResult.stdout.trim()) return null;
+
+    let portMatch: string | null = null;
+    for (const line of listResult.stdout.trim().split('\n')) {
+      const [name, image, ports] = line.split('\t');
+      if (!name) continue;
+      // Image name is the strongest signal — matches mongo, mongodb, bitnami/mongodb, etc.
+      if (image?.toLowerCase().includes('mongo')) return name;
+      // Port mapping is a reliable fallback for custom image names
+      if (!portMatch && ports?.includes(`:${mongoPort}->`)) portMatch = name;
+    }
+    return portMatch;
   }
 }

@@ -1,12 +1,31 @@
 import { useState, useMemo, useEffect } from 'react';
-import { RotateCw, Trash2, CheckSquare, Square, Circle, Server, Box, Download, Radio } from 'lucide-react';
+import { RotateCw, Trash2, CheckSquare, Square, Circle, Server, Box, Download, Radio, ScrollText, FileText, Gauge, Zap, RadioTower } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { useLogStream, LogEntry } from '../hooks/useLogStream';
 import { LogDownloadModal } from '../components/logs/LogDownloadModal';
+import { SyslogForwardingModal } from '../components/logs/SyslogForwardingModal';
+import { AuditPage } from '../components/audit/AuditPage';
+import { MajorEventsView } from '../components/logs/MajorEventsView';
+import { configApi } from '../api';
+import type { AllConfigs } from '../types';
 import axios from 'axios';
 
-const ALL_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+const ALL_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 const GENIEACS_SERVICES = ['genieacs-cwmp-access', 'genieacs-nbi-access'];
+// FRR writes one combined file for every daemon (eigrpd/zebra/mgmtd/staticd) — no per-daemon
+// split like the other sources, so this is a single pseudo-service.
+const FRR_SERVICES = ['frr'];
 const SAS_CONTAINER = 'open5gs-nms-backend'; // SAS logs live here
+
+// Matches the per-NF logger level options in ConfigPage's LoggerSection.
+const LOG_LEVELS = [
+  { value: 'fatal', label: 'fatal' },
+  { value: 'error', label: 'error' },
+  { value: 'warn',  label: 'warn' },
+  { value: 'info',  label: 'info (default)' },
+  { value: 'debug', label: 'debug' },
+  { value: 'trace', label: 'trace' },
+];
 
 interface GenieDevice {
   _id:    string;
@@ -16,7 +35,8 @@ interface GenieDevice {
 }
 
 export const LogsPage: React.FC = () => {
-  const [logSource, setLogSource] = useState<'open5gs' | 'docker' | 'genieacs'>('open5gs');
+  const [pageTab, setPageTab] = useState<'logs' | 'audit' | 'events'>('logs');
+  const [logSource, setLogSource] = useState<'open5gs' | 'docker' | 'genieacs' | 'frr'>('open5gs');
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
   const [logFilter, setLogFilter] = useState<string | undefined>(undefined); // server-side content filter
   const [dockerContainers, setDockerContainers] = useState<string[]>([]);
@@ -24,6 +44,7 @@ export const LogsPage: React.FC = () => {
   const [autoScroll, setAutoScroll] = useState(true);
   const [paused, setPaused] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [showSyslogModal, setShowSyslogModal] = useState(false);
   const [genieDevices, setGenieDevices] = useState<GenieDevice[]>([]);
   const [radioFilter, setRadioFilter] = useState<string>('');  // device _id to filter logs
   const [radioSort, setRadioSort]     = useState<'label' | 'ip'>('label');
@@ -71,12 +92,15 @@ export const LogsPage: React.FC = () => {
     }).catch(() => setGenieDevices([]));
   }, [logSource]);
 
-  // Clear selection and filter when switching sources
-  useEffect(() => {
-    setSelectedServices(new Set());
+  // Switches source and resets selection/filter — each source picks its own sensible
+  // default selection instead of always clearing (FRR/GenieACS have a small fixed service
+  // list, so there's no reason to make the user re-select them every time).
+  const switchSource = (source: 'open5gs' | 'docker' | 'genieacs' | 'frr', defaultServices: string[] = []) => {
+    setLogSource(source);
+    setSelectedServices(new Set(defaultServices));
     setLogFilter(undefined);
     setRadioFilter('');
-  }, [logSource]);
+  };
 
   // When radioFilter changes, update the server-side content filter
   // GenieACS logs contain the device serial number in every line
@@ -127,7 +151,7 @@ export const LogsPage: React.FC = () => {
   }, [showTaskQueue, taskQueueDevice]);
 
   // Determine available services based on source
-  const availableServices = logSource === 'docker' ? dockerContainers : logSource === 'genieacs' ? GENIEACS_SERVICES : ALL_SERVICES;
+  const availableServices = logSource === 'docker' ? dockerContainers : logSource === 'genieacs' ? GENIEACS_SERVICES : logSource === 'frr' ? FRR_SERVICES : ALL_SERVICES;
 
   // Memoize services array to prevent re-subscription on every render
   const servicesArray = useMemo(() => Array.from(selectedServices), [selectedServices]);
@@ -140,6 +164,33 @@ export const LogsPage: React.FC = () => {
     paused,
     filter: logFilter,
   });
+
+  // Sets logger.level on every NF's config at once and applies it
+  // immediately — unlike ConfigPage's per-field edits, this is a one-click
+  // action meant for "I'm looking at logs right now, bump verbosity" use,
+  // so it doesn't stage into ConfigPage's dirty/Apply flow.
+  const [settingLogLevel, setSettingLogLevel] = useState(false);
+  const handleBulkLogLevel = async (level: string) => {
+    setSettingLogLevel(true);
+    try {
+      const configs = await configApi.getAll();
+      const next = { ...configs } as AllConfigs;
+      for (const key of Object.keys(next) as (keyof AllConfigs)[]) {
+        const svc = next[key] as any;
+        next[key] = { ...svc, logger: { ...svc?.logger, level } } as any;
+      }
+      const result = await configApi.apply(next);
+      if (result.success) {
+        toast.success(`Log level set to "${level}" for all NFs`);
+      } else {
+        toast.error('Failed to apply log level — configuration rolled back');
+      }
+    } catch {
+      toast.error('Failed to set log level');
+    } finally {
+      setSettingLogLevel(false);
+    }
+  };
 
   const toggleService = (service: string) => {
     const newSelected = new Set(selectedServices);
@@ -161,7 +212,10 @@ export const LogsPage: React.FC = () => {
     if (logSource === 'genieacs') {
       return 'bg-purple-500/10 text-purple-400 border-purple-500/30';
     }
-    
+    if (logSource === 'frr') {
+      return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
+    }
+
     // Cycle through some accent colors for service badges
     const colors = [
       'bg-blue-500/10 text-blue-400 border-blue-500/30',
@@ -196,58 +250,123 @@ export const LogsPage: React.FC = () => {
     <div className="flex flex-col h-screen bg-nms-bg">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-nms-border bg-nms-surface">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold font-display text-nms-text">Unified Logs</h1>
-          <div className="flex items-center gap-2">
-            {connected ? (
-              <>
-                <Circle className="w-2 h-2 fill-nms-green text-nms-green animate-pulse" />
-                <span className="text-xs text-nms-green">Connected</span>
-              </>
-            ) : (
-              <>
-                <Circle className="w-2 h-2 fill-nms-red text-nms-red" />
-                <span className="text-xs text-nms-red">Disconnected</span>
-              </>
-            )}
+          {/* Page tabs */}
+          <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+            <button
+              onClick={() => setPageTab('logs')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${pageTab === 'logs' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+            >
+              <ScrollText className="w-4 h-4" /> Live Logs
+            </button>
+            <button
+              onClick={() => setPageTab('audit')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${pageTab === 'audit' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+            >
+              <FileText className="w-4 h-4" /> Audit Log
+            </button>
+            <button
+              onClick={() => setPageTab('events')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${pageTab === 'events' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+            >
+              <Zap className="w-4 h-4" /> Major Events
+            </button>
           </div>
+          {pageTab === 'logs' && (
+            <div className="flex items-center gap-2">
+              {connected ? (
+                <>
+                  <Circle className="w-2 h-2 fill-nms-green text-nms-green animate-pulse" />
+                  <span className="text-xs text-nms-green">Connected</span>
+                </>
+              ) : (
+                <>
+                  <Circle className="w-2 h-2 fill-nms-red text-nms-red" />
+                  <span className="text-xs text-nms-red">Disconnected</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
-        <div className="flex gap-2">
-        <button
-            onClick={() => setShowDownloadModal(true)}
-            className="nms-btn-ghost text-sm flex items-center gap-1.5"
-            title="Download logs"
-          >
-            <Download className="w-4 h-4" /> Download
-          </button>
-          <button
-            onClick={() => window.location.reload()}
-            className="nms-btn-ghost text-sm"
-            title="Refresh"
-          >
-            <RotateCw className="w-4 h-4" />
-          </button>
-          <button
-            onClick={clearLogs}
-            className="nms-btn-ghost text-sm"
-            title="Clear logs"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
+        {pageTab === 'logs' && (
+          <div className="flex gap-2 items-center">
+            <label
+              className="nms-btn-ghost text-sm flex items-center gap-1.5 cursor-pointer"
+              title="Set the logger level on every open5gs NF at once — applied immediately"
+            >
+              {settingLogLevel ? <RotateCw className="w-4 h-4 animate-spin" /> : <Gauge className="w-4 h-4" />}
+              <select
+                disabled={settingLogLevel}
+                defaultValue=""
+                onChange={(e) => { if (e.target.value) { handleBulkLogLevel(e.target.value); e.target.value = ''; } }}
+                className="bg-transparent focus:outline-none cursor-pointer disabled:cursor-not-allowed"
+              >
+                <option value="" disabled>Log Level (all NFs)</option>
+                {LOG_LEVELS.map((l) => (
+                  <option key={l.value} value={l.value}>{l.label}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              onClick={() => setShowDownloadModal(true)}
+              className="nms-btn-ghost text-sm flex items-center gap-1.5"
+              title="Download logs"
+            >
+              <Download className="w-4 h-4" /> Download
+            </button>
+            <button
+              onClick={() => setShowSyslogModal(true)}
+              className="nms-btn-ghost text-sm flex items-center gap-1.5"
+              title="Forward all logs to a remote syslog server"
+            >
+              <RadioTower className="w-4 h-4" /> Syslog Forwarding
+            </button>
+            <button
+              onClick={() => window.location.reload()}
+              className="nms-btn-ghost text-sm"
+              title="Refresh"
+            >
+              <RotateCw className="w-4 h-4" />
+            </button>
+            <button
+              onClick={clearLogs}
+              className="nms-btn-ghost text-sm"
+              title="Clear logs"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </div>
+
+      {pageTab === 'audit' && (
+        <div className="flex-1 overflow-y-auto">
+          <AuditPage />
+        </div>
+      )}
+
+      {pageTab === 'events' && (
+        <div className="flex-1 overflow-hidden">
+          <MajorEventsView />
+        </div>
+      )}
 
       {showDownloadModal && (
         <LogDownloadModal
           onClose={() => setShowDownloadModal(false)}
           initialServices={Array.from(selectedServices)}
-          initialSource={logSource}
+          initialSource={logSource === 'frr' ? 'open5gs' : logSource}
           dockerContainers={dockerContainers}
         />
       )}
 
+      {showSyslogModal && (
+        <SyslogForwardingModal onClose={() => setShowSyslogModal(false)} />
+      )}
+
       {/* Log Display */}
-      <div
+      {pageTab === 'logs' && <div
         ref={logContainerRef}
         className="flex-1 overflow-y-auto bg-nms-bg"
       >
@@ -261,16 +380,17 @@ export const LogsPage: React.FC = () => {
         ) : (
           logs.map((log, index) => renderLogLine(log, index))
         )}
-      </div>
+      </div>}
 
       {/* Sticky Footer - Filters */}
+      {pageTab === 'logs' &&
       <div className="border-t border-nms-border bg-nms-surface p-4">
         {/* Log Source Selector */}
         <div className="mb-3">
           <label className="nms-label mb-2">Log Source</label>
           <div className="flex gap-2">
             <button
-              onClick={() => setLogSource('open5gs')}
+              onClick={() => switchSource('open5gs')}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'open5gs'
                   ? 'bg-nms-accent text-white'
@@ -281,7 +401,7 @@ export const LogsPage: React.FC = () => {
               Open5GS Services
             </button>
             <button
-              onClick={() => setLogSource('docker')}
+              onClick={() => switchSource('docker')}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'docker'
                   ? 'bg-nms-accent text-white'
@@ -297,6 +417,7 @@ export const LogsPage: React.FC = () => {
                 setLogSource('docker');
                 setSelectedServices(new Set([SAS_CONTAINER]));
                 setLogFilter('sas');
+                setRadioFilter('');
               }}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logFilter === 'sas'
@@ -308,7 +429,7 @@ export const LogsPage: React.FC = () => {
               SAS Logs
             </button>
             <button
-              onClick={() => setLogSource('genieacs')}
+              onClick={() => switchSource('genieacs', GENIEACS_SERVICES)}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'genieacs'
                   ? 'bg-nms-accent text-white'
@@ -317,6 +438,17 @@ export const LogsPage: React.FC = () => {
             >
               <Server className="w-4 h-4" />
               GenieACS
+            </button>
+            <button
+              onClick={() => switchSource('frr', FRR_SERVICES)}
+              className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
+                logSource === 'frr'
+                  ? 'bg-nms-accent text-white'
+                  : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              FRR
             </button>
           </div>
         </div>
@@ -504,7 +636,7 @@ export const LogsPage: React.FC = () => {
             </label>
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 };

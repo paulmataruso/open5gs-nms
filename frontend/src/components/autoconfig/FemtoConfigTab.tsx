@@ -2,14 +2,15 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, MapPin, Wifi, Server, Locate, AlertCircle, Terminal, Monitor,
   Eye, EyeOff, HelpCircle, Send, RefreshCw, ChevronDown, ChevronUp,
-  Clock, ExternalLink, Copy, Check, RotateCw, WifiOff,
-  GripVertical, X, Plus, Shield,
+  Clock, ExternalLink, Copy, Check, RotateCw, WifiOff, Users,
 } from 'lucide-react';
 import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
-import { configApi, genieacsApi, SercommRadio, SercommProvisionInput, NbiTask } from '../../api';
+import { configApi, genieacsApi, radioTagsApi, SercommRadio, SercommProvisionInput, NbiTask } from '../../api';
+import { useTopologyStore } from '../../stores';
 import { ProvisionConfirmModal } from './ProvisionConfirmModal';
 import { SercommWebUIModal } from './SercommWebUIModal';
 import { CwmpScreenshotsModal } from './CwmpScreenshotsModal';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
@@ -45,7 +46,8 @@ async function fetchDerivedCredentials(mac: string): Promise<{ rootPass: string;
   try {
     const clean = mac.replace(/[^0-9a-fA-F]/g, '');
     if (clean.length !== 12) return null;
-    const res = await fetch(`/api/femto/derive-credentials?mac=${encodeURIComponent(clean)}`, { credentials: 'include' });
+    const formatted = clean.match(/.{2}/g)!.join(':').toUpperCase();
+    const res = await fetch(`/api/femto/derive-credentials?mac=${encodeURIComponent(formatted)}`, { credentials: 'include' });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
@@ -54,9 +56,14 @@ async function fetchDerivedCredentials(mac: string): Promise<{ rootPass: string;
 // ─── Copy button ──────────────────────────────────────────────────────────────
 function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const copyToClipboard = useCopyToClipboard();
   return (
     <button
-      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+      onClick={async () => {
+        const ok = await copyToClipboard(text);
+        if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+        else toast.error('Copy failed — please copy manually');
+      }}
       className="p-1 rounded hover:bg-nms-surface text-nms-text-dim hover:text-nms-accent transition-colors flex-shrink-0"
     >
       {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -66,7 +73,7 @@ function CopyBtn({ text }: { text: string }) {
 
 // ─── Form state ────────────────────────────────────────────────────────────────
 interface SercommForm {
-  mcc: string; mnc: string; tac: string; mmeIp: string;
+  mcc: string; mnc: string; tac: string; mmeIp: string; mmeCfgIdList: string;
   carrierNumber: string; bandwidth: string;
   freqBand1: string; freqBand2: string;
   earfcn: string; earfcn2: string;
@@ -89,9 +96,8 @@ interface SercommForm {
   sasUserId: string;
   sasIcgGroupId: string;
   sasPeerCertVerify: boolean;
+  sasGrantMethod: string;       // 'FREQ_GRANT_BY_CARRIER' | 'FREQ_GRANT_BY_BLOCKS'
   latitude: string; longitude: string;
-  cipheringAlgorithms:  string[];
-  integrityAlgorithms:  string[];
   enable256QAM: boolean;
 }
 
@@ -115,6 +121,7 @@ function radioToForm(r: SercommRadio, mmeIpFallback = ''): SercommForm {
     mnc:           r.mnc  || '',
     tac:           r.tac  || '1',
     mmeIp:         r.mmeIp || mmeIpFallback,
+    mmeCfgIdList:  r.mmeCfgIdList || '{1}',
     carrierNumber: isCA ? (r.cellNumber || '2') : '1',
     bandwidth:     r.bandwidth ? String(parseInt(r.bandwidth) / 5) : '20',
     freqBand1:     r.band || '48',
@@ -142,10 +149,9 @@ function radioToForm(r: SercommRadio, mmeIpFallback = ''): SercommForm {
     sasUserId:             r.sasUserId || cellId1,
     sasIcgGroupId:         r.icgGroupId || '',
     sasPeerCertVerify:     false,
+    sasGrantMethod:        'FREQ_GRANT_BY_CARRIER',
     latitude:              latDecimal,
     longitude:             lonDecimal,
-    cipheringAlgorithms:  ['EEA0', '128-EEA1', '128-EEA2'],
-    integrityAlgorithms:  ['128-EIA1', '128-EIA2'],
     enable256QAM: r.enable256QAM === '1' || r.enable256QAM?.toLowerCase() === 'true',
   };
 }
@@ -155,7 +161,7 @@ const DEFAULT_SERCOMM_SAS_URL = `https://${window.location.hostname}:8443/sas/v1
 
 function formToInput(f: SercommForm): SercommProvisionInput {
   return {
-    mcc: f.mcc.trim(), mnc: f.mnc.trim(), tac: f.tac.trim(), mmeIp: f.mmeIp.trim(),
+    mcc: f.mcc.trim(), mnc: f.mnc.trim(), tac: f.tac.trim(), mmeIp: f.mmeIp.trim(), mmeCfgIdList: f.mmeCfgIdList.trim(),
     earfcn: f.earfcn.trim(), earfcn2: f.earfcn2.trim(),
     pci: f.pci2.trim() ? `${f.pci1.trim()},${f.pci2.trim()}` : f.pci1.trim(),
     cellIdentity: f.cellIdentity.trim(), cellIdentity2: f.cellIdentity2.trim(),
@@ -175,93 +181,40 @@ function formToInput(f: SercommForm): SercommProvisionInput {
     sasUserId: f.sasUserId.trim(),
     sasIcgGroupId: f.sasIcgGroupId.trim(),
     sasPeerCertVerify: f.sasPeerCertVerify,
+    sasGrantMethod: f.sasGrantMethod,
     latitude:  f.latitude.trim()  ? String(Math.round(parseFloat(f.latitude)  * 1_000_000)) : '',
     longitude: f.longitude.trim() ? String(Math.round(parseFloat(f.longitude) * 1_000_000)) : '',
-    cipheringAlgorithmList:  f.cipheringAlgorithms.join(','),
-    integrityAlgorithmList:  f.integrityAlgorithms.join(','),
     enable256QAM: f.enable256QAM,
   };
 }
 
-// ─── Algorithm drag-and-drop lists ────────────────────────────────────────────
-const ALL_CIPHERING = ['EEA0', '128-EEA1', '128-EEA2'];
-const ALL_INTEGRITY = ['128-EIA1', '128-EIA2'];
-
-interface AlgorithmDndListProps {
-  label: string;
-  trParam: string;
-  allOptions: string[];
-  active: string[];
-  onChange: (next: string[]) => void;
-}
-
-const AlgorithmDndList: React.FC<AlgorithmDndListProps> = ({ label, trParam, allOptions, active, onChange }) => {
-  const dragIdx = useRef<number | null>(null);
-
-  const reorder = (fromIdx: number, toIdx: number) => {
-    if (fromIdx === toIdx) return;
-    const next = [...active];
-    const [item] = next.splice(fromIdx, 1);
-    next.splice(toIdx, 0, item);
-    onChange(next);
-  };
-
-  const remove = (item: string) => onChange(active.filter(a => a !== item));
-  const add    = (item: string) => onChange([...active, item]);
-
-  const available = allOptions.filter(o => !active.includes(o));
-
+// ─── S1 status chips from Open5GS interface-status API ───────────────────────
+function S1Chips({ ip }: { ip: string }) {
+  const ifStatus = useTopologyStore(s => s.interfaceStatus);
+  if (!ifStatus || !ip) return null;
+  const s1cRadio = ifStatus.s1mme.connectedEnodebs.find(r => r.ip === ip);
+  const s1uRadio = ifStatus.s1u.connectedEnodebs.find(r => r.ip === ip);
+  const s1cUp = s1cRadio?.setupSuccess ?? false;
+  const s1uUp = s1uRadio?.setupSuccess ?? false;
   return (
-    <div>
-      <label className="nms-label">
-        {label} <span className="text-nms-text-dim font-normal">({trParam})</span>
-      </label>
-      <div className="flex flex-col gap-1 min-h-[2.5rem] mt-1 p-1.5 rounded border border-nms-border bg-nms-bg">
-        {active.length === 0 && (
-          <p className="text-xs text-nms-text-dim italic px-1">No algorithms selected</p>
-        )}
-        {active.map((item, idx) => (
-          <div
-            key={item}
-            draggable
-            onDragStart={() => { dragIdx.current = idx; }}
-            onDragOver={e => e.preventDefault()}
-            onDrop={() => { if (dragIdx.current !== null) reorder(dragIdx.current, idx); dragIdx.current = null; }}
-            className="flex items-center gap-2 px-2 py-1 rounded bg-nms-surface border border-nms-border cursor-grab active:cursor-grabbing select-none"
-          >
-            <GripVertical className="w-3.5 h-3.5 text-nms-text-dim flex-shrink-0" />
-            <span className="text-xs font-mono text-nms-text flex-1">{item}</span>
-            <span className="text-xs text-nms-text-dim">{idx + 1}</span>
-            <button onClick={() => remove(item)} className="text-nms-text-dim hover:text-red-400 transition-colors ml-1">
-              <X className="w-3 h-3" />
-            </button>
-          </div>
-        ))}
-      </div>
-      {available.length > 0 && (
-        <div className="flex gap-1.5 mt-1 flex-wrap">
-          {available.map(item => (
-            <button
-              key={item}
-              onClick={() => add(item)}
-              className="flex items-center gap-1 px-2 py-0.5 text-xs font-mono rounded border border-dashed border-nms-border text-nms-text-dim hover:text-nms-accent hover:border-nms-accent transition-colors"
-            >
-              <Plus className="w-3 h-3" />
-              {item}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <>
+      <span title={s1cUp ? 'S1-C (MME) connected' : 'S1-C not connected'} className={clsx('text-xs font-mono', s1cUp ? 'text-green-400' : 'text-red-400')}>
+        S1-C{s1cUp ? '✓' : '✗'}
+      </span>
+      <span title={s1uUp ? 'S1-U (SGW-U) active' : 'S1-U not active'} className={clsx('text-xs font-mono', s1uUp ? 'text-green-400' : 'text-red-400')}>
+        S1-U{s1uUp ? '✓' : '✗'}
+      </span>
+    </>
   );
-};
+}
 
 // ─── Single radio row ──────────────────────────────────────────────────────────
 const SercommRadioRow: React.FC<{
   radio: SercommRadio;
   mmeIpDefault: string;
   onRefresh: () => void;
-}> = ({ radio, mmeIpDefault, onRefresh }) => {
+  nickname?: string;
+}> = ({ radio, mmeIpDefault, onRefresh, nickname }) => {
   const [expanded, setExpanded]             = useState(false);
   const [form, setForm]                     = useState<SercommForm>(() => radioToForm(radio, mmeIpDefault));
   const [locating, setLocating]             = useState(false);
@@ -274,9 +227,11 @@ const SercommRadioRow: React.FC<{
   const pushFreezeUntil  = useRef<number>(0);
   // Set to true after a summon so the next radio update syncs the form even while expanded.
   const syncOnNextUpdate = useRef(false);
+  // Set to true the moment the user touches any field — blocks all auto-resets until card closes.
+  const userEdited = useRef(false);
 
   useEffect(() => {
-    if ((!expanded || syncOnNextUpdate.current) && Date.now() > pushFreezeUntil.current) {
+    if (!userEdited.current && (!expanded || syncOnNextUpdate.current) && Date.now() > pushFreezeUntil.current) {
       setForm(radioToForm(radio, mmeIpDefault));
       syncOnNextUpdate.current = false;
     }
@@ -284,6 +239,7 @@ const SercommRadioRow: React.FC<{
 
   const handleExpand = async () => {
     const opening = !expanded;
+    if (!opening) userEdited.current = false; // card closing — clear dirty flag so next open can sync
     setExpanded(e => !e);
     if (!opening) return;
     // Summon the radio so GenieACS gets fresh param values immediately.
@@ -296,7 +252,10 @@ const SercommRadioRow: React.FC<{
     finally { setSummoning(false); }
   };
 
-  const set = (patch: Partial<SercommForm>) => setForm(f => ({ ...f, ...patch }));
+  const set = (patch: Partial<SercommForm>) => {
+    userEdited.current = true;
+    setForm(f => ({ ...f, ...patch }));
+  };
 
   // ─── EARFCN validation ────────────────────────────────────────────────────
   const EARFCN_MIN = 55340;
@@ -349,21 +308,47 @@ const SercommRadioRow: React.FC<{
     } finally { setRfBusy(false); }
   };
 
-  const useMyLocation = () => {
-    if (!navigator.geolocation) { toast.error('Geolocation not supported'); return; }
+  const useMyLocation = async () => {
     setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      pos => {
-        set({
-          latitude:  pos.coords.latitude.toFixed(6),
-          longitude: pos.coords.longitude.toFixed(6),
-        });
-        toast.success(`Location set: ${pos.coords.latitude.toFixed(5)}°, ${pos.coords.longitude.toFixed(5)}°`);
-        setLocating(false);
-      },
-      err => { toast.error(`Location error: ${err.message}`); setLocating(false); },
-      { enableHighAccuracy: true, timeout: 10000 },
-    );
+
+    // Browsers block navigator.geolocation on HTTP (non-secure context) without
+    // ever showing a prompt — fall back to IP geolocation in that case.
+    if (window.isSecureContext && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          set({
+            latitude:  pos.coords.latitude.toFixed(6),
+            longitude: pos.coords.longitude.toFixed(6),
+          });
+          toast.success(`Location set: ${pos.coords.latitude.toFixed(5)}°, ${pos.coords.longitude.toFixed(5)}°`);
+          setLocating(false);
+        },
+        () => ipFallback(),
+        { enableHighAccuracy: true, timeout: 10000 },
+      );
+    } else {
+      await ipFallback();
+    }
+  };
+
+  const ipFallback = async () => {
+    try {
+      const res  = await fetch('https://ipapi.co/json/');
+      const data = await res.json();
+      if (!data.latitude || !data.longitude) throw new Error('No coordinates in response');
+      set({
+        latitude:  String(data.latitude),
+        longitude: String(data.longitude),
+      });
+      toast.success(
+        `Location set via IP: ${Number(data.latitude).toFixed(5)}°, ${Number(data.longitude).toFixed(5)}° (${data.city ?? 'approximate'})`,
+        { duration: 5000 },
+      );
+    } catch {
+      toast.error('Could not determine location. Enter coordinates manually.');
+    } finally {
+      setLocating(false);
+    }
   };
 
   const handlePushConfig = async () => {
@@ -412,8 +397,24 @@ const SercommRadioRow: React.FC<{
         >
           <RfDot status={radio.rfStatus} />
           <Radio className="w-4 h-4 text-nms-accent flex-shrink-0" />
-          <span className="font-mono text-sm text-nms-text flex-1 truncate">{radio.serial}</span>
-          {radio.ip && <span className="text-xs text-nms-text-dim font-mono">{radio.ip}</span>}
+          <span className="font-mono text-sm text-nms-text truncate">{radio.serial}</span>
+          <span className="flex-1" />
+          {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
+          {radio.ip && (
+            <span className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+              <span className="text-xs text-nms-text-dim font-mono">{radio.ip}</span>
+              <CopyBtn text={radio.ip} />
+            </span>
+          )}
+          {radio.ueCount !== '' && (
+            <span className={clsx(
+              'text-xs font-mono flex items-center gap-1',
+              parseInt(radio.ueCount) > 0 ? 'text-green-400' : 'text-nms-text-dim',
+            )} title="Active UEs">
+              <Users className="w-3 h-3" />{radio.ueCount}
+            </span>
+          )}
+          <S1Chips ip={radio.ip} />
           <span className={clsx(
             'text-xs px-2 py-0.5 rounded-full flex items-center gap-1',
             radio.lastInform ? 'bg-green-500/15 text-green-400' : 'bg-nms-surface-2 text-nms-text-dim',
@@ -472,6 +473,20 @@ const SercommRadioRow: React.FC<{
                   <input className="nms-input font-mono" placeholder="1" value={form.tac} onChange={e => set({ tac: e.target.value })} /></div>
                 <div><label className="nms-label">MME IP</label>
                   <input className="nms-input font-mono" placeholder="10.0.1.2" value={form.mmeIp} onChange={e => set({ mmeIp: e.target.value })} /></div>
+                <div>
+                  <LabelWithTooltip
+                    tooltip={
+                      'X_000E8F_CFG_MMEIdList — tells the radio which MME GUMMEI group to use when selecting an MME from the S1SetupResponse.\n\n' +
+                      '{1} = use the MME in GUMMEI group 1 (Open5GS default for the primary PLMN)\n' +
+                      '{2} = use the MME in GUMMEI group 2\n\n' +
+                      "Must match the mme_gid assigned to this radio's PLMN in the Open5GS mme.yaml gummei list. " +
+                      'Mismatch here causes the cell to stay in TRYING state indefinitely even with S1 accepted.'
+                    }
+                  >
+                    <span className="nms-label">MME Group ID</span>
+                  </LabelWithTooltip>
+                  <input className="nms-input font-mono" value={form.mmeCfgIdList} onChange={e => set({ mmeCfgIdList: e.target.value })} placeholder="{1}" />
+                </div>
               </div>
             </div>
 
@@ -510,7 +525,7 @@ const SercommRadioRow: React.FC<{
                 <div><label className="nms-label">Sync Source</label>
                   <select className="nms-input" value={form.syncSource} onChange={e => set({ syncSource: e.target.value })}>
                     <option value="FREE_RUNNING">FREE_RUNNING</option>
-                    <option value="GNSS">GNSS (GPS)</option>
+                    <option value="GPS">GPS</option>
                     <option value="PTP">PTP (1588)</option>
                   </select></div>
                 <div><label className="nms-label">Freq Band (C1)</label>
@@ -616,6 +631,19 @@ const SercommRadioRow: React.FC<{
                   </select></div>
               </div>
 
+              {/* Row 1b — Grant Method */}
+              <div className="mt-3">
+                <div className="max-w-xs">
+                  <LabelWithTooltip tooltip="BY_CARRIER: sasd requests one grant per carrier and maps its full bandwidth to that grant — simple 1:1 mapping, works with any CBRS SAS. BY_BLOCKS: carrier follows the raw low/high frequency edges returned by the SAS grant — use when the SAS is doing precise spectrum coordination.">
+                    Grant Method
+                  </LabelWithTooltip>
+                  <select className="nms-input" value={form.sasGrantMethod} onChange={e => set({ sasGrantMethod: e.target.value })}>
+                    <option value="FREQ_GRANT_BY_CARRIER">BY_CARRIER — one SAS grant per carrier (recommended)</option>
+                    <option value="FREQ_GRANT_BY_BLOCKS">BY_BLOCKS — carrier follows raw SAS frequency block edges</option>
+                  </select>
+                </div>
+              </div>
+
               {/* Row 2 — Location fields */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                 <div><label className="nms-label">Location</label>
@@ -700,33 +728,6 @@ const SercommRadioRow: React.FC<{
               </div>
             </div>
 
-            {/* Security Algorithms */}
-            <div>
-              <p className="text-xs font-semibold text-nms-text mb-2 flex items-center gap-2">
-                <Shield className="w-3.5 h-3.5 text-nms-accent" />
-                Security Algorithms
-              </p>
-              <p className="text-xs text-nms-text-dim mb-3">
-                Drag to reorder — first item has highest priority. Click <strong className="text-nms-text">+</strong> to restore a removed algorithm.
-              </p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <AlgorithmDndList
-                  label="Ciphering Algorithms"
-                  trParam="AllowedCipheringAlgorithmList"
-                  allOptions={ALL_CIPHERING}
-                  active={form.cipheringAlgorithms}
-                  onChange={v => set({ cipheringAlgorithms: v })}
-                />
-                <AlgorithmDndList
-                  label="Integrity Algorithms"
-                  trParam="AllowedIntegrityProtectionAlgorithmList"
-                  allOptions={ALL_INTEGRITY}
-                  active={form.integrityAlgorithms}
-                  onChange={v => set({ integrityAlgorithms: v })}
-                />
-              </div>
-            </div>
-
             {/* Auto-set info */}
             <div className="text-xs text-nms-text-dim bg-nms-surface rounded px-3 py-2 border border-nms-border">
               <span className="font-semibold text-nms-text">Auto-set on push: </span>
@@ -781,6 +782,7 @@ export function FemtoConfigTab() {
   const [error, setError]           = useState<string | null>(null);
   const [globalBusy, setGlobalBusy] = useState(false);
   const [mmeIpDefault, setMmeIpDefault] = useState('');
+  const [radioTags, setRadioTags]   = useState<Record<string, string>>({});
   // Device Identity — shared card above radio list
   const [mac, setMac]                           = useState('');
   const [derivedRootPass, setDerivedRootPass]   = useState('');
@@ -789,6 +791,7 @@ export function FemtoConfigTab() {
   const [showWebUIModal, setShowWebUIModal]       = useState(false);
   const [showCwmpModal, setShowCwmpModal]         = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fetchInterfaceStatus = useTopologyStore(s => s.fetchInterfaceStatus);
 
   const fetchDevices = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -842,13 +845,15 @@ export function FemtoConfigTab() {
       const ip = (configs.mme as any)?.mme?.s1ap?.server?.[0]?.address || '';
       if (ip) setMmeIpDefault(ip);
     }).catch(() => {});
+    radioTagsApi.getAll().then(setRadioTags).catch(() => {});
   }, []);
 
   useEffect(() => {
     fetchDevices();
-    pollRef.current = setInterval(() => fetchDevices(true), POLL_INTERVAL_MS);
+    fetchInterfaceStatus();
+    pollRef.current = setInterval(() => { fetchDevices(true); fetchInterfaceStatus(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchDevices]);
+  }, [fetchDevices, fetchInterfaceStatus]);
 
   return (
     <div className="space-y-4">
@@ -862,6 +867,7 @@ export function FemtoConfigTab() {
       {showWebUIModal && (
         <SercommWebUIModal
           ip=""
+          mac={mac}
           rootPass={derivedRootPass}
           webuiPass={derivedWebuiPass}
           onClose={() => setShowWebUIModal(false)}
@@ -1127,6 +1133,7 @@ export function FemtoConfigTab() {
               radio={radio}
               mmeIpDefault={mmeIpDefault}
               onRefresh={() => fetchDevices(true)}
+              nickname={radio.ip ? radioTags[radio.ip] : undefined}
             />
           ))}
         </div>

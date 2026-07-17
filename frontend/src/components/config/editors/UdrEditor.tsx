@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection, SbiClientSection } from './SharedComponents';
+import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -29,6 +29,11 @@ export function UdrEditor({ configs, onChange }: Props): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Unified Data Repository (UDR)"
+        generation="5G"
+        description="The UDR is the raw storage backend for all 5G subscriber data. It acts as a structured database service that the UDM (N35) and PCF (N36) query to read and write subscriber profiles, authentication credentials, and policy data. The UDR has no business logic — it is a pure storage layer backed by MongoDB in Open5GS."
+      />
       {fullYaml.db_uri !== undefined && (
         <div>
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Database</h3>
@@ -63,6 +68,15 @@ export function UdrEditor({ configs, onChange }: Props): JSX.Element {
               className="nms-input font-mono text-xs"
               value={server.port}
               onChange={(e) => updateUdr({ sbi: { ...udr.sbi, server: [{ ...server, port: parseInt(e.target.value) || 7777 }] } })}
+            />
+          </div>
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
+            <input
+              className="nms-input font-mono text-xs"
+              value={server.advertise || ''}
+              onChange={(e) => updateUdr({ sbi: { ...udr.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}
+              placeholder="udr.5gc.mnc070.mcc999.3gppnetwork.org:7777"
             />
           </div>
         </div>

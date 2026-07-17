@@ -212,10 +212,9 @@ export function TunInterfacePage() {
       <div className="p-3 rounded-lg border border-nms-border bg-nms-surface-2/30 flex items-start gap-3 text-xs text-nms-text-dim">
         <Info className="w-4 h-4 text-nms-accent shrink-0 mt-0.5" />
         <span>
-          The default <span className="font-mono text-nms-text">ogstun</span> is created by Open5GS and cannot be deleted here.
-          Create additional interfaces with any valid name for multi-APN setups and set the matching{' '}
-          <span className="font-mono text-nms-text">dev:</span> field in your UPF session config.
-          Each interface is persisted via a <span className="font-mono text-nms-text">.netdev</span> +{' '}
+          Interfaces named <span className="font-mono text-nms-text">ogstun</span>, <span className="font-mono text-nms-text">ogstun2</span>, etc. are created by Open5GS UPF automatically when you add a session with a <span className="font-mono text-nms-text">dev:</span> field in the UPF config.
+          Use <strong>New Interface</strong> to create additional TUN interfaces for multi-APN setups not managed by Open5GS.
+          NMS-created interfaces are persisted via a <span className="font-mono text-nms-text">.netdev</span> +{' '}
           <span className="font-mono text-nms-text">.network</span> pair in <span className="font-mono text-nms-text">/etc/systemd/network/</span>.
         </span>
       </div>
@@ -277,7 +276,7 @@ export function TunInterfacePage() {
                       })()}
                     </td>
                     <td className="px-4 py-3">
-                      {iface.default ? (
+                      {iface.default || (!iface.managed && /^ogstun\d+$/.test(iface.name)) ? (
                         <span className="text-xs bg-nms-surface-2 border border-nms-border text-nms-text-dim rounded px-2 py-0.5">Open5GS</span>
                       ) : iface.managed ? (
                         <span className="text-xs bg-nms-accent/10 border border-nms-accent/20 text-nms-accent rounded px-2 py-0.5">NMS (persistent)</span>
@@ -298,7 +297,7 @@ export function TunInterfacePage() {
                               {iface.state === 'up' ? <ArrowDown className="w-4 h-4" /> : <ArrowUp className="w-4 h-4" />}
                             </button>
                           )}
-                          {!iface.default && iface.managed && (
+                          {iface.exists && (
                             <button onClick={() => setModal({ mode: 'edit', iface })} disabled={acting} title="Edit IP" className="p-1.5 rounded text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2 transition-colors">
                               <Pencil className="w-4 h-4" />
                             </button>

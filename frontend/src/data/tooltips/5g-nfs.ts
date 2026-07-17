@@ -2,6 +2,7 @@
 export const COMMON_TOOLTIPS = {
   sbi_address: "Service-Based Interface bind address. IP address this NF listens on for HTTP/2 connections from other NFs",
   sbi_port: "Service-Based Interface port. Default: 7777 for most NFs. Must be unique if multiple NFs on same host",
+  sbi_advertise: "Optional hostname/FQDN this NF announces to the NRF instead of its bind address (e.g. nrf.5gc.mnc070.mcc999.3gppnetwork.org:7777). Other NFs doing dynamic discovery via NRF/SCP will reach it at this name instead of the raw IP. Leave blank to advertise the bind address as-is.",
   scp_uri: "Service Communication Proxy URI. When set, NF uses SCP for indirect communication. Empty = direct NRF discovery",
   nrf_uri: "Network Repository Function URI. Used for direct NF discovery mode. Format: http://ip:port",
   log_path: "Full path to log file. Parent directory must exist and be writable by the NF process",

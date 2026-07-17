@@ -13,8 +13,10 @@ import { clsx } from 'clsx';
 // In Open5GS 2.7+, SMF absorbed PGW-c and UPF absorbed PGW-u.
 // SMF and UPF are shared between 4G and 5G — do NOT include them in the 5G-only group.
 // Stopping "5G" should only stop the 5G-specific NFs, leaving SMF/UPF running for 4G.
-const SERVICES_5G = ['nrf', 'scp', 'amf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf'];
-const SERVICES_4G = ['mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+const SERVICES_5G     = ['nrf', 'scp', 'amf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1'];
+const SERVICES_4G     = ['mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+const SERVICES_SHARED = ['mongodb', 'smf', 'upf'];
+const SERVICES_OSMO   = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null || bytes === 0) return '—';
@@ -146,6 +148,15 @@ function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
           <RotateCw className="w-3.5 h-3.5" /> Restart
         </button>
       </div>
+    </div>
+  );
+}
+
+function SectionHeader({ label, color }: { label: string; color: string }) {
+  return (
+    <div className={`flex items-center gap-3 pb-1 border-b border-nms-border mb-4`}>
+      <span className={`text-xs font-semibold uppercase tracking-widest ${color}`}>{label}</span>
+      <div className="flex-1" />
     </div>
   );
 }
@@ -289,68 +300,105 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {/* Chrony / Time Server card */}
-        <div className="nms-card animate-fade-in">
-          <div className="flex items-start justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <div className={chrony?.active ? 'status-dot-active' : 'status-dot-inactive'} />
-              <div>
-                <h3 className="text-base font-semibold font-display flex items-center gap-2">
-                  CHRONY
-                  <span className="inline-flex items-center gap-1 text-[10px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded px-1.5 py-0.5 font-semibold">
-                    <Clock className="w-2.5 h-2.5" /> ntp
-                  </span>
-                </h3>
-                <p className="text-xs text-nms-text-dim font-mono">chrony.service</p>
-              </div>
-            </div>
-            <span className={`text-xs px-2 py-1 rounded-full ${
-              !chrony ? 'bg-nms-surface text-nms-text-dim' :
-              !chrony.installed ? 'bg-amber-500/10 text-amber-400' :
-              chrony.active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red'
-            }`}>
-              {!chrony ? '…' : !chrony.installed ? 'not installed' : chrony.active ? 'active/running' : 'inactive/dead'}
-            </span>
-          </div>
-          {!chrony?.installed && (
-            <div className="flex items-center gap-2 text-xs text-amber-400 mb-3 cursor-pointer hover:text-amber-300" onClick={() => onNavigate?.('time-server')}>
-              <AlertCircle className="w-3.5 h-3.5" />
-              Not installed — click to install
-            </div>
-          )}
-          {chrony?.refSource && (
-            <p className="text-xs text-nms-text-dim font-mono mb-3">
-              Synced to: <span className="text-nms-text">{chrony.refSource}</span>
-            </p>
-          )}
-          <div className="flex gap-2 pt-3 border-t border-nms-border">
-            <button onClick={() => handleChronyAction('start')} disabled={chronyActing || chrony?.active || !chrony?.installed}
-              className="nms-btn-ghost flex items-center gap-1.5 text-xs flex-1 justify-center">
-              <Play className="w-3.5 h-3.5" /> Start
-            </button>
-            <button onClick={() => handleChronyAction('stop')} disabled={chronyActing || !chrony?.active}
-              className="nms-btn-danger flex items-center gap-1.5 text-xs flex-1 justify-center">
-              <Square className="w-3.5 h-3.5" /> Stop
-            </button>
-            <button onClick={() => handleChronyAction('restart')} disabled={chronyActing || !chrony?.installed}
-              className="nms-btn-primary flex items-center gap-1.5 text-xs flex-1 justify-center">
-              <RotateCw className="w-3.5 h-3.5" /> Restart
-            </button>
-          </div>
-        </div>
-
-        {statuses.map((s) => (
-          <ServiceCard key={s.name} status={s} />
-        ))}
-        {statuses.length === 0 &&
-          ['NRF', 'AMF', 'SMF', 'UPF', 'AUSF'].map((name) => (
+      {/* Loading skeleton */}
+      {statuses.length === 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {['NRF', 'AMF', 'SMF', 'UPF', 'AUSF'].map((name) => (
             <div key={name} className="nms-card animate-pulse">
               <div className="h-32 flex items-center justify-center text-nms-text-dim text-sm">
                 Loading {name}...
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* 5G Core */}
+      {statuses.some(s => SERVICES_5G.includes(s.name)) && (
+        <div>
+          <SectionHeader label="5G Core" color="text-blue-400" />
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {statuses.filter(s => SERVICES_5G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+          </div>
+        </div>
+      )}
+
+      {/* 4G EPC */}
+      {statuses.some(s => SERVICES_4G.includes(s.name)) && (
+        <div>
+          <SectionHeader label="4G EPC" color="text-amber-400" />
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {statuses.filter(s => SERVICES_4G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Shared 4G + 5G */}
+      {statuses.some(s => SERVICES_SHARED.includes(s.name)) && (
+        <div>
+          <SectionHeader label="Shared 4G + 5G" color="text-purple-400" />
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {statuses.filter(s => SERVICES_SHARED.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+          </div>
+        </div>
+      )}
+
+      {/* Osmocom + Chrony */}
+      <div>
+        <SectionHeader label="Osmocom" color="text-cyan-400" />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {/* Chrony card */}
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className={chrony?.active ? 'status-dot-active' : 'status-dot-inactive'} />
+                <div>
+                  <h3 className="text-base font-semibold font-display flex items-center gap-2">
+                    CHRONY
+                    <span className="inline-flex items-center gap-1 text-[10px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded px-1.5 py-0.5 font-semibold">
+                      <Clock className="w-2.5 h-2.5" /> ntp
+                    </span>
+                  </h3>
+                  <p className="text-xs text-nms-text-dim font-mono">chrony.service</p>
+                </div>
+              </div>
+              <span className={`text-xs px-2 py-1 rounded-full ${
+                !chrony ? 'bg-nms-surface text-nms-text-dim' :
+                !chrony.installed ? 'bg-amber-500/10 text-amber-400' :
+                chrony.active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red'
+              }`}>
+                {!chrony ? '…' : !chrony.installed ? 'not installed' : chrony.active ? 'active/running' : 'inactive/dead'}
+              </span>
+            </div>
+            {!chrony?.installed && (
+              <div className="flex items-center gap-2 text-xs text-amber-400 mb-3 cursor-pointer hover:text-amber-300" onClick={() => onNavigate?.('time-server')}>
+                <AlertCircle className="w-3.5 h-3.5" />
+                Not installed — click to install
+              </div>
+            )}
+            {chrony?.refSource && (
+              <p className="text-xs text-nms-text-dim font-mono mb-3">
+                Synced to: <span className="text-nms-text">{chrony.refSource}</span>
+              </p>
+            )}
+            <div className="flex gap-2 pt-3 border-t border-nms-border">
+              <button onClick={() => handleChronyAction('start')} disabled={chronyActing || chrony?.active || !chrony?.installed}
+                className="nms-btn-ghost flex items-center gap-1.5 text-xs flex-1 justify-center">
+                <Play className="w-3.5 h-3.5" /> Start
+              </button>
+              <button onClick={() => handleChronyAction('stop')} disabled={chronyActing || !chrony?.active}
+                className="nms-btn-danger flex items-center gap-1.5 text-xs flex-1 justify-center">
+                <Square className="w-3.5 h-3.5" /> Stop
+              </button>
+              <button onClick={() => handleChronyAction('restart')} disabled={chronyActing || !chrony?.installed}
+                className="nms-btn-primary flex items-center gap-1.5 text-xs flex-1 justify-center">
+                <RotateCw className="w-3.5 h-3.5" /> Restart
+              </button>
+            </div>
+          </div>
+
+          {statuses.filter(s => SERVICES_OSMO.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+        </div>
       </div>
     </div>
   );

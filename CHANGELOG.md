@@ -4,6 +4,112 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.12] - 2026-07-16
+
+### Added — Framed Routing
+
+- Subscriber sessions now support 3GPP Framed Routing (TS 23.501 §5.6.14) — lets a UE act
+  as a gateway for an IP subnet behind it (e.g. an IoT gateway or fixed-wireless CPE with
+  a LAN), routed through that UE's single PDU session. New `ipv4_framed_routes`/
+  `ipv6_framed_routes` array fields per session, editable directly on the Subscriber page
+  (comma-separated CIDR list), plus CSV import/export support (`framed_routes` column,
+  pipe-separated, mirrors the existing MSISDN convention)
+- **Static host route automation** — an "Apply static route on host" checkbox per
+  session auto-manages the local `ip route` needed for the subnet to actually be
+  reachable, resolving the correct `ogstun*` device from the session's DNN (not
+  hardcoded) via live `upf.yaml`. Idempotent add/remove, diffed on every subscriber
+  create/update/delete so routes never orphan
+- **Overlap/duplicate warnings (non-blocking)** — on save, new framed routes are checked
+  for exact-duplicate or CIDR-overlap conflicts against every other subscriber's framed
+  routes and against the core UE pool subnets (from `upf.yaml`/`smf.yaml`), surfaced as
+  toast warnings without blocking the save (an operator may be intentionally staging a
+  route). IPv4 uses full numeric-range overlap math; IPv6 is exact-string-duplicate only
+  (no 128-bit prefix library in this codebase yet — documented as a known limitation)
+- **Framed Routes Registry** — new modal (Subscribers page → Addressing dropdown) listing
+  every configured subnet across all subscribers, with owning IMSI/nickname, APN, and
+  whether a static route is currently applied
+- In-app guidance: the static-route checkbox's hint explains that a local route alone
+  isn't enough — the rest of the network needs its own route to that subnet too, either
+  via dynamic routing (e.g. an EIGRP `network` statement, not automated — FRR eigrpd has
+  a documented crash-loop history, so this app deliberately never edits `frr.conf` for
+  this) or a manual static route on the core/edge router pointing at **this Open5GS
+  host's own IP**, never the UE's IP (the UE isn't a direct L3 hop from outside this
+  host — this host is what forwards into the UE's tunnel), with a worked example
+- Found and fixed a real bug while building the overlap math: the shared CIDR
+  range/overlap helper (`backend/src/domain/services/ip-utils.ts`, extracted from
+  previously-duplicated logic in `validation-controller.ts` and
+  `swu-emulator-controller.ts`) produced a corrupted signed integer for any subnet whose
+  first octet is ≥128 (e.g. `192.168.x.x`) — silently returning wrong host-pool ranges
+  for IP auto-assignment too, not just the new overlap check. Fixed for both use sites
+
+### Changed
+
+- IMS and VoWiFi alpha warning banners now open with the same framing sentence: *"The
+  goal is a 100% automated deployment — today, expect to do manual configuration beyond
+  what this wizard automates."* Each banner keeps its own module-specific detail below.
+
+---
+
+## [v2.0-beta_0.11] - 2026-07-16
+
+### Fixed — DNS/FQDN Migration Wizard: SEPP gap
+
+- The DNS/FQDN migration wizard (converts hardcoded IPs to 3GPP FQDN/DNS addressing for
+  every NF) didn't account for SEPP at all. Fixed two real bugs found while adding it:
+  - SEPP's local SBI client (to our own SCP/NRF) was missing from the migration's service
+    list entirely — added to both the DNS-zone and SBI-client phases. SEPP's N32 peer
+    interface (to the *visited* PLMN's own SEPP) is correctly still excluded — that
+    belongs to a different operator's infrastructure, not something local DNS resolves
+  - `sepp1.yaml`'s internal YAML key is `sepp`, not `sepp1` — unlike every other NF where
+    the filename matches the top-level key. The migration code was patching under the
+    wrong key before this was caught and fixed with a `yamlKeyFor()` mapping helper
+- **Production incident found and fixed during live testing**: `open5gs-seppd` does
+  strict, synchronous DNS resolution of its own `advertise` FQDN at startup and aborts
+  fatally (core-dump) if the record doesn't exist yet — unlike every other NF, which
+  tolerates an unresolvable advertise value fine. Running the SBI-mesh migration phase
+  for SEPP without the DNS-zone phase already reflecting its current FQDN crash-loops the
+  service until the DNS phase is (re)run. Documented as a permanent operational note:
+  always run the DNS-zone phase immediately before the SBI-mesh phase for SEPP, not just
+  once at the start of a migration
+
+### Fixed — Stale subscriber sync (OsmoHLR / SMS)
+
+- SMS's `sync-subscribers` action (provisions MSISDN into OsmoHLR for CS-fallback SMS)
+  only ever inserted/updated currently-eligible subscribers, with no reconciliation pass
+  — a subscriber later deleted from Open5GS, or with its MSISDN cleared, stayed behind in
+  OsmoHLR forever. Added a reconciliation step (mirroring the same fix already applied to
+  IMS's subscriber sync) that removes OsmoHLR rows whose IMSI is no longer eligible.
+  Surfaced in the UI as a "removed N stale" count alongside the existing sync result
+
+---
+
+## [v2.0-beta_0.10] - 2026-07-16
+
+### Added — SEPP (Security Edge Protection Proxy)
+
+- SEPP is now a fully configurable 17th core NF, on equal footing with the other 16 —
+  its own Config tab, included in the standard bulk "Apply Config" restart flow, backed
+  up with the rest. Previously the Config page had a static disclaimer that SEPP wasn't
+  managed by this UI at all; that's no longer true
+- **Home SEPP configuration** — SBI server/client (SCP), N32 identity (sender FQDN,
+  scheme, N32-c/N32-f address+port), and an optional TLS section
+- **TLS support with in-app cert generation** — a toggle switches N32 between plaintext
+  HTTP and mutual TLS; when enabled, a "Generate Certs" action creates a self-signed
+  keypair for the home SEPP's identity via `openssl req -x509` (the standard simplified
+  trust model for a lab/test roaming setup, not a real GSMA-IPX-backed PKI), with the
+  public cert displayed for copying and a paste box for the visited peer's public cert
+- **"Generate Visited PLMN Config"** — a separate panel builds a complete, downloadable
+  `sepp.yaml` for the visited-network operator's side, cross-referencing our
+  already-configured home SEPP values and including our public cert content when TLS is
+  enabled — so a real roaming partner has everything needed in one download
+- Kept the existing `/etc/open5gs/sepp1.yaml`/`sepp2.yaml` filenames (matching the
+  pre-existing systemd unit and the open5gs tutorial's naming) rather than migrating to a
+  new name, since `open5gs-seppd` was already installed and running with TLS enabled
+  using the tutorial's demo config when this feature was built
+- New audit action `sepp_generate_certs`; all SEPP endpoints are admin-only
+
+---
+
 ## [v2.0-beta_0.9] - 2026-07-16
 
 ### Fixed — FRR eigrpd crash-guard patch

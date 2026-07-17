@@ -102,6 +102,22 @@ For large-scale deployments (100+ subscribers):
 | **systemd** | 245+ | Service management |
 | **bash** | 4.0+ | Shell scripts |
 | **iptables** | 1.8+ | NAT configuration (optional) |
+| **chrony** | any | NTP daemon managed by the Time Server page |
+| **frr** / **frr-pythontools** | 8.4.x (apt) | L3 Routing (EIGRP/OSPF/BGP) — see note below on upgrading to a from-source build |
+
+> **FRR note:** the Ubuntu `frr` apt package (8.4.4) has known long-standing `eigrpd` assertion-crash bugs ([#943](https://github.com/FRRouting/frr/issues/943), [#3701](https://github.com/FRRouting/frr/issues/3701)) that can cause intermittent route flaps and radio (S1AP/N2) disconnects under EIGRP. The L3 Routing page's **Reinstall (Source)** tab migrates to a from-source FRR build (10.6.1+) and automatically installs its own build toolchain (`git build-essential libtool automake autoconf pkg-config bison flex libreadline-dev libjson-c-dev libc-ares-dev python3-dev python3-sphinx libsnmp-dev libcap-dev libelf-dev libunwind-dev protobuf-c-compiler libprotobuf-c-dev cmake` plus a from-source `libyang` build) — you don't need to install these yourself, just make sure `/opt` has at least ~3GB free before starting a build.
+
+### Optional Module Software
+
+Each of these is installed on-demand from its own page in the NMS UI (an "Install" button that streams `apt-get install` output live) — none of it is required for a base deployment, only if you enable that specific module.
+
+| Module | Packages Installed | Notes |
+|--------|--------------------|-------|
+| **IMS / VoLTE** | `kamailio kamailio-ims-modules kamailio-mysql-modules kamailio-tls-modules kamailio-extra-modules kamailio-utils-modules rtpengine mariadb-server bind9 bind9utils mariadb-client dnsutils git dpkg-dev libxml2-dev redis-server python3-pip python3-venv python3-dev` | The Diameter HSS is [PyHSS](https://github.com/nickvsnetworking/pyhss) — **installed automatically by the NMS** (cloned from GitHub, Python deps installed via pip), no separate manual install or JRE/JDK needed. |
+| **SMS over SGs** | `osmo-stp osmo-hlr osmo-msc sqlite3` | Connects to the MME's SGs interface; OsmoHLR's subscriber DB lives at `/var/lib/osmocom/hlr.db` on the host. |
+| **Syslog Forwarding** | `rsyslog` | Also modifies (never destructively) the host's AppArmor local-override file and adds the `syslog` system user to the `frr` group, both required for rsyslog to read logs outside `/var/log` and to read `frr.log` — both changes are additive and reversible. |
+| **UE Validation** | Docker images only (no host packages) — `free5gc/ueransim:latest` pulled from Docker Hub, and a `srsran4g-noavx` image built locally from a Dockerfile in the repo | Needs internet access to pull/build on first use, same as the main app images. |
+| **VoWiFi** *(alpha, highly experimental)* | Not an apt package — builds `osmo-epdg` (Erlang/OTP via `erlang rebar3`) and the `strongswan-epdg` plugin from source, plus a standard C build toolchain (`build-essential autoconf automake libtool pkg-config gperf bison flex`, `libgmp-dev libssl-dev libgcrypt-dev libtalloc-dev liburing-dev libpcsclite-dev libusb-1.0-0-dev libgnutls28-dev libsystemd-dev libmnl-dev libsctp-dev`, `nftables`) | Heaviest optional module install — a real from-source build, not a quick apt install. Needs internet access to clone both repos. |
 
 ### Installation Commands
 
@@ -170,8 +186,7 @@ sudo systemctl restart systemd-resolved
 - Can be changed via `NGINX_PORT` environment variable
 
 **Internal Ports (Localhost Only):**
-- **3001/tcp** - Backend REST API (proxied by nginx)
-- **3002/tcp** - Backend WebSocket (proxied by nginx)
+- **3001/tcp** - Backend REST API AND WebSocket (both served on the same port since v2.0-beta_0.4 — the WebSocket upgrade is authenticated against the session cookie before the socket is accepted; there is no longer a separate 3002 listener)
 - **27017/tcp** - MongoDB (localhost only, no external access)
 
 **Firewall Configuration:**
@@ -181,13 +196,34 @@ sudo ufw allow 8888/tcp
 
 # Deny direct backend access (should be proxied only)
 sudo ufw deny 3001/tcp
-sudo ufw deny 3002/tcp
 
 # MongoDB should only listen on localhost
 # Edit /etc/mongod.conf:
 # net:
 #   bindIp: 127.0.0.1
 ```
+
+### Ports Used by Optional Modules
+
+These are only relevant if you enable the corresponding module from the UI — none of them are required for a base install.
+
+| Port | Protocol | Module | Purpose |
+|------|----------|--------|---------|
+| 80/tcp | HTTP | Core (nginx) | Web UI is also reachable here in addition to `NGINX_PORT` (default 8888) |
+| 443/tcp | HTTPS | Core (nginx) | TLS vhost for `acs.sc.sercomm.com` — relays factory-reset Sercomm radios (which hardcode this ACS URL) into the local GenieACS instance |
+| 514/udp or /tcp | Syslog | Syslog Forwarding | Outbound only — the NMS host connects out to *your* syslog server on this port (or whatever port you configure); nothing needs to be opened inbound on the NMS host itself |
+| 5060/udp | SIP | IMS / VoLTE | P-CSCF SIP signaling |
+| 3868–3871/tcp | Diameter | IMS / VoLTE | Cx (I/S-CSCF ↔ PyHSS) and Rx (P-CSCF ↔ PCRF) peer connections — all localhost-only in a single-host deployment |
+| 29118/sctp | SGs | SMS over SGs | MME ↔ OsmoMSC signaling |
+| 2905/tcp, 14001/tcp | M3UA / SUA | SMS over SGs | OsmoSTP internal signaling transport |
+| 4222/tcp | GSUP | SMS over SGs | OsmoMSC ↔ OsmoHLR |
+| 500/udp, 4500/udp | IKEv2 | VoWiFi | osmo-epdg IKEv2/IPsec (ePDG ↔ UE) — the actual internet-facing port for real handsets; localhost-only against the test emulator used during development |
+| 8443/tcp | HTTPS | CBRS SAS | SAS-CBSD protocol endpoint (Sercomm radios require HTTPS) |
+
+> **SEPP note:** SEPP's N32 port (7777, same as the other NFs' SBI port) is core, not
+> optional — but unlike every other NF's SBI traffic, it's only genuinely
+> internet-facing if you're doing real cross-operator roaming with a visited PLMN. In a
+> single-host / lab deployment it stays localhost-only like the rest of the SBI mesh.
 
 ### Network Connectivity
 
@@ -350,7 +386,7 @@ These are mounted via Docker volumes in `docker-compose.yml`.
 - Frontend built image - ~100MB
 
 **Configuration Backups:** Variable
-- ~10KB per NF config file × 16 = ~160KB per backup
+- ~10KB per NF config file × 17 = ~170KB per backup
 - Retention: All backups kept unless manually deleted
 - Estimate: ~100MB for 500 backups
 
@@ -470,7 +506,7 @@ Before installing Open5GS NMS, verify:
 - [ ] Docker Compose v2.20+ available
 - [ ] Open5GS 2.7.0+ installed with configs in `/etc/open5gs/`
 - [ ] MongoDB 6.0+ running on `localhost:27017`
-- [ ] All 16 Open5GS services managed by systemd
+- [ ] All 17 Open5GS services managed by systemd (16 core NFs + SEPP)
 - [ ] DNS resolution working (`nslookup registry.npmjs.org`)
 - [ ] At least 20GB free disk space
 - [ ] Port 8888 available (or alternate port configured)

@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection, SbiClientSection } from './SharedComponents';
+import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -29,6 +29,11 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Policy Control Function (PCF)"
+        generation="5G"
+        description="The PCF is the 5G evolution of the PCRF. It provides policy rules to the AMF (N15) controlling network slice access and UE policies, and to the SMF (N7) governing QoS flows and charging for each PDU session. The PCF reads per-subscriber policy profiles from the UDR (N36) and can receive application-level QoS requests from external Application Functions (N5)."
+      />
       {fullYaml.db_uri !== undefined && (
         <div>
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Database</h3>
@@ -62,6 +67,15 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
               className="nms-input font-mono text-xs"
               value={server.port}
               onChange={(e) => updatePcf({ sbi: { ...pcf.sbi, server: [{ ...server, port: parseInt(e.target.value) || 7777 }] } })}
+            />
+          </div>
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
+            <input
+              className="nms-input font-mono text-xs"
+              value={server.advertise || ''}
+              onChange={(e) => updatePcf({ sbi: { ...pcf.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}
+              placeholder="pcf.5gc.mnc070.mcc999.3gppnetwork.org:7777"
             />
           </div>
         </div>

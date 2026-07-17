@@ -163,11 +163,12 @@ export class SuciManagementUseCase {
     let newKeyPath = entry.key;
     const fileExists = await this.hostExecutor.fileExists(entry.key);
     if (fileExists) {
-      const oldFileName = entry.key.split('/').pop() || '';
-      const newFileName = oldFileName.replace(
-        /(curve25519-|secp256r1-)(\d+)(\.key)/,
-        `$1${newId}$3`,
-      );
+      // Always normalize to the NMS's standard naming convention (same as
+      // generateKey()) rather than pattern-matching the existing filename —
+      // this also correctly renames keys that pre-date the NMS (e.g. a
+      // fresh host with open5gs already configured) and don't follow the
+      // curve25519-<id>.key / secp256r1-<id>.key convention at all.
+      const newFileName = entry.scheme === 1 ? `curve25519-${newId}.key` : `secp256r1-${newId}.key`;
       newKeyPath = `${this.hnetDir}/${newFileName}`;
 
       if (newKeyPath !== entry.key) {

@@ -64,13 +64,19 @@ export class ActiveSessionsUseCase {
 
       // ─ Metrics fallback ────────────────────────────────────────────────────
       if (pduSessions.length === 0 && amfUes.length === 0) {
-        const [amfCounts, upfCounts] = await Promise.all([
+        const [amfCounts, upfCounts, smfCounts] = await Promise.all([
           this.apiClient.getAmfCountsFromMetrics(),
           this.apiClient.getUpfCountsFromMetrics(),
+          this.apiClient.getSmfCountsFromMetrics(),
         ]);
-        const ueCount = amfCounts.ueCount > 0 ? amfCounts.ueCount : upfCounts.sessionsActive;
+        // SMF ues_active and UPF session count reflect the data-plane truth.
+        // AMF ran_ue can be stale — it survives service restarts and isn't
+        // decremented when a UE loses radio without a clean deregistration.
+        // Prefer data-plane counts; fall back to AMF only if SMF/UPF are silent.
+        const dataPlaneCount = Math.max(smfCounts.activeUeCount, upfCounts.sessionsActive);
+        const ueCount = dataPlaneCount > 0 ? dataPlaneCount : amfCounts.ueCount;
         if (ueCount <= 0) return [];
-        this.logger.info({ ueCount, upfCounts }, '[5G Sessions] using Prometheus metrics fallback');
+        this.logger.info({ ueCount, upfCounts, smfCounts, amfCounts }, '[5G Sessions] using Prometheus metrics fallback');
         const dnns = Object.keys(upfCounts.dnnFlows);
         const primaryDnn = dnns[0] || 'internet';
         return Array.from({ length: ueCount }, () => ({
@@ -78,9 +84,11 @@ export class ActiveSessionsUseCase {
         }));
       }
 
-      // Build AMF UE lookup by IMSI for enrichment
+      // Build AMF UE lookup by IMSI for enrichment.
+      // Skip entries that have only suci (unauthenticated UEs mid-registration — no supi yet).
       const amfByImsi = new Map<string, typeof amfUes[0]>();
       for (const ue of amfUes) {
+        if (!ue.supi) continue;
         const imsi = ue.supi.replace(/^imsi-/, '');
         amfByImsi.set(imsi, ue);
       }
@@ -112,7 +120,7 @@ export class ActiveSessionsUseCase {
 
           const amfUe = amfByImsi.get(imsi);
 
-          // Resolve gNodeB IP from gnb_id
+          // Resolve gNodeB IP from gnb_id (N2 SCTP control-plane IP)
           const gnbId = amfUe?.gnb?.gnb_id;
           const radioIp = gnbId !== undefined ? gnbIpById.get(gnbId) : undefined;
 
@@ -127,6 +135,12 @@ export class ActiveSessionsUseCase {
             continue;
           }
 
+          // Fall back to N3 GTP-U gNB address when gnb_id → N2 IP lookup fails.
+          // For most small cells, the N2 SCTP and N3 GTP-U IPs are the same interface,
+          // so this fallback keeps UEs visible under their radio card when AMF UE info
+          // lacks gnb or gnb_id (e.g. some firmware versions, or after idle→active transition).
+          const displayRadioIp = radioIp ?? (pdu.n3?.gnb?.addr ? parsePeerIP(pdu.n3.gnb.addr) : undefined);
+
           const ue: ActiveUE = {
             ip:          pdu.ipv4,
             imsi,
@@ -138,7 +152,7 @@ export class ActiveSessionsUseCase {
             securityInt: amfUe?.security?.int,
             ambrDownlink: amfUe?.ambr?.downlink,
             ambrUplink:   amfUe?.ambr?.uplink,
-            radioIp,
+            radioIp:     displayRadioIp,
           };
 
           activeUEs.push(ue);

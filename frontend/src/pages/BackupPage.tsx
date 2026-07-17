@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Database, HardDrive, Settings as SettingsIcon, RotateCw, Check, AlertTriangle, Download, Upload, Archive, Radio } from 'lucide-react';
 import { backupApi as legacyBackupApi, BackupListItem, BackupSettings } from '../api/backup';
-import { backupApi, genieacsApi } from '../api';
+import { backupApi, genieacsApi, sercommNRApi } from '../api';
 import toast from 'react-hot-toast';
 import { ConfigRestoreModal } from '../components/backup/ConfigRestoreModal';
 import { LabelWithTooltip } from '../components/common/UniversalTooltipWrappers';
@@ -21,7 +21,7 @@ export const BackupPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Radio backups
-  const [radioDevices, setRadioDevices]           = useState<{ id: string; serial: string }[]>([]);
+  const [radioDevices, setRadioDevices]           = useState<{ id: string; serial: string; vendor: string }[]>([]);
   const [selectedRadioId, setSelectedRadioId]     = useState<string>('');
   const [radioBackups, setRadioBackups]           = useState<{ filename: string; deviceId: string }[]>([]);
   const [radioBackupsLoading, setRadioBackupsLoading] = useState(false);
@@ -88,10 +88,15 @@ export const BackupPage: React.FC = () => {
   useEffect(() => {
     loadBackups();
     loadSettings();
-    // Load radio devices for the backup section
-    genieacsApi.getDevices()
-      .then(devices => setRadioDevices(devices.map(d => ({ id: d.id, serial: d.serial }))))
-      .catch(() => {});
+    // Load radio devices from every vendor for the backup section
+    Promise.allSettled([
+      genieacsApi.getDevices().then(devices => devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Baicells' }))),
+      genieacsApi.getSercommDevices().then(devices => devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Sercomm 4G' }))),
+      sercommNRApi.listDevices().then(r => r.devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Sercomm 5G' }))),
+    ]).then(results => {
+      const merged = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+      setRadioDevices(merged);
+    });
   }, []);
 
   const loadBackups = async () => {
@@ -278,8 +283,11 @@ export const BackupPage: React.FC = () => {
     }
   };
 
-  const formatDate = (isoString: string) => {
+  const formatDate = (isoString: string, type?: string) => {
     const date = new Date(isoString);
+    if (type === 'mongodb') {
+      return date.toLocaleDateString();
+    }
     return date.toLocaleString();
   };
 
@@ -336,7 +344,7 @@ export const BackupPage: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="text-sm font-medium text-nms-text font-mono">{backup.name}</div>
-                      <div className="text-xs text-nms-text-dim">{formatDate(backup.timestamp)}</div>
+                      <div className="text-xs text-nms-text-dim">{formatDate(backup.timestamp, 'mongodb')}</div>
                     </div>
                     {selectedMongoBackup === backup.name && (
                       <Check className="w-4 h-4 text-nms-accent" />
@@ -531,15 +539,16 @@ export const BackupPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Baicells Radio Config Backups */}
+      {/* Radio Config Backups (all vendors) */}
       <div className="nms-card border-nms-accent/20 mb-6">
         <div className="flex items-center gap-2 mb-2">
           <Radio className="w-5 h-5 text-nms-accent" />
-          <h2 className="text-lg font-semibold font-display text-nms-text">Baicells Radio Config Backups</h2>
+          <h2 className="text-lg font-semibold font-display text-nms-text">Radio Config Backups</h2>
         </div>
         <p className="text-xs text-nms-text-dim mb-4">
-          Per-radio configuration snapshots saved from GenieACS after each successful provision.
-          Select a radio to view its backup history, or trigger a manual snapshot of current device parameters.
+          Per-radio configuration snapshots saved from GenieACS after each successful provision —
+          covers Baicells, Sercomm 4G, and Sercomm 5G NR radios. Select a radio to view its backup
+          history, or trigger a manual snapshot of current device parameters.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -553,7 +562,7 @@ export const BackupPage: React.FC = () => {
             >
               <option value="">— Select a radio —</option>
               {radioDevices.map(d => (
-                <option key={d.id} value={d.id}>{d.serial}</option>
+                <option key={d.id} value={d.id}>{d.vendor} — {d.serial}</option>
               ))}
             </select>
             <button

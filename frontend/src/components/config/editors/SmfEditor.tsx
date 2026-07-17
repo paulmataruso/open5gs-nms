@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Plus, X, AlertTriangle, Info, Network, ExternalLink, Map } from 'lucide-react';
 import type { AllConfigs } from '../../../types';
-import { LoggerSection, SbiClientSection } from './SharedComponents';
-import { FieldWithTooltip } from '../FieldsWithTooltips';
+import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedComponents';
+import { FieldWithTooltip, SelectWithTooltip } from '../FieldsWithTooltips';
 import { SMF_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
 import { TopologyModal } from './TopologyModal';
 
@@ -250,6 +250,12 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
     <div className="space-y-8">
       {showTopology && <TopologyModal focus="upf" onClose={() => setShowTopology(false)} />}
 
+      <FunctionInfoBox
+        title="Session Management Function (SMF)"
+        generation="4G + 5G"
+        description="The SMF manages the full lifecycle of data sessions. In 5G it handles PDU session establishment, modification, and release for UEs — allocating IP addresses, selecting and controlling the UPF via PFCP (N4), and applying QoS policy from the PCF (N7). In 4G it acts as the PGW-C, connecting to the SGW-C via GTP-C (S5/S8). Each configured DNN/APN session block defines the IP pool, DNS servers, and UPF assignment for a specific network (e.g. internet, ims)."
+      />
+
       {/* ── Section 1: SBI Server ── */}
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
@@ -266,6 +272,13 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
             value={sbiServer.port}
             onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, port: parseInt(v) || 7777 }] } })}
             tooltip={COMMON_TOOLTIPS.sbi_port}
+          />
+          <FieldWithTooltip
+            label="Advertise (optional)"
+            value={sbiServer.advertise || ''}
+            onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, advertise: v || undefined }] } })}
+            placeholder="smf.5gc.mnc070.mcc999.3gppnetwork.org:7777"
+            tooltip={COMMON_TOOLTIPS.sbi_advertise}
           />
         </div>
       </div>
@@ -766,6 +779,24 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
           </div>
         </div>
       )}
+
+      {/* ── Section 6b: Charging Trigger Function (CTF) ── */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Charging Trigger Function (CTF)</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <SelectWithTooltip
+            label="Enabled"
+            value={smf.ctf?.enabled || 'auto'}
+            onChange={(v) => updateSmf({ ctf: { enabled: v as 'auto' | 'yes' | 'no' } })}
+            options={[
+              { value: 'auto', label: 'auto (default) — only when charging is required' },
+              { value: 'yes', label: 'yes — always enabled' },
+              { value: 'no', label: 'no — disabled' },
+            ]}
+            tooltip={SMF_TOOLTIPS.ctf_enabled}
+          />
+        </div>
+      </div>
 
       {/* ── Section 7: S-NSSAI (Network Slices) ── */}
       {(() => {

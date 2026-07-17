@@ -8,6 +8,7 @@ import { requireAdmin } from './middleware/auth-middleware';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { classifyMajorEvent, MAJOR_EVENT_GREP_PATTERNS, parseOpen5gsTimestamp, formatOpen5gsTimestamp } from '../../application/use-cases/major-event-classifier';
 
 const execFileAsync = promisify(execFile);
 
@@ -321,6 +322,158 @@ export const createLogDownloadRouter = (
       if (!res.headersSent) res.status(500).json({ error: 'Failed to generate debug bundle' });
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // Bounded read + grep, same rationale as LogStreamingUseCase.getGreppedLogs: grep must
+  // scan sequentially from byte 0, which is fast only when the file is page-cached — on a
+  // multi-GB log that's evicting its own older pages constantly, a cold full-file grep
+  // measured 12-17s on this host. `tail -c <bytes>` seeks near the end instead (measured
+  // ~0.5-1s for several hundred MB), piped into grep so only that bounded window is
+  // scanned. No nsenter needed here — /var/log/open5gs is bind-mounted directly into this
+  // container (see LOG_BASE above).
+  const GREP_TAIL_BYTES = 300 * 1024 * 1024;
+  function grepTail(logPath: string, pattern: string, tailBytes: number, timeoutMs: number): Promise<string> {
+    return new Promise((resolve) => {
+      const tail = spawn('tail', ['-c', String(tailBytes), logPath]);
+      const grep = spawn('grep', ['-a', '-E', pattern]);
+      // grep.stdin can EPIPE if grep exits before tail finishes writing — without this
+      // handler that's an unhandled 'error' event, which crashes the whole process.
+      grep.stdin.on('error', () => {});
+      tail.stdout.pipe(grep.stdin);
+      tail.on('error', () => grep.stdin.end());
+
+      let out = '';
+      grep.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      const timer = setTimeout(() => { tail.kill(); grep.kill(); resolve(out); }, timeoutMs);
+      grep.on('close', () => { clearTimeout(timer); resolve(out); });
+      grep.on('error', () => { clearTimeout(timer); resolve(out); });
+    });
+  }
+
+  // Finds one exact line (by fixed-string match, not regex) within the same bounded tail
+  // window and returns it with `before`/`after` lines of surrounding context, using grep's
+  // own -B/-A rather than pulling the whole window into JS — grep streams, so this stays
+  // cheap even though the bounded window itself can be a few hundred MB / millions of lines.
+  // -F treats the search string as literal (log messages can contain regex-special chars
+  // like [ ] and .); -m 1 stops at the first match so a repeated exact line+timestamp
+  // (astronomically unlikely, but not impossible) doesn't return multiple context blocks.
+  function grepContext(
+    logPath: string, searchLine: string, before: number, after: number, tailBytes: number, timeoutMs: number,
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const tail = spawn('tail', ['-c', String(tailBytes), logPath]);
+      const grep = spawn('grep', ['-a', '-n', '-F', '-B', String(before), '-A', String(after), '-m', '1', '--', searchLine]);
+      // -m 1 means grep exits as soon as it finds the match (plus trailing -A context),
+      // often well before tail is done writing — without this handler that EPIPE is an
+      // unhandled 'error' event, which crashes the whole Node process, not just this request.
+      grep.stdin.on('error', () => {});
+      tail.stdout.pipe(grep.stdin);
+      tail.on('error', () => grep.stdin.end());
+
+      let out = '';
+      grep.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      const timer = setTimeout(() => { tail.kill(); grep.kill(); resolve(out); }, timeoutMs);
+      grep.on('close', () => { clearTimeout(timer); resolve(out); });
+      grep.on('error', () => { clearTimeout(timer); resolve(out); });
+    });
+  }
+
+  // ── GET /api/logs/context ────────────────────────────────────────────────────
+  // "Show me this Major Events line in its raw log file" — locates the exact line (matched
+  // by reconstructing its original MM/DD HH:MM:SS.mmm prefix + message text) and returns it
+  // plus surrounding context lines, with the index of the matched line so the frontend can
+  // highlight it.
+  router.get('/context', async (req: Request, res: Response) => {
+    try {
+      const service = String(req.query.service || '');
+      if (!(service in MAJOR_EVENT_GREP_PATTERNS)) {
+        return void res.status(400).json({ error: 'Unsupported service' });
+      }
+      const ts = String(req.query.ts || '');
+      const message = String(req.query.message || '');
+      const before = Math.max(0, Math.min(300, parseInt(req.query.before as string) || 50));
+      const after = Math.max(0, Math.min(300, parseInt(req.query.after as string) || 50));
+
+      const rawPrefix = formatOpen5gsTimestamp(ts);
+      if (!rawPrefix || !message) {
+        return void res.status(400).json({ error: 'Invalid timestamp or message' });
+      }
+      const searchLine = `${rawPrefix}: ${message}`;
+
+      const logPath = `${LOG_BASE}/${service}.log`;
+      const output = await grepContext(logPath, searchLine, before, after, GREP_TAIL_BYTES, 20000);
+
+      if (!output.trim()) {
+        return void res.status(404).json({
+          error: 'Could not find this line in the log — it may have rotated out of the recent window',
+        });
+      }
+
+      // grep -n -B/-A prefixes each line with "LINENO:" for the match, "LINENO-" for context.
+      const parsed = output.split('\n').filter(l => l.length > 0).map(l => {
+        const m = l.match(/^\d+([:-])(.*)$/s);
+        if (!m) return { line: l, isMatch: false };
+        return { line: m[2], isMatch: m[1] === ':' };
+      });
+
+      const matchIndex = parsed.findIndex(p => p.isMatch);
+      res.json({ service, lines: parsed.map(p => p.line), matchIndex });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Failed to get log context');
+      res.status(500).json({ error: 'Failed to get log context' });
+    }
+  });
+
+  // ── GET /api/logs/recent-radios?days=3 ───────────────────────────────────────
+  // Radios actually seen (via a radio_connect/radio_disconnect event) in the last N days —
+  // NOT every radio ever tagged or currently live, since a radio that changed IP or hasn't
+  // connected in weeks shouldn't clutter a "recent radios" picker. Reuses the same grep
+  // approach as the Major Events view: scans mme.log/amf.log directly for the known
+  // connect/disconnect line shapes rather than tailing a fixed line count (which would miss
+  // low-traffic radios entirely on a chatty host).
+  router.get('/recent-radios', async (req: Request, res: Response) => {
+    try {
+      const days = Math.max(1, Math.min(30, parseInt(req.query.days as string) || 3));
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+      const radioPatterns: Record<string, string> = {
+        mme: MAJOR_EVENT_GREP_PATTERNS.mme,
+        amf: MAJOR_EVENT_GREP_PATTERNS.amf,
+      };
+
+      const lastSeen = new Map<string, { lastSeen: string; lastEvent: string }>();
+
+      // Sequential, not parallel — concurrent large reads contend for disk I/O and end up
+      // slower than one-at-a-time (measured directly on this host).
+      for (const [service, pattern] of Object.entries(radioPatterns)) {
+        const logPath = `${LOG_BASE}/${service}.log`;
+        const stdout = await grepTail(logPath, pattern, GREP_TAIL_BYTES, 20000);
+
+        for (const line of stdout.split('\n')) {
+          if (!line.trim()) continue;
+          const event = classifyMajorEvent(line, service);
+          if (!event || !event.radioIp) continue;
+          if (event.type !== 'radio_connect' && event.type !== 'radio_disconnect') continue;
+
+          const ts = parseOpen5gsTimestamp(line);
+          if (!ts || new Date(ts).getTime() < cutoff) continue;
+
+          const existing = lastSeen.get(event.radioIp);
+          if (!existing || new Date(ts).getTime() > new Date(existing.lastSeen).getTime()) {
+            lastSeen.set(event.radioIp, { lastSeen: ts, lastEvent: event.type });
+          }
+        }
+      }
+
+      const radios = [...lastSeen.entries()]
+        .map(([ip, v]) => ({ ip, ...v }))
+        .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
+
+      res.json({ days, radios });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Failed to compute recent radios');
+      res.status(500).json({ error: 'Failed to compute recent radios' });
     }
   });
 

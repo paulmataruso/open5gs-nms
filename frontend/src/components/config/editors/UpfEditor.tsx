@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
-import { Plus, X, Server, AlertTriangle, Info, Download, Copy, Check, Radio } from 'lucide-react';
+import { Plus, X, Server, AlertTriangle, Info, Download, Copy, Check, Radio, ChevronDown } from 'lucide-react';
+import toast from 'react-hot-toast';
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS, UPF_TOOLTIPS } from '../../../data/tooltips';
+import { useCopyToClipboard } from '../../../hooks/useCopyToClipboard';
 
 interface Props {
   configs: AllConfigs;
@@ -145,9 +147,12 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
     logPath: '/var/log/open5gs/upf.log',
   });
   const [copied, setCopied] = useState(false);
+  const copyToClipboard = useCopyToClipboard();
 
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState(false);
+  const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [installStepsOpen, setInstallStepsOpen] = useState(false);
 
   // Pre-populate form when navigated here from SmfEditor
   useEffect(() => {
@@ -173,11 +178,10 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
 
   const generatedYaml = generateRemoteUpfYaml(remoteForm, smfPfcpDisplayAddress);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(generatedYaml).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(generatedYaml);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else toast.error('Copy failed — please copy manually');
   };
 
   const handleDownload = () => {
@@ -273,6 +277,11 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
 
   return (
     <div className="space-y-8">
+      <FunctionInfoBox
+        title="User Plane Function (UPF)"
+        generation="4G + 5G"
+        description="The UPF is the data plane anchor of the core network. All user traffic flows through it — GTP-U tunnels arrive from the gNB/eNB, the UPF decapsulates them, applies QoS marking, and routes packets to/from the internet (DNN/APN). The UPF is controlled entirely by the SMF via the PFCP protocol (N4 interface), which installs per-session packet forwarding and detection rules. In 4G it acts as the combined SGW-U + PGW-U."
+      />
 
       {/* ── Section 1: Local UPF ── */}
       <div>
@@ -471,12 +480,16 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
       </div>
 
       {/* ── Section 2: Remote UPF YAML Generator ── */}
-      <div id="remote-upf-generator">
-        <div className="flex items-center gap-3 mb-4">
+      <div id="remote-upf-generator" className="nms-card">
+        <button
+          type="button"
+          onClick={() => setGeneratorOpen(o => !o)}
+          className={`w-full flex items-center gap-3 text-left ${generatorOpen ? 'mb-4' : ''}`}
+        >
           <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400">
             <Radio className="w-4 h-4" />
           </div>
-          <div>
+          <div className="flex-1">
             <h3 className="text-base font-semibold font-display text-nms-text">
               Remote UPF Config Generator
             </h3>
@@ -486,7 +499,10 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
               The remote UPF only needs <span className="font-mono">open5gs-upfd</span> installed.
             </p>
           </div>
-        </div>
+          <ChevronDown className={`w-4 h-4 text-nms-text-dim transition-transform shrink-0 ${generatorOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {generatorOpen && <>
 
         {/* How it works explainer */}
         <div className="nms-card bg-purple-500/5 border-purple-500/20 mb-4">
@@ -508,7 +524,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
           </div>
         </div>
 
-        <div className="nms-card space-y-6">
+        <div className="space-y-6">
           {/* Identity */}
           <div>
             <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Site Identity</h4>
@@ -698,22 +714,31 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                 </span>
               </div>
               {/* Deployment steps */}
-              <div className="px-3 py-2 bg-nms-surface-2/50 rounded border border-nms-border text-xs text-nms-text-dim space-y-2">
-                <p className="font-semibold text-nms-text">Deployment steps on the remote host:</p>
+              <div className="bg-nms-surface-2/50 rounded border border-nms-border text-xs text-nms-text-dim">
+                <button
+                  type="button"
+                  onClick={() => setInstallStepsOpen(o => !o)}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left"
+                >
+                  <p className="font-semibold text-nms-text">Deployment steps on the remote host</p>
+                  <ChevronDown className={`w-4 h-4 text-nms-text-dim transition-transform shrink-0 ${installStepsOpen ? 'rotate-180' : ''}`} />
+                </button>
 
-                <p className="font-semibold text-nms-text-dim">1. Install &amp; configure Open5GS UPF</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`apt install open5gs-upf
+                {installStepsOpen && (
+                  <div className="px-3 pb-3 space-y-2">
+                    <p className="font-semibold text-nms-text-dim">1. Install &amp; configure Open5GS UPF</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`apt install open5gs-upf
 cp upf.yaml /etc/open5gs/upf.yaml`}</pre>
 
-                <p className="font-semibold text-nms-text-dim">2. Assign gateway IP to TUN interface</p>
-                <p className="text-nms-text-dim">Open5GS creates the ogstun interface but does NOT assign the IP — you must do this manually:</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ip addr add ${remoteForm.sessions[0]?.gateway || '10.x.x.1'}/${(remoteForm.sessions[0]?.subnet || '').split('/')[1] || '16'} dev ogstun
+                    <p className="font-semibold text-nms-text-dim">2. Assign gateway IP to TUN interface</p>
+                    <p className="text-nms-text-dim">Open5GS creates the ogstun interface but does NOT assign the IP — you must do this manually:</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ip addr add ${remoteForm.sessions[0]?.gateway || '10.x.x.1'}/${(remoteForm.sessions[0]?.subnet || '').split('/')[1] || '16'} dev ogstun
 sudo ip link set ogstun up`}</pre>
-                <p className="text-amber-300">⚠️ Add to a startup script to persist across reboots.</p>
+                    <p className="text-amber-300">⚠️ Add to a startup script to persist across reboots.</p>
 
-                <p className="font-semibold text-nms-text-dim">3. Enable IP forwarding &amp; configure NAT</p>
-                <p className="text-nms-text-dim">Replace <span className="font-mono text-nms-accent">eth0</span> with your internet-facing interface (<span className="font-mono">ip route | grep default</span>):</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`# Enable IP forwarding
+                    <p className="font-semibold text-nms-text-dim">3. Enable IP forwarding &amp; configure NAT</p>
+                    <p className="text-nms-text-dim">Replace <span className="font-mono text-nms-accent">eth0</span> with your internet-facing interface (<span className="font-mono">ip route | grep default</span>):</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`# Enable IP forwarding
 sudo sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
 
@@ -725,18 +750,21 @@ sudo iptables -I INPUT -i ogstun -j ACCEPT
 sudo apt-get install -y iptables-persistent
 sudo netfilter-persistent save`}</pre>
 
-                <p className="font-semibold text-nms-text-dim">4. Ensure firewall allows PFCP</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ufw allow 8805/udp`}</pre>
+                    <p className="font-semibold text-nms-text-dim">4. Ensure firewall allows PFCP</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ufw allow 8805/udp`}</pre>
 
-                <p className="font-semibold text-nms-text-dim">5. Start the UPF service</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo systemctl enable --now open5gs-upfd
+                    <p className="font-semibold text-nms-text-dim">5. Start the UPF service</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo systemctl enable --now open5gs-upfd
 sudo systemctl status open5gs-upfd`}</pre>
 
-                <p className="font-semibold text-nms-text pt-1">Central SMF is auto-configured when you click "Add to SMF &amp; Apply" above.</p>
+                    <p className="font-semibold text-nms-text pt-1">Central SMF is auto-configured when you click "Add to SMF &amp; Apply" above.</p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
+        </>}
       </div>
 
     </div>

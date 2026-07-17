@@ -17,6 +17,7 @@ import { ServiceMonitorUseCase } from './application/use-cases/service-monitor';
 import { SubscriberManagementUseCase } from './application/use-cases/subscriber-management';
 import { TopologyUseCase } from './application/use-cases/topology';
 import { BackupRestoreUseCase } from './application/use-cases/backup-restore';
+import { DnsMigrationUseCase } from './application/use-cases/dns-migration-usecase';
 import { RestoreDefaultsUseCase } from './application/use-cases/restore-defaults';
 import { AutoConfigUseCase } from './application/use-cases/auto-config';
 import { LogStreamingUseCase } from './application/use-cases/log-streaming';
@@ -32,7 +33,11 @@ import { createAuthMiddleware, requireAdmin } from './interfaces/rest/middleware
 import { UserManagementUseCase } from './application/use-cases/user-management';
 import { createUsersRouter } from './interfaces/rest/users-controller';
 import { createConfigRouter } from './interfaces/rest/config-controller';
+import { createSeppRouter } from './interfaces/rest/sepp-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
+import { createDnsMigrationRouter } from './interfaces/rest/dns-migration-controller';
+import { EsimGeneratorUseCase } from './application/use-cases/esim-generator';
+import { createEsimRouter } from './interfaces/rest/esim-controller';
 import { createFemtoRouter } from './interfaces/rest/femto-controller';
 import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller';
 import { createServiceRouter } from './interfaces/rest/service-controller';
@@ -53,9 +58,20 @@ import { createRadioTagsRouter } from './interfaces/rest/radio-tags-controller';
 import { createLogDownloadRouter } from './interfaces/rest/log-download-controller';
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
 import { createChronyRouter } from './interfaces/rest/chrony-controller';
+import { createSyslogRouter } from './interfaces/rest/syslog-controller';
 import { createFrrRouter } from './interfaces/rest/frr-controller';
+import { createFrrSourceBuildRouter } from './interfaces/rest/frr-source-build-controller';
+import { createSmsRouter } from './interfaces/rest/sms-controller';
+import { createImsRouter } from './interfaces/rest/ims-controller';
+import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
+import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controller';
+import { createBindRouter } from './interfaces/rest/bind-controller';
+import { createValidationRouter } from './interfaces/rest/validation-controller';
+import * as http from 'http';
 import { SasService } from './domain/sas/sas-service';
 import { createSasProtocolRouter, createSasAdminRouter } from './interfaces/rest/sas-controller';
+import { createSercommNRRouter } from './interfaces/rest/sercomm-nr-controller';
+import { createSubscriberGroupsRouter } from './interfaces/rest/subscriber-groups-controller';
 
 async function main() {
   // Load configuration
@@ -156,10 +172,13 @@ async function main() {
     auditLogger,
     logger,
   );
+  const tunUseCase = new TunManagementUseCase(hostExecutor, logger);
   const subscriberManagementUseCase = new SubscriberManagementUseCase(
     subscriberRepo,
     auditLogger,
     logger,
+    tunUseCase,
+    configRepo,
   );
   const topologyUseCase = new TopologyUseCase(configRepo, logger);
   const backupRestoreUseCase = new BackupRestoreUseCase(
@@ -175,6 +194,17 @@ async function main() {
     auditLogger,
     logger,
     config.backupPath,
+  );
+  const dnsMigrationUseCase = new DnsMigrationUseCase(
+    hostExecutor,
+    configRepo,
+    auditLogger,
+    logger,
+  );
+  const esimGeneratorUseCase = new EsimGeneratorUseCase(
+    config.simlesslyAccessKey,
+    config.simlesslySecretKey,
+    logger,
   );
   const autoConfigUseCase = new AutoConfigUseCase(
     hostExecutor,
@@ -254,13 +284,16 @@ async function main() {
   // requireAdmin middleware applied before routers that have write operations
   app.use('/api/users', createUsersRouter(userManagementUseCase, logger));
   app.use('/api/config', createConfigRouter(loadConfigUseCase, validateConfigUseCase, applyConfigUseCase, topologyUseCase, serviceMonitorUseCase, syncSDUseCase, logger));
+  app.use('/api/sepp', createSeppRouter(hostExecutor, auditLogger, logger));
   app.use('/api/services', createServiceRouter(serviceMonitorUseCase, logger));
   app.use('/api/subscribers', createSubscriberRouter(subscriberManagementUseCase, autoAssignIPsUseCase, logger));
   app.use('/api/audit', createAuditRouter(auditLogger, logger));
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
+  app.use('/api/dns-migration', createDnsMigrationRouter(dnsMigrationUseCase));
+  app.use('/api/esim', createEsimRouter(esimGeneratorUseCase, auditLogger, logger));
   app.use('/api/femto', createFemtoRouter(logger));
+  app.use('/api/femto/nr', createSercommNRRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
-  const tunUseCase = new TunManagementUseCase(hostExecutor, logger);
   app.use('/api/tun-interfaces', createTunRouter(tunUseCase, logger));
 
   app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo));
@@ -270,7 +303,16 @@ async function main() {
   app.use('/api/logs', createLogDownloadRouter(hostExecutor, config, logger));
   app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/chrony',   createChronyRouter(logger, auditLogger));
+  app.use('/api/syslog',   createSyslogRouter(logger, auditLogger));
+  app.use('/api/frr/source-build', createFrrSourceBuildRouter(logger, auditLogger));
   app.use('/api/frr',      createFrrRouter(logger, auditLogger));
+  app.use('/api/sms',        createSmsRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/ims',        createImsRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/vowifi',     createVowifiRouter(logger, auditLogger));
+  app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/bind', createBindRouter(logger, auditLogger));
+  app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
+  app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
   // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below
@@ -297,6 +339,18 @@ async function main() {
   // Start HTTP server
   const httpServer = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'HTTP server started');
+  });
+
+  // SAS proxy on port 8899 — Sercomm NR radios send HTTP/1.1 without Host header,
+  // which nginx 1.31 rejects before location matching. This separate server uses
+  // insecureHTTPParser to accept the malformed requests and route them to the SAS handler.
+  const sasProxyApp = express();
+  sasProxyApp.use(express.json({ limit: '1mb' }));
+  sasProxyApp.use(express.urlencoded({ extended: false }));
+  sasProxyApp.use('/sas', createSasProtocolRouter(sasService, sasLogger));
+  const sasProxyServer = http.createServer({ insecureHTTPParser: true } as any, sasProxyApp);
+  sasProxyServer.listen(8899, '0.0.0.0', () => {
+    logger.info('SAS proxy listening on 0.0.0.0:8899 (Sercomm NR Host-less HTTP/1.1 workaround)');
   });
 
   // ── Authenticated WebSocket upgrade ──────────────────────────────────────────
@@ -346,6 +400,7 @@ async function main() {
     logStreamHandler.cleanup();
     await subscriberRepo.disconnect();
     httpServer.close();
+    sasProxyServer.close();
     wss.close();
     process.exit(0);
   };

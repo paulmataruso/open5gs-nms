@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, AlertTriangle, RefreshCw, Shield, FileText, Layout, Plus, X } from 'lucide-react';
+import { Save, AlertTriangle, RefreshCw, Shield, FileText, Layout, Plus, X, BookOpen, Network } from 'lucide-react';
 import { useConfigStore } from '../../stores';
 import { configApi } from '../../api';
 import type { AllConfigs, ValidationResult } from '../../types';
@@ -14,6 +14,7 @@ import { NRF_TOOLTIPS, AMF_TOOLTIPS, COMMON_TOOLTIPS } from '../../data/tooltips
 // import { SbiEditor } from './editors/SbiEditor'; // Not used directly in this file
 import { ScpEditor } from './editors/ScpEditor';
 import { BsfEditor } from './editors/BsfEditor';
+import { SeppEditor } from './editors/SeppEditor';
 import { UdrEditor } from './editors/UdrEditor';
 import { UdmEditor } from './editors/UdmEditor';
 import { NssfEditor } from './editors/NssfEditor';
@@ -25,9 +26,19 @@ import { SgwuEditor } from './editors/SgwuEditor';
 import { MmeEditor } from './editors/MmeEditor';
 import { UpfEditor } from './editors/UpfEditor';
 import { SmfEditor } from './editors/SmfEditor';
-import { SbiClientSection } from './editors/SharedComponents';
+import { SbiClientSection, FunctionInfoBox } from './editors/SharedComponents';
 
-type Tab = 'nrf' | 'scp' | 'amf' | 'smf' | 'upf' | 'ausf' | 'udm' | 'udr' | 'pcf' | 'nssf' | 'bsf' | 'mme' | 'hss' | 'pcrf' | 'sgwc' | 'sgwu';
+type Tab = 'nrf' | 'scp' | 'amf' | 'smf' | 'upf' | 'ausf' | 'udm' | 'udr' | 'pcf' | 'nssf' | 'bsf' | 'sepp1' | 'mme' | 'hss' | 'pcrf' | 'sgwc' | 'sgwu';
+
+// Shared with the global bulk log-level selector in ConfigPage's header.
+const LOG_LEVELS = [
+  { value: 'fatal', label: 'fatal' },
+  { value: 'error', label: 'error' },
+  { value: 'warn', label: 'warn' },
+  { value: 'info', label: 'info (default)' },
+  { value: 'debug', label: 'debug' },
+  { value: 'trace', label: 'trace' },
+];
 
 function LoggerSection({
   logger,
@@ -38,15 +49,6 @@ function LoggerSection({
 }): JSX.Element {
   const logPath = typeof logger?.file === 'object' ? logger.file?.path || '' : logger?.file || '';
   const logLevel = logger?.level || 'info';
-
-  const levels = [
-    { value: 'fatal', label: 'fatal' },
-    { value: 'error', label: 'error' },
-    { value: 'warn', label: 'warn' },
-    { value: 'info', label: 'info (default)' },
-    { value: 'debug', label: 'debug' },
-    { value: 'trace', label: 'trace' },
-  ];
 
   return (
     <div>
@@ -63,7 +65,7 @@ function LoggerSection({
           label="Log Level"
           value={logLevel}
           onChange={(v) => onChange({ ...logger, level: v })}
-          options={levels}
+          options={LOG_LEVELS}
           tooltip={COMMON_TOOLTIPS.log_level}
         />
       </div>
@@ -90,6 +92,11 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="NF Repository Function (NRF)"
+        generation="5G"
+        description="The NRF is the service registry and discovery hub of the 5G core. Every other Network Function (AMF, SMF, UDM, etc.) registers itself with the NRF at startup and queries the NRF when it needs to find another NF. The NRF stores NF profiles and exposes the Nnrf interface (HTTP/2 SBI) so NFs can discover and communicate with each other dynamically."
+      />
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
@@ -106,38 +113,60 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
             onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, port: parseInt(v) || 7777 }] } })}
             tooltip={NRF_TOOLTIPS.sbi_port}
           />
+          <FieldWithTooltip
+            label="Advertise (optional)"
+            value={server.advertise || ''}
+            onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, advertise: v || undefined }] } })}
+            placeholder="nrf.5gc.mnc070.mcc999.3gppnetwork.org:7777"
+            tooltip={COMMON_TOOLTIPS.sbi_advertise}
+          />
         </div>
       </div>
 
-      {nrf.serving && nrf.serving.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Serving PLMN</h3>
-          {nrf.serving.map((s: any, i: number) => (
-            <div key={i} className="grid grid-cols-2 gap-4 mb-2">
-              <FieldWithTooltip
-                label="MCC"
-                value={s.plmn_id?.mcc || ''}
-                onChange={(v) => {
-                  const updated = [...nrf.serving];
-                  updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
-                  updateNrf({ serving: updated });
-                }}
-                tooltip={NRF_TOOLTIPS.serving_mcc}
-              />
-              <FieldWithTooltip
-                label="MNC"
-                value={s.plmn_id?.mnc || ''}
-                onChange={(v) => {
-                  const updated = [...nrf.serving];
-                  updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
-                  updateNrf({ serving: updated });
-                }}
-                tooltip={NRF_TOOLTIPS.serving_mnc}
-              />
-            </div>
-          ))}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold font-display text-nms-accent">Serving PLMN</h3>
+          <button
+            onClick={() => updateNrf({ serving: [...(nrf.serving || []), { plmn_id: { mcc: '001', mnc: '01' } }] })}
+            className="nms-btn-ghost text-xs flex items-center gap-1"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add PLMN
+          </button>
         </div>
-      )}
+        {(!nrf.serving || nrf.serving.length === 0) && (
+          <p className="text-xs text-nms-text-dim">No serving PLMN configured.</p>
+        )}
+        {(nrf.serving || []).map((s: any, i: number) => (
+          <div key={i} className="relative grid grid-cols-2 gap-4 mb-2 pr-8">
+            <button
+              onClick={() => updateNrf({ serving: nrf.serving.filter((_: any, idx: number) => idx !== i) })}
+              className="absolute top-1/2 -translate-y-1/2 right-0 text-nms-text-dim hover:text-nms-red transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <FieldWithTooltip
+              label="MCC"
+              value={s.plmn_id?.mcc || ''}
+              onChange={(v) => {
+                const updated = [...nrf.serving];
+                updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
+                updateNrf({ serving: updated });
+              }}
+              tooltip={NRF_TOOLTIPS.serving_mcc}
+            />
+            <FieldWithTooltip
+              label="MNC"
+              value={s.plmn_id?.mnc || ''}
+              onChange={(v) => {
+                const updated = [...nrf.serving];
+                updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
+                updateNrf({ serving: updated });
+              }}
+              tooltip={NRF_TOOLTIPS.serving_mnc}
+            />
+          </div>
+        ))}
+      </div>
 
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
@@ -200,11 +229,17 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Access and Mobility Management Function (AMF)"
+        generation="5G"
+        description="The AMF is the primary control-plane node of the 5G core, equivalent to the MME in 4G. It handles UE registration, authentication (via AUSF), connection and mobility management, and SMS over NAS. The gNB connects to the AMF over NGAP (N2), and the AMF interfaces with the SMF (N11) to trigger session setup. All UE signalling passes through the AMF."
+      />
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip label="Address" value={sbiServer.address} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, address: v }] } })} tooltip={AMF_TOOLTIPS.sbi_address} />
           <FieldWithTooltip label="Port" type="number" value={sbiServer.port} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, port: parseInt(v) || 7777 }] } })} tooltip={AMF_TOOLTIPS.sbi_port} />
+          <FieldWithTooltip label="Advertise (optional)" value={sbiServer.advertise || ''} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, advertise: v || undefined }] } })} placeholder="amf.5gc.mnc070.mcc999.3gppnetwork.org:7777" tooltip={COMMON_TOOLTIPS.sbi_advertise} />
         </div>
       </div>
 
@@ -572,11 +607,17 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Authentication Server Function (AUSF)"
+        generation="5G"
+        description="The AUSF performs UE authentication for 5G networks. When a UE attempts to register, the AMF forwards the authentication request to the AUSF (N12), which fetches authentication vectors from the UDM (N13) and runs the 5G-AKA or EAP-AKA′ authentication procedure. The AUSF produces a security context that the AMF uses to protect NAS signalling."
+      />
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip label="Address" value={server.address} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, address: v }] } })} tooltip={COMMON_TOOLTIPS.sbi_address} />
           <FieldWithTooltip label="Port" type="number" value={server.port} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, port: parseInt(v) || 7777 }] } })} tooltip={COMMON_TOOLTIPS.sbi_port} />
+          <FieldWithTooltip label="Advertise (optional)" value={server.advertise || ''} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, advertise: v || undefined }] } })} placeholder="ausf.5gc.mnc070.mcc999.3gppnetwork.org:7777" tooltip={COMMON_TOOLTIPS.sbi_advertise} />
         </div>
       </div>
       <SbiClientSection client={ausf.sbi?.client} onChange={(client) => updateAusf({ sbi: { ...ausf.sbi, client } })} />
@@ -668,7 +709,8 @@ export function ConfigPage(): JSX.Element {
     );
   }
 
-  const fiveGTabs: Tab[] = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf'];
+  const fiveGTabs: Tab[] = ['nrf', 'scp', 'amf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1'];
+  const sharedTabs: Tab[] = ['smf', 'upf'];
   const fourGTabs: Tab[] = ['mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 
   return (
@@ -686,6 +728,24 @@ export function ConfigPage(): JSX.Element {
               <AlertTriangle className="w-3.5 h-3.5" /> Unsaved changes
             </span>
           )}
+          <a
+            href="/docs/open5gs-yaml-reference.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="nms-btn-ghost flex items-center gap-2 text-sm"
+          >
+            <BookOpen className="w-4 h-4" />
+            YAML Config Reference
+          </a>
+          <a
+            href="/docs/open5gs-architecture-guide.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="nms-btn-ghost flex items-center gap-2 text-sm"
+          >
+            <Network className="w-4 h-4" />
+            Architecture Guide
+          </a>
           <button onClick={handleValidate} className="nms-btn-ghost flex items-center gap-2">
             <Shield className="w-4 h-4" /> Validate
           </button>
@@ -756,6 +816,22 @@ export function ConfigPage(): JSX.Element {
                 activeTab === tab ? 'bg-nms-accent/10 text-nms-accent' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2',
               )}
             >
+              {tab === 'sepp1' ? 'SEPP' : tab.toUpperCase()}
+            </button>
+          ))}
+        </div>
+
+        <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider px-1 pt-2">Shared 4G/5G</div>
+        <div className="flex gap-1 bg-nms-surface rounded-lg p-1 border border-nms-border flex-wrap">
+          {sharedTabs.map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={clsx(
+                'px-3 py-2 text-sm font-medium rounded-md transition-all',
+                activeTab === tab ? 'bg-nms-accent/10 text-nms-accent' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2',
+              )}
+            >
               {tab.toUpperCase()}
             </button>
           ))}
@@ -776,15 +852,6 @@ export function ConfigPage(): JSX.Element {
             </button>
           ))}
         </div>
-
-        <div className="flex items-start gap-2 px-3 py-2 rounded bg-nms-surface-2/60 border border-nms-border text-xs text-nms-text-dim">
-          <span className="mt-0.5 shrink-0">ℹ️</span>
-          <span>
-            <strong className="text-nms-text">SEPP (sepp1/sepp2)</strong> configs are not managed by this UI.
-            Edit <span className="font-mono">/etc/open5gs/sepp1.yaml</span> and{' '}
-            <span className="font-mono">/etc/open5gs/sepp2.yaml</span> directly.
-          </span>
-        </div>
       </div>
 
       {/* Editor */}
@@ -802,6 +869,7 @@ export function ConfigPage(): JSX.Element {
             {activeTab === 'pcf' && <PcfEditor configs={configs} onChange={updateConfigs} />}
             {activeTab === 'nssf' && <NssfEditor configs={configs} onChange={updateConfigs} />}
             {activeTab === 'bsf' && <BsfEditor configs={configs} onChange={updateConfigs} />}
+            {activeTab === 'sepp1' && <SeppEditor configs={configs} onChange={updateConfigs} />}
             {activeTab === 'mme' && <MmeEditor configs={configs} onChange={updateConfigs} />}
             {activeTab === 'hss' && <HssEditor configs={configs} onChange={updateConfigs} />}
             {activeTab === 'pcrf' && <PcrfEditor configs={configs} onChange={updateConfigs} />}

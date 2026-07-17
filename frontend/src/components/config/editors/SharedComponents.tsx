@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Info } from 'lucide-react';
 
 export function Field({
   label,
@@ -228,6 +228,42 @@ export function SbiClientSection({
             </p>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── FunctionInfoBox ────────────────────────────────────────────────────────────
+// Static info card placed at the top of each NF editor tab explaining what the
+// network function does.
+
+export function FunctionInfoBox({
+  title,
+  generation,
+  description,
+}: {
+  title: string;
+  generation: '4G' | '5G' | '4G + 5G';
+  description: string;
+}): JSX.Element {
+  const badgeClass =
+    generation === '4G'
+      ? 'bg-blue-500/15 text-blue-400 border border-blue-500/25'
+      : generation === '5G'
+        ? 'bg-purple-500/15 text-purple-400 border border-purple-500/25'
+        : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/25';
+
+  return (
+    <div className="flex gap-3 p-4 rounded-lg bg-nms-surface-2/40 border border-nms-border">
+      <Info className="w-4 h-4 text-nms-accent shrink-0 mt-0.5" />
+      <div>
+        <div className="flex items-center gap-2 mb-1.5">
+          <span className="text-sm font-semibold text-nms-text">{title}</span>
+          <span className={clsx('text-xs font-medium px-1.5 py-0.5 rounded', badgeClass)}>
+            {generation}
+          </span>
+        </div>
+        <p className="text-xs text-nms-text-dim leading-relaxed">{description}</p>
       </div>
     </div>
   );

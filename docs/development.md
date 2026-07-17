@@ -129,27 +129,36 @@ Recommended extensions:
 backend/
 ├── src/
 │   ├── domain/              # Business logic (no external dependencies)
-│   │   ├── entities/        # Core entities (NF configs, Subscriber, etc.)
-│   │   ├── interfaces/      # Abstract contracts
-│   │   ├── services/        # Domain services (validation, topology)
+│   │   ├── entities/        # Core entities (NF configs, Subscriber, SEPP, etc.)
+│   │   ├── interfaces/      # Abstract contracts (repos, host executor)
+│   │   ├── services/        # Domain services (validation schemas, ip-utils, topology)
+│   │   ├── sas/             # CBRS SAS (Spectrum Access System) logic
 │   │   └── value-objects/   # Immutable value types
 │   │
 │   ├── application/         # Use case orchestration
 │   │   ├── dto/             # Data transfer objects
-│   │   └── use-cases/       # Business workflows
+│   │   └── use-cases/       # Business workflows — one file per feature (apply-config,
+│   │                        # subscriber-management, dns-migration-usecase, esim-generator,
+│   │                        # vowifi-build, frr-source-build, tun-management, etc.)
 │   │
 │   ├── infrastructure/      # External integrations
-│   │   ├── yaml/            # YAML file I/O
-│   │   ├── mongodb/         # MongoDB client
-│   │   ├── system/          # systemctl executor
+│   │   ├── yaml/            # YAML file I/O (NF config read/write)
+│   │   ├── mongodb/         # MongoDB client (subscribers, etc.)
+│   │   ├── system/          # Host command executor (nsenter-based)
+│   │   ├── network/         # Dummy/TUN interface helpers, nsenter wrapper
+│   │   ├── docker/          # Docker log streaming
+│   │   ├── auth/            # SQLite-backed auth store
 │   │   ├── websocket/       # WebSocket broadcaster
 │   │   └── logging/         # Audit logger
 │   │
 │   ├── interfaces/          # HTTP/WebSocket entry points
-│   │   └── rest/            # Express controllers
+│   │   └── rest/            # Express controllers — one per feature area (config,
+│   │                        # subscriber, sepp, dns-migration, sms, ims, vowifi,
+│   │                        # syslog, frr, genieacs, sas, validation, etc.)
 │   │
-│   ├── config/              # App configuration
-│   └── index.ts             # Entry point
+│   ├── config/              # App configuration + bundled default NF YAML templates
+│   ├── __tests__/           # Jest unit tests
+│   └── index.ts             # Entry point — wires all use-cases/repos and mounts every router
 │
 ├── package.json
 ├── tsconfig.json
@@ -157,28 +166,43 @@ backend/
 └── .eslintrc.json
 ```
 
+This has grown to 17 NFs (including SEPP) and ~25 optional feature modules (IMS, VoWiFi,
+SMS, eSIM, DNS/FQDN migration, SAS, GenieACS, FRR migration/source-build, syslog
+forwarding, UE Validation, subscriber groups, etc.) — each follows the same
+domain/application/infrastructure/interfaces layering, just with its own use-case +
+controller pair. See [docs/features.md](features.md) for what each one does and
+[docs/api-reference.md](api-reference.md#additional-feature-modules) for its API namespace.
+
 ### Frontend Structure
 
 ```
 frontend/
 ├── src/
-│   ├── components/          # React components
-│   │   ├── common/          # Reusable components
+│   ├── components/          # React components, grouped by feature area
+│   │   ├── common/          # Reusable components (modals, dropdowns, etc.)
 │   │   ├── dashboard/       # Dashboard page
-│   │   ├── topology/        # Topology visualization
+│   │   ├── topology/        # Topology visualization (JointJS)
 │   │   ├── services/        # Service management
-│   │   ├── config/          # Configuration editors
-│   │   ├── subscribers/     # Subscriber management
+│   │   ├── config/editors/  # One editor per NF (17, incl. SeppEditor)
+│   │   ├── subscribers/     # Subscriber management, eSIM generator
 │   │   ├── suci/            # SUCI key management
 │   │   ├── backup/          # Backup & restore
-│   │   └── logs/            # Log streaming
+│   │   ├── logs/            # Log streaming, major-event view, syslog forwarding
+│   │   ├── frr/              # FRR routing migration wizard
+│   │   ├── autoconfig/       # 4G/5G auto-config + femtocell provisioning
+│   │   └── ran/, audit/, auth/, metrics/, users/
 │   │
-│   ├── stores/              # Zustand state management
-│   ├── api/                 # API client functions
-│   ├── hooks/               # Custom React hooks
-│   ├── types/               # TypeScript types
-│   ├── data/                # Static data (tooltips)
-│   └── App.tsx              # Root component
+│   ├── pages/                # Top-level feature pages not under components/
+│   │                          # (IMSPage, SMSPage, VoWiFiPage, ValidationPage,
+│   │                          #  BindPage, DnsMigrationPage, FRRPage, SASPage, etc.)
+│   ├── stores/                # Zustand state management
+│   ├── api/                   # API client functions — one file per feature module
+│   ├── hooks/                 # Custom React hooks
+│   ├── types/                 # TypeScript types
+│   ├── config/                # Feature flags
+│   ├── contexts/              # React context providers (auth)
+│   ├── data/                  # Static data (tooltips)
+│   └── App.tsx                # Root component / routing
 │
 ├── package.json
 ├── vite.config.ts
@@ -406,71 +430,56 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
 ### Running Tests
 
 ```bash
-# Backend tests
+# Backend — real jest suite (backend/src/__tests__/*.test.ts)
 cd backend
 npm test                 # Run all tests
 npm run test:watch      # Watch mode
 npm run test:coverage   # With coverage
-
-# Frontend tests
-cd frontend
-npm test                # Run all tests
-npm run test:watch     # Watch mode
 ```
+
+> **Frontend has no automated test suite today** — `frontend/package.json` doesn't
+> define a `test` script and no test framework (Vitest, Jest, Testing Library) is
+> installed. Frontend changes are verified manually against the running app (build,
+> deploy, exercise the feature in a browser) — see the workflow this project actually
+> uses in practice below. Adding a frontend test runner is open territory for a
+> contributor who wants to take it on.
 
 ### Writing Tests
 
-**Backend Unit Test Example:**
+**Backend Unit Test Example** (real pattern, mirrors `backend/src/__tests__/active-sessions.test.ts`):
 ```typescript
-// backend/src/domain/services/__tests__/validator.test.ts
-import { ConfigValidator } from '../validator';
+// backend/src/__tests__/my-feature.test.ts
+import { myPureFunction } from '../domain/services/my-feature';
 
-describe('ConfigValidator', () => {
-  let validator: ConfigValidator;
-  
-  beforeEach(() => {
-    validator = new ConfigValidator();
-  });
-  
-  describe('validateIpAddress', () => {
-    it('should accept valid IPv4 address', () => {
-      expect(validator.validateIpAddress('192.168.1.1')).toBe(true);
-    });
-    
-    it('should reject invalid IPv4 address', () => {
-      expect(validator.validateIpAddress('999.999.999.999')).toBe(false);
-    });
-    
-    it('should accept valid IPv6 address', () => {
-      expect(validator.validateIpAddress('2001:db8::1')).toBe(true);
-    });
+describe('myPureFunction', () => {
+  it('does the thing', () => {
+    expect(myPureFunction('input')).toBe('expected output');
   });
 });
 ```
 
-**Frontend Component Test Example:**
-```typescript
-// frontend/src/components/__tests__/ServiceCard.test.tsx
-import { render, screen, fireEvent } from '@testing-library/react';
-import { ServiceCard } from '../ServiceCard';
+Jest is configured for `**/__tests__/**/*.test.ts` — pure, dependency-free logic (domain
+services, validation, IP/CIDR math, etc.) is the easiest to unit test this way. Use cases
+with real I/O (Mongo, host commands) are instead verified live — see the direct-invocation
+pattern below.
 
-describe('ServiceCard', () => {
-  it('renders service name and status', () => {
-    render(<ServiceCard name="nrf" status="active" />);
-    
-    expect(screen.getByText('NRF')).toBeInTheDocument();
-    expect(screen.getByText('Active')).toBeInTheDocument();
-  });
-  
-  it('calls onRestart when restart button clicked', () => {
-    const onRestart = jest.fn();
-    render(<ServiceCard name="nrf" status="active" onRestart={onRestart} />);
-    
-    fireEvent.click(screen.getByText('Restart'));
-    expect(onRestart).toHaveBeenCalledWith('nrf');
-  });
-});
+### Verifying Backend Logic Against a Live Deployment
+
+For anything touching MongoDB, host commands, or real config files, the fastest reliable
+check is a throwaway script run inside the actual running backend container, against the
+real compiled output — not a mock:
+
+```bash
+# Write a script locally, then pipe it in (avoids heredoc-through-exec quoting issues)
+cat my-test.js | docker exec -i open5gs-nms-backend sh -c 'cat > /app/test-x.js'
+docker exec open5gs-nms-backend node /app/test-x.js
+docker exec open5gs-nms-backend rm -f /app/test-x.js   # always clean up afterward
 ```
+
+The script can `require('/app/dist/...')` any compiled module directly and construct real
+use-case instances the same way `index.ts` wires them, letting you exercise repository
+methods, host-command side effects (e.g. via `nsenter`), and full request/response shapes
+without needing an authenticated browser session.
 
 ---
 

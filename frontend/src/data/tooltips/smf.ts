@@ -14,6 +14,7 @@ export const SMF_TOOLTIPS = {
   dns_secondary: "Secondary DNS server address. Fallback if primary is unreachable. Recommended: 8.8.8.8, 1.1.1.1",
   mtu: "Maximum Transmission Unit for user plane packets. Default: 1400 bytes. Accounts for GTP/IP overhead (typical internet MTU is 1500)",
   freediameter: "Path to FreeDiameter configuration file for Gx interface. Used for 4G policy control with PCRF",
+  ctf_enabled: "Charging Trigger Function — controls whether the SMF generates charging trigger events. auto (default): only when charging is actually configured/required. yes: always generate them. no: never generate them, even if charging is configured.",
   s_nssai_sst: "Slice Service Type (1-255). Standard values: 1=eMBB (enhanced Mobile Broadband), 2=URLLC (Ultra-Reliable Low Latency), 3=MIoT (Massive IoT)",
   s_nssai_sd: "Slice Differentiator (optional 24-bit hex, e.g., 010203). Differentiates multiple slices with the same SST. Used for network slice isolation",
   s_nssai_dnn: "Data Network Name(s) for this slice. Common values: 'internet' (public internet), 'ims' (IP Multimedia Subsystem), 'iot' (IoT services)",

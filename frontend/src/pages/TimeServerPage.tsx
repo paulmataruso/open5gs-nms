@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Clock, CheckCircle, XCircle, AlertCircle, RefreshCw, Plus, Trash2, Save, Terminal, RotateCw } from 'lucide-react';
+import { Clock, CheckCircle, XCircle, AlertCircle, RefreshCw, Plus, Trash2, Save, Terminal, RotateCw, Users } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
@@ -7,9 +7,25 @@ const API = () => (import.meta.env.VITE_API_URL || '/api');
 
 interface ChronyServer  { type: 'server' | 'pool'; address: string; options: string; }
 interface ChronyConfig  { servers: ChronyServer[]; allowNets: string[]; localStratum: number; makestep: string; rtcsync: boolean; driftfile: string; logdir: string; }
+interface ChronyClient  { hostname: string; ntpRequests: number; ntpDropped: number; ntpInterval: string; ntpLast: string; }
 interface ChronySource  { mode: string; state: string; name: string; stratum: string; poll: string; reach: string; lastRx: string; offset: string; error: string; }
 interface ChronyTracking { refId: string; refSource: string; stratum: string; refTime: string; sysTimeOffset: string; rmsOffset: string; frequency: string; residualFreq: string; skew: string; rootDelay: string; rootDispersion: string; updateInterval: string; leap: string; }
 interface StatusData    { installed: boolean; active: boolean; tracking: ChronyTracking | null; sources: ChronySource[]; }
+
+/** Parse chronyc elapsed-time strings ("3h", "14m", "2d5h30m", raw seconds) → seconds. Returns null for "-" / unknown. */
+function parseChronycAge(s: string): number | null {
+  if (!s || s === '-') return null;
+  if (/^\d+$/.test(s)) return parseInt(s, 10);
+  let seconds = 0;
+  for (const [, n, unit] of s.matchAll(/(\d+)([dhms])/g)) {
+    const v = parseInt(n, 10);
+    if (unit === 'd') seconds += v * 86400;
+    else if (unit === 'h') seconds += v * 3600;
+    else if (unit === 'm') seconds += v * 60;
+    else seconds += v;
+  }
+  return seconds > 0 ? seconds : null;
+}
 
 function SourceStateLabel({ state }: { state: string }) {
   const map: Record<string, { label: string; color: string }> = {
@@ -27,25 +43,31 @@ function SourceStateLabel({ state }: { state: string }) {
 export function TimeServerPage() {
   const [status,    setStatus]    = useState<StatusData | null>(null);
   const [config,    setConfig]    = useState<ChronyConfig | null>(null);
+  const [clients,   setClients]   = useState<ChronyClient[]>([]);
   const [loading,   setLoading]   = useState(true);
   const [saving,    setSaving]    = useState(false);
   const [restarting,setRestarting]= useState(false);
   const [installing,setInstalling]= useState(false);
   const [installLog,setInstallLog]= useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [dirty,     setDirty]     = useState(false);
   const installRef = useRef<HTMLPreElement>(null);
 
-  const fetchAll = useCallback(async (silent = false) => {
+  const fetchAll = useCallback(async (silent = false, force = false) => {
     if (!silent) setLoading(true);
     try {
-      const [statusRes, configRes] = await Promise.allSettled([
+      const [statusRes, configRes, clientsRes] = await Promise.allSettled([
         axios.get(`${API()}/chrony/status`),
         axios.get(`${API()}/chrony/config`),
+        axios.get(`${API()}/chrony/clients`),
       ]);
       if (statusRes.status === 'fulfilled') setStatus(statusRes.value.data);
       if (configRes.status === 'fulfilled' && configRes.value.data.config) {
-        setConfig(configRes.value.data.config);
+        // Don't overwrite unsaved user edits during background polls
+        if (force) setConfig(configRes.value.data.config);
+        else setConfig(c => c ?? configRes.value.data.config);
       }
+      if (clientsRes.status === 'fulfilled') setClients(clientsRes.value.data.clients ?? []);
     } finally {
       if (!silent) setLoading(false);
     }
@@ -94,8 +116,9 @@ export function TimeServerPage() {
     setSaving(true);
     try {
       await axios.put(`${API()}/chrony/config`, config);
+      setDirty(false);
       toast.success('Chrony config saved and restarted');
-      await fetchAll(true);
+      await fetchAll(true, true);
     } catch (err: any) {
       toast.error(`Save failed: ${err?.response?.data?.error ?? err.message}`);
     } finally {
@@ -116,15 +139,20 @@ export function TimeServerPage() {
     }
   };
 
-  const addServer = () => setConfig(c => c ? { ...c, servers: [...c.servers, { type: 'server', address: '', options: 'iburst' }] } : c);
-  const addPool   = () => setConfig(c => c ? { ...c, servers: [...c.servers, { type: 'pool',   address: '', options: 'iburst' }] } : c);
-  const removeServer = (i: number) => setConfig(c => c ? { ...c, servers: c.servers.filter((_, idx) => idx !== i) } : c);
-  const updateServer = (i: number, field: keyof ChronyServer, val: string) =>
+  const markDirty = () => setDirty(true);
+  const addServer = () => { markDirty(); setConfig(c => c ? { ...c, servers: [...c.servers, { type: 'server', address: '', options: 'iburst' }] } : c); };
+  const addPool   = () => { markDirty(); setConfig(c => c ? { ...c, servers: [...c.servers, { type: 'pool',   address: '', options: 'iburst' }] } : c); };
+  const removeServer = (i: number) => { markDirty(); setConfig(c => c ? { ...c, servers: c.servers.filter((_, idx) => idx !== i) } : c); };
+  const updateServer = (i: number, field: keyof ChronyServer, val: string) => {
+    markDirty();
     setConfig(c => c ? { ...c, servers: c.servers.map((s, idx) => idx === i ? { ...s, [field]: val } : s) } : c);
-  const addNet    = () => setConfig(c => c ? { ...c, allowNets: [...c.allowNets, ''] } : c);
-  const removeNet = (i: number) => setConfig(c => c ? { ...c, allowNets: c.allowNets.filter((_, idx) => idx !== i) } : c);
-  const updateNet = (i: number, val: string) =>
+  };
+  const addNet    = () => { markDirty(); setConfig(c => c ? { ...c, allowNets: [...c.allowNets, ''] } : c); };
+  const removeNet = (i: number) => { markDirty(); setConfig(c => c ? { ...c, allowNets: c.allowNets.filter((_, idx) => idx !== i) } : c); };
+  const updateNet = (i: number, val: string) => {
+    markDirty();
     setConfig(c => c ? { ...c, allowNets: c.allowNets.map((n, idx) => idx === i ? val : n) } : c);
+  };
 
   if (loading) return (
     <div className="p-6 flex items-center justify-center h-64 text-nms-text-dim">
@@ -154,11 +182,17 @@ export function TimeServerPage() {
               {restarting ? 'Restarting…' : 'Restart Chrony'}
             </button>
           )}
+          {config && dirty && (
+            <button onClick={() => { setDirty(false); fetchAll(true, true); }}
+              className="nms-btn-ghost flex items-center gap-2 text-sm text-nms-text-dim">
+              Discard
+            </button>
+          )}
           {config && (
             <button onClick={handleSave} disabled={saving}
-              className="nms-btn-primary flex items-center gap-2 text-sm">
+              className={`nms-btn-primary flex items-center gap-2 text-sm ${dirty ? 'ring-2 ring-nms-accent/50' : ''}`}>
               <Save className="w-4 h-4" />
-              {saving ? 'Saving…' : 'Save & Restart'}
+              {saving ? 'Saving…' : dirty ? 'Save & Restart *' : 'Save & Restart'}
             </button>
           )}
         </div>
@@ -268,6 +302,64 @@ export function TimeServerPage() {
         </div>
       )}
 
+      {/* Connected clients */}
+      {active && (
+        <div className="nms-card">
+          {(() => {
+            const ONE_HOUR = 3600;
+            const recentClients = clients.filter(c => {
+              const age = parseChronycAge(c.ntpLast);
+              return age === null || age <= ONE_HOUR;
+            });
+            const staleCount = clients.length - recentClients.length;
+            return (
+              <>
+                <div className="flex items-center gap-2 mb-3">
+                  <Users className="w-4 h-4 text-nms-accent" />
+                  <h2 className="text-sm font-semibold text-nms-text">Connected NTP Clients</h2>
+                  <span className="ml-auto text-xs text-nms-text-dim">
+                    {recentClients.length} client{recentClients.length !== 1 ? 's' : ''}
+                    {staleCount > 0 && <span className="ml-1 text-nms-text-dim/60">· {staleCount} stale hidden</span>}
+                  </span>
+                </div>
+                {recentClients.length === 0 ? (
+                  <p className="text-xs text-nms-text-dim py-2">
+                    {clients.length === 0
+                      ? 'No clients seen yet — chronyc reports clients after they have queried this server at least once.'
+                      : `All ${clients.length} client${clients.length !== 1 ? 's' : ''} last seen over 1 hour ago.`}
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs font-mono">
+                      <thead>
+                        <tr className="text-nms-text-dim border-b border-nms-border">
+                          <th className="text-left pb-2 pr-4">Client</th>
+                          <th className="text-right pb-2 pr-4">NTP Requests</th>
+                          <th className="text-right pb-2 pr-4">Dropped</th>
+                          <th className="text-right pb-2 pr-4">Poll Interval</th>
+                          <th className="text-right pb-2">Last Seen</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-nms-border/40">
+                        {recentClients.map((c, i) => (
+                          <tr key={i} className="hover:bg-nms-surface-2/50">
+                            <td className="py-1.5 pr-4 text-nms-text">{c.hostname}</td>
+                            <td className="py-1.5 pr-4 text-right text-nms-text">{c.ntpRequests.toLocaleString()}</td>
+                            <td className={`py-1.5 pr-4 text-right ${c.ntpDropped > 0 ? 'text-amber-400' : 'text-nms-text-dim'}`}>{c.ntpDropped}</td>
+                            <td className="py-1.5 pr-4 text-right text-nms-text-dim">{c.ntpInterval === '-' ? '—' : `2^${c.ntpInterval}s`}</td>
+                            <td className="py-1.5 text-right text-nms-text-dim">{c.ntpLast === '-' ? '—' : c.ntpLast}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
+
       {/* Config editor */}
       {config && (
         <div className="space-y-4">
@@ -365,7 +457,7 @@ export function TimeServerPage() {
                   <input
                     type="number" min={1} max={15}
                     value={config.localStratum}
-                    onChange={e => setConfig(c => c ? { ...c, localStratum: parseInt(e.target.value) || 10 } : c)}
+                    onChange={e => { markDirty(); setConfig(c => c ? { ...c, localStratum: parseInt(e.target.value) || 10 } : c); }}
                     className="nms-input font-mono text-xs"
                   />
                   <p className="text-xs text-nms-text-dim mt-1">Stratum reported when no upstream sources available (1–15)</p>
@@ -374,7 +466,7 @@ export function TimeServerPage() {
                   <label className="nms-label">Makestep</label>
                   <input
                     value={config.makestep}
-                    onChange={e => setConfig(c => c ? { ...c, makestep: e.target.value } : c)}
+                    onChange={e => { markDirty(); setConfig(c => c ? { ...c, makestep: e.target.value } : c); }}
                     placeholder="1.0 3"
                     className="nms-input font-mono text-xs"
                   />
@@ -384,7 +476,7 @@ export function TimeServerPage() {
                   <label className="nms-label">Drift File</label>
                   <input
                     value={config.driftfile}
-                    onChange={e => setConfig(c => c ? { ...c, driftfile: e.target.value } : c)}
+                    onChange={e => { markDirty(); setConfig(c => c ? { ...c, driftfile: e.target.value } : c); }}
                     className="nms-input font-mono text-xs"
                   />
                 </div>
@@ -392,7 +484,7 @@ export function TimeServerPage() {
                   <label className="nms-label">Log Directory</label>
                   <input
                     value={config.logdir}
-                    onChange={e => setConfig(c => c ? { ...c, logdir: e.target.value } : c)}
+                    onChange={e => { markDirty(); setConfig(c => c ? { ...c, logdir: e.target.value } : c); }}
                     className="nms-input font-mono text-xs"
                   />
                 </div>
@@ -401,7 +493,7 @@ export function TimeServerPage() {
                     <input
                       type="checkbox"
                       checked={config.rtcsync}
-                      onChange={e => setConfig(c => c ? { ...c, rtcsync: e.target.checked } : c)}
+                      onChange={e => { markDirty(); setConfig(c => c ? { ...c, rtcsync: e.target.checked } : c); }}
                       className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent"
                     />
                     <span className="text-xs text-nms-text">RTC Sync</span>

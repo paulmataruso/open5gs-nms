@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight } from 'lucide-react';
 import { useTopologyStore } from '../../stores';
 import { radioTagsApi, configApi } from '../../api';
+import { imsApi } from '../../api/ims';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
@@ -84,27 +85,28 @@ function RadioTagCell({ ip, nickname, isAdmin, onSave }: {
 
 function UESubRow({ ue, gen, onNavigate }: { ue: ActiveUE; gen: '4G' | '5G'; onNavigate?: (imsi: string) => void }): JSX.Element {
   return (
-    <div className="flex items-center gap-3 px-3 py-2 border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2/40 transition-colors">
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2/40 transition-colors">
       <ChevronRight className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
-      <div className="flex-1 min-w-0 grid grid-cols-3 gap-2 items-center">
-        <div className="min-w-0">
-          <button onClick={() => onNavigate?.(ue.imsi)} className="text-xs font-mono text-nms-accent hover:underline text-left truncate block">{ue.imsi}</button>
-          {ue.nickname && <span className="text-xs text-nms-text-dim block truncate">{ue.nickname}</span>}
-        </div>
-        <span className="text-xs font-mono text-nms-text text-center">{ue.ip || '—'}</span>
-        <div className="flex justify-end">
-          <span className={clsx('inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium',
-            (ue.cmState === 'connected' || !ue.cmState) ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-text-dim/10 text-nms-text-dim')}>
-            <Circle className="w-1.5 h-1.5 fill-current" />{ue.cmState || 'active'}
+      <div className="flex-1 min-w-0">
+        <button onClick={() => onNavigate?.(ue.imsi)} className="text-xs font-mono text-nms-accent hover:underline text-left truncate block">{ue.imsi}</button>
+        {ue.nickname && <span className="text-xs text-nms-text-dim block truncate">{ue.nickname}</span>}
+      </div>
+      <span className="w-28 text-xs font-mono text-nms-text text-center flex-shrink-0">{ue.ip || '—'}</span>
+      <span className="w-20 text-xs font-mono text-nms-text-dim text-center flex-shrink-0 truncate">{ue.dnn || ue.apn || '—'}</span>
+      <div className="w-20 flex justify-end flex-shrink-0">
+        <span className={clsx('inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium',
+          (ue.cmState === 'connected' || !ue.cmState) ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-text-dim/10 text-nms-text-dim')}>
+          <Circle className="w-1.5 h-1.5 fill-current" />{ue.cmState || 'active'}
+        </span>
+      </div>
+      {gen === '5G' && (
+        <div className="w-16 flex items-center gap-1 flex-shrink-0"
+          title={!ue.securityEnc ? 'Security active — algorithm not reported by AMF for CM-Idle UEs' : undefined}>
+          <Shield className={clsx('w-3 h-3 flex-shrink-0', ue.securityEnc ? 'text-nms-accent' : 'text-nms-text-dim/40')} />
+          <span className={clsx('text-xs font-mono', ue.securityEnc ? 'text-nms-text-dim' : 'text-nms-text-dim/40')}>
+            {ue.securityEnc?.toUpperCase() ?? '?'}
           </span>
         </div>
-      </div>
-      <span className="text-xs font-mono text-nms-text-dim w-16 text-right truncate">{ue.dnn || ue.apn || '—'}</span>
-      {gen === '5G' && (ue.securityEnc || ue.securityInt) && (
-        <span className="text-xs text-nms-text-dim flex items-center gap-1">
-          <Shield className="w-3 h-3 text-nms-accent flex-shrink-0" />
-          <span className="font-mono">{ue.securityEnc?.toUpperCase()}</span>
-        </span>
       )}
     </div>
   );
@@ -148,7 +150,14 @@ function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, gen
             <span>IP / Nickname</span><span className="text-center">UEs</span><span className="text-right">Status</span>
           </div>
           {radios.map((radio, idx) => {
-            const radioUEs = ues.filter(ue => ue.radioIp === radio.ip);
+            // Synthetic metrics-fallback radios have a non-IP placeholder string for their IP.
+            // When the JSON API isn't available (Open5GS < v2.7.7), pair all metricsOnly UEs
+            // with the synthetic radio rather than leaving "session details pending".
+            const isSyntheticIp = !/^\d+\.\d+\.\d+\.\d+$/.test(radio.ip);
+            const radioUEs = ues.filter(ue =>
+              ue.radioIp === radio.ip ||
+              (isSyntheticIp && (ue.metricsOnly || !ue.radioIp)),
+            );
             const nickname = radioTags[radio.ip];
             return (
               <div key={idx}>
@@ -165,10 +174,13 @@ function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, gen
                 {radioUEs.length > 0 && (
                   <div className="bg-nms-surface-2/10">
                     {idx === 0 && (
-                      <div className="grid grid-cols-3 gap-2 px-3 py-1 border-b border-nms-border/50">
-                        <span className="text-xs text-nms-text-dim pl-5">IMSI</span>
-                        <span className="text-xs text-nms-text-dim text-center">UE IP</span>
-                        <span className="text-xs text-nms-text-dim text-right">State</span>
+                      <div className="flex items-center gap-2 px-3 py-1 border-b border-nms-border/50">
+                        <div className="w-3 flex-shrink-0" />
+                        <span className="flex-1 text-xs text-nms-text-dim">IMSI</span>
+                        <span className="w-28 text-xs text-nms-text-dim text-center flex-shrink-0">UE IP</span>
+                        <span className="w-20 text-xs text-nms-text-dim text-center flex-shrink-0">DNN</span>
+                        <span className="w-20 text-xs text-nms-text-dim text-right flex-shrink-0">State</span>
+                        {is5G && <span className="w-16 text-xs text-nms-text-dim flex-shrink-0">Enc</span>}
                       </div>
                     )}
                     {radioUEs.map((ue, ueIdx) => <UESubRow key={ueIdx} ue={ue} gen={generation} onNavigate={onNavigateToSubscriber} />)}
@@ -198,14 +210,14 @@ function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, gen
 interface IPRow {
   ip: string; service: string; interface: string; protocol: string; port: string;
   direction: 'server' | 'client'; connects_to?: string; description: string;
-  group: '4G' | '5G' | 'Shared'; loopback: boolean;
+  group: '4G' | '5G' | 'Shared' | 'IMS'; loopback: boolean;
 }
 
 interface ConnectionPair {
   interface: string; protocol: string; port: string;
   clientService: string; clientIP: string;
   serverService: string; serverIP: string;
-  description: string; group: '4G' | '5G' | 'Shared';
+  description: string; group: '4G' | '5G' | 'Shared' | 'IMS';
 }
 
 // ── buildIPTable ──────────────────────────────────────────────────────────────
@@ -235,7 +247,7 @@ function buildIPTable(configs: any): IPRow[] {
     const gtpc = mme?.gtpc?.server?.[0]?.address || '127.0.0.2';
     add({ ip: gtpc, service: 'MME', interface: 'S11 GTPv2-C', protocol: 'UDP', port: '2123', direction: 'server', connects_to: 'SGW-C', description: 'SGW-C dials this to receive bearer setup/modify/delete instructions from the MME', group: '4G', loopback: lo(gtpc) });
     const sgsap = mme?.sgsap?.server?.[0]?.address;
-    if (sgsap) add({ ip: sgsap, service: 'MME', interface: 'SGs-AP', protocol: 'SCTP', port: '29118', direction: 'server', connects_to: 'MSC/VLR', description: 'MSC/VLR dials this for circuit-switched fallback (CSFB) voice calls', group: '4G', loopback: lo(sgsap) });
+    add({ ip: sgsap ?? '127.0.0.2', service: 'MME', interface: sgsap ? 'SGs-AP (SMS/CSFB)' : 'SGs-AP (not configured)', protocol: 'SCTP', port: '29118', direction: 'server', connects_to: 'MSC/VLR / SMSC', description: sgsap ? 'MSC/VLR or SMSC dials this for SMS over SGs and circuit-switched fallback (CSFB) voice — configure in mme.yaml sgsap.server' : 'Not configured — add mme.sgsap.server in mme.yaml to enable 4G SMS and CSFB via an external MSC/VLR or SMSC', group: '4G', loopback: lo(sgsap ?? '127.0.0.2') });
     const mmeHss = mme?.s6a?.server?.[0]?.address;
     if (mmeHss) add({ ip: mmeHss, service: 'MME', interface: 'S6a Diameter', protocol: 'SCTP', port: '3868', direction: 'client', connects_to: 'HSS', description: 'MME dials HSS for subscriber authentication and profile download', group: '4G', loopback: lo(mmeHss) });
     metricsServers(mme).forEach(ip => add({ ip, service: 'MME', interface: 'Metrics (Prometheus)', protocol: 'HTTP', port: '9090', direction: 'server', connects_to: 'Prometheus', description: 'Prometheus scrapes MME metrics — sessions, UEs, handovers', group: '4G', loopback: lo(ip) }));
@@ -403,6 +415,37 @@ function buildIPTable(configs: any): IPRow[] {
     metricsServers(scp).forEach(ip => add({ ip, service: 'SCP', interface: 'Metrics (Prometheus)', protocol: 'HTTP', port: '9090', direction: 'server', connects_to: 'Prometheus', description: 'Prometheus scrapes SCP metrics', group: '5G', loopback: lo(ip) }));
   }
 
+  // ── IMS (VoLTE) ──────────────────────────────────────────────────────────────
+  const ims = configs?._ims as { pcscfIp?: string; pcscfPort?: number; icscfIp?: string; icscfPort?: number; scscfIp?: string; scscfPort?: number; rtpEngineIp?: string; dnsIp?: string } | null | undefined;
+  if (ims?.pcscfIp) {
+    const pIp = ims.pcscfIp;
+    const pPort = String(ims.pcscfPort || 5060);
+    const iIp = ims.icscfIp!;
+    const iPort = String(ims.icscfPort || 5060);
+    const sIp = ims.scscfIp!;
+    const sPort = String(ims.scscfPort || 5060);
+    const hssIp = '127.0.0.1';
+
+    add({ ip: pIp, service: 'P-CSCF', interface: 'SIP (UE→P-CSCF)', protocol: 'UDP/TCP', port: pPort, direction: 'server', connects_to: 'UE', description: 'UEs dial here first for VoLTE SIP REGISTER and INVITE — P-CSCF IP is delivered to the UE via IMS APN', group: 'IMS', loopback: lo(pIp) });
+    add({ ip: pIp, service: 'P-CSCF', interface: 'SIP-TLS (UE→P-CSCF)', protocol: 'TCP/TLS', port: '5061', direction: 'server', connects_to: 'UE', description: 'Secure SIP over TLS — some UEs use TLS for signaling encryption instead of plain SIP', group: 'IMS', loopback: lo(pIp) });
+    add({ ip: pIp, service: 'P-CSCF', interface: 'Rx Diameter (→PCRF)', protocol: 'TCP', port: '3871', direction: 'client', connects_to: 'PCRF', description: 'P-CSCF dials PCRF Rx interface to authorize IMS bearers and install QoS rules for voice calls', group: 'IMS', loopback: lo(pIp) });
+    if (iIp) {
+      add({ ip: iIp, service: 'I-CSCF', interface: 'SIP server', protocol: 'UDP/TCP', port: iPort, direction: 'server', connects_to: 'P-CSCF', description: 'P-CSCF forwards initial REGISTER/INVITE here; I-CSCF queries HSS to assign the S-CSCF', group: 'IMS', loopback: lo(iIp) });
+      add({ ip: iIp, service: 'I-CSCF', interface: 'Cx Diameter (→HSS)', protocol: 'TCP', port: '3869', direction: 'client', connects_to: 'PyHSS', description: 'I-CSCF sends UAR (User-Authorization-Request) and LIR (Location-Info-Request) to HSS for S-CSCF selection', group: 'IMS', loopback: lo(iIp) });
+    }
+    if (sIp) {
+      add({ ip: sIp, service: 'S-CSCF', interface: 'SIP server', protocol: 'UDP/TCP', port: sPort, direction: 'server', connects_to: 'I-CSCF / P-CSCF', description: 'Anchor CSCF — handles REGISTER, maintains contact bindings, routes calls for registered UEs', group: 'IMS', loopback: lo(sIp) });
+      add({ ip: sIp, service: 'S-CSCF', interface: 'Cx Diameter (→HSS)', protocol: 'TCP', port: '3870', direction: 'client', connects_to: 'PyHSS', description: 'S-CSCF sends MAR (Multimedia-Auth-Request) and SAR (Server-Assignment-Request) to HSS', group: 'IMS', loopback: lo(sIp) });
+    }
+    add({ ip: hssIp, service: 'PyHSS', interface: 'Cx Diameter server', protocol: 'TCP', port: '3868', direction: 'server', connects_to: 'I-CSCF, S-CSCF', description: 'IMS Home Subscriber Server — responds to Cx requests from I-CSCF and S-CSCF for auth and subscriber data', group: 'IMS', loopback: lo(hssIp) });
+    if (ims.rtpEngineIp) {
+      add({ ip: ims.rtpEngineIp, service: 'RTPengine', interface: 'NGCP (Kamailio→RTPengine)', protocol: 'UDP', port: '2223', direction: 'server', connects_to: 'P-CSCF / S-CSCF', description: 'Kamailio instructs RTPengine to proxy RTP voice streams for NAT traversal and transcoding', group: 'IMS', loopback: lo(ims.rtpEngineIp) });
+    }
+    if (ims.dnsIp) {
+      add({ ip: ims.dnsIp, service: 'BIND9 (IMS DNS)', interface: 'DNS', protocol: 'UDP', port: '53', direction: 'server', connects_to: 'UE / Kamailio', description: 'IMS DNS — provides SRV and NAPTR records for IMS realm routing (pcscf, icscf, scscf FQDNs)', group: 'IMS', loopback: lo(ims.dnsIp) });
+    }
+  }
+
   // deduplicate
   const seen = new Set<string>();
   return rows.filter(r => {
@@ -439,7 +482,7 @@ function buildConnectionPairs(rows: IPRow[]): ConnectionPair[] {
 
   // ── Helper to add a pair only when both IPs exist ──
   const pair = (
-    group: '4G' | '5G' | 'Shared',
+    group: '4G' | '5G' | 'Shared' | 'IMS',
     iface: string,
     proto: string,
     port: string,
@@ -662,6 +705,51 @@ function buildConnectionPairs(rows: IPRow[]): ConnectionPair[] {
       'gNodeBs send UE user data to UPF encapsulated in GTP-U — the N3 GTP-U address is configured on the gNodeB');
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // IMS (VoLTE)
+  // ═══════════════════════════════════════════════════════════════════
+
+  const pCscfSipIp = ip('P-CSCF', 'sip (ue', 'server');
+  if (pCscfSipIp && pCscfSipIp !== '—') {
+    pair('IMS', 'SIP (UE→P-CSCF)', 'UDP/TCP', '5060',
+      'UE', '(UE IMS IP)',
+      'P-CSCF', pCscfSipIp,
+      'UE SIP registration and call setup — first hop for all VoLTE IMS signaling');
+
+    const pcrfAddr = ip('PCRF', 'gx', 'server');
+    pair('IMS', 'Rx Diameter (P-CSCF→PCRF)', 'TCP', '3871',
+      'P-CSCF', pCscfSipIp,
+      'PCRF', pcrfAddr,
+      'P-CSCF requests IMS bearer authorization and QoS policy from PCRF for each voice call');
+
+    const iCscfIp = ip('I-CSCF', 'sip', 'server');
+    if (iCscfIp && iCscfIp !== '—') {
+      pair('IMS', 'SIP (P-CSCF→I-CSCF)', 'UDP/TCP', '5060',
+        'P-CSCF', pCscfSipIp,
+        'I-CSCF', iCscfIp,
+        'P-CSCF forwards SIP REGISTER and initial INVITEs to I-CSCF for S-CSCF selection');
+
+      const hssIp = ip('PyHSS', 'cx', 'server');
+      pair('IMS', 'Cx Diameter (I-CSCF→HSS)', 'TCP', '3869',
+        'I-CSCF', ip('I-CSCF', 'cx', 'client'),
+        'PyHSS', hssIp,
+        'I-CSCF queries HSS via UAR/LIR to assign and locate the S-CSCF for the subscriber');
+
+      const sCscfIp = ip('S-CSCF', 'sip', 'server');
+      if (sCscfIp && sCscfIp !== '—') {
+        pair('IMS', 'SIP (I-CSCF→S-CSCF)', 'UDP/TCP', '5060',
+          'I-CSCF', iCscfIp,
+          'S-CSCF', sCscfIp,
+          'I-CSCF routes SIP REGISTER to the assigned S-CSCF to anchor the registration');
+
+        pair('IMS', 'Cx Diameter (S-CSCF→HSS)', 'TCP', '3870',
+          'S-CSCF', ip('S-CSCF', 'cx', 'client'),
+          'PyHSS', hssIp,
+          'S-CSCF requests auth vectors (MAR) and confirms registration (SAR) with HSS');
+      }
+    }
+  }
+
   // Metrics: each service → Prometheus
   rows.filter(r => r.interface.toLowerCase().includes('metrics') && r.direction === 'server').forEach(r => {
     add({
@@ -705,10 +793,11 @@ function buildConnectionPairs(rows: IPRow[]): ConnectionPair[] {
 
 function ConnectionsTab({ rows }: { rows: IPRow[] }) {
   const pairs = useMemo(() => buildConnectionPairs(rows), [rows]);
-  const groups: Array<{ key: '4G' | '5G' | 'Shared'; label: string; color: string; bg: string }> = [
+  const groups: Array<{ key: '4G' | '5G' | 'Shared' | 'IMS'; label: string; color: string; bg: string }> = [
     { key: '4G',     label: '4G EPC',       color: 'text-purple-400', bg: 'bg-purple-500/10' },
     { key: '5G',     label: '5G NR Core',   color: 'text-nms-accent', bg: 'bg-nms-accent/10' },
     { key: 'Shared', label: 'Shared 4G+5G', color: 'text-teal-400',   bg: 'bg-teal-500/10'  },
+    { key: 'IMS',    label: 'IMS (VoLTE)',  color: 'text-rose-400',   bg: 'bg-rose-500/10'  },
   ];
   return (
     <div className="space-y-6">
@@ -770,10 +859,11 @@ function ConnectionsTab({ rows }: { rows: IPRow[] }) {
 // ── All IPs tab ───────────────────────────────────────────────────────────────
 
 function AllIPsTab({ rows }: { rows: IPRow[] }) {
-  const groups: Array<{ key: '4G' | '5G' | 'Shared'; label: string; color: string; bg: string }> = [
+  const groups: Array<{ key: '4G' | '5G' | 'Shared' | 'IMS'; label: string; color: string; bg: string }> = [
     { key: '4G',     label: '4G EPC',       color: 'text-purple-400', bg: 'bg-purple-500/10' },
     { key: '5G',     label: '5G NR Core',   color: 'text-nms-accent', bg: 'bg-nms-accent/10' },
     { key: 'Shared', label: 'Shared 4G+5G', color: 'text-teal-400',   bg: 'bg-teal-500/10'  },
+    { key: 'IMS',    label: 'IMS (VoLTE)',  color: 'text-rose-400',   bg: 'bg-rose-500/10'  },
   ];
   return (
     <div className="space-y-6">
@@ -905,7 +995,13 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const [showIPTable, setShowIPTable] = useState(false);
   const [allConfigs, setAllConfigs]   = useState<any>(null);
   const loadConfigs = useCallback(async () => {
-    try { setAllConfigs(await configApi.getAll()); } catch { /* silent */ }
+    try {
+      const [configs, imsStatus] = await Promise.all([
+        configApi.getAll(),
+        imsApi.getStatus().catch(() => null),
+      ]);
+      setAllConfigs({ ...configs, _ims: imsStatus?.currentConfig ?? null });
+    } catch { /* silent */ }
   }, []);
 
   const [radioTags, setRadioTags] = useState<Record<string, string>>({});

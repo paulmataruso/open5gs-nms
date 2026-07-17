@@ -8,6 +8,7 @@ import { sasApi } from '../api/sas';
 import { interfaceApi } from '../api';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 
 const SAS_BASE = `http://${window.location.hostname}:8888/sas/v1.2`;
 
@@ -21,6 +22,15 @@ function earfcnToHz(earfcn: number): number {
 function hzToEarfcn(hz: number): number {
   return Math.round(55240 + (hz / 1e6 - 3550) / 0.1);
 }
+// ─── NR-ARFCN ↔ Hz helpers (n48, 3GPP TS 38.101-1, FR1 3000–24250 MHz) ─────
+// F(MHz) = 3000 + 0.015 × (NR-ARFCN − 600000)   step = 15 kHz
+// NR-ARFCN = (F_MHz − 3000) / 0.015 + 600000
+function hzToNrArfcn(hz: number): number {
+  return Math.round((hz / 1e6 - 3000) / 0.015 + 600000);
+}
+function nrArfcnToHz(arfcn: number): number {
+  return Math.round((3000 + 0.015 * (arfcn - 600000)) * 1e6);
+}
 function hzToMhz(hz: number): number { return hz / 1e6; }
 function mhzToHz(mhz: number): number { return Math.round(mhz * 1e6); }
 
@@ -30,31 +40,33 @@ function BandRow({ band, onChange, onDelete }: {
   onChange: (updated: any) => void;
   onDelete: () => void;
 }) {
-  const [inputMode, setInputMode] = useState<'hz' | 'mhz' | 'earfcn'>('earfcn');
+  const [inputMode, setInputMode] = useState<'hz' | 'mhz' | 'earfcn' | 'nrarfcn'>('earfcn');
 
-  const lowMhz     = hzToMhz(band.lowFrequency);
-  const highMhz    = hzToMhz(band.highFrequency);
-  const lowEarfcn  = hzToEarfcn(band.lowFrequency);
-  const highEarfcn = hzToEarfcn(band.highFrequency);
-  const bwMhz      = (band.highFrequency - band.lowFrequency) / 1e6;
+  const lowMhz      = hzToMhz(band.lowFrequency);
+  const highMhz     = hzToMhz(band.highFrequency);
+  const lowEarfcn   = hzToEarfcn(band.lowFrequency);
+  const highEarfcn  = hzToEarfcn(band.highFrequency);
+  const lowNrArfcn  = hzToNrArfcn(band.lowFrequency);
+  const highNrArfcn = hzToNrArfcn(band.highFrequency);
+  const bwMhz       = (band.highFrequency - band.lowFrequency) / 1e6;
 
   const handleLow = (val: string) => {
     const n = parseFloat(val);
     if (isNaN(n)) return;
-    const hz = inputMode === 'hz' ? n : inputMode === 'mhz' ? mhzToHz(n) : earfcnToHz(n);
+    const hz = inputMode === 'hz' ? n : inputMode === 'mhz' ? mhzToHz(n) : inputMode === 'nrarfcn' ? nrArfcnToHz(n) : earfcnToHz(n);
     onChange({ ...band, lowFrequency: hz });
   };
 
   const handleHigh = (val: string) => {
     const n = parseFloat(val);
     if (isNaN(n)) return;
-    const hz = inputMode === 'hz' ? n : inputMode === 'mhz' ? mhzToHz(n) : earfcnToHz(n);
+    const hz = inputMode === 'hz' ? n : inputMode === 'mhz' ? mhzToHz(n) : inputMode === 'nrarfcn' ? nrArfcnToHz(n) : earfcnToHz(n);
     onChange({ ...band, highFrequency: hz });
   };
 
-  const dispLow  = inputMode === 'hz' ? band.lowFrequency  : inputMode === 'mhz' ? lowMhz   : lowEarfcn;
-  const dispHigh = inputMode === 'hz' ? band.highFrequency : inputMode === 'mhz' ? highMhz  : highEarfcn;
-  const unit     = inputMode === 'hz' ? 'Hz' : inputMode === 'mhz' ? 'MHz' : 'EARFCN';
+  const dispLow  = inputMode === 'hz' ? band.lowFrequency  : inputMode === 'mhz' ? lowMhz  : inputMode === 'nrarfcn' ? lowNrArfcn  : lowEarfcn;
+  const dispHigh = inputMode === 'hz' ? band.highFrequency : inputMode === 'mhz' ? highMhz : inputMode === 'nrarfcn' ? highNrArfcn : highEarfcn;
+  const unit     = inputMode === 'hz' ? 'Hz' : inputMode === 'mhz' ? 'MHz' : inputMode === 'nrarfcn' ? 'NR-ARFCN' : 'EARFCN';
 
   return (
     <div className="border border-nms-border rounded-lg p-3 space-y-3 bg-nms-surface-2">
@@ -75,15 +87,17 @@ function BandRow({ band, onChange, onDelete }: {
       {/* Input mode toggle */}
       <div className="flex items-center gap-1">
         <span className="text-xs text-nms-text-dim mr-1">Input as:</span>
-        {(['earfcn', 'mhz', 'hz'] as const).map(mode => (
+        {(['earfcn', 'nrarfcn', 'mhz', 'hz'] as const).map(mode => (
           <button key={mode} onClick={() => setInputMode(mode)}
             className={clsx(
               'px-2 py-0.5 rounded text-xs font-medium transition-all',
               inputMode === mode
-                ? 'bg-nms-accent/15 text-nms-accent border border-nms-accent/30'
+                ? mode === 'nrarfcn'
+                  ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                  : 'bg-nms-accent/15 text-nms-accent border border-nms-accent/30'
                 : 'text-nms-text-dim hover:text-nms-text border border-transparent',
             )}>
-            {mode.toUpperCase()}
+            {mode === 'nrarfcn' ? 'NR-ARFCN' : mode.toUpperCase()}
           </button>
         ))}
       </div>
@@ -110,10 +124,14 @@ function BandRow({ band, onChange, onDelete }: {
 
       {/* Read-only computed values — always visible regardless of input mode */}
       <div className="rounded-md bg-nms-bg border border-nms-border/60 px-3 py-2 space-y-1.5">
-        <div className="grid grid-cols-3 gap-x-4">
+        <div className="grid grid-cols-4 gap-x-4">
           <div>
-            <p className="text-xs text-nms-text-dim mb-0.5">EARFCN</p>
+            <p className="text-xs text-nms-text-dim mb-0.5">EARFCN (LTE)</p>
             <p className="font-mono text-xs text-nms-text">{lowEarfcn} – {highEarfcn}</p>
+          </div>
+          <div>
+            <p className="text-xs text-nms-text-dim mb-0.5">NR-ARFCN (5G)</p>
+            <p className="font-mono text-xs text-nms-text">{hzToNrArfcn(band.lowFrequency)} – {hzToNrArfcn(band.highFrequency)}</p>
           </div>
           <div>
             <p className="text-xs text-nms-text-dim mb-0.5">MHz</p>
@@ -155,7 +173,7 @@ function EarfcnReferenceModal({ onClose }: { onClose: () => void }) {
               <BookOpen className="w-4 h-4 text-indigo-400" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-nms-text">EARFCN / Frequency Reference</h2>
+              <h2 className="text-sm font-semibold text-nms-text">EARFCN / NR-ARFCN / Frequency Reference</h2>
               <p className="text-xs text-nms-text-dim">3GPP TS 36.101 — Band 48 (CBRS 3550–3700 MHz)</p>
             </div>
           </div>
@@ -176,11 +194,19 @@ function EarfcnReferenceModal({ onClose }: { onClose: () => void }) {
 // ─── EARFCN Reference content ─────────────────────────────────────────────────
 function EarfcnReference() {
   const [calcEarfcn, setCalcEarfcn] = useState(56060);
-  const calcMhz = 3550 + (calcEarfcn - 55240) * 0.1;
-  const calcHz  = Math.round(calcMhz * 1e6);
+  const calcMhz       = 3550 + (calcEarfcn - 55240) * 0.1;
+  const calcHz        = Math.round(calcMhz * 1e6);
+  const calcNrArfcn   = hzToNrArfcn(calcHz);
 
   const [calcMhzIn, setCalcMhzIn] = useState(3632);
   const calcEarfcnOut = Math.round(55240 + (calcMhzIn - 3550) * 10);
+  const calcNrArfcnOut = hzToNrArfcn(mhzToHz(calcMhzIn));
+
+  // Also allow entering NR-ARFCN directly
+  const [calcNrIn, setCalcNrIn] = useState(638000);
+  const calcNrMhz  = 3000 + 0.015 * (calcNrIn - 600000);
+  const calcNrHz   = nrArfcnToHz(calcNrIn);
+  const calcNrEarfcn = hzToEarfcn(calcNrHz);
 
   const EXAMPLES = [
     { earfcn: 55240, mhz: 3550.0, note: 'CBRS band start' },
@@ -203,7 +229,7 @@ function EarfcnReference() {
           <BookOpen className="w-4 h-4 text-indigo-400" />
         </div>
         <div>
-          <h2 className="text-sm font-semibold text-nms-text">EARFCN / Frequency Reference</h2>
+          <h2 className="text-sm font-semibold text-nms-text">EARFCN / NR-ARFCN / Frequency Reference</h2>
           <p className="text-xs text-nms-text-dim">3GPP TS 36.101 — Band 48 (CBRS 3550–3700 MHz)</p>
         </div>
       </div>
@@ -316,13 +342,13 @@ function EarfcnReference() {
       </div>
 
       {/* Interactive calculators */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-3 gap-4">
 
-        {/* EARFCN → MHz/Hz */}
+        {/* EARFCN → Frequency */}
         <div className="nms-card space-y-3">
           <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">EARFCN → Frequency</h3>
           <div>
-            <label className="nms-label text-xs">EARFCN (Band 48)</label>
+            <label className="nms-label text-xs">EARFCN (Band 48 LTE)</label>
             <input className="nms-input font-mono" type="number"
               value={calcEarfcn}
               onChange={e => setCalcEarfcn(Number(e.target.value))}
@@ -332,22 +358,57 @@ function EarfcnReference() {
           <div className="bg-nms-surface rounded-lg px-3 py-2 border border-nms-border space-y-1">
             <div className="flex justify-between text-xs">
               <span className="text-nms-text-dim">MHz</span>
-              <span className="font-mono text-nms-text">{calcMhz.toFixed(1)} MHz</span>
+              <span className="font-mono text-nms-text">{calcMhz.toFixed(3)} MHz</span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-nms-text-dim">Hz (SAS grant)</span>
               <span className="font-mono text-nms-text">{calcHz.toLocaleString()} Hz</span>
             </div>
+            <div className="flex justify-between text-xs text-purple-400">
+              <span>NR-ARFCN (n48)</span>
+              <span className="font-mono">{calcNrArfcn}</span>
+            </div>
             <div className="flex justify-between text-xs border-t border-nms-border/40 pt-1 mt-1">
-              <span className="text-nms-text-dim">Calculation</span>
+              <span className="text-nms-text-dim">Calc</span>
               <span className="font-mono text-nms-text-dim text-xs">3550 + 0.1×({calcEarfcn}−55240)</span>
             </div>
           </div>
         </div>
 
-        {/* MHz → EARFCN */}
+        {/* NR-ARFCN → Frequency */}
         <div className="nms-card space-y-3">
-          <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Frequency → EARFCN</h3>
+          <h3 className="text-xs font-semibold text-purple-400 uppercase tracking-wider">NR-ARFCN → Frequency</h3>
+          <div>
+            <label className="nms-label text-xs">NR-ARFCN (n48 5G NR)</label>
+            <input className="nms-input font-mono" type="number"
+              value={calcNrIn}
+              onChange={e => setCalcNrIn(Number(e.target.value))}
+              min={620000} max={653333} />
+            <p className="text-xs text-nms-text-dim mt-1">Valid range: 620000 – 653333</p>
+          </div>
+          <div className="bg-nms-surface rounded-lg px-3 py-2 border border-nms-border space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-nms-text-dim">MHz</span>
+              <span className="font-mono text-nms-text">{calcNrMhz.toFixed(3)} MHz</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-nms-text-dim">Hz (SAS grant)</span>
+              <span className="font-mono text-nms-text">{calcNrHz.toLocaleString()} Hz</span>
+            </div>
+            <div className="flex justify-between text-xs text-nms-accent">
+              <span>EARFCN (Band 48 LTE)</span>
+              <span className="font-mono">{calcNrEarfcn}</span>
+            </div>
+            <div className="flex justify-between text-xs border-t border-nms-border/40 pt-1 mt-1">
+              <span className="text-nms-text-dim">Calc</span>
+              <span className="font-mono text-nms-text-dim text-xs">3000 + 0.015×({calcNrIn}−600000)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* MHz → Both */}
+        <div className="nms-card space-y-3">
+          <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Frequency → ARFCN</h3>
           <div>
             <label className="nms-label text-xs">Frequency (MHz)</label>
             <input className="nms-input font-mono" type="number"
@@ -358,16 +419,16 @@ function EarfcnReference() {
           </div>
           <div className="bg-nms-surface rounded-lg px-3 py-2 border border-nms-border space-y-1">
             <div className="flex justify-between text-xs">
-              <span className="text-nms-text-dim">EARFCN</span>
-              <span className="font-mono text-nms-text">{calcEarfcnOut}</span>
+              <span className="text-nms-text-dim">EARFCN (LTE)</span>
+              <span className="font-mono text-nms-accent">{calcEarfcnOut}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-purple-400">NR-ARFCN (5G)</span>
+              <span className="font-mono text-purple-400">{calcNrArfcnOut}</span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-nms-text-dim">Hz</span>
               <span className="font-mono text-nms-text">{mhzToHz(calcMhzIn).toLocaleString()} Hz</span>
-            </div>
-            <div className="flex justify-between text-xs border-t border-nms-border/40 pt-1 mt-1">
-              <span className="text-nms-text-dim">Calculation</span>
-              <span className="font-mono text-nms-text-dim text-xs">55240 + 10×({calcMhzIn}−3550)</span>
             </div>
           </div>
         </div>
@@ -379,7 +440,8 @@ function EarfcnReference() {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-nms-border text-nms-text-dim">
-              <th className="text-left py-2 pr-4">EARFCN</th>
+              <th className="text-left py-2 pr-4">EARFCN (LTE)</th>
+              <th className="text-left py-2 pr-4 text-purple-400">NR-ARFCN (5G)</th>
               <th className="text-left py-2 pr-4">MHz</th>
               <th className="text-left py-2 pr-4">Hz</th>
               <th className="text-left py-2">Note</th>
@@ -389,6 +451,7 @@ function EarfcnReference() {
             {EXAMPLES.map(ex => (
               <tr key={ex.earfcn} className="border-b border-nms-border/50 hover:bg-nms-surface-2">
                 <td className="py-1.5 pr-4 font-mono text-nms-accent">{ex.earfcn}</td>
+                <td className="py-1.5 pr-4 font-mono text-purple-400">{hzToNrArfcn(mhzToHz(ex.mhz))}</td>
                 <td className="py-1.5 pr-4 font-mono text-nms-text">{ex.mhz.toFixed(1)}</td>
                 <td className="py-1.5 pr-4 font-mono text-nms-text-dim">{mhzToHz(ex.mhz).toLocaleString()}</td>
                 <td className="py-1.5 text-nms-text-dim">{ex.note}</td>
@@ -473,7 +536,7 @@ const SLOT_COLORS = [
 ];
 
 function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, rfStatus = new Map() }: {
-  slots:          Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
+  slots:          Array<{ low: number; high: number; earfcn: number; nrArfcn?: number; displayArfcn?: number; arfcnLabel?: string; radioTech?: string; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
   bandLow:        number;
   bandHigh:       number;
   slotWidthHz:    number;
@@ -512,7 +575,7 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
   return (
     <div className="space-y-3">
       {/* Chart bar */}
-      <div className="relative h-14 rounded-lg overflow-hidden bg-nms-surface border border-nms-border">
+      <div className="relative h-16 rounded-lg overflow-hidden bg-nms-surface border border-nms-border">
         {/* Unused slot hatching */}
         {unusedSlots.map((s, i) => {
           const leftPct  = ((s.low  - bandLow) / bandWidthHz) * 100;
@@ -533,12 +596,14 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
           const color     = SLOT_COLORS[cbsdColorMap.get(s.cbsdId!)! % SLOT_COLORS.length];
           const isAuth    = s.state === 'AUTHORIZED';
           const label     = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
+          const bwMhz     = (s.high - s.low) / 1e6;
           return (
             <div key={s.cbsdId} className="absolute inset-y-0 flex flex-col items-center justify-center px-1 overflow-hidden"
               style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color + '33', borderLeft: `2px solid ${color}`, borderRight: `2px solid ${color}` }}
-              title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}–${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}>
+              title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}–${(s.high/1e6).toFixed(1)} MHz (${bwMhz.toFixed(1)} MHz)\n${s.arfcnLabel ?? 'EARFCN'} ${s.displayArfcn ?? s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}>
               <span className="text-xs font-bold truncate w-full text-center" style={{ color }}>{label}</span>
               <span className="text-xs font-mono truncate w-full text-center" style={{ color: color + 'cc' }}>{(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}</span>
+              <span className="text-xs font-mono truncate w-full text-center opacity-70" style={{ color }}>{bwMhz % 1 === 0 ? bwMhz.toFixed(0) : bwMhz.toFixed(1)} MHz</span>
               {isAuth && <div className="absolute top-1 right-1 flex items-center gap-0.5">
                 {/* SAS state — circle */}
                 <div className={`w-2 h-2 rounded-full ${
@@ -572,7 +637,7 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
           return (
             <span key={i} className="absolute text-xs font-mono text-nms-text-dim -translate-x-1/2"
               style={{ left: `${centerPct}%` }}>
-              {s.earfcn}
+              {s.displayArfcn ?? s.earfcn}
             </span>
           );
         })}
@@ -620,7 +685,7 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
             <tr className="border-b border-nms-border text-nms-text-dim">
               <th className="text-left py-1.5 pr-4">Slot</th>
               <th className="text-left py-1.5 pr-4">Frequency Range</th>
-              <th className="text-left py-1.5 pr-4">EARFCN</th>
+              <th className="text-left py-1.5 pr-4">ARFCN</th>
               <th className="text-left py-1.5 pr-4">Assigned To</th>
               <th className="text-left py-1.5">Status</th>
             </tr>
@@ -639,7 +704,16 @@ function SpectrumChart({ slots, bandLow, bandHigh, slotWidthHz, filterGroupIds, 
                   <td className="py-1.5 pr-4 font-mono text-nms-text">
                     {(s.low/1e6).toFixed(1)}–{(s.high/1e6).toFixed(1)} MHz
                   </td>
-                  <td className="py-1.5 pr-4 font-mono text-nms-accent">{s.earfcn}</td>
+                  <td className="py-1.5 pr-4 font-mono">
+                    <span className="text-nms-accent">{s.displayArfcn ?? s.earfcn}</span>
+                    <span className="text-nms-text-dim text-xs ml-1">{s.arfcnLabel ?? 'EARFCN'}</span>
+                    {s.nrArfcn && s.arfcnLabel !== 'NR-ARFCN' && (
+                      <span className="text-nms-text-dim/60 text-xs ml-2">/ {s.nrArfcn} <span className="text-purple-400/70">NR</span></span>
+                    )}
+                    {s.arfcnLabel === 'NR-ARFCN' && s.earfcn && (
+                      <span className="text-nms-text-dim/60 text-xs ml-2">/ {s.earfcn} <span className="text-nms-accent/60">LTE</span></span>
+                    )}
+                  </td>
                   <td className="py-1.5 pr-4 font-mono">
                     {s.serial
                       ? <span style={{ color }}>{s.serial}</span>
@@ -682,7 +756,7 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
   bands: Array<{
     bandLow: number; bandHigh: number; label: string; slotWidthHz: number;
     bandId: string; assignedGroupIds: string[];
-    slots: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
+    slots: Array<{ low: number; high: number; earfcn: number; nrArfcn?: number; displayArfcn?: number; arfcnLabel?: string; radioTech?: string; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }>;
   }>;
   rfStatus?: Map<string, boolean | null>;
 }) {
@@ -737,14 +811,14 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
   }, 0);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-4">
       {bands.map((band, bi) => {
         const bandColor = SLOT_COLORS[bi % SLOT_COLORS.length];
         const groupFilter = band.assignedGroupIds.length > 0 ? band.assignedGroupIds : null;
 
         // Build expanded entries — one per grant per slot so multiple CBSDs
         // on the same frequency all appear (e.g. two Sercomm radios with same CA channels)
-        const expandedEntries: Array<{ low: number; high: number; earfcn: number; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }> = [];
+        const expandedEntries: Array<{ low: number; high: number; earfcn: number; nrArfcn?: number; displayArfcn?: number; arfcnLabel?: string; radioTech?: string; cbsdId?: string; serial?: string; fccId?: string; state?: string; groupId?: string }> = [];
         const seenUnassigned = new Set<string>();
         for (const s of band.slots) {
           const grants: Array<{ cbsdId: string; serial?: string; fccId?: string; state: string; groupId?: string }> =
@@ -766,22 +840,22 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
         const activeInRow = expandedEntries.filter(s => s.cbsdId);
 
         return (
-          <div key={bi} className="flex items-stretch gap-2">
+          <div key={bi} className="flex items-stretch gap-3">
             {/* Band label — left side */}
-            <div className="w-32 shrink-0 flex flex-col justify-center">
-              <p className="text-xs font-semibold truncate" style={{ color: bandColor }}>{band.label}</p>
+            <div className="w-44 shrink-0 flex flex-col justify-center py-1">
+              <p className="text-xs font-semibold break-words leading-snug" style={{ color: bandColor }} title={band.label}>{band.label}</p>
               <p className="text-xs font-mono text-nms-text-dim/60">
                 {(band.bandLow/1e6).toFixed(0)}–{(band.bandHigh/1e6).toFixed(0)} MHz
               </p>
               {band.assignedGroupIds.length > 0 && (
-                <p className="text-xs text-purple-400/70 truncate" title={band.assignedGroupIds.join(', ')}>
+                <p className="text-xs text-purple-400/70 break-words leading-snug" title={band.assignedGroupIds.join(', ')}>
                   {band.assignedGroupIds.join(', ')}
                 </p>
               )}
             </div>
 
             {/* Chart row */}
-            <div className="flex-1 relative h-12 rounded overflow-hidden bg-nms-surface border border-nms-border">
+            <div className="flex-1 relative h-16 rounded overflow-hidden bg-nms-surface border border-nms-border">
               {/* Band span indicator */}
               <div className="absolute inset-y-0 pointer-events-none"
                 style={{
@@ -812,15 +886,19 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
                 const subLeft  = pct(s.low) + pos * subW;
                 const color    = getColor(s.cbsdId!);
                 const label    = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
+                const bwMhz    = (s.high - s.low) / 1e6;
                 return (
                   <div key={`${s.cbsdId}-${entryIdx}`}
                     className="absolute inset-y-0 flex flex-col items-center justify-center px-0.5 overflow-hidden"
                     style={{ left: `${subLeft}%`, width: `${subW}%`, backgroundColor: color + '33', borderLeft: `2px solid ${color}`, borderRight: `2px solid ${color}` }}
-                    title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz\nEARFCN ${s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}
+                    title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz (${bwMhz.toFixed(1)} MHz)\n${s.arfcnLabel ?? 'EARFCN'} ${s.displayArfcn ?? s.earfcn}\n${s.state}${s.groupId ? `\nGroup: ${s.groupId}` : ''}`}
                   >
                     <span className="text-xs font-bold truncate w-full text-center leading-tight" style={{ color }}>{label}</span>
                     <span className="text-xs font-mono truncate w-full text-center leading-tight" style={{ color: color + 'cc' }}>
                       {(s.low/1e6).toFixed(0)}–{(s.high/1e6).toFixed(0)}
+                    </span>
+                    <span className="text-xs font-mono truncate w-full text-center leading-tight opacity-70" style={{ color }}>
+                      {bwMhz % 1 === 0 ? bwMhz.toFixed(0) : bwMhz.toFixed(1)} MHz
                     </span>
                     {/* Two status dots: SAS state (circle) + RF on/off (square) */}
                     <div className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
@@ -859,26 +937,30 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
 
       {/* Global default row — always shown; displays CBSDs on global default (no group pinned to a band) */}
       {uniqueGlobalSlots.length > 0 && (
-        <div className="flex items-stretch gap-2">
-          <div className="w-32 shrink-0 flex flex-col justify-center">
+        <div className="flex items-stretch gap-3">
+          <div className="w-44 shrink-0 flex flex-col justify-center py-1">
             <p className="text-xs font-semibold text-nms-text-dim">Global Default</p>
             <p className="text-xs font-mono text-nms-text-dim/60">no group</p>
           </div>
-          <div className="flex-1 relative h-12 rounded overflow-hidden bg-nms-surface border border-nms-border border-dashed">
+          <div className="flex-1 relative h-16 rounded overflow-hidden bg-nms-surface border border-nms-border border-dashed">
             {uniqueGlobalSlots.map((s, entryIdx) => {
               const color = getColor(s.cbsdId!);
               const label = s.serial ? s.serial.slice(-6) : s.cbsdId?.slice(0, 6);
               const leftPct = pct(s.low);
               const widthPct = pct(s.high) - pct(s.low);
+              const bwMhz = (s.high - s.low) / 1e6;
               return (
                 <div key={`global-${s.cbsdId}-${entryIdx}`}
                   className="absolute inset-y-0 flex flex-col items-center justify-center px-0.5 overflow-hidden"
                   style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color + '33', borderLeft: `2px solid ${color}`, borderRight: `2px solid ${color}` }}
-                  title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz\n${s.state}\nGlobal default`}
+                  title={`${s.serial ?? s.cbsdId}\n${(s.low/1e6).toFixed(1)}\u2013${(s.high/1e6).toFixed(1)} MHz (${bwMhz.toFixed(1)} MHz)\n${s.state}\nGlobal default`}
                 >
                   <span className="text-xs font-bold truncate w-full text-center leading-tight" style={{ color }}>{label}</span>
                   <span className="text-xs font-mono truncate w-full text-center leading-tight" style={{ color: color + 'cc' }}>
                     {(s.low/1e6).toFixed(0)}\u2013{(s.high/1e6).toFixed(0)}
+                  </span>
+                  <span className="text-xs font-mono truncate w-full text-center leading-tight opacity-70" style={{ color }}>
+                    {bwMhz % 1 === 0 ? bwMhz.toFixed(0) : bwMhz.toFixed(1)} MHz
                   </span>
                   <div className="absolute top-0.5 right-0.5 flex items-center gap-0.5">
                     <div className={`w-2 h-2 rounded-full ${
@@ -902,8 +984,8 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
           </div>
         </div>
       )}
-      <div className="flex items-stretch gap-2">
-        <div className="w-32 shrink-0" />
+      <div className="flex items-stretch gap-3">
+        <div className="w-44 shrink-0" />
         <div className="flex-1 relative h-4">
           {ticks.map(hz => (
             <span key={hz} className="absolute text-xs font-mono text-nms-text-dim -translate-x-1/2"
@@ -917,7 +999,7 @@ function StackedBandChart({ bands, rfStatus = new Map() }: {
 
       {/* Legend — all active grants across all rows */}
       {totalGrants > 0 && (
-        <div className="flex flex-wrap gap-3 pt-1">
+        <div className="flex flex-wrap gap-3 pt-2">
           {bands.map((band, bi) => {
             const groupFilter = band.assignedGroupIds.length > 0 ? band.assignedGroupIds : null;
             return band.slots
@@ -1062,9 +1144,20 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
     return map;
   }, [cbsds]);
 
+  const GROUP_STALE_MS = 60 * 60 * 1000; // hide native groups inactive > 1 hour
   const groupIds = [...new Set([
-    ...Object.keys(groups).filter(k => k !== '__none__'),
+    ...Object.keys(groups).filter(k => {
+      if (k === '__none__') return false;
+      if (manualGroups.some(mg => mg._id === k)) return false; // added separately below
+      const members = groups[k] ?? [];
+      return members.some(c => c.lastSeen && (Date.now() - new Date(c.lastSeen).getTime()) < GROUP_STALE_MS);
+    }),
     ...manualGroups.map(mg => mg._id),
+    // Groups with a saved band policy but zero current CBSD members — e.g. a
+    // native group whose last radio was reconfigured/removed, or a manual
+    // group whose members were all deleted. These have nothing deriving them
+    // from live CBSDs, so without this they're invisible and un-prunable.
+    ...Object.keys(groupPolicies),
   ])].sort();
   const unassigned = groups['__none__']?.filter(c => !manualGroups.some(mg => mg.cbsdIds.includes(c.cbsdId))) ?? [];
 
@@ -1179,7 +1272,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
           const isSaving = saving[groupId];
           const showMembers = expandedMembers.has(groupId);
           return (
-            <div key={groupId} className="nms-card space-y-3">
+            <div key={groupId} className={clsx('nms-card space-y-3', isManual && 'border-amber-500/40 bg-amber-950/10')}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0 space-y-2">
 
@@ -1272,7 +1365,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                     {isSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
                     Save
                   </button>
-                  {isManual && (
+                  {isManual ? (
                     <button
                       onClick={async () => {
                         if (!confirm(`Delete group "${groupId}"?`)) return;
@@ -1286,6 +1379,33 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                         } catch { toast.error('Failed to delete group'); }
                       }}
                       className="nms-btn-ghost text-xs text-red-400 flex items-center gap-1"
+                      title="Delete this manual group"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        const memberList = nativeMembers.map(c => c.cbsdSerialNumber).join(', ') || 'none';
+                        if (!confirm(
+                          `Prune native group "${groupId}"?\n\n` +
+                          `This removes ${nativeMembers.length} CBSD registration(s) and their grants ` +
+                          `from the SAS server (${memberList}), plus any saved band policy for this group.\n\n` +
+                          `If a radio in this group is still actually in use, it will simply re-register ` +
+                          `and recreate the group the next time it checks in or reboots — this is safe to ` +
+                          `use for groups you believe are stale.`
+                        )) return;
+                        try {
+                          await Promise.all([
+                            ...nativeMembers.map(c => sasApi.deleteCbsd(c.cbsdId)),
+                            sasApi.deleteGroupPolicy(groupId).catch(() => {}),
+                          ]);
+                          await load();
+                          toast.success(`Group "${groupId}" pruned`);
+                        } catch { toast.error('Failed to prune group'); }
+                      }}
+                      className="nms-btn-ghost text-xs text-red-400 flex items-center gap-1"
+                      title="Prune this native group — removes its CBSD registrations; still-active radios simply re-register"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1343,7 +1463,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {/* Auto-slice buttons */}
                           <span className="text-xs text-nms-text-dim">Slice by:</span>
-                          {[5, 10, 20, 40].map(mhz => (
+                          {[5, 10, 20, 40, 50, 80, 100].map(mhz => (
                             <button key={mhz} type="button" onClick={() => autoSlice(mhz)}
                               className="text-xs font-mono text-nms-accent border border-nms-accent/30 rounded px-2 py-0.5 hover:bg-nms-accent/10 transition-colors">
                               {mhz} MHz
@@ -1548,6 +1668,7 @@ function GrantStateDot({ state }: { state: string }) {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export function SASPage() {
+  const copyToClipboard = useCopyToClipboard();
   const [stats, setStats]     = useState<any>(null);
   const [cbsds, setCbsds]     = useState<any[]>([]);
   const [config, setConfig]   = useState<any>(null);
@@ -1736,22 +1857,31 @@ export function SASPage() {
                   </thead>
                   <tbody>
                     {freqDebugData.map(r => {
-                      const lowMhz   = (r.lowFrequency  / 1e6).toFixed(1);
-                      const highMhz  = (r.highFrequency / 1e6).toFixed(1);
-                      const bwMhz    = ((r.highFrequency - r.lowFrequency) / 1e6).toFixed(0);
-                      const lowEarfcn  = Math.round(55240 + (r.lowFrequency  / 1e6 - 3550) * 10);
-                      const highEarfcn = Math.round(55240 + (r.highFrequency / 1e6 - 3550) * 10);
+                      const isNR       = r.radioTech === 'NR';
+                      const lowMhz     = (r.lowFrequency  / 1e6).toFixed(1);
+                      const highMhz    = (r.highFrequency / 1e6).toFixed(1);
+                      const bwMhz      = ((r.highFrequency - r.lowFrequency) / 1e6).toFixed(0);
+                      const arfcnLabel = isNR ? 'NR-ARFCN' : 'EARFCN';
+                      const lowArfcn   = isNR
+                        ? Math.round((r.lowFrequency  / 1e6 - 3000) / 0.015 + 600000)
+                        : Math.round(55240 + (r.lowFrequency  / 1e6 - 3550) * 10);
+                      const highArfcn  = isNR
+                        ? Math.round((r.highFrequency / 1e6 - 3000) / 0.015 + 600000)
+                        : Math.round(55240 + (r.highFrequency / 1e6 - 3550) * 10);
                       return (
                         <tr key={r.cbsdId} className="border-b border-nms-border/50 hover:bg-nms-surface-2">
-                          <td className="py-2 pr-4 font-mono text-nms-accent">{r.serial}</td>
+                          <td className="py-2 pr-4 font-mono text-nms-accent">
+                            {r.serial}
+                            {isNR && <span className="ml-1.5 text-xs px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">NR</span>}
+                          </td>
                           <td className="py-2 pr-4 font-mono text-nms-text-dim">{r.ip || '—'}</td>
                           <td className="py-2 pr-4">
                             <span className="font-mono text-nms-text">{lowMhz} MHz</span>
-                            <span className="text-nms-text-dim ml-1.5 font-mono text-xs">{lowEarfcn}</span>
+                            <span className="text-nms-text-dim ml-1.5 font-mono text-xs">{arfcnLabel} {lowArfcn}</span>
                           </td>
                           <td className="py-2 pr-4">
                             <span className="font-mono text-nms-text">{highMhz} MHz</span>
-                            <span className="text-nms-text-dim ml-1.5 font-mono text-xs">{highEarfcn}</span>
+                            <span className="text-nms-text-dim ml-1.5 font-mono text-xs">{arfcnLabel} {highArfcn}</span>
                           </td>
                           <td className="py-2 pr-4 font-mono text-nms-text-dim">{bwMhz} MHz</td>
                           <td className="py-2 pr-4">
@@ -1964,8 +2094,8 @@ export function SASPage() {
                         </div>
                       ))}
                       {/* Stacked full CBRS view — always shown, one row per band */}
-                      <div>
-                        <p className="text-xs font-medium text-nms-text-dim mb-2">
+                      <div className="pt-2">
+                        <p className="text-xs font-medium text-nms-text-dim mb-3">
                           All Bands — Full CBRS View
                           <span className="text-nms-text-dim/60 font-mono ml-2">3550–3700 MHz</span>
                         </p>
@@ -2004,8 +2134,8 @@ export function SASPage() {
                         <button
                           onClick={() => setCbsdSort(s => s === 'asc' ? 'desc' : 'asc')}
                           className="flex items-center gap-1 hover:text-nms-accent transition-colors"
-                          title="Sort by EARFCN">
-                          EARFCN
+                          title="Sort by ARFCN">
+                          ARFCN
                           <span className="text-nms-text-dim">
                             {cbsdSort === 'asc' ? '↑' : cbsdSort === 'desc' ? '↓' : '⇅'}
                           </span>
@@ -2022,9 +2152,14 @@ export function SASPage() {
                       const activeGrant = (c.grants ?? []).find((g: any) => g.state === 'AUTHORIZED' || g.state === 'GRANTED');
                       const grantLow    = activeGrant?.operationParam?.operationFrequencyRange?.lowFrequency;
                       const grantHigh   = activeGrant?.operationParam?.operationFrequencyRange?.highFrequency;
-                      const earfcn      = grantLow && grantHigh
-                        ? Math.round(55240 + (((grantLow + grantHigh) / 2) / 1e6 - 3550) * 10)
+                      const isNrCbsd    = c.airInterface?.radioTechnology === 'NR';
+                      const centerMhz   = grantLow && grantHigh ? (grantLow + grantHigh) / 2 / 1e6 : null;
+                      const earfcn      = centerMhz
+                        ? isNrCbsd
+                          ? Math.round((centerMhz - 3000) / 0.015 + 600000)
+                          : Math.round(55240 + (centerMhz - 3550) * 10)
                         : null;
+                      const earfcnLabel = isNrCbsd ? 'NR-ARFCN' : 'EARFCN';
                       const channelStr  = grantLow && grantHigh
                         ? `${(grantLow/1e6).toFixed(1)}–${(grantHigh/1e6).toFixed(1)} MHz`
                         : null;
@@ -2045,7 +2180,7 @@ export function SASPage() {
                         </td>
                         <td className="py-2 pr-4 font-mono">
                           {earfcn
-                            ? <span className="text-nms-accent">{earfcn}</span>
+                            ? <span className="text-nms-accent">{earfcn}<span className="text-nms-text-dim text-xs ml-1">{earfcnLabel}</span></span>
                             : <span className="text-nms-text-dim">—</span>}
                         </td>
                         <td className="py-2 pr-4">
@@ -2206,17 +2341,18 @@ export function SASPage() {
               Replaces all frequency bands with a safe, non-overlapping 20 MHz channel for the selected band.
               Band boundaries are strictly enforced — grants will never cross into another band.
             </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               {[
-                { band: 42, label: 'Band 42', channel: '3400–3420 MHz', note: 'Pure Band 42 — no overlap with B43/B48', low: 3400000000, high: 3420000000, color: 'border-blue-500/30 hover:bg-blue-500/5', labelColor: 'text-blue-400' },
-                { band: 43, label: 'Band 43', channel: '3600–3620 MHz', note: 'Pure Band 43 — starts above Band 48 overlap zone', low: 3600000000, high: 3620000000, color: 'border-purple-500/30 hover:bg-purple-500/5', labelColor: 'text-purple-400' },
-                { band: 48, label: 'Band 48 / CBRS', channel: '3560–3580 MHz', note: 'Safe zone: below 3600 MHz so radio uses B48 not B43', low: 3560000000, high: 3580000000, color: 'border-nms-accent/30 hover:bg-nms-accent/5', labelColor: 'text-nms-accent' },
-              ].map(preset => (
-                <button key={preset.band} type="button"
+                { band: 42, label: 'Band 42', channel: '3400–3420 MHz', note: 'Pure Band 42 — no overlap with B43/B48', low: 3400000000, high: 3420000000, maxBw: 20, color: 'border-blue-500/30 hover:bg-blue-500/5', labelColor: 'text-blue-400' },
+                { band: 43, label: 'Band 43', channel: '3600–3620 MHz', note: 'Pure Band 43 — starts above Band 48 overlap zone', low: 3600000000, high: 3620000000, maxBw: 20, color: 'border-purple-500/30 hover:bg-purple-500/5', labelColor: 'text-purple-400' },
+                { band: 48, label: 'Band 48 / CBRS (LTE)', channel: '3560–3580 MHz', note: 'Safe zone: below 3600 MHz so radio uses B48 not B43', low: 3560000000, high: 3580000000, maxBw: 20, color: 'border-nms-accent/30 hover:bg-nms-accent/5', labelColor: 'text-nms-accent' },
+                { band: 48, label: 'n48 / CBRS (5G NR)', channel: '3550–3700 MHz', note: 'Full CBRS band for 5G NR — 40 MHz grant (NR-ARFCN 638000)', low: 3550000000, high: 3700000000, maxBw: 40, color: 'border-purple-500/30 hover:bg-purple-500/5', labelColor: 'text-purple-400' },
+              ].map((preset, pi) => (
+                <button key={`${preset.band}-${pi}`} type="button"
                   onClick={() => {
-                    if (!confirm(`Replace all frequency bands with Band ${preset.band} preset?\n\nChannel: ${preset.channel}\n${preset.note}\n\nThis removes existing bands.`)) return;
-                    setCfgForm((f: any) => ({ ...f, frequencyBands: [{ id: `band-${Date.now()}`, label: `${preset.label} — ${preset.channel}`, lowFrequency: preset.low, highFrequency: preset.high, maxBandwidthMhz: 20 }] }));
-                    toast.success(`Band ${preset.band} preset applied — click Save to activate`);
+                    if (!confirm(`Replace all frequency bands with this preset?\n\nChannel: ${preset.channel}\n${preset.note}\n\nThis removes existing bands.`)) return;
+                    setCfgForm((f: any) => ({ ...f, frequencyBands: [{ id: `band-${Date.now()}`, label: `${preset.label} — ${preset.channel}`, lowFrequency: preset.low, highFrequency: preset.high, maxBandwidthMhz: preset.maxBw }] }));
+                    toast.success(`${preset.label} preset applied — click Save to activate`);
                   }}
                   className={`text-left p-3 rounded-lg border transition-colors ${preset.color}`}>
                   <p className={`text-sm font-semibold mb-1 ${preset.labelColor}`}>{preset.label}</p>
@@ -2293,7 +2429,12 @@ export function SASPage() {
                     <p className="font-mono text-sm text-nms-accent break-all">{SAS_BASE}{ep.path}</p>
                     <p className="text-xs text-nms-text-dim mt-0.5">{ep.desc}</p>
                   </div>
-                  <button onClick={() => { navigator.clipboard.writeText(`${SAS_BASE}${ep.path}`); toast.success('Copied'); }}
+                  <button
+                    onClick={async () => {
+                      const ok = await copyToClipboard(`${SAS_BASE}${ep.path}`);
+                      if (ok) toast.success('Copied');
+                      else toast.error('Copy failed — please copy manually');
+                    }}
                     className="text-xs text-nms-text-dim hover:text-nms-accent shrink-0">Copy</button>
                 </div>
               ))}

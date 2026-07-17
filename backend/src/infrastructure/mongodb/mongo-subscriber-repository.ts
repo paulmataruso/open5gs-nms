@@ -1,7 +1,7 @@
 import { Collection, Db, MongoClient } from 'mongodb';
 import pino from 'pino';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
-import { Subscriber, SubscriberListItem } from '../../domain/entities/subscriber';
+import { Subscriber, SubscriberListItem, FramedRouteEntry } from '../../domain/entities/subscriber';
 
 export class MongoSubscriberRepository implements ISubscriberRepository {
   private collection!: Collection;
@@ -20,6 +20,10 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     this.db = this.client.db('open5gs');
     this.collection = this.db.collection('subscribers');
     this.logger.info('Connected to MongoDB');
+  }
+
+  getDb(): Db {
+    return this.db;
   }
 
   async disconnect(): Promise<void> {
@@ -72,6 +76,12 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     return docs.map((doc) => {
       const firstSlice   = Array.isArray(doc.slice)   ? doc.slice[0]            : undefined;
       const firstSession = Array.isArray(firstSlice?.session) ? firstSlice.session[0] : undefined;
+      const sessions: { apn: string; ipv4?: string; framedRoutes?: string[] }[] = Array.isArray(doc.slice)
+        ? doc.slice.flatMap((s: { session?: { name?: string; ue?: { ipv4?: string }; ipv4_framed_routes?: string[] }[] }) =>
+            Array.isArray(s.session)
+              ? s.session.map(sess => ({ apn: sess.name ?? '', ipv4: sess.ue?.ipv4, framedRoutes: sess.ipv4_framed_routes }))
+              : [])
+        : [];
       return {
         imsi:          doc.imsi     as string,
         nickname:      doc.nickname as string | undefined,
@@ -85,8 +95,9 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
               0,
             )
           : 0,
-        ue_ipv4: firstSession?.ue?.ipv4 as string | undefined,
-        apn:     firstSession?.name     as string | undefined,
+        ue_ipv4:  firstSession?.ue?.ipv4 as string | undefined,
+        apn:      firstSession?.name     as string | undefined,
+        sessions,
       };
     });
   }
@@ -178,16 +189,52 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     return docs as unknown as Subscriber[];
   }
 
-  async assignIPv4(imsi: string, ipv4: string): Promise<void> {
-    // Assign IPv4 to the first session of the first slice
+  async assignIPv4ByApn(imsi: string, apn: string, ipv4: string): Promise<void> {
+    // Update the first session matching the given APN name within any slice
     await this.collection.updateOne(
-      { imsi },
-      {
-        $set: {
-          'slice.0.session.0.ue.ipv4': ipv4,
-        },
-      },
+      { imsi, 'slice.session.name': apn },
+      { $set: { 'slice.$[sl].session.$[sess].ue.ipv4': ipv4 } },
+      { arrayFilters: [{ 'sl.session.name': apn }, { 'sess.name': apn }] } as any,
     );
-    this.logger.info({ imsi, ipv4 }, 'Assigned IPv4 to subscriber');
+    this.logger.info({ imsi, apn, ipv4 }, 'Assigned IPv4 to APN session');
+  }
+
+  async removeImsSessionFromAll(): Promise<number> {
+    const result = await this.collection.updateMany(
+      {},
+      { $pull: { 'slice.$[].session': { name: 'ims' } } } as any,
+    );
+    this.logger.info({ modified: result.modifiedCount }, 'Removed IMS sessions from subscribers');
+    return result.modifiedCount;
+  }
+
+  async getAllFramedRoutes(excludeImsi?: string): Promise<FramedRouteEntry[]> {
+    const filter = excludeImsi ? { imsi: { $ne: excludeImsi } } : {};
+    const docs = await this.collection
+      .find(filter)
+      .project({ imsi: 1, nickname: 1, slice: 1 })
+      .toArray();
+
+    const entries: FramedRouteEntry[] = [];
+    for (const doc of docs as any[]) {
+      if (!Array.isArray(doc.slice)) continue;
+      for (const slice of doc.slice) {
+        if (!Array.isArray(slice.session)) continue;
+        for (const sess of slice.session) {
+          const ipv4 = sess.ipv4_framed_routes ?? [];
+          const ipv6 = sess.ipv6_framed_routes ?? [];
+          if (ipv4.length === 0 && ipv6.length === 0) continue;
+          entries.push({
+            imsi: doc.imsi,
+            nickname: doc.nickname,
+            apn: sess.name ?? '',
+            ipv4,
+            ipv6,
+            static: !!sess.framed_routes_static,
+          });
+        }
+      }
+    }
+    return entries;
   }
 }

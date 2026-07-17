@@ -3,10 +3,11 @@ import {
   RefreshCw, AlertTriangle, CheckCircle, XCircle,
   ChevronRight, RotateCcw, Eye, Shield, Play, Settings, BookOpen, ChevronDown,
   Filter, Plus, Trash2, ArrowDown, ArrowUp, Activity, Radio, GitBranch, Terminal,
-  Globe, Layers,
+  Globe, Layers, Wrench,
 } from 'lucide-react';
-import { frrApi, UeSubnet } from '../api/frr';
+import { frrApi, UeSubnet, DummyInterface, FRR_LOG_LEVELS, FrrLogLevel } from '../api/frr';
 import { TunInterfacePage } from './TunInterfacePage';
+import { FrrSourceBuildTab } from '../components/frr/FrrSourceBuildTab';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 
@@ -798,8 +799,314 @@ function UeSubnetPanel({ storedSubnets, hasRollback, onApplied }: {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
+// ─── Dummy Interfaces tab ─────────────────────────────────────────────────────
+
+function DummyInterfacesTab() {
+  const [interfaces, setInterfaces]     = useState<DummyInterface[]>([]);
+  const [loading,    setLoading]        = useState(true);
+  const [showModal,  setShowModal]      = useState(false);
+  const [acting,     setActing]         = useState<string | null>(null);
+  const [confirmDel, setConfirmDel]     = useState<string | null>(null);
+  const [frrDetect,  setFrrDetect]      = useState<{ active: boolean; protocol?: string } | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [r, det] = await Promise.all([
+        frrApi.listDummies(),
+        frrApi.detect().catch(() => null),
+      ]);
+      setInterfaces(r.interfaces ?? []);
+      if (det) setFrrDetect({ active: !!det.active, protocol: det.protocol });
+    } catch { toast.error('Failed to load dummy interfaces'); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleDelete = async (name: string) => {
+    setActing(name);
+    try {
+      await frrApi.deleteDummy(name);
+      toast.success(`Deleted ${name}`);
+      setConfirmDel(null);
+      await load();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? `Failed to delete ${name}`);
+    } finally { setActing(null); }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+            <Radio className="w-4 h-4 text-nms-accent" />
+            Dummy Interfaces
+          </h2>
+          <p className="text-xs text-nms-text-dim mt-0.5">
+            Create dummy (VSI) interfaces with a fixed IP for service binding. Persisted via systemd-networkd.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={load} className="nms-btn-ghost flex items-center gap-2 text-xs">
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          </button>
+          <button onClick={() => setShowModal(true)} className="nms-btn-primary flex items-center gap-2 text-xs">
+            <Plus className="w-3.5 h-3.5" /> New Dummy Interface
+          </button>
+        </div>
+      </div>
+
+      {/* Info */}
+      <div className="text-xs text-nms-text-dim bg-nms-surface-2/30 border border-nms-border rounded-lg px-3 py-2 flex items-start gap-2">
+        <Activity className="w-3.5 h-3.5 text-nms-accent shrink-0 mt-0.5" />
+        <span>
+          Dummy interfaces are virtual interfaces with no physical link.
+          They stay UP permanently and are ideal for binding service IPs (P-CSCF, S1-MME, UPF, etc.)
+          that need to be reachable via L3 routing but not tied to a physical port.
+          Each interface is persisted via <span className="font-mono">20-nms-dummy-*.netdev</span> +{' '}
+          <span className="font-mono">*.network</span> in <span className="font-mono">/etc/systemd/network/</span>.
+        </span>
+      </div>
+
+      {/* Table */}
+      <div className="nms-card p-0 overflow-hidden">
+        {loading ? (
+          <div className="p-8 text-center text-nms-text-dim flex items-center justify-center gap-2">
+            <RefreshCw className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        ) : interfaces.length === 0 ? (
+          <div className="p-10 text-center">
+            <Radio className="w-8 h-8 text-nms-text-dim/20 mx-auto mb-3" />
+            <p className="text-sm text-nms-text-dim">No dummy interfaces found on host.</p>
+            <p className="text-xs text-nms-text-dim mt-1">Click "New Dummy Interface" to create one.</p>
+          </div>
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-nms-border">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider">State</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Interface</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IP / Prefix</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Managed by</th>
+                <th className="px-4 py-3 text-right text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-nms-border/50">
+              {interfaces.map(iface => {
+                const isActing = acting === iface.name;
+                return (
+                  <tr key={iface.name} className={clsx('transition-colors', isActing ? 'opacity-60' : 'hover:bg-nms-surface-2/40')}>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5">
+                        {iface.state === 'up'
+                          ? <CheckCircle className="w-3.5 h-3.5 text-green-400" />
+                          : <XCircle className="w-3.5 h-3.5 text-red-400" />}
+                        <span className={clsx('text-xs font-medium', iface.state === 'up' ? 'text-green-400' : 'text-red-400')}>
+                          {iface.state.toUpperCase()}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 font-mono text-sm text-nms-text">{iface.name}</td>
+                    <td className="px-4 py-3 font-mono text-sm text-nms-accent">
+                      {iface.addrs.length > 0
+                        ? iface.addrs.map(a => `${a.ip}/${a.prefix}`).join(', ')
+                        : <span className="text-nms-text-dim">—</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {iface.managed
+                        ? <span className="text-xs bg-nms-accent/10 border border-nms-accent/20 text-nms-accent rounded px-2 py-0.5">NMS (persistent)</span>
+                        : <span className="text-xs bg-amber-500/10 border border-amber-500/20 text-amber-400 rounded px-2 py-0.5">External / wizard</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2">
+                        {iface.managed && (
+                          <button
+                            onClick={() => setConfirmDel(iface.name)}
+                            disabled={isActing}
+                            title="Delete interface"
+                            className="p-1.5 rounded text-nms-text-dim hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* Create modal */}
+      {showModal && <DummyCreateModal onClose={() => setShowModal(false)} onCreated={load} frrActive={frrDetect?.active ?? false} frrProtocol={frrDetect?.protocol} />}
+
+      {/* Delete confirm */}
+      {confirmDel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="nms-card w-full max-w-sm">
+            <h2 className="text-base font-bold text-nms-text mb-2">Delete {confirmDel}?</h2>
+            <p className="text-sm text-nms-text-dim mb-4">
+              This will bring the interface down, remove it from the kernel, and delete its systemd-networkd config. Any services bound to this IP will lose connectivity.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setConfirmDel(null)} className="nms-btn-ghost">Cancel</button>
+              <button
+                onClick={() => handleDelete(confirmDel)}
+                disabled={acting === confirmDel}
+                className="nms-btn-danger flex items-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                {acting === confirmDel ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DummyCreateModal({ onClose, onCreated, frrActive, frrProtocol }: {
+  onClose: () => void;
+  onCreated: () => void;
+  frrActive: boolean;
+  frrProtocol?: string;
+}) {
+  const [name,      setName]      = useState('dummy-');
+  const [ip,        setIp]        = useState('');
+  const [prefix,    setPrefix]    = useState('32');
+  const [advertise, setAdvertise] = useState(frrActive);
+  const [saving,    setSaving]    = useState(false);
+
+  const handleSave = async () => {
+    const p = parseInt(prefix);
+    if (!name.match(/^[a-zA-Z][a-zA-Z0-9_-]{0,14}$/)) {
+      toast.error('Invalid name — must start with a letter, max 15 chars, letters/digits/hyphen/underscore');
+      return;
+    }
+    if (!ip.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+      toast.error('Enter a valid IPv4 address');
+      return;
+    }
+    if (isNaN(p) || p < 1 || p > 32) {
+      toast.error('Prefix must be 1–32');
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await frrApi.createDummy({ name, ip, prefix: p, advertise: frrActive && advertise });
+      if (result.addedToFrr) {
+        toast.success(`Created ${name} (${ip}/${p}) and added to FRR ${frrProtocol?.toUpperCase() ?? ''} advertisement`);
+      } else {
+        toast.success(`Created ${name} (${ip}/${p})`);
+      }
+      onCreated();
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="nms-card w-full max-w-md">
+        <h2 className="text-base font-bold font-display text-nms-text mb-4 flex items-center gap-2">
+          <Radio className="w-4 h-4 text-nms-accent" /> New Dummy Interface
+        </h2>
+        <div className="space-y-4">
+          <div>
+            <label className="nms-label">Interface Name</label>
+            <input
+              className="nms-input font-mono"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="dummy-pcscf"
+              autoFocus
+            />
+            <p className="text-xs text-nms-text-dim mt-1">
+              Starts with a letter, max 15 chars. Convention: <span className="font-mono">dummy-&lt;service&gt;</span>, e.g. <span className="font-mono">dummy-pcscf</span>, <span className="font-mono">dummy-s1mme</span>
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="nms-label">IP Address</label>
+              <input
+                className="nms-input font-mono"
+                value={ip}
+                onChange={e => setIp(e.target.value)}
+                placeholder="10.0.1.178"
+              />
+            </div>
+            <div className="w-28">
+              <label className="nms-label">Prefix</label>
+              <input
+                className="nms-input font-mono"
+                type="number"
+                min={1}
+                max={32}
+                value={prefix}
+                onChange={e => setPrefix(e.target.value)}
+                placeholder="32"
+              />
+            </div>
+          </div>
+
+          {/* FRR advertisement option */}
+          <div className={clsx(
+            'border rounded-lg px-3 py-3',
+            frrActive
+              ? 'border-nms-accent/20 bg-nms-accent/5'
+              : 'border-nms-border bg-nms-bg opacity-60',
+          )}>
+            <label className={clsx('flex items-start gap-3 cursor-pointer', !frrActive && 'cursor-not-allowed')}>
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-nms-accent"
+                checked={frrActive && advertise}
+                disabled={!frrActive}
+                onChange={e => setAdvertise(e.target.checked)}
+              />
+              <div>
+                <span className="text-sm font-medium text-nms-text">
+                  Advertise via FRR{frrActive && frrProtocol ? ` (${frrProtocol.toUpperCase()})` : ''}
+                </span>
+                <p className="text-xs text-nms-text-dim mt-0.5">
+                  {frrActive
+                    ? `Adds ${ip || 'this IP'}/32 as a network statement in frr.conf and reloads FRR so it is immediately advertised to your upstream router.`
+                    : 'FRR is not active. Complete the L3 routing wizard first to enable advertisement.'}
+                </p>
+              </div>
+            </label>
+          </div>
+
+          <div className="text-xs text-nms-text-dim bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
+            Creates <span className="font-mono text-nms-text">{name || 'dummy-name'}</span> with IP{' '}
+            <span className="font-mono text-nms-accent">{ip || '0.0.0.0'}/{prefix}</span> immediately on the host,
+            and writes <span className="font-mono text-nms-text">20-nms-dummy-{name || '…'}.netdev</span> +{' '}
+            <span className="font-mono text-nms-text">.network</span> for persistence across reboots.
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 mt-5">
+          <button onClick={onClose} className="nms-btn-ghost" disabled={saving}>Cancel</button>
+          <button onClick={handleSave} className="nms-btn-primary flex items-center gap-2" disabled={saving}>
+            <Plus className="w-4 h-4" />
+            {saving ? 'Creating…' : 'Create Interface'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function FRRPage() {
-  const [pageTab, setPageTab] = useState<'routing' | 'tun'>('routing');
+  const [pageTab, setPageTab] = useState<'routing' | 'tun' | 'dummy' | 'build'>('routing');
   const [detection, setDetection]   = useState<any>(null);
   const [migState,  setMigState]    = useState<any>(null);
   const [interfaces, setInterfaces] = useState<IfaceInfo[]>([]);
@@ -815,6 +1122,7 @@ export function FRRPage() {
   const [showPreview, setShowPreview]     = useState(false);
   const [reconfigMode, setReconfigMode]   = useState(false);
   const [neighborTimer, setNeighborTimer] = useState<ReturnType<typeof setInterval> | null>(null);
+  const [settingLogLevel, setSettingLogLevel] = useState(false);
   const [routeFilters, setRouteFiltersState] = useState<RouteFilter[]>([]);
   const [storedUeSubnets, setStoredUeSubnets] = useState<UeSubnet[]>([]);
   const [hasUeRollback, setHasUeRollback]     = useState(false);
@@ -929,6 +1237,23 @@ export function FRRPage() {
 
   const rewind = async (phase: Phase) => { await frrApi.rewind(phase); await load(true); };
 
+  const handleLogLevelChange = async (level: FrrLogLevel) => {
+    setSettingLogLevel(true);
+    try {
+      const result = await frrApi.setLogLevel(level);
+      if (result.success) {
+        toast.success(`FRR log level set to "${level}"`);
+        await load(true);
+      } else {
+        toast.error(result.error || 'Failed to set FRR log level');
+      }
+    } catch (err: any) {
+      toast.error(`Failed to set FRR log level: ${err.message}`);
+    } finally {
+      setSettingLogLevel(false);
+    }
+  };
+
   const currentPhase: Phase = migState?.phase ?? 'INIT';
   const phaseIdx            = PHASE_ORDER.indexOf(currentPhase);
   const isComplete          = currentPhase === 'CUTOVER_COMPLETE' || currentPhase === 'LEGACY_INTERFACES_REMOVED';
@@ -957,7 +1282,21 @@ export function FRRPage() {
           <p className="text-sm text-nms-text-dim mt-1">FRR routing migration and TUN interface management</p>
         </div>
         {pageTab === 'routing' && (
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center">
+            <label className="flex items-center gap-2 text-sm text-nms-text-dim">
+              <Terminal className="w-4 h-4" />
+              Log Level
+              <select
+                value={migState?.logLevel ?? 'informational'}
+                disabled={settingLogLevel}
+                onChange={e => handleLogLevelChange(e.target.value as FrrLogLevel)}
+                className="nms-input py-1 text-sm"
+              >
+                {FRR_LOG_LEVELS.map(level => (
+                  <option key={level} value={level}>{level}</option>
+                ))}
+              </select>
+            </label>
             <button onClick={() => load()} disabled={acting} className="nms-btn-ghost flex items-center gap-2 text-sm">
               <RefreshCw className={clsx('w-4 h-4', acting && 'animate-spin')} /> Refresh
             </button>
@@ -983,11 +1322,32 @@ export function FRRPage() {
         )}
       </div>
 
+      {/* apt-installed FRR migration prompt — shown regardless of sub-tab so existing
+          deployments (from before the source-build migration) always see it */}
+      {detection?.viaApt === true && pageTab !== 'build' && (
+        <div className="nms-card border-amber-500/40 bg-amber-500/5 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-300">FRR is running the distro apt package — known crash bugs</p>
+            <p className="text-xs text-nms-text-dim mt-0.5">
+              This host's FRR was installed via apt (8.4.4), which has known eigrpd crash bugs
+              (assertion failures causing intermittent route flaps). We recommend migrating to
+              a from-source build to fix this.
+            </p>
+          </div>
+          <button onClick={() => setPageTab('build')} className="nms-btn-primary text-sm shrink-0 flex items-center gap-2">
+            <Wrench className="w-4 h-4" /> Migrate to source build
+          </button>
+        </div>
+      )}
+
       {/* Page tabs */}
       <div className="flex border-b border-nms-border">
         {([
-          { id: 'routing', label: 'L3 Routing',     Icon: GitBranch },
-          { id: 'tun',     label: 'TUN Interfaces', Icon: Layers    },
+          { id: 'routing', label: 'L3 Routing',        Icon: GitBranch },
+          { id: 'tun',     label: 'TUN Interfaces',    Icon: Layers    },
+          { id: 'dummy',   label: 'Dummy Interfaces',  Icon: Radio     },
+          { id: 'build',   label: 'Reinstall (Source)', Icon: Wrench   },
         ] as const).map(({ id, label, Icon }) => (
           <button key={id} onClick={() => setPageTab(id)}
             className={clsx('flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
@@ -1000,7 +1360,9 @@ export function FRRPage() {
         ))}
       </div>
 
-      {pageTab === 'tun' && <TunInterfacePage />}
+      {pageTab === 'tun'   && <TunInterfacePage />}
+      {pageTab === 'dummy' && <DummyInterfacesTab />}
+      {pageTab === 'build' && <FrrSourceBuildTab />}
 
       {pageTab === 'routing' && (loading ? (
         <div className="flex items-center justify-center h-64 text-nms-text-dim">

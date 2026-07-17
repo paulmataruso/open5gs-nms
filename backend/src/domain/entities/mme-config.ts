@@ -61,7 +61,11 @@ export interface MmeConfig {
     client?: Array<{
       address: string | string[];
       local_address?: string | string[];
-      map?: {
+      // Open5GS expresses one TAI→LAI mapping per PLMN as repeated `map:`
+      // sibling keys on disk (non-standard YAML) — the repository round-trips
+      // that into this `maps` array (see yaml-config-repository.ts's
+      // convertRepeatedMapKeysToArray/convertMapsArrayToRepeatedMapKeys).
+      maps?: Array<{
         tai: {
           plmn_id: { mcc: string; mnc: string };
           tac: number;
@@ -70,7 +74,7 @@ export interface MmeConfig {
           plmn_id: { mcc: string; mnc: string };
           lac: number;
         };
-      };
+      }>;
     }>;
   };
   time?: {

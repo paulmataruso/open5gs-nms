@@ -19,6 +19,10 @@ export interface SmfInfoEntry {
   dnn: string[];
 }
 
+export interface SmfCtfConfig {
+  enabled: 'auto' | 'yes' | 'no';
+}
+
 export interface SmfConfig extends BaseNfConfig {
   sbi: SbiConfig;
   pfcp: PfcpConfig;
@@ -30,6 +34,7 @@ export interface SmfConfig extends BaseNfConfig {
   dns?: string[];
   mtu?: number;
   freeDiameter?: string;
+  ctf?: SmfCtfConfig;
   info?: SmfInfoEntry[];
   nrf?: {
     sbi: {

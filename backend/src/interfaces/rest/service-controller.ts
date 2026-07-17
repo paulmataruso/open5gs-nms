@@ -27,10 +27,11 @@ export function createServiceRouter(
     const name = req.params.name as ServiceName;
     const validServices: ServiceName[] = [
       'mongodb',
-      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 
-      'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
+      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
+      'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
+      'osmo-stp', 'osmo-hlr', 'osmo-msc',
     ];
-    
+
     if (!validServices.includes(name)) {
       logger.warn({ name, validServices }, 'Invalid service name requested');
       res.status(400).json({ success: false, error: `Invalid service: ${name}` });
@@ -76,8 +77,9 @@ export function createServiceRouter(
     const action = req.params.action as 'start' | 'stop' | 'restart' | 'enable' | 'disable';
     const validServices: ServiceName[] = [
       'mongodb',
-      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 
-      'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
+      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
+      'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
+      'osmo-stp', 'osmo-hlr', 'osmo-msc',
     ];
     const validActions = ['start', 'stop', 'restart', 'enable', 'disable'];
 

@@ -26,7 +26,7 @@ export function createFemtoRouter(logger: pino.Logger): Router {
 
     try {
       const result = await execFileAsync(
-        'python3', ['-u', FEMTO_SCRIPT, '--derive-credentials', mac],
+        'python3', ['-u', FEMTO_SCRIPT, '--ip', '0.0.0.0', '--derive-credentials', mac],
         { env: { ...process.env, PYTHONUNBUFFERED: '1' }, timeout: 5000 },
       );
       const creds = JSON.parse(result.stdout.trim());

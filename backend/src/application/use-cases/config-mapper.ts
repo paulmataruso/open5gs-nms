@@ -28,6 +28,7 @@ export class ConfigMapper {
       pcf: (configs.pcf as any)?.rawYaml || {},
       nssf: (configs.nssf as any)?.rawYaml || {},
       bsf: (configs.bsf as any)?.rawYaml || {},
+      sepp1: (configs.sepp1 as any)?.rawYaml || {},
       mme: (configs.mme as any)?.rawYaml || {},
       hss: (configs.hss as any)?.rawYaml || {},
       pcrf: (configs.pcrf as any)?.rawYaml || {},

@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Plus, Server, AlertTriangle, Info, Download, Copy, Check, Radio } from 'lucide-react';
+import { Plus, Server, AlertTriangle, Info, Download, Copy, Check, Radio, ChevronDown } from 'lucide-react';
+import toast from 'react-hot-toast';
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, FunctionInfoBox } from './SharedComponents';
+import { useCopyToClipboard } from '../../../hooks/useCopyToClipboard';
 
 interface Props {
   configs: AllConfigs;
@@ -93,6 +95,9 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
   const [copied,   setCopied]   = useState(false);
   const [applying, setApplying] = useState(false);
   const [applied,  setApplied]  = useState(false);
+  const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [installStepsOpen, setInstallStepsOpen] = useState(false);
+  const copyToClipboard = useCopyToClipboard();
 
   // Pre-populate form when navigated here from SgwcEditor
   useEffect(() => {
@@ -115,11 +120,10 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
 
   const generatedYaml = generateRemoteSgwuYaml(remoteForm, sgwcDisplayAddress);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(generatedYaml).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(generatedYaml);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else toast.error('Copy failed — please copy manually');
   };
 
   const handleDownload = () => {
@@ -205,6 +209,11 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
 
   return (
     <div className="space-y-8">
+      <FunctionInfoBox
+        title="Serving Gateway — User Plane (SGW-U)"
+        generation="4G"
+        description="The SGW-U is the data-plane component of the Serving Gateway. It forwards user traffic between the eNodeB (via S1-U GTP-U tunnels) and the PGW-U/UPF (via S5/S8-U). The SGW-U has no signalling logic of its own — it is entirely programmed by the SGW-C via the PFCP (Sxa) interface, which installs per-session packet forwarding rules."
+      />
 
       {/* ── Section 1: Local SGW-U ── */}
       <div>
@@ -332,12 +341,16 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
       </div>
 
       {/* ── Section 2: Remote SGW-U YAML Generator ── */}
-      <div id="remote-sgwu-generator">
-        <div className="flex items-center gap-3 mb-4">
+      <div id="remote-sgwu-generator" className="nms-card">
+        <button
+          type="button"
+          onClick={() => setGeneratorOpen(o => !o)}
+          className={`w-full flex items-center gap-3 text-left ${generatorOpen ? 'mb-4' : ''}`}
+        >
           <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400">
             <Radio className="w-4 h-4" />
           </div>
-          <div>
+          <div className="flex-1">
             <h3 className="text-base font-semibold font-display text-nms-text">
               Remote SGW-U Config Generator
             </h3>
@@ -347,7 +360,10 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               The remote SGW-U only needs <span className="font-mono">open5gs-sgwu</span> installed.
             </p>
           </div>
-        </div>
+          <ChevronDown className={`w-4 h-4 text-nms-text-dim transition-transform shrink-0 ${generatorOpen ? 'rotate-180' : ''}`} />
+        </button>
+
+        {generatorOpen && <>
 
         {/* How it works explainer */}
         <div className="nms-card bg-purple-500/5 border-purple-500/20 mb-4">
@@ -371,7 +387,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
           </div>
         </div>
 
-        <div className="nms-card space-y-6">
+        <div className="space-y-6">
           {/* Site identity */}
           <div>
             <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Site Identity</h4>
@@ -533,37 +549,49 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
                 </span>
               </div>
 
-              <div className="px-3 py-2 bg-nms-surface-2/50 rounded border border-nms-border text-xs text-nms-text-dim space-y-2">
-                <p className="font-semibold text-nms-text">Deployment steps on the remote host:</p>
+              <div className="bg-nms-surface-2/50 rounded border border-nms-border text-xs text-nms-text-dim">
+                <button
+                  type="button"
+                  onClick={() => setInstallStepsOpen(o => !o)}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-left"
+                >
+                  <p className="font-semibold text-nms-text">Deployment steps on the remote host</p>
+                  <ChevronDown className={`w-4 h-4 text-nms-text-dim transition-transform shrink-0 ${installStepsOpen ? 'rotate-180' : ''}`} />
+                </button>
 
-                <p className="font-semibold text-nms-text-dim">1. Install Open5GS SGW-U</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`apt install open5gs-sgwu
+                {installStepsOpen && (
+                  <div className="px-3 pb-3 space-y-2">
+                    <p className="font-semibold text-nms-text-dim">1. Install Open5GS SGW-U</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`apt install open5gs-sgwu
 cp sgwu-${remoteForm.label || 'remote'}.yaml /etc/open5gs/sgwu.yaml`}</pre>
 
-                <p className="font-semibold text-nms-text-dim">2. Enable IP forwarding</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo sysctl -w net.ipv4.ip_forward=1
+                    <p className="font-semibold text-nms-text-dim">2. Enable IP forwarding</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf`}</pre>
 
-                <p className="font-semibold text-nms-text-dim">3. Ensure firewall allows PFCP and GTP-U</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ufw allow 8805/udp   # PFCP
+                    <p className="font-semibold text-nms-text-dim">3. Ensure firewall allows PFCP and GTP-U</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ufw allow 8805/udp   # PFCP
 sudo ufw allow 2152/udp   # GTP-U`}</pre>
 
-                <p className="font-semibold text-nms-text-dim">4. Start the SGW-U service</p>
-                <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo systemctl enable --now open5gs-sgwud
+                    <p className="font-semibold text-nms-text-dim">4. Start the SGW-U service</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo systemctl enable --now open5gs-sgwud
 sudo systemctl status open5gs-sgwud`}</pre>
 
-                <div className="px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded text-xs text-blue-300 space-y-1">
-                  <p className="font-semibold">Important: internet breakout is handled by the UPF, not SGW-U</p>
-                  <p>The SGW-U only terminates the S1-U GTP tunnel from the eNodeB and forwards packets to the central PGW/UPF. For local internet breakout at the edge site you also need to deploy a remote UPF on this host — use the UPF Config page to generate the upf.yaml and add it to the SMF.</p>
-                </div>
+                    <div className="px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded text-xs text-blue-300 space-y-1">
+                      <p className="font-semibold">Important: internet breakout is handled by the UPF, not SGW-U</p>
+                      <p>The SGW-U only terminates the S1-U GTP tunnel from the eNodeB and forwards packets to the central PGW/UPF. For local internet breakout at the edge site you also need to deploy a remote UPF on this host — use the UPF Config page to generate the upf.yaml and add it to the SMF.</p>
+                    </div>
 
-                <p className="font-semibold text-nms-text pt-1">
-                  Central SGW-C is auto-configured when you click "Add to SGW-C &amp; Apply" above.
-                </p>
+                    <p className="font-semibold text-nms-text pt-1">
+                      Central SGW-C is auto-configured when you click "Add to SGW-C &amp; Apply" above.
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </div>
         </div>
+        </>}
       </div>
 
     </div>

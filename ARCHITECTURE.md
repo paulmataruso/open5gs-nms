@@ -152,7 +152,7 @@ The backend follows **Clean Architecture** principles with four distinct layers:
 ```
 backend/src/
 ├── domain/              # Pure business logic (no external deps)
-│   ├── entities/        # 16 NF config types, Subscriber, ServiceStatus
+│   ├── entities/        # 17 NF config types, Subscriber, ServiceStatus
 │   ├── interfaces/      # Abstract contracts (repositories, executors)
 │   ├── services/        # Domain services (validation, topology)
 │   └── value-objects/   # Immutable value types
@@ -292,7 +292,7 @@ frontend/src/
 │   │       ├── NrfEditor.tsx
 │   │       ├── AmfEditor.tsx
 │   │       ├── SmfEditor.tsx
-│   │       └── ... (16 total)
+│   │       └── ... (17 total, incl. SeppEditor.tsx)
 │   │
 │   ├── subscribers/     # Subscriber management
 │   │   └── SubscriberPage.tsx      # CRUD UI + SIM Generator
@@ -382,20 +382,39 @@ function ConfigPage() {
 
 ### Routing Structure
 
+The frontend does **not** use `react-router` — `App.tsx` holds a single `activeTab` state
+(`useState('dashboard')`) and a `switch (activeTab)` renders the matching page component.
+`Layout.tsx`'s `NAV_ITEMS` array drives the sidebar and passes the selected id back up via
+`onTabChange`. Optional modules (`sms`/`ims`/`vowifi`/`validation`) are conditionally
+included in `NAV_ITEMS` based on the `FEATURES` build-time flags (`.env`
+`ENABLE_*_MODULE`), so a disabled module's tab never renders and its `case` is unreachable.
+
 ```typescript
-// App.tsx routes
-<Routes>
-  <Route path="/" element={<DashboardPage />} />
-  <Route path="/topology" element={<TopologyPage />} />
-  <Route path="/services" element={<ServicesPage />} />
-  <Route path="/config" element={<ConfigPage />} />
-  <Route path="/subscribers" element={<SubscriberPage />} />
-  <Route path="/suci" element={<SuciManagementPage />} />
-  <Route path="/auto-config" element={<AutoConfigPage />} />
-  <Route path="/backup" element={<BackupPage />} />
-  <Route path="/logs" element={<LogsPage />} />
-  <Route path="/audit" element={<AuditPage />} />
-</Routes>
+// App.tsx (simplified)
+const [activeTab, setActiveTab] = useState('dashboard');
+
+switch (activeTab) {
+  case 'dashboard':    return <DashboardPage />;
+  case 'topology':     return <TopologyPage />;
+  case 'ran':          return <RANPage />;
+  case 'services':     return <ServicesPage />;
+  case 'config':       return <ConfigPage />;       // includes the SEPP tab (17th NF)
+  case 'subscribers':  return <SubscriberPage />;
+  case 'backup':       return <BackupPage />;
+  case 'logs':         return <LogsPage />;
+  case 'auto-config':  return <AutoConfigPage />;
+  case 'suci':         return <SuciManagementPage />;
+  case 'metrics':      return <MetricsPage />;
+  case 'sas':          return <SASPage />;
+  case 'time-server':  return <TimeServerPage />;
+  case 'frr':          return <FRRPage />;
+  case 'bind':         return <BindPage />;          // includes the DNS/FQDN migration wizard
+  case 'sms':          return <SMSPage />;            // optional module
+  case 'ims':          return <IMSPage />;            // optional module
+  case 'vowifi':       return <VoWiFiPage />;         // optional module
+  case 'validation':   return <ValidationPage />;     // optional module
+  case 'users':        return <UserManagementPage />;
+}
 ```
 
 ---
@@ -443,7 +462,7 @@ Frontend: Show toast notification
 Backend: ServiceMonitorUseCase starts polling (5s interval)
      │
      ▼
-Poll systemd status for all 16 services
+Poll systemd status for all 17 services
      │
      ▼
 Broadcast via WebSocket: { type: 'service_status_update', payload: {...} }
@@ -762,7 +781,7 @@ See **[docs/deployment.md](docs/deployment.md)** for:
 │  │  Host Services                                       │ │
 │  │  - MongoDB (127.0.0.1:27017)                        │ │
 │  │  - systemd (via D-Bus)                              │ │
-│  │  - Open5GS services (16 NFs)                        │ │
+│  │  - Open5GS services (17 NFs incl. SEPP)             │ │
 │  └──────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```

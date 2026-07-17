@@ -7,7 +7,7 @@ import pino from 'pino';
 // CSV column order
 const CSV_HEADERS = [
   'imsi', 'nickname', 'iccid', 'msisdn', 'ki', 'opc', 'amf',
-  'sst', 'sd', 'apn', 'type', 'ue_ipv4', 'ue_ipv6',
+  'sst', 'sd', 'apn', 'type', 'ue_ipv4', 'ue_ipv6', 'framed_routes',
 ];
 
 function subscriberToRow(sub: any): string {
@@ -27,6 +27,7 @@ function subscriberToRow(sub: any): string {
     session.type ?? '1',
     session.ue?.ipv4 ?? '',
     session.ue?.ipv6 ?? '',
+    (session.ipv4_framed_routes ?? []).join('|'),
   ];
   return vals.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
 }
@@ -65,6 +66,7 @@ function rowToSubscriber(headers: string[], values: string[]): any {
           ...(row.ue_ipv6 ? { ipv6: row.ue_ipv6 } : {}),
         } : undefined,
         qos: { index: 9, arp: { priority_level: 8, pre_emption_capability: 1, pre_emption_vulnerability: 1 } },
+        ...(row.framed_routes ? { ipv4_framed_routes: row.framed_routes.split('|').filter(Boolean) } : {}),
       }],
     }],
   };
@@ -180,6 +182,17 @@ export function createSubscriberRouter(
     }
   });
 
+  // Framed Routes registry (MUST be before /:imsi route)
+  router.get('/framed-routes', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const routes = await subscriberUC.getFramedRoutes();
+      res.json(routes);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      res.status(400).json({ error: msg });
+    }
+  });
+
   router.get('/:imsi', async (req: Request, res: Response) => {
     try {
       const subscriber = await subscriberUC.getByImsi(req.params.imsi);
@@ -193,8 +206,8 @@ export function createSubscriberRouter(
 
   router.post('/', requireAdmin, async (req: Request, res: Response) => {
     try {
-      await subscriberUC.create(req.body);
-      res.status(201).json({ message: 'Created' });
+      const { warnings } = await subscriberUC.create(req.body);
+      res.status(201).json({ message: 'Created', warnings });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';
       res.status(400).json({ error: msg });
@@ -203,8 +216,8 @@ export function createSubscriberRouter(
 
   router.put('/:imsi', requireAdmin, async (req: Request, res: Response) => {
     try {
-      await subscriberUC.update(req.params.imsi, req.body);
-      res.json({ message: 'Updated' });
+      const { warnings } = await subscriberUC.update(req.params.imsi, req.body);
+      res.json({ message: 'Updated', warnings });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed';
       res.status(400).json({ error: msg });
@@ -221,14 +234,48 @@ export function createSubscriberRouter(
     }
   });
 
+  router.post('/bulk-add-apn', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { sessions, overwrite = false, sst = 1, sd } = req.body as { sessions: any[]; overwrite?: boolean; sst?: number; sd?: string };
+    if (!sessions?.length) return res.status(400).json({ error: 'sessions array is required' });
+    try {
+      const result = await subscriberUC.bulkAddApn(sessions, !!overwrite, Number(sst), sd, user);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Bulk APN add failed';
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  router.post('/auto-assign-msisdn', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { startingNumber, overwrite = false } = req.body as { startingNumber: string; overwrite?: boolean };
+    if (!startingNumber) return res.status(400).json({ error: 'startingNumber is required' });
+    try {
+      const result = await subscriberUC.autoAssignMsisdn(startingNumber, overwrite, user);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to auto-assign MSISDNs';
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  router.get('/auto-assign-ips/pool', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const info = await autoAssignIPsUC.getPoolInfo();
+      res.json({ success: true, data: info });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to load pool info';
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
   router.post('/auto-assign-ips', requireAdmin, async (req: Request, res: Response) => {
     try {
       logger.info('Auto-assigning IPs to all subscribers');
-      const result = await autoAssignIPsUC.execute();
-      res.json({
-        success: true,
-        data: result,
-      });
+      const { startIp, endIp, overwrite, imsStartIp, imsEndIp, imsOverwrite } = req.body ?? {};
+      const result = await autoAssignIPsUC.execute({ startIp, endIp, overwrite: !!overwrite, imsStartIp, imsEndIp, imsOverwrite: !!imsOverwrite });
+      res.json({ success: true, data: result });
     } catch (err) {
       logger.error({ err }, 'Failed to auto-assign IPs');
       const msg = err instanceof Error ? err.message : 'Failed to auto-assign IPs';

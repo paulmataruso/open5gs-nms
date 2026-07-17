@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -27,6 +27,11 @@ export function PcrfEditor({ configs, onChange }: Props): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Policy and Charging Rules Function (PCRF)"
+        generation="4G"
+        description="The PCRF is the policy engine of the 4G core. It dynamically determines which QoS rules and charging policies apply to each PDN session, communicating with the PGW/SMF via the Gx Diameter interface. The PCRF sets QCI bearer classes, bandwidth limits, and charging triggers per subscriber and per service data flow."
+      />
       {fullYaml.db_uri !== undefined && (
         <div>
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Database</h3>

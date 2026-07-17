@@ -15,6 +15,48 @@ function formatBytes(bytes: number | null): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
+type SasBand = {
+  bandLow: number; bandHigh: number; label: string;
+  slots: Array<{ low: number; high: number; cbsdId?: string; serial?: string; state?: string }>;
+};
+
+// Compact single-band frequency bar for the dashboard's split SAS Grants card —
+// same underlying slot data as the full SpectrumChart on the SAS page, but
+// stripped to just color blocks + a hover tooltip (no legend/table — no room for it here).
+function MiniSpectrumBar({ band }: { band: SasBand }): JSX.Element {
+  const bandWidth = band.bandHigh - band.bandLow;
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium text-nms-text-dim">{band.label}</span>
+        <span className="text-xs font-mono text-nms-text-dim/50">{(band.bandLow / 1e6).toFixed(0)}–{(band.bandHigh / 1e6).toFixed(0)} MHz</span>
+      </div>
+      <div className="relative h-3 rounded-sm overflow-hidden bg-nms-surface-2 border border-nms-border">
+        {band.slots.map((s, i) => {
+          const leftPct = ((s.low - band.bandLow) / bandWidth) * 100;
+          const widthPct = ((s.high - s.low) / bandWidth) * 100;
+          if (!s.cbsdId) {
+            return (
+              <div key={i} className="absolute inset-y-0 opacity-20"
+                style={{
+                  left: `${leftPct}%`, width: `${widthPct}%`,
+                  backgroundImage: 'repeating-linear-gradient(-45deg, #6b7280 0, #6b7280 1px, transparent 0, transparent 50%)',
+                  backgroundSize: '4px 4px',
+                }} />
+            );
+          }
+          const color = s.state === 'AUTHORIZED' ? '#4ade80' : '#38bdf8';
+          return (
+            <div key={i} className="absolute inset-y-0"
+              style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color }}
+              title={`${s.serial ?? s.cbsdId}\n${(s.low / 1e6).toFixed(1)}–${(s.high / 1e6).toFixed(1)} MHz\n${s.state}`} />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function StatCard({
   icon: Icon,
   label,
@@ -76,6 +118,7 @@ export function DashboardPage(): JSX.Element {
   const [chronyStatus, setChronyStatus] = useState<{ installed: boolean; active: boolean; refSource?: string; sysTimeOffset?: string } | null>(null);
   const [sasStats, setSasStats] = useState<{ activeGrants: number; authorizedGrants: number; registeredCbsds: number } | null>(null);
   const [sasRfStatus, setSasRfStatus] = useState<{ rfOn: number; rfOff: number; unknown: number } | null>(null);
+  const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
   const [activeUes, setActiveUes] = useState<number | null>(null);
 
   useEffect(() => {
@@ -98,6 +141,10 @@ export function DashboardPage(): JSX.Element {
       .catch(() => setChronyStatus({ installed: false, active: false }));
     // SAS stats
     sasApi.getStats().then(s => setSasStats(s)).catch(() => {});
+    sasApi.getSlots().then(s => {
+      const bands = s.bands ?? (s.slots?.length ? [{ bandLow: s.bandLow, bandHigh: s.bandHigh, label: 'Band', slots: s.slots }] : []);
+      setSasBands(bands);
+    }).catch(() => {});
     sasApi.getRfStatus().then(rf => {
       const vals = rf.map((r: any) => r.rfOn);
       setSasRfStatus({
@@ -106,9 +153,11 @@ export function DashboardPage(): JSX.Element {
         unknown: vals.filter((v: any) => v === null).length,
       });
     }).catch(() => {});
-    // Active UEs
+    // Active UEs — InterfaceStatus has no top-level count field, it returns
+    // activeUEs4G/activeUEs5G arrays (see get-interface-status.ts); sum their lengths.
     interfaceApi.getStatus().then((s: any) => {
-      setActiveUes(s?.activeSessions ?? s?.ueCount ?? null);
+      const count = (s?.activeUEs4G?.length ?? 0) + (s?.activeUEs5G?.length ?? 0);
+      setActiveUes(count);
     }).catch(() => {});
   }, [fetchStatuses, fetchSubscribers]);
 
@@ -199,9 +248,9 @@ export function DashboardPage(): JSX.Element {
           subValue={health?.status === 'ok' ? 'Backend healthy' : 'Checking...'}
           color="nms-accent"
         />
-        {/* SAS Grants card */}
-        <div className="nms-card animate-fade-in">
-          <div className="flex items-start justify-between">
+        {/* SAS Grants card — split: stats on top, mini spectrum map on bottom */}
+        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+          <div className="flex items-start justify-between p-4">
             <div>
               <p className="text-xs text-nms-text-dim uppercase tracking-wider">SAS Grants</p>
               <p className="text-2xl font-semibold font-display mt-1">{sasStats?.activeGrants ?? '—'}</p>
@@ -215,6 +264,15 @@ export function DashboardPage(): JSX.Element {
             <div className="p-2.5 rounded-lg bg-purple-500/10">
               <Shield className="w-5 h-5 text-purple-400" />
             </div>
+          </div>
+          <div className="p-4">
+            {sasBands && sasBands.length > 0 ? (
+              <div className="space-y-2">
+                {sasBands.map((band, i) => <MiniSpectrumBar key={i} band={band} />)}
+              </div>
+            ) : (
+              <p className="text-xs text-nms-text-dim">No spectrum data</p>
+            )}
           </div>
         </div>
 
@@ -240,16 +298,26 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Active UEs card */}
-        <div className="nms-card animate-fade-in">
-          <div className="flex items-start justify-between">
+        {/* Active / Total UEs card — split top/bottom: currently-active vs. all known subscribers */}
+        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+          <div className="flex items-start justify-between p-4">
             <div>
               <p className="text-xs text-nms-text-dim uppercase tracking-wider">Active UEs</p>
               <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}</p>
-              <p className="text-xs text-nms-text-dim mt-1">Connected devices</p>
+              <p className="text-xs text-nms-text-dim mt-1">Currently connected</p>
             </div>
             <div className="p-2.5 rounded-lg bg-nms-accent/10">
               <Users className="w-5 h-5 text-nms-accent" />
+            </div>
+          </div>
+          <div className="flex items-start justify-between p-4">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">Total UEs</p>
+              <p className="text-2xl font-semibold font-display mt-1">{subscriberTotal ?? '—'}</p>
+              <p className="text-xs text-nms-text-dim mt-1">All subscribers, incl. idle</p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-nms-text-dim/10">
+              <Users className="w-5 h-5 text-nms-text-dim" />
             </div>
           </div>
         </div>

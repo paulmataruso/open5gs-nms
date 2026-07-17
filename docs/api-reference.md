@@ -24,6 +24,7 @@ Base URL (direct backend): `http://YOUR_SERVER:3001/api`
 11. [Audit Log](#audit-log)
 12. [Docker](#docker)
 13. [WebSocket](#websocket)
+14. [Additional Feature Modules](#additional-feature-modules)
 
 ---
 
@@ -212,13 +213,13 @@ Delete a user. Cannot delete yourself or the last remaining user.
 
 Valid service names for all config endpoints:
 
-`nrf` `scp` `amf` `smf` `upf` `ausf` `udm` `udr` `pcf` `nssf` `bsf` `mme` `hss` `pcrf` `sgwc` `sgwu`
+`nrf` `scp` `amf` `smf` `upf` `ausf` `udm` `udr` `pcf` `nssf` `bsf` `sepp1` `mme` `hss` `pcrf` `sgwc` `sgwu`
 
 ---
 
 ### `GET /api/config`
 
-Load all 16 NF configurations at once.
+Load all 17 NF configurations at once.
 
 **Response `200`**
 ```json
@@ -239,7 +240,7 @@ Load all 16 NF configurations at once.
 
 Load a single NF configuration.
 
-**URL params:** `service` — one of the 16 valid service names
+**URL params:** `service` — one of the 17 valid service names
 
 **Response `200`**
 ```json
@@ -307,7 +308,7 @@ Apply configuration changes to all NF YAML files. Automatically backs up current
 
 ### `GET /api/config/topology/graph`
 
-Returns node data for all 16 NFs including their addresses, ports, and current active status. Used by the topology page.
+Returns node data for all 17 NFs including their addresses, ports, and current active status. Used by the topology page.
 
 **Response `200`**
 ```json
@@ -354,7 +355,7 @@ Sync a Slice Differentiator (SD) value across SMF config and all matching subscr
 
 ## Services
 
-Valid service names: `nrf` `scp` `amf` `smf` `upf` `ausf` `udm` `udr` `pcf` `nssf` `bsf` `mme` `hss` `pcrf` `sgwc` `sgwu`
+Valid service names: `nrf` `scp` `amf` `smf` `upf` `ausf` `udm` `udr` `pcf` `nssf` `bsf` `sepp1` `mme` `hss` `pcrf` `sgwc` `sgwu`
 
 Valid actions for single service: `start` `stop` `restart` `enable` `disable`
 
@@ -364,7 +365,7 @@ Valid actions for bulk: `start` `stop` `restart`
 
 ### `GET /api/services`
 
-Get status of all 16 Open5GS services.
+Get status of all 17 Open5GS services.
 
 **Response `200`**
 ```json
@@ -424,7 +425,7 @@ Execute an action on a single service.
 
 ### `POST /api/services/all/:action`
 
-Execute an action across all 16 services at once.
+Execute an action across all 17 services at once.
 
 **URL params:** `action` — one of `start` `stop` `restart`
 
@@ -586,6 +587,21 @@ Auto-assign sequential static IPv4 addresses from the session pool to all subscr
 
 ---
 
+### `GET /api/subscribers/framed-routes`
+
+Registry of every configured Framed Routing subnet (TS 23.501 §5.6.14 — IP subnets routed behind a UE) across all subscribers, with whether a static host route has been applied for each.
+
+**Response `200`**
+```json
+[
+  { "imsi": "999700000053555", "nickname": "Edge Gateway", "apn": "internet", "ipv4": ["192.168.30.0/24"], "ipv6": [], "static": true }
+]
+```
+
+`POST`/`PUT /api/subscribers(/:imsi)` also accept `ipv4_framed_routes`/`ipv6_framed_routes`/`framed_routes_static` fields per session, and return an optional `warnings: string[]` array (non-blocking — overlap/duplicate detection against other subscribers and the core UE pool subnets does not block the save).
+
+---
+
 ## Interface Status
 
 ### `GET /api/interface-status`
@@ -655,7 +671,7 @@ List all available backups.
 
 ### `POST /api/backup/config`
 
-Create a manual config backup of all 16 YAML files immediately.
+Create a manual config backup of all 17 YAML files immediately.
 
 **Response `200`**
 ```json
@@ -825,7 +841,7 @@ Manually trigger backup cleanup to enforce retention limits.
 
 ### `POST /api/backup/restore-defaults`
 
-Restore all 16 NF YAML configs to factory defaults (bundled with the NMS). Creates a backup of the current state first.
+Restore all 17 NF YAML configs to factory defaults (bundled with the NMS). Creates a backup of the current state first.
 
 **Response `200`**
 ```json
@@ -1148,6 +1164,41 @@ Use `"services": []` or omit to subscribe to all services/containers for that so
   "source": "open5gs"
 }
 ```
+
+---
+
+## Additional Feature Modules
+
+Beyond the core NF/subscriber management API documented above, the backend mounts a large
+number of feature-specific routers for optional/add-on modules. These are summarized here
+at the namespace level rather than exhaustively (each has many routes) — see
+[docs/features.md](features.md) for what each module does, and the linked controller file
+for the exact routes.
+
+| Base path | Module | Controller |
+|---|---|---|
+| `/api/sepp` | SEPP (5G roaming/N32) config + cert generation | `sepp-controller.ts` |
+| `/api/dns-migration` | DNS/FQDN NF-addressing migration wizard | `dns-migration-controller.ts` |
+| `/api/bind` | BIND9 DNS zone management (forwarders, zone files) | `bind-controller.ts` |
+| `/api/esim` | eSIM (Simlessly RSP) activation code generator | `esim-controller.ts` |
+| `/api/femto`, `/api/femto/nr` | Baicells/Sercomm femtocell auto-provisioning | `femto-controller.ts`, `sercomm-nr-controller.ts` |
+| `/api/auto-config` | 4G/5G auto-configuration wizard | (see `docs/features.md`) |
+| `/api/tun-interfaces` | TUN interface management (`ogstun*`) | `tun-controller.ts` |
+| `/api/radio-tags` | Radio/eNB/gNB tagging | (see `docs/features.md`) |
+| `/api/genieacs` | GenieACS TR-069 device management/provisioning | `genieacs-controller.ts` |
+| `/api/chrony` | Chrony NTP server status/config | `chrony-controller.ts` |
+| `/api/syslog` | Syslog forwarding (rsyslog) for open5gs/GenieACS/FRR | `syslog-controller.ts` |
+| `/api/frr`, `/api/frr/source-build` | FRR routing config, migration wizard, source-build/patch | `frr-controller.ts`, `frr-source-build-controller.ts` |
+| `/api/sms` | SMS over SGs (osmo-msc/osmo-hlr) install/config | `sms-controller.ts` |
+| `/api/ims` | IMS/VoLTE (PyHSS, Kamailio) install/config | `ims-controller.ts` |
+| `/api/vowifi` | VoWiFi/ePDG (osmo-epdg, strongSwan) install/config | `vowifi-controller.ts` |
+| `/api/swu-emulator` | SWu (IKEv2/EAP-AKA) emulator for VoWiFi testing | `swu-emulator-controller.ts` |
+| `/api/validation` | UE Validation (UERANSIM/srsRAN load/session testing) | `validation-controller.ts` |
+| `/api/subscriber-groups` | Subscriber grouping/tagging for the subscriber list | `subscriber-groups-controller.ts` |
+| `/api/logs` | Log download, debug bundles, unified log context | `log-download-controller.ts` |
+
+All are `requireAdmin`-gated like the rest of the API unless noted otherwise in the
+controller itself.
 
 ---
 

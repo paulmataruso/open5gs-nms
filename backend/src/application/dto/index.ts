@@ -208,6 +208,34 @@ export interface BsfConfigDto {
   global?: GlobalDto;
 }
 
+// ── SEPP (roaming — N32 to a visited PLMN's SEPP) ──
+export interface SeppConfigDto {
+  sbi: SbiDto;
+  n32: {
+    server: {
+      sender: string;
+      scheme?: 'http' | 'https';
+      address?: string;
+      port?: number;
+      n32f?: { scheme?: 'http' | 'https'; address?: string; port?: number };
+    };
+    client: {
+      sepp: Array<{
+        receiver: string;
+        uri: string;
+        resolve?: string;
+        n32f: { uri: string; resolve?: string };
+      }>;
+    };
+  };
+  tls?: {
+    server?: { private_key?: string; cert?: string; verify_client?: boolean; verify_client_cacert?: string };
+    client?: { cacert?: string; client_private_key?: string; client_cert?: string };
+  };
+  logger?: LoggerDto;
+  global?: GlobalDto;
+}
+
 // ── MME ──
 export interface MmeConfigDto {
   freeDiameter?: string;
@@ -293,6 +321,7 @@ export interface AllConfigsDto {
   pcf: PcfConfigDto;
   nssf: NssfConfigDto;
   bsf: BsfConfigDto;
+  sepp1: SeppConfigDto;
   mme: MmeConfigDto;
   hss: HssConfigDto;
   pcrf: PcrfConfigDto;
@@ -342,6 +371,9 @@ export interface SubscriberDto {
       ue?: { ipv4?: string; ipv6?: string };
       smf?: { ipv4?: string; ipv6?: string };
       pcc_rule?: unknown[];
+      ipv4_framed_routes?: string[];
+      ipv6_framed_routes?: string[];
+      framed_routes_static?: boolean;
     }>;
   }>;
   subscribed_rau_tau_timer?: number;

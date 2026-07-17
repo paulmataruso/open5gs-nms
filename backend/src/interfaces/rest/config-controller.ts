@@ -52,7 +52,7 @@ export function createConfigRouter(
       // Build node list — all 16 NFs plus mongodb
       const services = [
         'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-        'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
+        'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
         'mongodb',
       ];
       
@@ -99,7 +99,7 @@ export function createConfigRouter(
     const service = req.params.service;
     const validServices = [
       'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-      'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
+      'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
     ];
     if (!validServices.includes(service)) {
       logger.warn({ service, validServices }, 'Invalid service requested');

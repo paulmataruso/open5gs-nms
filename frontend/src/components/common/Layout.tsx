@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import {
-  Radio, Settings, Users, Activity, Network, FileText,
+  Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, Clock, GitBranch, Zap,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, Clock, GitBranch, Zap, MessageSquare, Phone, FlaskConical, Wifi, Globe,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
+import { FEATURES } from '../../config/features';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -29,8 +30,12 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'sas',         label: 'SAS',          icon: Shield    },
   { id: 'time-server', label: 'Time Server',   icon: Clock     },
   { id: 'frr', label: 'L3 Routing', icon: GitBranch },
+  { id: 'bind', label: 'DNS (BIND9)', icon: Globe },
+  ...(FEATURES.sms ? [{ id: 'sms', label: 'SMS', icon: MessageSquare }] : []),
+  ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
+  ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),
+  ...(FEATURES.validation ? [{ id: 'validation', label: 'UE/Core Validation', icon: FlaskConical }] : []),
   { id: 'users',   label: 'User Management', icon: UserCog },
-  { id: 'audit', label: 'Audit Log', icon: FileText },
 ];
 
 export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.Element {

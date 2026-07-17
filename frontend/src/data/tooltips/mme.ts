@@ -41,4 +41,7 @@ export const MME_TOOLTIPS = {
   t3402: "T3402 timer (seconds). Controls how long a UE waits before re-attempting attach after a failed attempt. Default: 720s (12 minutes).",
   t3412: "T3412 timer (seconds). Periodic TAU (Tracking Area Update) timer — how often an idle UE checks in with the network. Default: 3240s (54 minutes).",
   t3423: "T3423 timer (seconds). IMSI detach timer for combined EPS/IMSI attach. Controls GPRS detach procedure timing. Default: 720s (12 minutes).",
+
+  // Global parameters
+  use_openair: "Omit the HashMME IE from Security Mode Commands. HashMME is a SHA-256 hash of the plain-text Attach Request that the UE verifies (3GPP TS 24.301 §5.4.3.4). If verification fails, the UE sends Security Mode Reject Cause 24. Enable this if iPhones or 5G-capable devices reject attach with EMM Cause 24 — it disables HashMME inclusion, which some Open5GS versions compute incorrectly for complex Attach Requests. Named 'use_openair' because OpenAirInterface UEs do not support HashMME.",
 };

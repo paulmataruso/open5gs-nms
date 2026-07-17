@@ -1,4 +1,6 @@
 import * as yaml from 'js-yaml';
+import * as fs from 'fs';
+import * as path from 'path';
 import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { NrfConfig } from '../../domain/entities/nrf-config';
@@ -11,6 +13,144 @@ import pino from 'pino';
 
 interface RawYamlDoc {
   [key: string]: unknown;
+}
+
+// Host files that must travel with every config backup but live outside the
+// bind-mounted /etc/open5gs tree (only /etc/open5gs is mounted into this container —
+// see docker-compose.yml), so they're read/written via /proc/1/root directly, same
+// pattern already used in sms-controller.ts/vowifi-controller.ts for this exact
+// directory. Added 2026-07-13 after a real incident: a bug in VoWiFi's uninstall flow
+// (`rm -rf /etc/osmocom`) deleted the SMS-over-SGs configs with no backup anywhere on
+// the host to recover from — never again.
+export const EXTRA_BACKUP_FILES = [
+  '/etc/osmocom/osmo-hlr.cfg',
+  '/etc/osmocom/osmo-msc.cfg',
+  '/etc/osmocom/osmo-stp.cfg',
+  '/etc/osmocom/osmo-epdg.config',
+];
+
+// ── mme.yaml sgsap map: round-trip helpers ────────────────────────────────────
+// Open5GS uses duplicate map: YAML keys (non-standard) within sgsap.client
+// entries to express multiple TAI→LAI mappings. js-yaml only keeps the last
+// duplicate key on parse. These two functions convert between the Open5GS
+// on-disk format and a standard maps: array that js-yaml can handle.
+
+// READ: convert consecutive duplicate  map:  keys → single  maps: [...]  array
+export function convertRepeatedMapKeysToArray(content: string): string {
+  const lines = content.split('\n');
+  const output: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const mapMatch = line.match(/^( +)map:\s*$/);
+
+    if (!mapMatch) {
+      output.push(line);
+      i++;
+      continue;
+    }
+
+    const mapIndent = mapMatch[1];          // e.g. '        ' (8 spaces)
+    const contentIndent = mapIndent + '  '; // e.g. '          ' (10 spaces)
+
+    // Collect all consecutive map: blocks at this same indent level
+    const blocks: string[][] = [];
+
+    while (i < lines.length) {
+      const l = lines[i];
+      if (!l.match(new RegExp(`^${mapIndent}map:\\s*$`))) break;
+
+      i++; // skip the map: line itself
+      const blockLines: string[] = [];
+
+      while (i < lines.length) {
+        const bl = lines[i];
+        if (bl.trim() === '') { blockLines.push(bl); i++; continue; }
+        const blIndent = (bl.match(/^( *)/) as RegExpMatchArray)[1].length;
+        if (blIndent <= mapIndent.length) break;
+        blockLines.push(bl);
+        i++;
+      }
+
+      // Trim trailing blank lines
+      while (blockLines.length && blockLines[blockLines.length - 1].trim() === '') blockLines.pop();
+      blocks.push(blockLines);
+    }
+
+    // Emit as maps: array
+    output.push(mapIndent + 'maps:');
+    for (const block of blocks) {
+      let first = true;
+      for (const bl of block) {
+        if (bl.trim() === '') { output.push(bl); continue; }
+        if (first) {
+          // "          tai:" → "          - tai:"  (insert "- " at contentIndent)
+          const fieldPart = bl.slice(contentIndent.length);
+          output.push(contentIndent + '- ' + fieldPart);
+          first = false;
+        } else {
+          // All subsequent lines: shift right by 2 (the "- " adds 2 chars of effective indent)
+          output.push('  ' + bl);
+        }
+      }
+    }
+  }
+
+  return output.join('\n');
+}
+
+// WRITE: convert  maps: [...]  array → consecutive duplicate  map:  keys
+export function convertMapsArrayToRepeatedMapKeys(content: string): string {
+  const lines = content.split('\n');
+  const output: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const mapsMatch = line.match(/^( +)maps:\s*$/);
+
+    if (!mapsMatch) {
+      output.push(line);
+      i++;
+      continue;
+    }
+
+    const mapsIndent = mapsMatch[1];          // e.g. '        ' (8 spaces)
+    const dashIndent = mapsIndent + '  ';     // e.g. '          ' (10 spaces)
+    const dashPrefix = dashIndent + '- ';     // e.g. '          - '
+
+    i++; // skip the maps: line
+
+    while (i < lines.length) {
+      const l = lines[i];
+      if (l.trim() === '') { i++; continue; }
+
+      const lIndent = (l.match(/^( *)/) as RegExpMatchArray)[1].length;
+      if (lIndent <= mapsIndent.length) break; // left the sequence entirely
+
+      if (!l.startsWith(dashPrefix)) { output.push(l); i++; continue; }
+
+      // New sequence item → emit a separate map: block
+      output.push(mapsIndent + 'map:');
+      // "          - tai:" → "          tai:"  (remove the "- " at dashIndent)
+      output.push(dashIndent + l.slice(dashPrefix.length));
+      i++;
+
+      // Continuation lines of this item
+      while (i < lines.length) {
+        const cl = lines[i];
+        if (cl.trim() === '') { i++; continue; }
+        const clIndent = (cl.match(/^( *)/) as RegExpMatchArray)[1].length;
+        if (clIndent <= mapsIndent.length) break;  // left the sequence
+        if (cl.startsWith(dashPrefix)) break;       // next item
+        output.push(cl.slice(2)); // strip 2 leading spaces (reverse of the shift added on read)
+        i++;
+      }
+    }
+  }
+
+  return output.join('\n');
 }
 
 export class YamlConfigRepository implements IConfigRepository {
@@ -117,7 +257,7 @@ export class YamlConfigRepository implements IConfigRepository {
       this.loadAusf(),
     ]);
 
-    const optionalServices = ['scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+    const optionalServices = ['scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1'];
     const optional: Partial<AllConfigs> = {};
 
     for (const service of optionalServices) {
@@ -174,6 +314,13 @@ export class YamlConfigRepository implements IConfigRepository {
         await this.hostExecutor.copyFile(srcPath, destPath);
       }
     }
+
+    for (const filePath of EXTRA_BACKUP_FILES) {
+      const hostPath = `/proc/1/root${filePath}`;
+      if (fs.existsSync(hostPath)) {
+        fs.copyFileSync(hostPath, `${backupDir}/${path.basename(filePath)}`);
+      }
+    }
     this.logger.info({ backupDir }, 'Backup completed');
   }
 
@@ -186,6 +333,15 @@ export class YamlConfigRepository implements IConfigRepository {
       const exists = await this.hostExecutor.fileExists(srcPath);
       if (exists) {
         await this.hostExecutor.copyFile(srcPath, destPath);
+      }
+    }
+
+    for (const filePath of EXTRA_BACKUP_FILES) {
+      const srcPath = `${backupDir}/${path.basename(filePath)}`;
+      if (fs.existsSync(srcPath)) {
+        const destHostPath = `/proc/1/root${filePath}`;
+        fs.mkdirSync(path.dirname(destHostPath), { recursive: true });
+        fs.copyFileSync(srcPath, destHostPath);
       }
     }
     this.rawCache = {};
@@ -202,7 +358,13 @@ export class YamlConfigRepository implements IConfigRepository {
   private async loadRaw(service: string): Promise<RawYamlDoc> {
     const filePath = `${this.configPath}/${service}.yaml`;
     try {
-      const content = await this.hostExecutor.readFile(filePath);
+      let content = await this.hostExecutor.readFile(filePath);
+
+      // mme.yaml uses duplicate map: keys (Open5GS extension, not standard YAML).
+      // Convert them to a maps: array so js-yaml can parse all entries.
+      if (service === 'mme') {
+        content = convertRepeatedMapKeysToArray(content);
+      }
 
       // js-yaml may interpret bare 010 (MNC) as octal/decimal.
       // Parse first, then restore MCC/MNC/SD from raw text.
@@ -335,10 +497,24 @@ export class YamlConfigRepository implements IConfigRepository {
       '$1$2:',
     );
 
+    // ── db_uri: normalize localhost → 127.0.0.1 ──────────────────────────────
+    // Ubuntu resolves `localhost` to ::1 (IPv6) but MongoDB only binds IPv4.
+    // Any write path — apply-config, restore-defaults, UI save — must not
+    // re-introduce this bug regardless of what the on-disk file contained.
+    finalContent = finalContent.replace(
+      /^(db_uri:\s*["']?mongodb:\/\/)localhost\//gm,
+      '$1127.0.0.1/',
+    );
+
     // Log SD lines so we can verify quoting in backend logs
     const sdLines = finalContent.split('\n').filter(l => /^\s*sd:/.test(l));
     if (sdLines.length > 0) {
       this.logger.info({ service, sdLines }, 'SD lines written to YAML');
+    }
+
+    // mme.yaml: convert maps: array back to duplicate map: keys for Open5GS
+    if (service === 'mme') {
+      finalContent = convertMapsArrayToRepeatedMapKeys(finalContent);
     }
 
     this.logger.info(
@@ -562,6 +738,7 @@ export class YamlConfigRepository implements IConfigRepository {
   async loadPcrf() { return this.loadGeneric('pcrf') as any; }
   async loadSgwc() { return this.loadGeneric('sgwc') as any; }
   async loadSgwu() { return this.loadGeneric('sgwu') as any; }
+  async loadSepp1() { return this.loadGeneric('sepp1') as any; }
 
   async saveScp(config: any)  { return this.saveGeneric('scp',  config); }
   async saveUdm(config: any)  { return this.saveGeneric('udm',  config); }
@@ -574,4 +751,5 @@ export class YamlConfigRepository implements IConfigRepository {
   async savePcrf(config: any) { return this.saveGeneric('pcrf', config); }
   async saveSgwc(config: any) { return this.saveGeneric('sgwc', config); }
   async saveSgwu(config: any) { return this.saveGeneric('sgwu', config); }
+  async saveSepp1(config: any) { return this.saveGeneric('sepp1', config); }
 }

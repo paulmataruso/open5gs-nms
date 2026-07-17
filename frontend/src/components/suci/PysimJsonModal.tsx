@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { X, FileJson, Copy, Check, Terminal } from 'lucide-react';
 import type { HnetKey } from '../../types/suci';
 import toast from 'react-hot-toast';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 interface PysimJsonModalProps {
   keys: HnetKey[];
@@ -61,14 +62,15 @@ function buildPysimJson(keys: HnetKey[]) {
 export function PysimJsonModal({ keys, onClose }: PysimJsonModalProps): JSX.Element {
   const [copiedPretty, setCopiedPretty] = useState(false);
   const [copiedOneline, setCopiedOneline] = useState(false);
+  const copyToClipboard = useCopyToClipboard();
 
   const json = useMemo(() => buildPysimJson(keys), [keys]);
   const prettyJson = JSON.stringify(json, null, 2);
   const onelineJson = JSON.stringify(json);
 
   const copy = async (text: string, which: 'pretty' | 'oneline') => {
-    try {
-      await navigator.clipboard.writeText(text);
+    const ok = await copyToClipboard(text);
+    if (ok) {
       if (which === 'pretty') {
         setCopiedPretty(true);
         setTimeout(() => setCopiedPretty(false), 2000);
@@ -77,7 +79,7 @@ export function PysimJsonModal({ keys, onClose }: PysimJsonModalProps): JSX.Elem
         setTimeout(() => setCopiedOneline(false), 2000);
       }
       toast.success('Copied to clipboard');
-    } catch {
+    } else {
       toast.error('Failed to copy');
     }
   };

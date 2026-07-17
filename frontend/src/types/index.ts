@@ -223,6 +223,34 @@ export interface BsfConfig {
   global?: Global;
 }
 
+// ── SEPP (roaming — N32 to a visited PLMN's SEPP) ──
+export interface SeppN32Peer {
+  receiver: string;
+  uri: string;
+  resolve?: string;
+  n32f: { uri: string; resolve?: string };
+}
+
+export interface SeppConfig {
+  sbi: Sbi;
+  n32: {
+    server: {
+      sender: string;
+      scheme?: 'http' | 'https';
+      address?: string;
+      port?: number;
+      n32f?: { scheme?: 'http' | 'https'; address?: string; port?: number };
+    };
+    client: { sepp: SeppN32Peer[] };
+  };
+  tls?: {
+    server?: { private_key?: string; cert?: string; verify_client?: boolean; verify_client_cacert?: string };
+    client?: { cacert?: string; client_private_key?: string; client_cert?: string };
+  };
+  logger?: Logger;
+  global?: Global;
+}
+
 // ── MME ──
 export interface MmeConfig {
   freeDiameter?: string;
@@ -308,6 +336,7 @@ export interface AllConfigs {
   pcf: PcfConfig;
   nssf: NssfConfig;
   bsf: BsfConfig;
+  sepp1: SeppConfig;
   mme: MmeConfig;
   hss: HssConfig;
   pcrf: PcrfConfig;
@@ -355,8 +384,21 @@ export interface SubscriberQos {
   index: number;
   arp: {
     priority_level: number;
-    pre_emption_capability: number;
+    pre_emption_capability: number;  // 1=Disabled (NOT_PRE-EMPTIVE), 2=Enabled (MAY_PRE-EMPT)
     pre_emption_vulnerability: number;
+  };
+}
+
+export interface PccRule {
+  qos: {
+    index: number;
+    arp: {
+      priority_level: number;
+      pre_emption_capability: number;
+      pre_emption_vulnerability: number;
+    };
+    mbr: { downlink: AmbrValue; uplink: AmbrValue };
+    gbr: { downlink: AmbrValue; uplink: AmbrValue };
   };
 }
 
@@ -366,15 +408,18 @@ export interface SubscriberSession {
   type: number;  // 1=IPv4, 2=IPv6, 3=IPv4v6
   ambr: Ambr;
   qos: SubscriberQos;
-  ue?: { 
-    ipv4?: string;   // UE IPv4 address (note: ipv4, not addr)
-    ipv6?: string;   // UE IPv6 address (note: ipv6, not addr6)
+  ue?: {
+    ipv4?: string;
+    ipv6?: string;
   };
   smf?: {
-    ipv4?: string;   // SMF IPv4 address
-    ipv6?: string;   // SMF IPv6 address
+    ipv4?: string;
+    ipv6?: string;
   };
-  pcc_rule?: unknown[];
+  pcc_rule?: PccRule[];
+  ipv4_framed_routes?: string[];  // Framed Routing (TS 23.501 §5.6.14) — IPv4 CIDRs routed behind the UE
+  ipv6_framed_routes?: string[];  // Framed Routing — IPv6 prefixes routed behind the UE
+  framed_routes_static?: boolean;  // Auto-manage a static host route for the above
 }
 
 export interface SubscriberSlice {
@@ -420,6 +465,16 @@ export interface SubscriberListItem {
   session_count: number;
   ue_ipv4?: string;
   apn?: string;
+  sessions?: { apn: string; ipv4?: string; framedRoutes?: string[] }[];
+}
+
+export interface FramedRouteEntry {
+  imsi: string;
+  nickname?: string;
+  apn: string;
+  ipv4: string[];
+  ipv6: string[];
+  static: boolean;
 }
 
 // ── Validation ──

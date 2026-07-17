@@ -88,48 +88,82 @@ export function TopologyPage(): JSX.Element {
 
     // Scaling is handled in CSS
     // Store paper reference so we can scale after graph is built
-    // Add tooltip element to DOM
+    // Add tooltip element to DOM — sized generously (min-width + larger font/line-height)
+    // so the connected-radios list is comfortably readable, not a cramped one-liner.
     const tooltip = document.createElement('div');
     tooltip.style.position = 'absolute';
-    tooltip.style.background = 'rgba(15, 23, 42, 0.95)';
-    tooltip.style.color = '#94a3b8';
-    tooltip.style.padding = '8px 12px';
-    tooltip.style.borderRadius = '6px';
-    tooltip.style.fontSize = '12px';
+    tooltip.style.background = 'rgba(15, 23, 42, 0.97)';
+    tooltip.style.color = '#cbd5e1';
+    tooltip.style.padding = '14px 18px';
+    tooltip.style.borderRadius = '8px';
+    tooltip.style.fontSize = '14px';
+    tooltip.style.lineHeight = '1.7';
+    tooltip.style.minWidth = '260px';
+    tooltip.style.maxWidth = '420px';
     tooltip.style.pointerEvents = 'none';
     tooltip.style.display = 'none';
     tooltip.style.zIndex = '1000';
-    tooltip.style.border = '1px solid #334155';
+    tooltip.style.border = '1px solid #475569';
+    tooltip.style.boxShadow = '0 8px 24px rgba(0, 0, 0, 0.5)';
     tooltip.style.whiteSpace = 'pre-line';
     paperRef.current.appendChild(tooltip);
 
-    // Handle hover events for eNodeB
-    paper.on('element:mouseenter', (elementView) => {
+    // Radio-box tooltip: hover on desktop, click to pin (and tap on touch devices) — clicking
+    // the box again or clicking elsewhere on the canvas unpins it. RADIO_TOOLTIP_IDS covers
+    // both eNodeB and gNodeB.
+    // Disabled for now (kept in place, not removed) — flip RADIO_TOOLTIPS_ENABLED to true to
+    // turn this back on.
+    const RADIO_TOOLTIPS_ENABLED = false;
+    const RADIO_TOOLTIP_IDS = RADIO_TOOLTIPS_ENABLED ? new Set(['enb', 'gnb']) : new Set<string>();
+    let tooltipPinnedFor: string | null = null;
+
+    const showTooltip = (element: any, evt: MouseEvent) => {
+      tooltip.textContent = element.get('tooltipData') || 'No radios connected';
+      tooltip.style.display = 'block';
+      tooltip.style.left = `${evt.clientX + 14}px`;
+      tooltip.style.top = `${evt.clientY + 14}px`;
+    };
+    const hideTooltip = () => {
+      tooltip.style.display = 'none';
+      tooltipPinnedFor = null;
+    };
+
+    paper.on('element:mouseenter', (elementView, evt) => {
       const element = elementView.model;
-      if (element.id === 'enb' && element.get('tooltipData')) {
-        tooltip.textContent = element.get('tooltipData');
-        tooltip.style.display = 'block';
+      if (RADIO_TOOLTIP_IDS.has(String(element.id)) && !tooltipPinnedFor) {
+        showTooltip(element, evt as unknown as MouseEvent);
       }
     });
 
     paper.on('element:mouseleave', () => {
-      tooltip.style.display = 'none';
+      if (!tooltipPinnedFor) tooltip.style.display = 'none';
     });
 
     paper.on('element:mousemove', (elementView, evt) => {
       const element = elementView.model;
-      if (element.id === 'enb' && element.get('tooltipData')) {
-        tooltip.style.left = `${evt.clientX + 10}px`;
-        tooltip.style.top = `${evt.clientY + 10}px`;
+      if (RADIO_TOOLTIP_IDS.has(String(element.id)) && !tooltipPinnedFor) {
+        tooltip.style.left = `${evt.clientX + 14}px`;
+        tooltip.style.top = `${evt.clientY + 14}px`;
       }
     });
 
-    // Click handler for UE overflow "view more" buttons
-    paper.on('element:pointerclick', (elementView) => {
-      const id = elementView.model.id;
+    // Click handler for UE overflow "view more" buttons + click-to-pin radio tooltips
+    paper.on('element:pointerclick', (elementView, evt) => {
+      const id = String(elementView.model.id);
       if (id === 'more-4g-btn') setShow4GPanel(true);
       if (id === 'more-5g-btn') setShow5GPanel(true);
+      if (RADIO_TOOLTIP_IDS.has(id)) {
+        if (tooltipPinnedFor === id) {
+          hideTooltip();
+        } else {
+          tooltipPinnedFor = id;
+          showTooltip(elementView.model, evt as unknown as MouseEvent);
+        }
+      }
     });
+
+    // Clicking empty canvas dismisses a pinned tooltip
+    paper.on('blank:pointerclick', () => hideTooltip());
 
     return () => {
       paper.remove();
@@ -482,7 +516,7 @@ export function TopologyPage(): JSX.Element {
     console.log('S1-MME Status:', { s1mmeActive, s1mmeConnectedEnodebs });
     console.log('S1-U Status:', { s1uActive, s1uConnectedEnodebs });
     
-    // Add status indicator and tooltip if eNodeBs are connected
+    // Add status indicator if eNodeBs are connected
     if (s1mmeActive) {
       console.log('Adding green circle to eNodeB');
       const enbStatusCircle = new shapes.standard.Circle({
@@ -498,10 +532,19 @@ export function TopologyPage(): JSX.Element {
         z: 11,
       });
       enbStatusCircle.addTo(jointGraph);
-      
-      // Set tooltip data
-      const tooltipText = `Connected eNodeBs (${s1mmeConnectedEnodebs.length}):\n${s1mmeConnectedEnodebs.join('\n')}`;
-      enb.set('tooltipData', tooltipText);
+    }
+
+    // Tooltip data — always set (even with zero radios) so hover/click always shows something
+    // useful, covering both S1-MME (control-plane, registered with MME) and S1-U (user-plane,
+    // connected to SGW-U), since a radio can be up on one without the other.
+    {
+      const lines = ['Connected eNodeBs', ''];
+      lines.push(`S1-MME (control-plane): ${s1mmeConnectedEnodebs.length}`);
+      lines.push(...(s1mmeConnectedEnodebs.length > 0 ? s1mmeConnectedEnodebs.map((ip: string) => `  ${ip}`) : ['  (none)']));
+      lines.push('');
+      lines.push(`S1-U (user-plane): ${s1uConnectedEnodebs.length}`);
+      lines.push(...(s1uConnectedEnodebs.length > 0 ? s1uConnectedEnodebs.map((ip: string) => `  ${ip}`) : ['  (none)']));
+      enb.set('tooltipData', lines.join('\n'));
     }
 
 
@@ -1083,7 +1126,36 @@ export function TopologyPage(): JSX.Element {
     // Check if N3 interface is active
     const n3Active = interfaceStatus?.n3?.active || false;
     const n3ConnectedGnodebs = (interfaceStatus?.n3?.connectedGnodebs || []).map((r: any) => typeof r === 'string' ? r : r.ip);
-    
+
+    // Status indicator on the gNodeB box itself, matching the eNodeB one
+    if (n2Active || n3Active) {
+      const gnbStatusCircle = new shapes.standard.Circle({
+        position: { x: 2400 - 45 + 75, y: 700 - 35 + 5 },  // top-right corner, matches gnb position
+        size: { width: 10, height: 10 },
+        attrs: {
+          body: {
+            fill: '#22c55e',
+            stroke: '#16a34a',
+            strokeWidth: 1,
+          },
+        },
+        z: 11,
+      });
+      gnbStatusCircle.addTo(jointGraph);
+    }
+
+    // Tooltip data — always set (even with zero radios), covering both N2 (control-plane,
+    // registered with AMF) and N3 (user-plane, connected to UPF).
+    {
+      const lines = ['Connected gNodeBs', ''];
+      lines.push(`N2 (control-plane): ${n2ConnectedGnodebs.length}`);
+      lines.push(...(n2ConnectedGnodebs.length > 0 ? n2ConnectedGnodebs.map((ip: string) => `  ${ip}`) : ['  (none)']));
+      lines.push('');
+      lines.push(`N3 (user-plane): ${n3ConnectedGnodebs.length}`);
+      lines.push(...(n3ConnectedGnodebs.length > 0 ? n3ConnectedGnodebs.map((ip: string) => `  ${ip}`) : ['  (none)']));
+      gnb.set('tooltipData', lines.join('\n'));
+    }
+
     // Main box - 100px to the left of Active 5G Sessions box
     const fiveGRadioBox = new shapes.standard.Rectangle({
       position: { x: 1925, y: 150 },

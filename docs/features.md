@@ -7,29 +7,32 @@ Detailed documentation for all Open5GS NMS features.
 ## Table of Contents
 
 1. [Configuration Management](#configuration-management)
-2. [Network Topology Visualization](#network-topology-visualization)
-3. [Subscriber Management](#subscriber-management)
-4. [eSIM Generator (Simlessly API)](#esim-generator-simlessly-api)
-5. [SIM Generator](#sim-generator)
-6. [SUCI Key Management](#suci-key-management)
-7. [Service Management](#service-management)
-8. [Auto-Configuration Wizard](#auto-configuration-wizard)
-9. [Real-Time Logging](#real-time-logging)
-10. [Backup & Restore](#backup--restore)
-11. [Audit Trail](#audit-trail)
-12. [IMS / VoLTE](#ims--volte)
-13. [SMS over SGs](#sms-over-sgs)
-14. [UE Validation](#ue-validation)
+2. [SEPP (Security Edge Protection Proxy)](#sepp-security-edge-protection-proxy)
+3. [DNS/FQDN Migration Wizard](#dnsfqdn-migration-wizard)
+4. [Network Topology Visualization](#network-topology-visualization)
+5. [Subscriber Management](#subscriber-management)
+6. [eSIM Generator (Simlessly API)](#esim-generator-simlessly-api)
+7. [SIM Generator](#sim-generator)
+8. [SUCI Key Management](#suci-key-management)
+9. [Service Management](#service-management)
+10. [Auto-Configuration Wizard](#auto-configuration-wizard)
+11. [Real-Time Logging](#real-time-logging)
+12. [Backup & Restore](#backup--restore)
+13. [Audit Trail](#audit-trail)
+14. [IMS / VoLTE](#ims--volte)
+15. [VoWiFi (ePDG)](#vowifi-epdg)
+16. [SMS over SGs](#sms-over-sgs)
+17. [UE Validation](#ue-validation)
 
 ---
 
 ## Configuration Management
 
-Manage all 16 Open5GS network function configurations through a unified interface.
+Manage all 17 Open5GS network function configurations through a unified interface.
 
 ### Supported Network Functions
 
-**5G Core (11 NFs):**
+**5G Core (12 NFs):**
 - NRF - NF Repository Function
 - SCP - Service Communication Proxy
 - AMF - Access and Mobility Management Function
@@ -41,6 +44,7 @@ Manage all 16 Open5GS network function configurations through a unified interfac
 - PCF - Policy Control Function
 - NSSF - Network Slice Selection Function
 - BSF - Binding Support Function
+- SEPP - Security Edge Protection Proxy (roaming/N32 — see [dedicated section](#sepp-security-edge-protection-proxy) below)
 
 **4G EPC (5 NFs):**
 - MME - Mobility Management Entity
@@ -86,6 +90,60 @@ When you click "Apply Configuration":
 - **Diff Preview** - See exactly what changed
 - **Audit Logging** - All changes logged with timestamps
 - **Rollback Capability** - Restore any previous backup
+
+---
+
+## SEPP (Security Edge Protection Proxy)
+
+Configure and run a real SEPP for 5G inter-PLMN roaming (N32 interface) directly from the WebUI — previously this was entirely unmanaged, requiring manual edits to `/etc/open5gs/sepp1.yaml`.
+
+### Home SEPP Configuration
+
+A Config tab like every other NF, covering:
+- **SBI** — server address/port, SCP client URI
+- **N32 identity** — our sender FQDN, scheme (HTTP/HTTPS), N32-c (control) and N32-f (forwarding) address/port pairs
+- **TLS** — an on/off toggle for mutual TLS on N32 (independent of whether other local NFs use TLS, which they typically don't in a lab deployment)
+- **Visited-peer connection** — receiver FQDN, N32-c/N32-f URI and resolve-IP for the one configured visited-network peer
+
+### TLS / Certificate Generation
+
+When TLS is enabled:
+- **Generate Certs** — creates a self-signed keypair for the home SEPP's identity (`openssl req -x509`) — the standard simplified trust model for a lab/test roaming setup, not a real GSMA-IPX-backed PKI. The public cert is displayed for copying.
+- **Peer certificate** — a paste box for the visited operator's public cert, saved as the local trust anchor for verifying their connection.
+
+### Generate Visited PLMN Config
+
+A separate export panel builds a complete, downloadable `sepp.yaml` for the visited-network operator's side — cross-referencing our already-configured home SEPP values (FQDN, N32 addresses) and appending our public cert content when TLS is enabled, so a real roaming partner has everything needed in one file.
+
+### Lifecycle
+
+SEPP is a full 17th core NF: included in the standard bulk "Apply Configuration" restart flow (backed up, written, restarted, verified, rolled back on failure — same as any other NF), not a separately-lifecycled optional module like IMS/SMS/VoWiFi.
+
+---
+
+## DNS/FQDN Migration Wizard
+
+Converts the core network from hardcoded IP addressing to 3GPP-standard FQDN/DNS addressing (`<nf>.5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org` for 5GC SBI, `<nf>.epc.mnc<mnc>.mcc<mcc>.3gppnetwork.org` for EPC Diameter) — matching how carrier-grade Open5GS deployments and the official Open5GS roaming tutorial address NFs, instead of loopback/private IPs.
+
+### Phasing
+
+Run independently or together, always with an automatic backup first:
+
+- **Phase A — DNS zones.** Generates and verifies both zones via the BIND9 module.
+- **Phase B — EPC/Diameter mesh.** Rewrites MME/HSS/PCRF/SMF freeDiameter `.conf` files to use FQDN-based `Identity`/`ConnectPeer` (dropping hardcoded `ConnectTo` IPs in favor of DNS resolution).
+- **Phase C — 5GC SBI mesh.** Rewrites every 5GC NF's `client.nrf`/`client.scp` URIs and `sbi.server[].advertise` field to FQDNs, then restarts all of them together in dependency order.
+
+### Scope
+
+Deliberately excludes bearer-plane addresses (GTP-C/GTP-U/S1AP/PFCP on SGWC/SGWU/UPF/MME) — Open5GS's YAML schema doesn't support hostnames there. SEPP's local SBI client (to our own SCP/NRF) is included; its N32 peer connection to a visited PLMN's own SEPP is not, since that belongs to a different operator's infrastructure and isn't something local DNS resolves.
+
+### Operational note — SEPP + Phase A/C ordering
+
+`open5gs-seppd` does strict, synchronous DNS resolution of its own `advertise` FQDN at startup and aborts fatally if the record doesn't exist yet — unlike every other NF, which tolerates an unresolvable advertise value fine and starts up normally regardless. **Always run Phase A (DNS zones) immediately before or alongside Phase C for SEPP** — if the DNS zone doesn't yet contain SEPP's record when Phase C restarts it, `open5gs-seppd` will crash-loop until Phase A is (re)run.
+
+### Rollback
+
+A fresh backup is taken automatically before Phase B or C — rollback stays available for as long as that backup exists.
 
 ---
 
@@ -192,6 +250,17 @@ Subscriber:
 ### Subscriber Groups
 
 Organize subscribers into named, colored groups (e.g. "Field trial A", "Test devices") for easier browsing of large deployments. Grouped subscribers render clustered under a collapsible group header; ungrouped subscribers list separately below. Purely organizational — backed by its own MongoDB collection, independent of and never touching actual subscriber/HSS data.
+
+### Framed Routing
+
+Per-session support for 3GPP Framed Routing (TS 23.501 §5.6.14) — lets a UE act as a gateway for an IP subnet behind it (e.g. an IoT gateway or fixed-wireless CPE with its own LAN), routed through that UE's single PDU session, instead of requiring a dedicated address per downstream device.
+
+- **Configuration** — each session has editable IPv4/IPv6 framed-route fields (comma-separated CIDR list), alongside the existing AMBR/QoS/UE-address fields
+- **Apply static route on host** — a per-session checkbox that auto-manages the local `ip route` needed for the subnet to actually reach the UE's tunnel, resolving the correct `ogstun*` device from the session's DNN automatically. Idempotent — safe across repeated saves, and cleaned up on delete
+- **You still need an upstream route** — a local route alone isn't enough for the rest of your network to reach the subnet; either advertise it via dynamic routing (e.g. an EIGRP `network` statement — not automated by this app) or add a manual static route on your core/edge router pointing at **this Open5GS host's own IP**, never the UE's IP. The checkbox's hint text includes a worked example
+- **Overlap/duplicate warnings** — on save, new framed routes are checked against every other subscriber's framed routes and the core UE pool subnets, surfaced as a non-blocking warning toast (an operator may be intentionally staging a route, so the save still succeeds)
+- **Framed Routes Registry** — a modal (Addressing dropdown, toolbar) listing every configured subnet across all subscribers with its owner, APN, and static-route status
+- **CSV import/export** — a `framed_routes` column (pipe-separated CIDRs) round-trips through the existing subscriber CSV import/export flow
 
 ---
 
@@ -541,9 +610,13 @@ A separate "Events" tab (alongside "Live Logs" and "Audit Log") that classifies 
 
 The L3 Routing page has a dropdown for FRR's 8 syslog-style severities (`emergencies`, `alerts`, `critical`, `errors`, `warnings`, `notifications`, `informational`, `debugging`). Changing it writes both the `log syslog` and `log file` directives in the generated `frr.conf` and reloads via `vtysh -b` — this does not restart the FRR service or flap any routing neighbor, it only changes log verbosity.
 
+### FRR Source Build
+
+The L3 Routing page's "Reinstall (Source)" tab migrates FRR from the Ubuntu apt package (8.4.4, has long-standing `eigrpd` assertion-crash bugs) to a from-source build (10.6.1+, built against libyang), with automatic backup, build, config-restore, and rollback — a prerequisite for the crash-guard patch below.
+
 ### eigrpd Crash-Guard Patch
 
-A hand-built patch on top of the from-source FRR build (see "Reinstall (Source)" above) that stops a long-standing, upstream-unfixed EIGRP bug ([FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943)) from crashing the entire `eigrpd` process — and withdrawing every EIGRP-learned route — when it fires. See **[docs/frr-eigrpd-crash-guard-patch.md](frr-eigrpd-crash-guard-patch.md)** for the full root-cause writeup, code, and reapplication steps.
+A hand-built patch on top of the from-source FRR build (see "FRR Source Build" above) that stops a long-standing, upstream-unfixed EIGRP bug ([FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943)) from crashing the entire `eigrpd` process — and withdrawing every EIGRP-learned route — when it fires. See **[docs/frr-eigrpd-crash-guard-patch.md](frr-eigrpd-crash-guard-patch.md)** for the full root-cause writeup, code, and reapplication steps.
 
 ### Syslog Forwarding
 
@@ -564,7 +637,7 @@ Automated backup system with selective restore capability.
 ### Backup Types
 
 **Configuration Backups:**
-- All 16 YAML files
+- All 17 configurable NF YAML files, plus `sepp2.yaml` (the visited-PLMN template file — not independently editable via the UI, but swept up in every full backup/restore cycle)
 - Stored in `/etc/open5gs/backups/config/YYYY-MM-DD-HHMM/`
 - Includes exact file permissions
 
@@ -700,6 +773,28 @@ Server-side signaling is verified: all Diameter connections establish, the IMS A
 
 ---
 
+## VoWiFi (ePDG)
+
+*(Alpha — highly experimental, not production-ready)* Voice/data over Wi-Fi via an evolved Packet Data Gateway (ePDG), for handsets on an untrusted (Wi-Fi) access network.
+
+> ⚠️ **This module is more experimental than IMS/VoLTE.** It was proven working end-to-end against a test IKEv2/EAP-AKA emulator (real SWx/S6b/GTP-C signaling, a real subscriber, a real static-IP assignment, EAP-AKA authentication succeeding), but a real handset has not been confirmed working. Two real bugs in upstream osmo-epdg were found and patched during testing. Do not rely on this for a production voice deployment.
+
+### Components
+
+- **osmo-epdg** — the ePDG itself, handling IKEv2/EAP-AKA with the UE and SWx/S6b Diameter with the HSS/AAA
+- **strongSwan** — IKEv2/IPsec implementation osmo-epdg is built on
+- **`gtp0` kernel module** — GTP-C tunnel to the SMF/UPF for the resulting PDN connection
+
+### Known upstream bugs found and fixed
+
+Two real bugs in upstream osmo-epdg were discovered and patched while getting a real tunnel working: it silently dropped the HSS-assigned static IP, and it hardcoded an oversized GTP hash-table size that a real Linux kernel's GTP driver rejects (previously misdiagnosed as random "GTP kernel-module flakiness" — it was actually deterministic). The `gtp0` kernel module is reloaded on every service start as defense-in-depth, with a manual "Reload GTP Module" button available if a tunnel ever gets stuck.
+
+### Current Status
+
+Server-side signaling is verified end-to-end against a test emulator (real SWx/S6b/GTP-C, real subscriber, real static IP, successful EAP-AKA). Real-phone VoWiFi is not yet confirmed — see the alpha warning above. DNS discovery for real phones (`epdg.epc.mnc<mnc>.mcc<mcc>.pub.3gppnetwork.org`) and a full fwmark/nftables policy-routing scheme (to prevent a UE-to-UE shortcut through the Wi-Fi network) are known, deferred gaps — not yet implemented.
+
+---
+
 ## SMS over SGs
 
 *(Beta)* Circuit-switched-domain SMS delivery — no IMS/VoLTE deployment required.
@@ -746,12 +841,13 @@ Spins up a containerized test UE — **srsRAN** for 4G (eNB+UE in one container,
 ## Summary
 
 Open5GS NMS provides a complete management solution for Open5GS deployments with:
-- ✅ Safe, validated configuration management
+- ✅ Safe, validated configuration management for all 17 core NFs, including SEPP
+- ✅ 5G inter-PLMN roaming (SEPP/N32) and a DNS/FQDN migration path for carrier-grade addressing
 - ✅ Real-time network visualization
-- ✅ Comprehensive subscriber management
+- ✅ Comprehensive subscriber management, including per-session Framed Routing
 - ✅ Powerful automation tools
 - ✅ Production-ready safety features
-- ✅ Voice (IMS/VoLTE, alpha) and SMS (SGs) modules, both optional
+- ✅ Voice (IMS/VoLTE, VoWiFi — both alpha) and SMS (SGs) modules, all optional
 - ✅ End-to-end validation via simulated test UEs, no physical radio required
 
 For detailed usage instructions, see **[INSTALL.md](../INSTALL.md)** and other documentation.

@@ -16,6 +16,24 @@ export interface IPAssignment {
   ipv4: string;
 }
 
+export interface IPPoolInfo {
+  ipPool: string;
+  startIp: string;
+  endIp: string;
+  gatewayIp: string | null;
+  totalSubscribers: number;
+  withIp: number;
+  withoutIp: number;
+  // IMS APN info — only present when subscribers have an IMS session configured
+  imsApn?: string;
+  imsPool?: string;
+  imsStartIp?: string;
+  imsEndIp?: string;
+  imsGatewayIp?: string | null;
+  imsWithIp?: number;
+  imsWithoutIp?: number;
+}
+
 /**
  * Auto-assign IPv4 addresses to all subscribers from the UPF session pool
  */
@@ -26,31 +44,109 @@ export class AutoAssignIPsUseCase {
     private readonly logger: pino.Logger,
   ) {}
 
-  async execute(): Promise<AutoAssignIPsResult> {
+  async getPoolInfo(): Promise<IPPoolInfo> {
+    const upfConfig = await this.configRepo.loadUpf();
+    const rawYaml = (upfConfig as any).rawYaml;
+    const sessions: any[] = rawYaml?.upf?.session ?? [];
+
+    // Primary internet session: first IPv4 session without a DNN restriction (or dnn=internet)
+    const internetSession = sessions.find((s: any) =>
+      s.subnet && !s.subnet.includes(':') && (!s.dnn || s.dnn === 'internet')
+    ) ?? sessions.find((s: any) => s.subnet && !s.subnet.includes(':'));
+    if (!internetSession?.subnet) throw new Error('No IPv4 session pool subnet found in UPF configuration');
+
+    const ipPool = internetSession.subnet as string;
+    const gatewayIp = (internetSession.gateway as string) ?? null;
+    const { startIp, endIp } = this.parseSubnet(ipPool);
+
+    // IMS session: session with dnn=ims
+    const IMS_APNS = ['ims', 'IMS'];
+    const imsUpfSession = sessions.find((s: any) =>
+      s.subnet && !s.subnet.includes(':') && IMS_APNS.includes(s.dnn)
+    );
+
+    const allSubscribers = await this.subscriberRepo.findAllFull();
+
+    const withIp = allSubscribers.filter(s =>
+      s.slice?.some(sl => sl.session?.some(sess => !IMS_APNS.includes(sess.name) && sess.ue?.ipv4))
+    ).length;
+
+    // Detect IMS sessions on subscribers
+    const imsSubscribers = allSubscribers.filter(s =>
+      s.slice?.some(sl => sl.session?.some(sess => IMS_APNS.includes(sess.name)))
+    );
+    const detectedImsApn = imsSubscribers.length > 0
+      ? (imsSubscribers[0].slice?.flatMap(sl => sl.session ?? []).find(sess => IMS_APNS.includes(sess.name))?.name ?? 'ims')
+      : undefined;
+
+    const info: IPPoolInfo = {
+      ipPool, startIp, endIp, gatewayIp,
+      totalSubscribers: allSubscribers.length,
+      withIp,
+      withoutIp: allSubscribers.length - withIp,
+    };
+
+    if (detectedImsApn !== undefined) {
+      const imsWithIp = imsSubscribers.filter(s =>
+        s.slice?.some(sl => sl.session?.some(sess => IMS_APNS.includes(sess.name) && sess.ue?.ipv4))
+      ).length;
+
+      let imsPool: string | undefined;
+      let imsStartIp: string | undefined;
+      let imsEndIp: string | undefined;
+      let imsGatewayIp: string | null = null;
+
+      if (imsUpfSession?.subnet) {
+        imsPool = imsUpfSession.subnet as string;
+        imsGatewayIp = (imsUpfSession.gateway as string) ?? null;
+        const parsed = this.parseSubnet(imsPool);
+        imsStartIp = parsed.startIp;
+        imsEndIp = parsed.endIp;
+      }
+
+      info.imsApn = detectedImsApn;
+      info.imsPool = imsPool;
+      info.imsStartIp = imsStartIp;
+      info.imsEndIp = imsEndIp;
+      info.imsGatewayIp = imsGatewayIp;
+      info.imsWithIp = imsWithIp;
+      info.imsWithoutIp = imsSubscribers.length - imsWithIp;
+    }
+
+    return info;
+  }
+
+  async execute(overrides?: { startIp?: string; endIp?: string; overwrite?: boolean; imsStartIp?: string; imsEndIp?: string; imsOverwrite?: boolean }): Promise<AutoAssignIPsResult> {
     try {
+      const IMS_APNS = ['ims', 'IMS'];
+
       // Step 1: Get IP pool from UPF configuration
       const upfConfig = await this.configRepo.loadUpf();
       const rawYaml = (upfConfig as any).rawYaml;
-      const session = rawYaml?.upf?.session?.[0];
-      
-      if (!session?.subnet) {
-        throw new Error('No session pool subnet found in UPF configuration');
-      }
+      const upfSessions: any[] = rawYaml?.upf?.session ?? [];
 
-      const ipPool = session.subnet; // e.g., "10.45.0.0/16"
-      const gatewayIP = session.gateway; // e.g., "10.45.0.1" - must be excluded
+      const internetSession = upfSessions.find((s: any) =>
+        s.subnet && !s.subnet.includes(':') && (!s.dnn || s.dnn === 'internet')
+      ) ?? upfSessions.find((s: any) => s.subnet && !s.subnet.includes(':'));
+      if (!internetSession?.subnet) throw new Error('No IPv4 session pool subnet found in UPF configuration');
+
+      const ipPool = internetSession.subnet as string;
+      const gatewayIP = internetSession.gateway;
       this.logger.info({ ipPool, gatewayIP }, 'Using IP pool from UPF configuration');
 
       // Step 2: Parse the subnet to get base IP and netmask
-      const { baseIp, netmask, startIp, endIp } = this.parseSubnet(ipPool);
+      const { baseIp, netmask, startIp: defaultStart, endIp: defaultEnd } = this.parseSubnet(ipPool);
+      const startIp = overrides?.startIp ?? defaultStart;
+      const endIp   = overrides?.endIp   ?? defaultEnd;
+      const overwrite = overrides?.overwrite ?? false;
       const gatewayIPNum = gatewayIP ? this.ipToNumber(gatewayIP) : null;
-      this.logger.info({ baseIp, netmask, startIp, endIp, gatewayIP }, 'Parsed IP pool');
+      this.logger.info({ baseIp, netmask, startIp, endIp, gatewayIP, overwrite }, 'Parsed IP pool');
 
       // Step 3: Get all subscribers
       const allSubscribers = await this.subscriberRepo.findAllFull();
       this.logger.info({ count: allSubscribers.length }, 'Found subscribers');
 
-      // Step 4: Generate and assign IPs
+      // Step 4: Assign internet session IPs
       let assigned = 0;
       let skipped = 0;
       let failed = 0;
@@ -60,24 +156,32 @@ export class AutoAssignIPsUseCase {
 
       for (const subscriber of allSubscribers) {
         try {
-          // Check if subscriber already has an IP assigned
-          const hasIp = subscriber.slice?.some(slice =>
-            slice.session?.some(session => session.ue?.ipv4)
-          );
+          // Target the actual non-IMS session by name, not slice[0].session[0] positionally —
+          // a subscriber whose "ims" session happens to sit first in the array would otherwise
+          // get an internet-pool IP written into their IMS session instead of their real
+          // internet session (confirmed live: this caused internet and ims to end up sharing
+          // the same 10.45.0.0/24 range for affected subscribers).
+          const nonImsSession = subscriber.slice
+            ?.flatMap(sl => sl.session ?? [])
+            .find(sess => !IMS_APNS.includes(sess.name));
 
-          if (hasIp) {
+          if (!nonImsSession) {
             skipped++;
             continue;
           }
 
-          // Assign IP to the first session of the first slice
+          if (nonImsSession.ue?.ipv4 && !overwrite) {
+            skipped++;
+            continue;
+          }
+
           if (currentIp > endIpNum) {
             errors.push(`IP pool exhausted after ${assigned} assignments`);
             failed++;
             break;
           }
 
-          // Skip gateway IP if it matches current IP
+          // Skip gateway IP
           if (gatewayIPNum !== null && currentIp === gatewayIPNum) {
             this.logger.info({ skippedIP: this.numberToIp(currentIp) }, 'Skipping gateway IP');
             currentIp++;
@@ -91,14 +195,50 @@ export class AutoAssignIPsUseCase {
           const assignedIp = this.numberToIp(currentIp);
           currentIp++;
 
-          // Update subscriber with new IP
-          await this.subscriberRepo.assignIPv4(subscriber.imsi, assignedIp);
+          await this.subscriberRepo.assignIPv4ByApn(subscriber.imsi, nonImsSession.name, assignedIp);
           assigned++;
-          
+
         } catch (error) {
           failed++;
           errors.push(`Failed to assign IP to ${subscriber.imsi}: ${error instanceof Error ? error.message : String(error)}`);
           this.logger.warn({ imsi: subscriber.imsi, error: String(error) }, 'Failed to assign IP');
+        }
+      }
+
+      // Step 5: Optionally assign IMS session IPs
+      if (overrides?.imsStartIp && overrides?.imsEndIp) {
+        const imsOverwrite = overrides.imsOverwrite ?? false;
+        let imsCurrentIp = this.ipToNumber(overrides.imsStartIp);
+        const imsEndIpNum = this.ipToNumber(overrides.imsEndIp);
+
+        for (const subscriber of allSubscribers) {
+          try {
+            const imsSession = subscriber.slice?.flatMap(sl => sl.session ?? [])
+              .find(sess => IMS_APNS.includes(sess.name));
+            if (!imsSession) continue;
+
+            if (imsSession.ue?.ipv4 && !imsOverwrite) {
+              skipped++;
+              continue;
+            }
+
+            if (imsCurrentIp > imsEndIpNum) {
+              errors.push(`IMS IP pool exhausted after ${assigned} IMS assignments`);
+              failed++;
+              break;
+            }
+
+            const imsIp = this.numberToIp(imsCurrentIp);
+            imsCurrentIp++;
+
+            await this.subscriberRepo.assignIPv4ByApn(subscriber.imsi, imsSession.name, imsIp);
+            assigned++;
+
+          } catch (error) {
+            failed++;
+            errors.push(`Failed to assign IMS IP to ${subscriber.imsi}: ${error instanceof Error ? error.message : String(error)}`);
+            this.logger.warn({ imsi: subscriber.imsi, error: String(error) }, 'Failed to assign IMS IP');
+          }
         }
       }
 

@@ -43,6 +43,11 @@ coverage/
 # Production data (should not be in repo)
 /backups/
 /data/
+/backend/radio-backups/
+/mongo_docker/
+*.db
+*.db-shm
+*.db-wal
 
 # Monitoring runtime data
 monitoring/prometheus_data/*

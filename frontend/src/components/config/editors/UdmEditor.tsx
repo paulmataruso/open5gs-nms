@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection, SbiClientSection } from './SharedComponents';
+import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -28,6 +28,11 @@ export function UdmEditor({ configs, onChange }: Props): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Unified Data Management (UDM)"
+        generation="5G"
+        description="The UDM is the 5G equivalent of the HSS. It manages subscriber identities and generates authentication vectors for the AUSF (5G-AKA / EAP-AKA′). UDM provides subscriber data to the AMF (N8) and session management subscriptions to the SMF (N10). It stores no data itself — all persistent subscriber data lives in the UDR, which UDM queries over the Nudr (N35) interface."
+      />
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
@@ -46,6 +51,15 @@ export function UdmEditor({ configs, onChange }: Props): JSX.Element {
               className="nms-input font-mono text-xs"
               value={server.port}
               onChange={(e) => updateUdm({ sbi: { ...udm.sbi, server: [{ ...server, port: parseInt(e.target.value) || 7777 }] } })}
+            />
+          </div>
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
+            <input
+              className="nms-input font-mono text-xs"
+              value={server.advertise || ''}
+              onChange={(e) => updateUdm({ sbi: { ...udm.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}
+              placeholder="udm.5gc.mnc070.mcc999.3gppnetwork.org:7777"
             />
           </div>
         </div>

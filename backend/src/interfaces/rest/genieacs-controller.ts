@@ -4,6 +4,7 @@ import * as path from 'path';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
+import { radioBackupDir, backupDeviceById } from './radio-backup';
 
 // ─── Bandwidth MHz → LTE resource blocks ────────────────────────────────────
 // BaiBLQ_3.x expects integer resource blocks as xsd:int
@@ -48,7 +49,7 @@ const SFAP = 'Device.Services.FAPService.1.';
 
 interface SercommProvisionInput {
   mcc: string; mnc: string; tac: string;
-  mmeIp: string;
+  mmeIp: string; mmeCfgIdList: string;
   earfcn: string;
   earfcn2: string;
   pci: string;
@@ -74,10 +75,9 @@ interface SercommProvisionInput {
   sasUserId: string;
   sasIcgGroupId: string;
   sasPeerCertVerify: boolean;
+  sasGrantMethod: string;        // 'FREQ_GRANT_BY_CARRIER' | 'FREQ_GRANT_BY_BLOCKS'
   latitude: string;
   longitude: string;
-  cipheringAlgorithmList:  string;
-  integrityAlgorithmList:  string;
   enable256QAM: boolean;
 }
 
@@ -127,13 +127,9 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.CellReservedForOperatorUse`,          '1',          'xsd:boolean'     ],
     // Extra Sercomm vendor params not in Magma but confirmed from live device
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.Alias`,                               'Primary PLMNID', 'xsd:string'  ],
-    [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_CFG_MMEIdList`,             '{1}',        'xsd:string'      ],
+    [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_CFG_MMEIdList`,             input.mmeCfgIdList || '{1}', 'xsd:string'],
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_PLMNID_Priority`,           '6',          'xsd:unsignedInt' ],
     [`${SFAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_Selected_MME_ByPriority`,   '1',          'xsd:boolean'     ],
-
-    // ── Security algorithms (configuration_init._set_security) ──────────────
-    [`${SFAP}CellConfig.LTE.EPC.AllowedCipheringAlgorithmList`,              input.cipheringAlgorithmList, 'xsd:string'],
-    [`${SFAP}CellConfig.LTE.EPC.AllowedIntegrityProtectionAlgorithmList`,    input.integrityAlgorithmList, 'xsd:string'],
 
     // ── Gateway / S1 (configuration_init._set_s1_connection) ────────────────
     // MME_IP → xsd:string
@@ -151,12 +147,11 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}CellConfig.LTE.RAN.RF.EARFCNDL`,                                    input.earfcn, 'xsd:int'         ],
     // EARFCNUL: NOT set by Magma for TDD, but set here for dual carrier
     [`${SFAP}CellConfig.LTE.RAN.RF.EARFCNUL`,                                    input.earfcn, 'xsd:int'         ],
-    // Carrier 2 EARFCNs — only push when earfcn2 is set (CA mode)
-    // Empty string as xsd:int causes faultCode 9007 and aborts the entire task
-    ...(input.earfcn2 ? [
-      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDL2`,  input.earfcn2, 'xsd:int'] as [string,string,string],
-      [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNUL2`,  input.earfcn2, 'xsd:int'] as [string,string,string],
-    ] : []),
+    // Carrier 2 EARFCNs — always push to prevent factory leftovers (e.g. 55546) from
+    // causing RF mismatch. In CA mode set to earfcn2; in single-carrier mode mirror
+    // the primary so the RF layer doesn't try to bring up a ghost second carrier.
+    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDL2`,  input.earfcn2 || input.earfcn, 'xsd:int'],
+    [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNUL2`,  input.earfcn2 || input.earfcn, 'xsd:int'],
     // EARFCNDLConfigList / EARFCNULConfigList: comma-separated list matching EarfcnList
     // Must match EARFCNDL,EARFCNDL2 exactly or radio rejects the CA config
     [`${SFAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDLConfigList`,                input.earfcn2 ? `${input.earfcn},${input.earfcn2}` : input.earfcn, 'xsd:string'],
@@ -213,7 +208,9 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}REM.X_000E8F_tfcsManagerConfig.primSrc`,                            input.syncSource,                 'xsd:string' ],
     // Extra sync params
     [`${SFAP}REM.X_000E8F_tfcsManagerConfig.srcSwitchFreeRunning`,               '1',                              'xsd:boolean'],
-    [`${SFAP}REM.X_000E8F_tfcsManagerConfig.ntpSyncEnable`,                      '1',                              'xsd:boolean'],
+    // ntpSyncEnable MUST be False — NTP timeout eats into the eNodeB 120s watchdog window
+    // causing a crash loop before SAS can grant. FREE_RUNNING sync is stable.
+    [`${SFAP}REM.X_000E8F_tfcsManagerConfig.ntpSyncEnable`,                      '0',                              'xsd:boolean'],
 
     // ── CA (CarrierAggregationParameters) ─────────────────────────────────
     // NOTE: CA_Enable and Cell_Number are intentionally NOT set here.
@@ -224,6 +221,7 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     // Must always be True for the radio to work correctly, regardless of CA setting
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ExtendFreqA.Enable`,                  'True',                            'xsd:boolean'],
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ExtendFreqA.AutoSelectChannelAndBandwidth`, 'True',                       'xsd:boolean'],
+    [`${SFAP}FAPControl.LTE.X_000E8F_SAS.ExtendFreqA.GrantMethod`,             input.sasGrantMethod || 'FREQ_GRANT_BY_CARRIER', 'xsd:string'],
 
     // ── SAS (SASParameters) ─────────────────────────────────────────────
     // SAS_ENABLE → xsd:boolean (Sercomm uses True/False not 1/0)
@@ -276,11 +274,16 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     [`${SFAP}FAPControl.LTE.X_000E8F_SAS.MaxEirpMHz_Carrier2`,                  '-137',                            'xsd:int'    ],
 
     // ── Location ────────────────────────────────────────────────────────────
-    // NOTE: Device.FAP.GPS.LockedLatitude/Longitude and LocationInfoInUse_Lat/Long
-    // are read-only status fields — do NOT write to them (9002 Internal error)
-    // Location is set via X_000E8F_SAS.HighAccuracyLatitude/Longitude above
+    // FAP.GPS.LockedLatitude/Longitude ARE writable on DG3934v3 firmware.
+    // Must be non-zero or SAS client refuses to start (GPS-not-locked guard in firmware).
+    // ScanOnBoot=false prevents the GPS scan from blocking LTE cell startup on radios
+    // that have no antenna/view of sky — SAS uses HighAccuracyLatitude/Longitude instead.
+    ['Device.FAP.GPS.LockedLatitude',                                             input.latitude,                    'xsd:int'    ],
+    ['Device.FAP.GPS.LockedLongitude',                                            input.longitude,                   'xsd:int'    ],
+    ['Device.FAP.GPS.ScanOnBoot',                                                 'false',                           'xsd:boolean'],
     ['Device.FAP.Location.X_000E8F_LocationInfoSourceSavedFile_Enable',          '1',                               'xsd:boolean'],
     ['Device.FAP.GPS.X_000E8F_Elevation',                                        '0',                               'xsd:int'    ],
+
   );
 
   // Params that must survive the invasive self-reboot — sent AFTER reboot
@@ -421,11 +424,26 @@ function toRadio(device: Record<string, any>) {
     !isOnline                                   ? 'offline' :
     rfEnable === 'true' && opState === 'true'   ? 'on'      : 'off';
 
+  const directIp = getParam(device, 'Device.IP.Interface.1.IPv4Address.1.IPAddress');
+  const crUrl    = getParam(device, 'Device.ManagementServer.ConnectionRequestURL');
+  const parsedIp = !directIp && crUrl ? (crUrl.match(/https?:\/\/([^:/]+)/)?.[1] ?? '') : directIp;
+
+  // GPS coordinates stored as integer 1e-7 degrees (e.g. 43375198 → 43.375198°)
+  const latRaw = getParam(device, 'Device.DeviceInfo.cpiLatitude');
+  const lonRaw = getParam(device, 'Device.DeviceInfo.cpiLongitude');
+  const latitude  = latRaw ? String(parseInt(latRaw) / 1e7) : '';
+  const longitude = lonRaw ? String(parseInt(lonRaw) / 1e7) : '';
+
+  // UE count — prefer the per-cell field, fall back to DeviceInfo aggregate
+  const ueCountFap  = getParam(device, `${FAP}X_COM.LTE.LteUECount`);
+  const ueCountInfo = getParam(device, 'Device.DeviceInfo.X_COM_UE_Count');
+  const ueCount = ueCountFap || ueCountInfo;
+
   return {
     id:           serial,
     serial,
     lastInform,
-    ip:           getParam(device, 'Device.IP.Interface.1.IPv4Address.1.IPAddress'),
+    ip:           parsedIp,
     rfStatus,
     mcc,
     mnc,
@@ -437,6 +455,17 @@ function toRadio(device: Record<string, any>) {
     pci:          getParam(device, `${FAP}CellConfig.LTE.RAN.RF.PhyCellID`),
     band:         getParam(device, `${FAP}CellConfig.LTE.RAN.RF.FreqBandIndicator`),
     txPower:      getParam(device, `${FAP}Capabilities.MaxTxPower`),
+    // Live status — from newly discovered full parameter tree
+    mmeStatus:    getParam(device, 'Device.DeviceInfo.X_COM_MME_Status'),
+    ueCount,
+    gpsStatus:    getParam(device, 'Device.DeviceInfo.X_COM_GPS_Status'),
+    gpsSatCount:  getParam(device, 'Device.DeviceInfo.X_COM_GPS_Satellite_count'),
+    uptime:       getParam(device, 'Device.DeviceInfo.X_COM_STATION_RUN_Time'),
+    latitude,
+    longitude,
+    hwVersion:    getParam(device, 'Device.DeviceInfo.HardwareVersion'),
+    swVersion:    getParam(device, 'Device.DeviceInfo.SoftwareVersion'),
+    // SAS
     sasEnable:    getParam(device, 'Device.DeviceInfo.SAS.RadioEnable'),
     sasServerUrl: getParam(device, 'Device.DeviceInfo.SAS.ServerUrl'),
     sasUserId:    getParam(device, 'Device.DeviceInfo.SAS.UserId'),
@@ -466,20 +495,6 @@ async function nbiPost(url: string, body: Record<string, any>): Promise<{ ok: bo
   });
   const text = await resp.text().catch(() => '');
   return { ok: resp.ok, status: resp.status, text };
-}
-
-// ─── Radio backup helpers ─────────────────────────────────────────────────────
-function radioBackupDir(backupRoot: string, deviceId: string): string {
-  const safe = deviceId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(backupRoot, 'radio-backups', safe);
-}
-
-async function saveRadioBackup(backupRoot: string, deviceId: string, data: Record<string, any>): Promise<string> {
-  const dir      = radioBackupDir(backupRoot, deviceId);
-  fs.mkdirSync(dir, { recursive: true });
-  const filename = `${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-  fs.writeFileSync(path.join(dir, filename), JSON.stringify(data, null, 2));
-  return filename;
 }
 
 // ─── Router factory ───────────────────────────────────────────────────────────
@@ -544,6 +559,7 @@ export function createGenieacsRouter(
         'Device.FAP.GPS.LockedLongitude',
         'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status',
         'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_S1_Status',
+        `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_CurrentUENum`,
         'Device.IP.Interface.1.IPv4Address.1.IPAddress',
       ].join(',');
 
@@ -552,12 +568,13 @@ export function createGenieacsRouter(
 
       const devices = (await resp.json()) as Record<string, any>[];
 
-      // Filter to Sercomm/FreedomFi by OUI from _deviceId (000E8F)
-      // Can't rely on Device.DeviceInfo.Manufacturer — Baicells doesn't populate it
+      // Filter to Sercomm/FreedomFi 4G by OUI from _deviceId (000E8F)
+      // Exclude OUI 00C002 = Sercomm NR (SCE5164 5G) which shares the "Sercomm" manufacturer string
       const sercommDevices = devices.filter(d => {
         const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
         const mfr = (d._deviceId?._Manufacturer ?? getParam(d, 'Device.DeviceInfo.Manufacturer')).toLowerCase();
-        return oui === '000E8F' || mfr.includes('sercomm') || mfr.includes('freedomfi') || mfr.includes('moso');
+        return (oui === '000E8F' || mfr.includes('sercomm') || mfr.includes('freedomfi') || mfr.includes('moso'))
+          && oui !== '00C002';
       });
 
       const radios = sercommDevices.map(d => {
@@ -578,6 +595,7 @@ export function createGenieacsRouter(
           mcc, mnc,
           tac:          getParam(d, `${SERCOMM_FAP}CellConfig.LTE.EPC.TAC`),
           mmeIp:        getParam(d, `${SERCOMM_FAP}FAPControl.LTE.Gateway.S1SigLinkServerList`),
+          mmeCfgIdList: getParam(d, `${SERCOMM_FAP}CellConfig.LTE.EPC.PLMNList.1.X_000E8F_CFG_MMEIdList`) || '{1}',
           earfcn:       getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.RF.EARFCNDL`),
           earfcn2:      getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.RF.X_000E8F_EARFCNDL2`),
           bandwidth:    getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.RF.DLBandwidth`),
@@ -598,6 +616,8 @@ export function createGenieacsRouter(
           longitude:    getParam(d, 'Device.FAP.GPS.LockedLongitude'),
           enable256QAM: getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.PHY.PDSCH.X_000E8F_Enable256QAM`),
           enable64QAM:  getParam(d, `${SERCOMM_FAP}CellConfig.LTE.RAN.PHY.PUSCH.Enable64QAM`),
+          s1Status:     getParam(d, 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_S1_Status'),
+          ueCount:      getParam(d, `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_CurrentUENum`),
         };
       });
 
@@ -640,6 +660,19 @@ export function createGenieacsRouter(
         `${FAP}CellConfig.LTE.RAN.Common.CellIdentity`,
         `${FAP}Capabilities.MaxTxPower`,
         'Device.IP.Interface.1.IPv4Address.1.IPAddress',
+        'Device.ManagementServer.ConnectionRequestURL',
+        // Live status fields — from full parameter tree (available after clean bootstrap)
+        'Device.DeviceInfo.X_COM_MME_Status',
+        'Device.DeviceInfo.X_COM_UE_Count',
+        `${FAP}X_COM.LTE.LteUECount`,
+        'Device.DeviceInfo.X_COM_GPS_Status',
+        'Device.DeviceInfo.X_COM_GPS_Satellite_count',
+        'Device.DeviceInfo.cpiLatitude',
+        'Device.DeviceInfo.cpiLongitude',
+        'Device.DeviceInfo.X_COM_STATION_RUN_Time',
+        'Device.DeviceInfo.HardwareVersion',
+        'Device.DeviceInfo.SoftwareVersion',
+        `${FAP}CellConfig.LTE.MmePoolConfigParam.1.MME1Status`,
         'Device.DeviceInfo.SAS.RadioEnable',
         'Device.DeviceInfo.SAS.ServerUrl',
         'Device.DeviceInfo.SAS.UserId',
@@ -732,13 +765,7 @@ export function createGenieacsRouter(
 
       // Auto-backup after successful provision
       try {
-        const backupResp = await fetch(`${nbiUrl}/devices?query=${encodeURIComponent(JSON.stringify({ _id: deviceId }))}`)
-        if (backupResp.ok) {
-          const devices = (await backupResp.json()) as Record<string, any>[];
-          if (devices && devices.length > 0) {
-            await saveRadioBackup(backupRoot, deviceId, devices[0]);
-          }
-        }
+        await backupDeviceById(nbiUrl, backupRoot, deviceId);
       } catch (backupErr) {
         logger.warn({ backupErr: String(backupErr), deviceId }, 'Auto-backup after provision failed');
       }
@@ -757,6 +784,18 @@ export function createGenieacsRouter(
   });
 
   // ── POST /api/genieacs/refresh/:deviceId ─────────────────────────────────
+  // Triggers a connection request, re-runs the inform provision, AND explicitly
+  // fetches the config/SAS parameters the edit form needs but that GenieACS
+  // never queries on its own (Baicells only reports a small fixed parameter
+  // set on periodic Inform — see memory baicells-genieacs-9005-fix).
+  //
+  // IMPORTANT: this parameterNames list must only ever contain paths already
+  // proven to exist on this radio model — every one of them is also written
+  // by buildProvisionTasks()'s setParameterValues (Push Config), so a prior
+  // successful push is what actually creates them in the device's data model.
+  // Baicells (BaiBLQ_3.0.12) hard-faults (9005) a getParameterValues call if
+  // ANY listed name doesn't exist on the device, aborting the whole RPC — do
+  // not add a path here unless it's also in buildProvisionTasks's params list.
   router.post('/refresh/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const encodedId    = encodeDeviceId(deviceId);
@@ -764,30 +803,48 @@ export function createGenieacsRouter(
 
     try {
       const r = await nbiPost(taskUrl, {
+        name: 'provisions',
+        provisions: [['baicells']],
+      });
+      if (!r.ok) throw new Error(`connection_request failed (${r.status}): ${r.text}`);
+
+      const gpvUrl = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
+      const gpv = await nbiPost(gpvUrl, {
         name: 'getParameterValues',
         parameterNames: [
           `${FAP}CellConfig.LTE.EPC.TAC`,
-          `${FAP}CellConfig.LTE.EPC.PLMNList.1.PLMNID`,
           `${FAP}FAPControl.LTE.Gateway.S1SigLinkServerList`,
-          `${FAP}FAPControl.LTE.Gateway.MmeIpPlmnList`,
-          `${FAP}FAPControl.LTE.Gateway.ExistPlmnidList`,
-          `${FAP}FAPControl.LTE.OpState`,
-          `${FAP}FAPControl.LTE.RFTxStatus`,
           `${FAP}CellConfig.LTE.RAN.RF.EARFCNDL`,
-          `${FAP}CellConfig.LTE.RAN.RF.EARFCNUL`,
           `${FAP}CellConfig.LTE.RAN.RF.DLBandwidth`,
-          `${FAP}CellConfig.LTE.RAN.RF.ULBandwidth`,
           `${FAP}CellConfig.LTE.RAN.RF.PhyCellID`,
           `${FAP}CellConfig.LTE.RAN.RF.FreqBandIndicator`,
-          `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`,
           `${FAP}CellConfig.LTE.RAN.Common.CellIdentity`,
           `${FAP}Capabilities.MaxTxPower`,
-          'Device.IP.Interface.1.IPv4Address.1.IPAddress',
-          'Device.DeviceInfo.SoftwareVersion',
-          'Device.DeviceInfo.X_COM_MME_Status',
+          'Device.DeviceInfo.SAS.ServerUrl',
+          'Device.DeviceInfo.SAS.UserId',
+          'Device.DeviceInfo.SAS.FccId',
+          'Device.DeviceInfo.SAS.CallSign',
+          'Device.DeviceInfo.SAS.groupType',
+          'Device.DeviceInfo.SAS.groupId',
+          'Device.DeviceInfo.SAS.LegacyMode',
+          'Device.DeviceInfo.SAS.RegistrationType',
+          'Device.DeviceInfo.SAS.reqLowFrequency',
+          'Device.DeviceInfo.SAS.reqHighFrequency',
+          'Device.DeviceInfo.SAS.PreferredFrequency',
+          'Device.DeviceInfo.SAS.PreferredBandwidth',
+          'Device.DeviceInfo.SAS.PreferredPower',
+          'Device.DeviceInfo.SAS.FrequencySelectionLogic',
+          'Device.DeviceInfo.SAS.MaxEIRP',
+          'Device.DeviceInfo.SAS.EirpCapability',
+          'Device.DeviceInfo.SAS.enableMode',
         ],
       });
-      if (!r.ok) throw new Error(`connection_request failed (${r.status}): ${r.text}`);
+      // 202 = queued (delivered on next inform) — not a failure. Only a hard
+      // non-2xx/non-202 status means the NBI itself rejected the task.
+      if (gpv.status !== 202 && !gpv.ok) {
+        logger.warn({ deviceId, status: gpv.status, text: gpv.text }, 'Baicells getParameterValues refresh returned non-ok — config fields may stay stale');
+      }
+
       res.json({ success: true, message: 'Connection request sent — device will inform shortly.' });
     } catch (err) {
       logger.error({ deviceId, err: String(err) }, 'Force refresh failed');
@@ -798,11 +855,14 @@ export function createGenieacsRouter(
   // ── POST /api/genieacs/refresh-sercomm/:deviceId ─────────────────────────
   // Summons a Sercomm radio via connection_request + getParameterValues so
   // GenieACS fetches the latest param values from the radio immediately.
+  // timeout=30000 makes GenieACS wait up to 30s for the radio to inform and
+  // pick up the task, even if the connection_request itself fails (some radios
+  // reset their CR password on reboot and the CPE-generated password is unknown).
   router.post('/refresh-sercomm/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const encodedId    = encodeDeviceId(deviceId);
     const SFAP_        = 'Device.Services.FAPService.1.';
-    const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?connection_request`;
+    const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?connection_request&timeout=30000`;
     try {
       const r = await nbiPost(taskUrl, {
         name: 'getParameterValues',
@@ -832,8 +892,10 @@ export function createGenieacsRouter(
           'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status',
         ],
       });
-      if (!r.ok) throw new Error(`connection_request failed (${r.status}): ${r.text}`);
-      res.json({ success: true, message: 'Sercomm summon sent — device will inform shortly.' });
+      // 202 = task queued (success), even when status line says "Connection request error"
+      // (some radios reset their CR password on reboot; tasks still deliver via periodic inform)
+      if (r.status !== 202 && !r.ok) throw new Error(`refresh failed (${r.status}): ${r.text}`);
+      res.json({ success: true, message: 'Sercomm parameters refreshed.' });
     } catch (err) {
       logger.error({ deviceId, err: String(err) }, 'Sercomm refresh failed');
       res.status(502).json({ success: false, error: String(err) });
@@ -1024,7 +1086,8 @@ export function createGenieacsRouter(
       const sercommDevices = allDevices.filter(d => {
         const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
         const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
-        return oui === '000E8F' || mfr.includes('sercomm') || mfr.includes('freedomfi');
+        return (oui === '000E8F' || mfr.includes('sercomm') || mfr.includes('freedomfi'))
+          && oui !== '00C002';
       });
       const results = await Promise.allSettled(
         sercommDevices.map(async (d) => {
@@ -1085,12 +1148,7 @@ export function createGenieacsRouter(
   router.post('/backup/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     try {
-      // Use the NBI devices list with a query filter to avoid ID encoding issues
-      const resp = await fetch(`${nbiUrl}/devices?query=${encodeURIComponent(JSON.stringify({ _id: deviceId }))}`)
-      if (!resp.ok) throw new Error(`NBI returned ${resp.status}`);
-      const devices = (await resp.json()) as Record<string, any>[];
-      if (!devices || devices.length === 0) throw new Error(`Device not found: ${deviceId}`);
-      const filename = await saveRadioBackup(backupRoot, deviceId, devices[0]);
+      const filename = await backupDeviceById(nbiUrl, backupRoot, deviceId);
       res.json({ success: true, filename });
     } catch (err) {
       res.status(502).json({ success: false, error: String(err) });

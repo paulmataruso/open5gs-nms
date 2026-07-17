@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { Plus, X, Shield } from 'lucide-react';
 import { FieldWithTooltip } from '../FieldsWithTooltips';
 import { MME_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
@@ -32,13 +32,13 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
   const mme = fullYaml.mme || {};
 
   const updateMme = (partial: any) => {
-    // Transform sgsap.client.map from array to object for Open5GS compatibility
+    // Keep maps as an array (plural); normalize any legacy map: object to maps: array.
     if (partial.sgsap?.client) {
-      partial.sgsap.client = partial.sgsap.client.map((client: any) => ({
-        ...client,
-        // Convert map array [{ tai, lai }] to object { tai, lai }
-        map: client.map?.[0] || client.map
-      }));
+      partial.sgsap.client = partial.sgsap.client.map((client: any) => {
+        const { map: _legacy, ...rest } = client;
+        const maps = client.maps ?? (_legacy ? [_legacy] : undefined);
+        return maps !== undefined ? { ...rest, maps } : rest;
+      });
     }
     onChange({ ...configs, mme: { ...fullYaml, mme: { ...mme, ...partial } } });
   };
@@ -50,10 +50,14 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
   const s1apServer = mme.s1ap?.server?.[0] || { address: '10.0.1.175' };
   const gtpcServer = mme.gtpc?.server?.[0] || { address: '127.0.0.2' };
 
-  // Update a TAI or LAI field within a client's map object.
-  // Open5GS map is a plain object { tai: {...}, lai: {...} }, NOT an array.
+  // Normalize a client's map entries to an array (handles legacy map: object and maps: array).
+  const getClientMaps = (client: any): any[] =>
+    client?.maps ?? (client?.map ? [client.map] : [defaultMap()]);
+
+  // Update a field within a specific TAI→LAI mapping in a client.
   const updateMapField = (
     clientIdx: number,
+    mapIdx: number,
     isFirstAndEmpty: boolean,
     side: 'tai' | 'lai',
     subfield: 'mcc' | 'mnc' | 'tac' | 'lac',
@@ -67,11 +71,12 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
       } else {
         m[side].plmn_id[subfield as 'mcc' | 'mnc'] = value;
       }
-      updateMme({ sgsap: { client: [{ address: '', local_address: '', map: m }] } });
+      updateMme({ sgsap: { client: [{ address: '', local_address: '', maps: [m] }] } });
     } else {
-      const updated = [...(mme.sgsap?.client || [])];
-      const existingMap = updated[clientIdx].map || defaultMap();
-      const newMap = {
+      const updatedClients = [...(mme.sgsap?.client || [])];
+      const clientMaps = [...getClientMaps(updatedClients[clientIdx])];
+      const existingMap = clientMaps[mapIdx] || defaultMap();
+      clientMaps[mapIdx] = {
         ...existingMap,
         [side]: {
           ...existingMap[side],
@@ -80,13 +85,18 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
             : { plmn_id: { ...existingMap[side]?.plmn_id, [subfield]: value } }),
         },
       };
-      updated[clientIdx] = { ...updated[clientIdx], map: newMap };
-      updateMme({ sgsap: { client: updated } });
+      updatedClients[clientIdx] = { ...updatedClients[clientIdx], maps: clientMaps };
+      updateMme({ sgsap: { client: updatedClients } });
     }
   };
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Mobility Management Entity (MME)"
+        generation="4G"
+        description="The MME is the central control-plane node of the 4G (LTE) core network. It handles UE attachment and authentication, manages tracking areas and paging, and coordinates with the HSS (via Diameter/S6a), the Serving Gateway (via GTP-C/S11), and the SMF/PGW (via S5/S8). Every 4G device registers, authenticates, and establishes sessions through the MME."
+      />
       {mme.freeDiameter && (
         <div>
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">
@@ -192,13 +202,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         {(mme.sgsap?.client?.length > 0 ? mme.sgsap.client : [null]).map((client: any, clientIdx: number) => {
           const isFirstAndEmpty = client === null;
           const actualClient = client || {};
-          // map is a plain object { tai, lai } — NOT an array
-          // hasRealMap = true only when the client actually has saved map data
-          const hasRealMap = !isFirstAndEmpty && actualClient.map != null;
-          const mapping: any = hasRealMap ? actualClient.map : defaultMap();
-
-          // Helper: return real value if map data exists, otherwise '' so placeholder shows
-          const mapVal = (val: any) => hasRealMap ? (val ?? '') : '';
+          const clientMaps: any[] = isFirstAndEmpty ? [defaultMap()] : getClientMaps(actualClient);
 
           return (
             <div key={clientIdx} className="relative border border-nms-border rounded-lg p-4 mb-4 bg-nms-surface-2/30">
@@ -226,7 +230,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                   value={isFirstAndEmpty ? '' : (Array.isArray(actualClient.address) ? actualClient.address.join(', ') : actualClient.address || '')}
                   onChange={(v) => {
                     if (isFirstAndEmpty) {
-                      updateMme({ sgsap: { client: [{ address: v, local_address: '', map: defaultMap() }] } });
+                      updateMme({ sgsap: { client: [{ address: v, local_address: '', maps: [defaultMap()] }] } });
                     } else {
                       const updated = [...(mme.sgsap?.client || [])];
                       updated[clientIdx] = { ...updated[clientIdx], address: v };
@@ -253,7 +257,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                   value={isFirstAndEmpty ? '' : (Array.isArray(actualClient.local_address) ? actualClient.local_address.join(', ') : actualClient.local_address || '')}
                   onChange={(v) => {
                     if (isFirstAndEmpty) {
-                      updateMme({ sgsap: { client: [{ address: '', local_address: v, map: defaultMap() }] } });
+                      updateMme({ sgsap: { client: [{ address: '', local_address: v, maps: [defaultMap()] }] } });
                     } else {
                       const updated = [...(mme.sgsap?.client || [])];
                       updated[clientIdx] = { ...updated[clientIdx], local_address: v };
@@ -265,97 +269,145 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 />
               </div>
 
-              {/* TAI → LAI Mapping */}
+              {/* TAI → LAI Mappings */}
               <div>
-                <div className="mb-3">
-                  <h4 className="text-sm font-semibold text-nms-text">TAI → LAI Mapping</h4>
-                  <p className="text-xs text-nms-text-dim mt-0.5">
-                    {MME_TOOLTIPS.sgsap_mapping_explanation}
-                  </p>
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h4 className="text-sm font-semibold text-nms-text">TAI → LAI Mappings</h4>
+                    <p className="text-xs text-nms-text-dim mt-0.5">
+                      {MME_TOOLTIPS.sgsap_mapping_explanation}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (isFirstAndEmpty) {
+                        // Initialize the client with two default mappings
+                        updateMme({ sgsap: { client: [{ address: '', local_address: '', maps: [defaultMap(), defaultMap()] }] } });
+                      } else {
+                        const updatedClients = [...(mme.sgsap?.client || [])];
+                        updatedClients[clientIdx] = {
+                          ...updatedClients[clientIdx],
+                          maps: [...getClientMaps(updatedClients[clientIdx]), defaultMap()],
+                        };
+                        updateMme({ sgsap: { client: updatedClients } });
+                      }
+                    }}
+                    className="nms-btn-ghost text-xs flex items-center gap-1 shrink-0"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add Mapping
+                  </button>
                 </div>
 
-                {/* 4G TAI section */}
-                <div className="mb-3">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-3 h-3 rounded-full bg-blue-500"></div>
-                    <h5 className="text-xs font-semibold text-blue-400 uppercase tracking-wider">
-                      4G Tracking Area (TAI)
-                    </h5>
-                  </div>
-                  <p className="text-xs text-nms-text-dim mb-2 ml-5">
-                    {MME_TOOLTIPS.sgsap_tai_header}
-                  </p>
-                  <div className="grid grid-cols-3 gap-3 ml-5 p-3 bg-blue-500/5 border border-blue-500/20 rounded">
-                    <FieldWithTooltip
-                      label="MCC"
-                      value={mapVal(mapping.tai?.plmn_id?.mcc)}
-                      onChange={(v) => updateMapField(clientIdx, isFirstAndEmpty, 'tai', 'mcc', v)}
-                      placeholder="001"
-                      tooltip={MME_TOOLTIPS.sgsap_tai_mcc}
-                    />
-                    <FieldWithTooltip
-                      label="MNC"
-                      value={mapVal(mapping.tai?.plmn_id?.mnc)}
-                      onChange={(v) => updateMapField(clientIdx, isFirstAndEmpty, 'tai', 'mnc', v)}
-                      placeholder="01"
-                      tooltip={MME_TOOLTIPS.sgsap_tai_mnc}
-                    />
-                    <FieldWithTooltip
-                      label="TAC"
-                      type="number"
-                      value={mapVal(mapping.tai?.tac)}
-                      onChange={(v) => updateMapField(clientIdx, isFirstAndEmpty, 'tai', 'tac', v)}
-                      placeholder="4131"
-                      tooltip={MME_TOOLTIPS.sgsap_tai_tac}
-                    />
-                  </div>
-                </div>
+                {clientMaps.map((mapping: any, mapIdx: number) => (
+                  <div key={mapIdx} className="relative mb-3 border border-dashed border-nms-border/60 rounded-lg p-3 bg-nms-surface-2/20">
+                    {/* Remove mapping button — only when > 1 mapping and not placeholder */}
+                    {!isFirstAndEmpty && clientMaps.length > 1 && (
+                      <button
+                        onClick={() => {
+                          const updatedClients = [...(mme.sgsap?.client || [])];
+                          updatedClients[clientIdx] = {
+                            ...updatedClients[clientIdx],
+                            maps: getClientMaps(updatedClients[clientIdx]).filter((_: any, idx: number) => idx !== mapIdx),
+                          };
+                          updateMme({ sgsap: { client: updatedClients } });
+                        }}
+                        className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
+                        title="Remove Mapping"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
 
-                {/* Arrow */}
-                <div className="flex items-center justify-center my-2">
-                  <div className="text-nms-text-dim text-xs font-semibold flex items-center gap-2">
-                    <div className="h-px w-16 bg-nms-border"></div>
-                    ▼ Maps to ▼
-                    <div className="h-px w-16 bg-nms-border"></div>
-                  </div>
-                </div>
+                    {clientMaps.length > 1 && (
+                      <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-3">
+                        Mapping {mapIdx + 1}
+                      </div>
+                    )}
 
-                {/* 2G/3G LAI section */}
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                    <h5 className="text-xs font-semibold text-green-400 uppercase tracking-wider">
-                      2G/3G Location Area (LAI)
-                    </h5>
+                    {/* 4G TAI section */}
+                    <div className="mb-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                        <h5 className="text-xs font-semibold text-blue-400 uppercase tracking-wider">
+                          4G Tracking Area (TAI)
+                        </h5>
+                      </div>
+                      <p className="text-xs text-nms-text-dim mb-2 ml-5">
+                        {MME_TOOLTIPS.sgsap_tai_header}
+                      </p>
+                      <div className="grid grid-cols-3 gap-3 ml-5 p-3 bg-blue-500/5 border border-blue-500/20 rounded">
+                        <FieldWithTooltip
+                          label="MCC"
+                          value={isFirstAndEmpty ? '' : (mapping.tai?.plmn_id?.mcc ?? '')}
+                          onChange={(v) => updateMapField(clientIdx, mapIdx, isFirstAndEmpty, 'tai', 'mcc', v)}
+                          placeholder="001"
+                          tooltip={MME_TOOLTIPS.sgsap_tai_mcc}
+                        />
+                        <FieldWithTooltip
+                          label="MNC"
+                          value={isFirstAndEmpty ? '' : (mapping.tai?.plmn_id?.mnc ?? '')}
+                          onChange={(v) => updateMapField(clientIdx, mapIdx, isFirstAndEmpty, 'tai', 'mnc', v)}
+                          placeholder="01"
+                          tooltip={MME_TOOLTIPS.sgsap_tai_mnc}
+                        />
+                        <FieldWithTooltip
+                          label="TAC"
+                          type="number"
+                          value={isFirstAndEmpty ? '' : (mapping.tai?.tac ?? '')}
+                          onChange={(v) => updateMapField(clientIdx, mapIdx, isFirstAndEmpty, 'tai', 'tac', v)}
+                          placeholder="4131"
+                          tooltip={MME_TOOLTIPS.sgsap_tai_tac}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Arrow */}
+                    <div className="flex items-center justify-center my-2">
+                      <div className="text-nms-text-dim text-xs font-semibold flex items-center gap-2">
+                        <div className="h-px w-16 bg-nms-border"></div>
+                        ▼ Maps to ▼
+                        <div className="h-px w-16 bg-nms-border"></div>
+                      </div>
+                    </div>
+
+                    {/* 2G/3G LAI section */}
+                    <div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                        <h5 className="text-xs font-semibold text-green-400 uppercase tracking-wider">
+                          2G/3G Location Area (LAI)
+                        </h5>
+                      </div>
+                      <p className="text-xs text-nms-text-dim mb-2 ml-5">
+                        {MME_TOOLTIPS.sgsap_lai_header}
+                      </p>
+                      <div className="grid grid-cols-3 gap-3 ml-5 p-3 bg-green-500/5 border border-green-500/20 rounded">
+                        <FieldWithTooltip
+                          label="MCC"
+                          value={isFirstAndEmpty ? '' : (mapping.lai?.plmn_id?.mcc ?? '')}
+                          onChange={(v) => updateMapField(clientIdx, mapIdx, isFirstAndEmpty, 'lai', 'mcc', v)}
+                          placeholder="001"
+                          tooltip={MME_TOOLTIPS.sgsap_lai_mcc}
+                        />
+                        <FieldWithTooltip
+                          label="MNC"
+                          value={isFirstAndEmpty ? '' : (mapping.lai?.plmn_id?.mnc ?? '')}
+                          onChange={(v) => updateMapField(clientIdx, mapIdx, isFirstAndEmpty, 'lai', 'mnc', v)}
+                          placeholder="01"
+                          tooltip={MME_TOOLTIPS.sgsap_lai_mnc}
+                        />
+                        <FieldWithTooltip
+                          label="LAC"
+                          type="number"
+                          value={isFirstAndEmpty ? '' : (mapping.lai?.lac ?? '')}
+                          onChange={(v) => updateMapField(clientIdx, mapIdx, isFirstAndEmpty, 'lai', 'lac', v)}
+                          placeholder="43691"
+                          tooltip={MME_TOOLTIPS.sgsap_lai_lac}
+                        />
+                      </div>
+                    </div>
                   </div>
-                  <p className="text-xs text-nms-text-dim mb-2 ml-5">
-                    {MME_TOOLTIPS.sgsap_lai_header}
-                  </p>
-                  <div className="grid grid-cols-3 gap-3 ml-5 p-3 bg-green-500/5 border border-green-500/20 rounded">
-                    <FieldWithTooltip
-                      label="MCC"
-                      value={mapVal(mapping.lai?.plmn_id?.mcc)}
-                      onChange={(v) => updateMapField(clientIdx, isFirstAndEmpty, 'lai', 'mcc', v)}
-                      placeholder="001"
-                      tooltip={MME_TOOLTIPS.sgsap_lai_mcc}
-                    />
-                    <FieldWithTooltip
-                      label="MNC"
-                      value={mapVal(mapping.lai?.plmn_id?.mnc)}
-                      onChange={(v) => updateMapField(clientIdx, isFirstAndEmpty, 'lai', 'mnc', v)}
-                      placeholder="01"
-                      tooltip={MME_TOOLTIPS.sgsap_lai_mnc}
-                    />
-                    <FieldWithTooltip
-                      label="LAC"
-                      type="number"
-                      value={mapVal(mapping.lai?.lac)}
-                      onChange={(v) => updateMapField(clientIdx, isFirstAndEmpty, 'lai', 'lac', v)}
-                      placeholder="43691"
-                      tooltip={MME_TOOLTIPS.sgsap_lai_lac}
-                    />
-                  </div>
-                </div>
+                ))}
               </div>
             </div>
           );
@@ -364,7 +416,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         {/* Add Button */}
         <button
           onClick={() => {
-            const newClient = { address: '', local_address: '', map: defaultMap() };
+            const newClient = { address: '', local_address: '', maps: [defaultMap()] };
             updateMme({ sgsap: { client: [...(mme.sgsap?.client || []), newClient] } });
           }}
           className="nms-btn-ghost text-sm flex items-center gap-2 w-full justify-center py-3"
@@ -755,6 +807,53 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
             onChange={(v) => updateMme({ metrics: { server: [{ address: mme.metrics?.server?.[0]?.address || '', port: parseInt(v) || 9090 }] } })}
             tooltip={COMMON_TOOLTIPS.metrics_port}
           />
+        </div>
+      </div>
+
+      {/* Global Parameters */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-1 flex items-center gap-2">
+          <Shield className="w-4 h-4" />
+          Global Parameters
+        </h3>
+        <p className="text-xs text-nms-text-dim mb-3">
+          Settings under <code className="font-mono bg-nms-surface-2 px-1 rounded">global.parameter</code> that apply network-wide.
+        </p>
+        <div className="border border-nms-border rounded-lg p-4 space-y-4">
+          <label className="flex items-start gap-3 cursor-pointer group">
+            <div className="relative mt-0.5 shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                checked={!!(fullYaml.global?.parameter?.use_openair)}
+                onChange={(e) => {
+                  const global = fullYaml.global || {};
+                  const parameter = { ...(global.parameter || {}) };
+                  if (e.target.checked) {
+                    parameter.use_openair = true;
+                  } else {
+                    delete parameter.use_openair;
+                  }
+                  onChange({ ...configs, mme: { ...fullYaml, global: { ...global, parameter } } });
+                }}
+              />
+              <div className="w-10 h-6 bg-nms-border peer-checked:bg-nms-accent rounded-full transition-colors duration-200"></div>
+              <div className="absolute left-1 top-1 w-4 h-4 bg-white rounded-full transition-transform duration-200 peer-checked:translate-x-4 pointer-events-none"></div>
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-sm font-semibold text-nms-text group-hover:text-nms-accent transition-colors font-mono">use_openair</span>
+                <span className={`text-xs px-1.5 py-0.5 rounded border ${fullYaml.global?.parameter?.use_openair ? 'bg-green-500/15 text-green-400 border-green-500/30' : 'bg-nms-surface-2 text-nms-text-dim border-nms-border'}`}>
+                  {fullYaml.global?.parameter?.use_openair ? 'enabled' : 'disabled'}
+                </span>
+              </div>
+              <p className="text-xs text-nms-text-dim leading-relaxed">
+                Omit the <strong>HashMME</strong> IE from Security Mode Commands.
+                Enable this if iPhones or 5G-capable UEs fail attachment with EMM Cause 24 (Security Mode Reject).
+                Per 3GPP TS 24.301 §5.4.3.4, a failed HashMME verification mandates Cause 24.
+              </p>
+            </div>
+          </label>
         </div>
       </div>
 

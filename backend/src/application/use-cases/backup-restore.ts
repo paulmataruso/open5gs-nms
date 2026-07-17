@@ -1,6 +1,8 @@
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import { EXTRA_BACKUP_FILES } from '../../infrastructure/yaml/yaml-config-repository';
+import * as path from 'path';
 
 export interface BackupListItem {
   name: string;
@@ -54,6 +56,15 @@ export class BackupRestoreUseCase {
           await this.hostExecutor.copyFile(src, dst);
         } catch {
           this.logger.warn({ service }, 'Config file not found, skipping');
+        }
+      }
+      // Osmocom configs (SMS-over-SGs + VoWiFi) — outside /etc/open5gs, only reachable
+      // via /proc/1/root from inside this container. See EXTRA_BACKUP_FILES.
+      for (const filePath of EXTRA_BACKUP_FILES) {
+        try {
+          await this.hostExecutor.copyFile(`/proc/1/root${filePath}`, `${tmpDir}/config/${path.basename(filePath)}`);
+        } catch {
+          this.logger.warn({ filePath }, 'Osmocom config not found, skipping');
         }
       }
       this.logger.info('Config files copied');
@@ -164,6 +175,14 @@ export class BackupRestoreUseCase {
           await this.hostExecutor.copyFile(src, dst);
         } catch {
           this.logger.warn({ service }, 'Config file missing from archive, skipping');
+        }
+      }
+      // Osmocom configs (SMS-over-SGs + VoWiFi)
+      for (const filePath of EXTRA_BACKUP_FILES) {
+        try {
+          await this.hostExecutor.copyFile(`${tmpDir}/config/${path.basename(filePath)}`, `/proc/1/root${filePath}`);
+        } catch {
+          this.logger.warn({ filePath }, 'Osmocom config missing from archive, skipping');
         }
       }
       this.logger.info('Config files restored from full backup');
@@ -280,7 +299,7 @@ export class BackupRestoreUseCase {
           // Parse date from Open5Gs_dd-mm-yyyy format
           const datePart = name.replace('Open5Gs_', '');
           const [day, month, year] = datePart.split('-');
-          const timestamp = new Date(`${year}-${month}-${day}`);
+          const timestamp = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
           
           return {
             name,

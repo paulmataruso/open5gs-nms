@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.apple.cellular</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadIdentifier</key>
+            <string>com.dhi.cellular</string>
+            <key>PayloadUUID</key>
+            <string>4A8F2D1E-9C3B-4E76-A512-7B6D8E3F1C90</string>
+            <key>PayloadDisplayName</key>
+            <string>DHI Cellular</string>
+            <key>APNs</key>
+            <array>
+                <dict>
+                    <key>Name</key>
+                    <string>internet</string>
+                    <key>DefaultProtocol</key>
+                    <string>IPv4</string>
+                    <key>IsDefault</key>
+                    <true/>
+                </dict>
+            </array>
+            <key>AttachAPN</key>
+            <dict>
+                <key>Name</key>
+                <string>internet</string>
+            </dict>
+        </dict>
+        <dict>
+            <key>PayloadType</key>
+            <string>com.apple.cellular.ims</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadIdentifier</key>
+            <string>com.dhi.cellular.ims</string>
+            <key>PayloadUUID</key>
+            <string>7C3E9A2F-1D5B-4087-B834-9F2E6C4A8D51</string>
+            <key>PayloadDisplayName</key>
+            <string>DHI IMS</string>
+            <key>IMSAPN</key>
+            <dict>
+                <key>Name</key>
+                <string>ims</string>
+                <key>DefaultProtocol</key>
+                <string>IPv4</string>
+            </dict>
+        </dict>
+    </array>
+    <key>PayloadDisplayName</key>
+    <string>DHI Network Profile</string>
+    <key>PayloadDescription</key>
+    <string>Configures IMS/VoLTE for DHI private 5G network (MCC=999 MNC=70)</string>
+    <key>PayloadIdentifier</key>
+    <string>com.dhi.profile</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>1F4D8B2C-E7A3-4956-C012-8E5F9A3D7B24</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>

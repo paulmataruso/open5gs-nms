@@ -130,8 +130,15 @@ export class TunManagementUseCase {
       for (const n of out.split('\n').map(s => s.trim()).filter(Boolean)) managedNames.add(n);
     } catch {}
 
-    // Display: managed interfaces + the default ogstun (created by Open5GS UPF)
-    const allNames = new Set<string>([...managedNames, 'ogstun']);
+    // Display: NMS-managed interfaces + any ogstun* present on the system
+    // (Open5GS UPF and the IMS configure step create ogstun2, ogstun3, etc. outside NMS)
+    const allNames = new Set<string>([...managedNames]);
+    for (const name of stateMap.keys()) {
+      if (name === 'ogstun' || /^ogstun\d+$/.test(name)) allNames.add(name);
+    }
+    // Always include ogstun even if UPF isn't running yet
+    allNames.add('ogstun');
+
     return [...allNames].sort().map(name => ({
       name,
       ip:      addrMap.get(name)?.ip     || '',
@@ -165,7 +172,6 @@ export class TunManagementUseCase {
   }
 
   async edit(name: string, input: TunEditInput): Promise<void> {
-    if (name === 'ogstun') throw new Error('Cannot edit default ogstun — managed by Open5GS.');
     validateName(name); validateIp(input.ip); validatePrefix(input.prefix);
     const { ip, prefix } = input;
     this.logger.info({ name, ip, prefix }, 'Editing TUN interface');
@@ -211,5 +217,20 @@ export class TunManagementUseCase {
       if (!existing.has(`ogstun${n}`)) return `ogstun${n}`;
     }
     return 'ogstun2';
+  }
+
+  // ── Static routes (e.g. Framed Routing subnets behind a UE) ────────────────
+  // Idempotent: safe to call repeatedly for the same cidr/dev.
+  async addRoute(cidr: string, dev: string): Promise<void> {
+    const family = cidr.includes(':') ? '-6' : '-4';
+    await this.ipNet(`${family} route del ${cidr} dev ${dev} 2>/dev/null || true`);
+    await this.ipNet(`${family} route add ${cidr} dev ${dev}`);
+    this.logger.info({ cidr, dev }, 'Static route added');
+  }
+
+  async removeRoute(cidr: string, dev: string): Promise<void> {
+    const family = cidr.includes(':') ? '-6' : '-4';
+    await this.ipNet(`${family} route del ${cidr} dev ${dev} 2>/dev/null || true`);
+    this.logger.info({ cidr, dev }, 'Static route removed');
   }
 }

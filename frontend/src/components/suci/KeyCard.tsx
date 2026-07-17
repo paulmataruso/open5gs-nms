@@ -5,6 +5,7 @@ import { RegenerateKeyModal } from './RegenerateKeyModal';
 import { DeleteKeyModal } from './DeleteKeyModal';
 import { RenameKeyModal } from './RenameKeyModal';
 import toast from 'react-hot-toast';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 interface KeyCardProps {
   keyData: HnetKey;
@@ -17,11 +18,12 @@ function CopyableKey({ label, sublabel, value, copyLabel, accentColor = 'text-nm
   copyLabel: string;
   accentColor?: string;
 }) {
-  const handleCopy = () => {
-    if (value) {
-      navigator.clipboard.writeText(value);
-      toast.success(`${copyLabel} copied to clipboard`);
-    }
+  const copyToClipboard = useCopyToClipboard();
+  const handleCopy = async () => {
+    if (!value) return;
+    const ok = await copyToClipboard(value);
+    if (ok) toast.success(`${copyLabel} copied to clipboard`);
+    else toast.error('Copy failed — please copy manually');
   };
 
   return (

@@ -1,10 +1,13 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
-import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Upload, Shield, Network, List, ArrowUp, ArrowDown } from 'lucide-react';
+import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Upload, Shield, Network, List, ArrowUp, ArrowDown, ChevronDown, Users, ChevronRight, Pencil, Unlink, Smartphone } from 'lucide-react';
+import { EsimGeneratorModal } from './EsimGeneratorModal';
 import { useSubscriberStore, useSuciStore } from '../../stores';
-import { subscriberApi } from '../../api';
+import { subscriberApi, subscriberGroupsApi } from '../../api';
+import type { SubscriberGroup } from '../../api';
 import { useAuth } from '../../contexts/AuthContext';
-import type { Subscriber, SubscriberListItem, SubscriberSession } from '../../types';
+import type { Subscriber, SubscriberListItem, SubscriberSession, PccRule, FramedRouteEntry } from '../../types';
 import toast from 'react-hot-toast';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 const DEFAULT_SUB: Subscriber = {
   imsi: '', 
@@ -40,6 +43,47 @@ const SESSION_TYPES = [
   { value: 2, label: 'IPv6' },
   { value: 3, label: 'IPv4v6' },
 ];
+
+const AMBR_UNITS = [
+  { value: 0, label: 'bps' },
+  { value: 1, label: 'Kbps' },
+  { value: 2, label: 'Mbps' },
+  { value: 3, label: 'Gbps' },
+];
+
+const DEFAULT_PCC_RULE: PccRule = {
+  qos: {
+    index: 1,
+    arp: { priority_level: 2, pre_emption_capability: 2, pre_emption_vulnerability: 2 },
+    mbr: { downlink: { value: 128, unit: 1 }, uplink: { value: 128, unit: 1 } },
+    gbr: { downlink: { value: 128, unit: 1 }, uplink: { value: 128, unit: 1 } },
+  },
+};
+
+const IMS_SESSION_TEMPLATE: SubscriberSession = {
+  name: 'ims',
+  type: 1,
+  ambr: { uplink: { value: 1530, unit: 1 }, downlink: { value: 3850, unit: 1 } },
+  qos: { index: 5, arp: { priority_level: 1, pre_emption_capability: 1, pre_emption_vulnerability: 1 } },
+  pcc_rule: [
+    {
+      qos: {
+        index: 1,
+        arp: { priority_level: 2, pre_emption_capability: 2, pre_emption_vulnerability: 2 },
+        mbr: { downlink: { value: 128, unit: 1 }, uplink: { value: 128, unit: 1 } },
+        gbr: { downlink: { value: 128, unit: 1 }, uplink: { value: 128, unit: 1 } },
+      },
+    },
+    {
+      qos: {
+        index: 2,
+        arp: { priority_level: 4, pre_emption_capability: 2, pre_emption_vulnerability: 2 },
+        mbr: { downlink: { value: 128, unit: 1 }, uplink: { value: 128, unit: 1 } },
+        gbr: { downlink: { value: 128, unit: 1 }, uplink: { value: 128, unit: 1 } },
+      },
+    },
+  ],
+};
 
 const SUBSCRIBER_STATUS_OPTIONS = [
   { value: 0, label: 'Service Granted' },
@@ -166,10 +210,115 @@ function generateICCID(mcc: string, issuer: string, accountNumber?: string): str
 }
 
 // IP Assignments Modal Component
+function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
+  const [routes, setRoutes] = useState<FramedRouteEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        setRoutes(await subscriberApi.getFramedRoutes());
+      } catch {
+        toast.error('Failed to load framed routes');
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  // Flatten to one row per CIDR
+  const rows = routes.flatMap(r => [
+    ...r.ipv4.map(cidr => ({ ...r, cidr, family: 'v4' as const })),
+    ...r.ipv6.map(cidr => ({ ...r, cidr, family: 'v6' as const })),
+  ]);
+
+  const filteredRows = rows.filter(r =>
+    r.imsi.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    r.cidr.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (r.nickname ?? '').toLowerCase().includes(searchTerm.toLowerCase()),
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="nms-card max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-semibold font-display">Framed Routes Registry</h3>
+            <p className="text-sm text-nms-text-dim mt-1">
+              {rows.length} subnet{rows.length !== 1 ? 's' : ''} routed behind {routes.length} subscriber{routes.length !== 1 ? 's' : ''}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-nms-text-dim" />
+          <input
+            className="nms-input pl-10"
+            placeholder="Search IMSI, nickname, or subnet..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+          />
+        </div>
+
+        <div className="overflow-y-auto flex-1">
+          {loading ? (
+            <div className="text-center py-12 text-nms-text-dim">
+              Loading framed routes...
+            </div>
+          ) : filteredRows.length === 0 ? (
+            <div className="text-center py-12 text-nms-text-dim">
+              {searchTerm ? 'No matching routes found' : 'No framed routes configured'}
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-nms-surface-1 border-b border-nms-border">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Subnet</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Subscriber</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">APN</th>
+                  <th className="text-right px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Static Route</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((r, i) => (
+                  <tr key={`${r.imsi}-${r.cidr}-${i}`} className="border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors">
+                    <td className="px-4 py-3 font-mono text-xs text-nms-accent">{r.cidr}</td>
+                    <td className="px-4 py-3 font-mono text-xs">
+                      {r.nickname ? <span className="text-nms-accent font-medium">{r.nickname}</span> : r.imsi}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-nms-text-dim">{r.apn}</td>
+                    <td className="px-4 py-3 text-right">
+                      {r.static
+                        ? <span className="bg-nms-green/10 text-nms-green text-xs px-2 py-0.5 rounded-full">Applied</span>
+                        : <span className="bg-nms-surface-2 text-nms-text-dim text-xs px-2 py-0.5 rounded-full">Not applied</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-nms-border flex justify-end">
+          <button onClick={onClose} className="nms-btn-ghost">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
   const [assignments, setAssignments] = useState<Array<{ imsi: string; ipv4: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const copyToClipboard = useCopyToClipboard();
 
   useEffect(() => {
     const load = async () => {
@@ -240,10 +389,11 @@ function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
                     <td className="px-4 py-3 font-mono text-xs">{a.imsi}</td>
                     <td className="px-4 py-3 font-mono text-sm text-nms-accent">{a.ipv4}</td>
                     <td className="px-4 py-3 text-right">
-                      <button 
-                        onClick={() => {
-                          navigator.clipboard.writeText(a.ipv4);
-                          toast.success('IP copied to clipboard');
+                      <button
+                        onClick={async () => {
+                          const ok = await copyToClipboard(a.ipv4);
+                          if (ok) toast.success('IP copied to clipboard');
+                          else toast.error('Copy failed — please copy manually');
                         }}
                         className="text-nms-text-dim hover:text-nms-accent text-xs flex items-center gap-1 ml-auto"
                       >
@@ -260,6 +410,734 @@ function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
         <div className="mt-4 pt-4 border-t border-nms-border flex justify-end">
           <button onClick={onClose} className="nms-btn-ghost">
             Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Auto-Assign IPs Dialog ───────────────────────────────────────────────────
+type PoolInfo = {
+  ipPool: string; startIp: string; endIp: string; gatewayIp: string | null;
+  totalSubscribers: number; withIp: number; withoutIp: number;
+  imsApn?: string; imsPool?: string; imsStartIp?: string; imsEndIp?: string;
+  imsGatewayIp?: string | null; imsWithIp?: number; imsWithoutIp?: number;
+};
+
+function AutoAssignIPsDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }): JSX.Element {
+  const [pool, setPool]       = useState<PoolInfo | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [startIp, setStartIp] = useState('');
+  const [endIp, setEndIp]     = useState('');
+  const [overwrite, setOverwrite] = useState(false);
+  // IMS
+  const [assignIms, setAssignIms]       = useState(false);
+  const [imsStartIp, setImsStartIp]     = useState('');
+  const [imsEndIp, setImsEndIp]         = useState('');
+  const [imsOverwrite, setImsOverwrite] = useState(false);
+
+  const [assigning, setAssigning] = useState(false);
+  const [result, setResult]   = useState<{ assigned: number; skipped: number; failed: number; ipPool: string } | null>(null);
+
+  useEffect(() => {
+    subscriberApi.getAutoAssignIPsPool().then(r => {
+      if (r.success) {
+        setPool(r.data);
+        setStartIp(r.data.startIp);
+        setEndIp(r.data.endIp);
+        if (r.data.imsStartIp) setImsStartIp(r.data.imsStartIp);
+        if (r.data.imsEndIp)   setImsEndIp(r.data.imsEndIp);
+      }
+    }).catch(err => setLoadErr(err?.response?.data?.error ?? err.message));
+  }, []);
+
+  const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  const isValid = ipRegex.test(startIp) && ipRegex.test(endIp);
+  const imsValid = !assignIms || (ipRegex.test(imsStartIp) && ipRegex.test(imsEndIp));
+  const targetCount = pool ? (overwrite ? pool.totalSubscribers : pool.withoutIp) : 0;
+  const imsTargetCount = pool?.imsApn ? (imsOverwrite ? (pool.imsWithIp ?? 0) + (pool.imsWithoutIp ?? 0) : pool.imsWithoutIp ?? 0) : 0;
+
+  const handleAssign = async () => {
+    if (!isValid || !imsValid) return;
+    setAssigning(true);
+    try {
+      const r = await subscriberApi.autoAssignIPs({
+        startIp, endIp, overwrite,
+        ...(assignIms ? { imsStartIp, imsEndIp, imsOverwrite } : {}),
+      });
+      if (r.success) {
+        setResult(r.data);
+        onDone();
+      } else {
+        toast.error('IP assignment failed');
+      }
+    } catch (err: any) {
+      toast.error(`Failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-nms-surface border border-nms-border rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-nms-border">
+          <h2 className="text-base font-semibold">Auto-Assign IPv4 Addresses</h2>
+          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {result ? (
+            <div className="space-y-3">
+              <div className="bg-nms-green/10 border border-nms-green/30 rounded-lg p-3 text-sm text-nms-green">
+                Assignment complete
+              </div>
+              <div className="bg-nms-bg rounded-lg p-3 text-xs space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-nms-text-dim">Pool</span>
+                  <span className="font-mono text-nms-text">{result.ipPool}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-nms-text-dim">Assigned</span>
+                  <span className="font-mono text-nms-green">{result.assigned}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-nms-text-dim">Skipped (had IP)</span>
+                  <span className="font-mono text-nms-text">{result.skipped}</span>
+                </div>
+                {result.failed > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">Failed</span>
+                    <span className="font-mono text-red-400">{result.failed}</span>
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end">
+                <button onClick={onClose} className="nms-btn-primary">Done</button>
+              </div>
+            </div>
+          ) : loadErr ? (
+            <div className="text-sm text-red-400">{loadErr}</div>
+          ) : !pool ? (
+            <div className="text-sm text-nms-text-dim animate-pulse">Loading pool info…</div>
+          ) : (
+            <>
+              <div className="bg-nms-bg rounded-lg p-3 text-xs space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-nms-text-dim">UPF subnet</span>
+                  <span className="font-mono text-nms-text">{pool.ipPool}</span>
+                </div>
+                {pool.gatewayIp && (
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">Gateway (excluded)</span>
+                    <span className="font-mono text-nms-text-dim">{pool.gatewayIp}</span>
+                  </div>
+                )}
+                <div className="border-t border-nms-border/40 my-1" />
+                <div className="flex justify-between">
+                  <span className="text-nms-text-dim">Will be assigned</span>
+                  <span className="font-mono text-nms-accent">{targetCount} subscribers</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-nms-text-dim">Already have IPs</span>
+                  <span className="font-mono text-nms-text">{pool.withIp} subscribers</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="nms-label">Start IP</label>
+                  <input
+                    value={startIp}
+                    onChange={e => setStartIp(e.target.value.trim())}
+                    className="nms-input font-mono mt-1"
+                    placeholder="10.45.0.2"
+                    spellCheck={false}
+                  />
+                </div>
+                <div>
+                  <label className="nms-label">End IP</label>
+                  <input
+                    value={endIp}
+                    onChange={e => setEndIp(e.target.value.trim())}
+                    className="nms-input font-mono mt-1"
+                    placeholder="10.45.255.254"
+                    spellCheck={false}
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)}
+                  className="w-4 h-4 rounded border-nms-border accent-nms-accent" />
+                <div>
+                  <span className="text-sm text-nms-text">Overwrite existing IPs</span>
+                  <p className="text-xs text-nms-text-dim">Re-assign all subscribers sequentially, replacing current IPs</p>
+                </div>
+              </label>
+
+              {/* IMS APN section — only shown when IMS sessions are detected */}
+              {pool.imsApn && (
+                <div className="border border-nms-border rounded-lg overflow-hidden">
+                  <label className="flex items-center gap-2.5 px-3 py-2.5 cursor-pointer select-none bg-nms-surface-2/50">
+                    <input type="checkbox" checked={assignIms} onChange={e => setAssignIms(e.target.checked)}
+                      className="w-4 h-4 rounded border-nms-border accent-rose-500" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium text-nms-text">Assign IMS ({pool.imsApn}) IPs</span>
+                      <p className="text-xs text-nms-text-dim">
+                        {pool.imsWithoutIp} without IP · {pool.imsWithIp} already assigned
+                        {pool.imsPool && <> · Pool: <span className="font-mono">{pool.imsPool}</span></>}
+                      </p>
+                    </div>
+                  </label>
+                  {assignIms && (
+                    <div className="p-3 space-y-3 border-t border-nms-border">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="nms-label">IMS Start IP</label>
+                          <input value={imsStartIp} onChange={e => setImsStartIp(e.target.value.trim())}
+                            className="nms-input font-mono mt-1" placeholder="10.46.0.1" spellCheck={false} />
+                        </div>
+                        <div>
+                          <label className="nms-label">IMS End IP</label>
+                          <input value={imsEndIp} onChange={e => setImsEndIp(e.target.value.trim())}
+                            className="nms-input font-mono mt-1" placeholder="10.46.255.254" spellCheck={false} />
+                        </div>
+                      </div>
+                      {pool.imsGatewayIp && (
+                        <p className="text-xs text-nms-text-dim">Gateway (excluded): <span className="font-mono">{pool.imsGatewayIp}</span></p>
+                      )}
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input type="checkbox" checked={imsOverwrite} onChange={e => setImsOverwrite(e.target.checked)}
+                          className="w-4 h-4 rounded border-nms-border accent-rose-500" />
+                        <span className="text-sm text-nms-text">Overwrite existing IMS IPs</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button onClick={onClose} className="nms-btn-ghost">Cancel</button>
+                <button
+                  onClick={handleAssign}
+                  disabled={!isValid || !imsValid || assigning || (targetCount === 0 && (!assignIms || imsTargetCount === 0))}
+                  className="nms-btn-primary flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Network className="w-4 h-4" />
+                  {assigning ? 'Assigning…' : (
+                    assignIms && pool.imsApn
+                      ? `Assign ${targetCount} internet + ${imsTargetCount} IMS`
+                      : `Assign to ${targetCount} subscribers`
+                  )}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MSISDN Auto-Assign Dialog ────────────────────────────────────────────────
+function MsisdnAssignDialog({
+  totalSubscribers,
+  onClose,
+  onDone,
+}: {
+  totalSubscribers: number;
+  onClose: () => void;
+  onDone: () => void;
+}): JSX.Element {
+  const [startingNumber, setStartingNumber] = useState('15550000001');
+  const [overwrite, setOverwrite]           = useState(false);
+  const [assigning, setAssigning]           = useState(false);
+  const [result, setResult]                 = useState<{ assigned: number; skipped: number } | null>(null);
+
+  const isValid = /^\d+$/.test(startingNumber) && startingNumber.length >= 5;
+  const endNumber = isValid
+    ? (BigInt(startingNumber) + BigInt(totalSubscribers) - BigInt(1)).toString()
+    : '—';
+
+  const handleAssign = async () => {
+    if (!isValid) return;
+    setAssigning(true);
+    try {
+      const r = await subscriberApi.autoAssignMsisdn(startingNumber, overwrite);
+      setResult(r.data);
+    } catch (err: any) {
+      toast.error(`Failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setAssigning(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-nms-surface border border-nms-border rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-nms-border">
+          <h2 className="text-base font-semibold">Auto-Assign MSISDN</h2>
+          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          {!result ? (
+            <>
+              <div>
+                <label className="nms-label">Starting Number</label>
+                <input
+                  value={startingNumber}
+                  onChange={e => setStartingNumber(e.target.value.replace(/\D/g, ''))}
+                  placeholder="15550000001"
+                  className="nms-input font-mono mt-1"
+                  maxLength={15}
+                />
+                <p className="text-xs text-nms-text-dim mt-1">
+                  Digits only. Include country code (e.g. 1 for US).
+                </p>
+              </div>
+
+              {isValid && (
+                <div className="bg-nms-bg rounded-lg p-3 text-xs space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">First number</span>
+                    <span className="font-mono text-nms-text">{startingNumber}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">Last number</span>
+                    <span className="font-mono text-nms-text">{endNumber}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">Subscribers</span>
+                    <span className="font-mono text-nms-text">{totalSubscribers}</span>
+                  </div>
+                </div>
+              )}
+
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={overwrite}
+                  onChange={e => setOverwrite(e.target.checked)}
+                  className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent"
+                />
+                <span className="text-sm text-nms-text">Overwrite existing MSISDNs</span>
+              </label>
+              <p className="text-xs text-nms-text-dim -mt-2">
+                When unchecked, subscribers that already have an MSISDN are skipped.
+              </p>
+            </>
+          ) : (
+            <div className="text-center py-4 space-y-2">
+              <div className="text-3xl font-bold font-mono text-nms-accent">{result.assigned}</div>
+              <p className="text-sm text-nms-text">MSISDNs assigned</p>
+              {result.skipped > 0 && (
+                <p className="text-xs text-nms-text-dim">{result.skipped} subscriber{result.skipped !== 1 ? 's' : ''} skipped (already had MSISDN)</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-nms-border flex justify-end gap-2">
+          {!result ? (
+            <>
+              <button onClick={onClose} className="nms-btn-ghost">Cancel</button>
+              <button onClick={handleAssign} disabled={assigning || !isValid} className="nms-btn-primary flex items-center gap-2">
+                <Shield className="w-4 h-4" />
+                {assigning ? 'Assigning…' : 'Assign MSISDNs'}
+              </button>
+            </>
+          ) : (
+            <button onClick={onDone} className="nms-btn-primary">Done</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BulkApnDialog({
+  totalSubscribers,
+  onClose,
+  onDone,
+}: { totalSubscribers: number; onClose: () => void; onDone: () => void }): JSX.Element {
+  const [addCustom, setAddCustom]         = useState(true);
+  const [apnName, setApnName]             = useState('internet');
+  const [apnType, setApnType]             = useState(3);
+  const [ulValue, setUlValue]             = useState(1);
+  const [ulUnit, setUlUnit]               = useState(3);
+  const [dlValue, setDlValue]             = useState(1);
+  const [dlUnit, setDlUnit]               = useState(3);
+  const [qosIndex, setQosIndex]           = useState(9);
+  const [sst, setSst]                     = useState(1);
+  const [sd, setSd]                       = useState('');
+  const [addIms, setAddIms]               = useState(false);
+  const [imsStartIp, setImsStartIp]       = useState('');
+  const [imsEndIp, setImsEndIp]           = useState('');
+  const [overwrite, setOverwrite]         = useState(false);
+  const [autoIPs, setAutoIPs]             = useState(true);
+  const [autoMsisdn, setAutoMsisdn]       = useState(false);
+  const [msisdnStart, setMsisdnStart]     = useState('15550000001');
+  const [running, setRunning]             = useState(false);
+  const [result, setResult] = useState<{
+    apn: { updated: number; skipped: number; errors: string[] };
+    ips?: { assigned: number; skipped: number };
+    msisdn?: { assigned: number; skipped: number };
+  } | null>(null);
+
+  const canApply = (addCustom && apnName.trim().length > 0) || addIms;
+
+  const handleApply = async () => {
+    const sessions: any[] = [];
+    if (addCustom && apnName.trim()) {
+      sessions.push({
+        name: apnName.trim(),
+        type: apnType,
+        ambr: {
+          uplink:   { value: ulValue, unit: ulUnit },
+          downlink: { value: dlValue, unit: dlUnit },
+        },
+        qos: {
+          index: qosIndex,
+          arp: { priority_level: 8, pre_emption_capability: 1, pre_emption_vulnerability: 1 },
+        },
+        pcc_rule: [],
+      });
+    }
+    if (addIms) sessions.push({ ...IMS_SESSION_TEMPLATE });
+    if (!sessions.length) return;
+
+    setRunning(true);
+    try {
+      const apnRes = await subscriberApi.bulkAddApn(sessions, overwrite, sst, sd || undefined);
+      let ipsRes, msisdnRes;
+
+      if (autoIPs) {
+        try {
+          ipsRes = (await subscriberApi.autoAssignIPs({
+            ...(addIms && imsStartIp && imsEndIp
+              ? { imsStartIp, imsEndIp, imsOverwrite: overwrite }
+              : {}),
+          })).data;
+        } catch { /* non-fatal */ }
+      }
+      if (autoMsisdn && /^\d+$/.test(msisdnStart)) {
+        try { msisdnRes = (await subscriberApi.autoAssignMsisdn(msisdnStart, overwrite)).data; } catch { /* non-fatal */ }
+      }
+
+      setResult({ apn: apnRes.data, ips: ipsRes, msisdn: msisdnRes });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? 'Bulk APN add failed');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="w-full max-w-lg bg-nms-surface border border-nms-border rounded-xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-lg font-semibold font-display">Bulk Add APN</h2>
+            <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {!result ? (
+            <div className="space-y-4">
+              {/* Custom APN */}
+              <div className="border border-nms-border rounded-lg p-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-3">
+                  <input type="checkbox" checked={addCustom} onChange={e => setAddCustom(e.target.checked)} className="w-4 h-4 accent-nms-accent" />
+                  <span className="text-sm font-semibold text-nms-text">Custom APN</span>
+                </label>
+                {addCustom && (
+                  <div className="space-y-3 ml-2">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="nms-label">APN Name (DNN)</label>
+                        <input className="nms-input" value={apnName} onChange={e => setApnName(e.target.value)} placeholder="internet" />
+                      </div>
+                      <div>
+                        <label className="nms-label">Type</label>
+                        <select className="nms-input" value={apnType} onChange={e => setApnType(Number(e.target.value))}>
+                          {SESSION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="nms-label">AMBR Uplink</label>
+                        <div className="flex gap-2">
+                          <input type="number" className="nms-input flex-1" min={1} value={ulValue} onChange={e => setUlValue(Number(e.target.value))} />
+                          <select className="nms-input w-20" value={ulUnit} onChange={e => setUlUnit(Number(e.target.value))}>
+                            {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="nms-label">AMBR Downlink</label>
+                        <div className="flex gap-2">
+                          <input type="number" className="nms-input flex-1" min={1} value={dlValue} onChange={e => setDlValue(Number(e.target.value))} />
+                          <select className="nms-input w-20" value={dlUnit} onChange={e => setDlUnit(Number(e.target.value))}>
+                            {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="nms-label">QoS Index (QCI)</label>
+                      <input type="number" className="nms-input w-24" min={1} max={9} value={qosIndex} onChange={e => setQosIndex(Number(e.target.value))} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* IMS APN */}
+              <div className="border border-nms-border rounded-lg p-4">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input type="checkbox" checked={addIms} onChange={e => setAddIms(e.target.checked)} className="w-4 h-4 accent-nms-accent shrink-0" />
+                  <div>
+                    <span className="text-sm font-semibold text-nms-text">IMS APN</span>
+                    <p className="text-xs text-nms-text-dim mt-0.5">
+                      Standard IMS session — QCI-5, GBR voice/video PCC rules, same settings as per-subscriber Add IMS APN
+                    </p>
+                  </div>
+                </label>
+                {addIms && (
+                  <div className="mt-3 ml-7 space-y-3">
+                    <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IMS UE IP Range</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="nms-label">Start IP</label>
+                        <input
+                          className="nms-input font-mono"
+                          value={imsStartIp}
+                          onChange={e => setImsStartIp(e.target.value)}
+                          placeholder="10.46.0.1"
+                        />
+                      </div>
+                      <div>
+                        <label className="nms-label">End IP</label>
+                        <input
+                          className="nms-input font-mono"
+                          value={imsEndIp}
+                          onChange={e => setImsEndIp(e.target.value)}
+                          placeholder="10.46.0.254"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-nms-text-dim">
+                      Required for auto-assign IPs to set the UE IP on each IMS session. Leave blank to skip IMS IP assignment.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Target Slice */}
+              <div className="border border-nms-border rounded-lg p-4">
+                <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-3">Target Slice</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="nms-label">SST</label>
+                    <input
+                      type="number"
+                      className="nms-input"
+                      min={1}
+                      max={255}
+                      value={sst}
+                      onChange={e => setSst(Number(e.target.value))}
+                    />
+                  </div>
+                  <div>
+                    <label className="nms-label">SD <span className="text-nms-text-dim font-normal">(optional)</span></label>
+                    <input
+                      className="nms-input font-mono"
+                      value={sd}
+                      onChange={e => setSd(e.target.value)}
+                      placeholder="e.g. 000001"
+                      maxLength={6}
+                    />
+                  </div>
+                </div>
+                <p className="text-xs text-nms-text-dim mt-2">
+                  Sessions are added to the slice matching this SST{sd ? ' + SD' : ''}.
+                  Subscribers with no matching slice are skipped.
+                </p>
+              </div>
+
+              {/* Options */}
+              <div className="border border-nms-border rounded-lg p-4 space-y-3">
+                <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-1">Options</p>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={overwrite} onChange={e => setOverwrite(e.target.checked)} className="w-4 h-4 accent-nms-accent" />
+                  <span className="text-sm text-nms-text">Overwrite APN if it already exists in subscriber</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={autoIPs} onChange={e => setAutoIPs(e.target.checked)} className="w-4 h-4 accent-nms-accent" />
+                  <span className="text-sm text-nms-text">Auto-assign UE IPs from UPF pool after adding</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={autoMsisdn} onChange={e => setAutoMsisdn(e.target.checked)} className="w-4 h-4 accent-nms-accent" />
+                  <span className="text-sm text-nms-text">Auto-assign MSISDNs</span>
+                </label>
+                {autoMsisdn && (
+                  <div className="ml-6">
+                    <label className="nms-label">Starting Number</label>
+                    <input className="nms-input" value={msisdnStart} onChange={e => setMsisdnStart(e.target.value)} placeholder="15550000001" />
+                  </div>
+                )}
+              </div>
+
+              <p className="text-xs text-nms-text-dim">
+                Will apply to all <strong>{totalSubscribers}</strong> subscribers.
+                {!overwrite && ' Subscribers that already have the APN will be skipped.'}
+              </p>
+
+              <div className="flex gap-3 pt-1">
+                <button onClick={onClose} className="nms-btn-ghost flex-1">Cancel</button>
+                <button
+                  onClick={handleApply}
+                  disabled={running || !canApply}
+                  className="nms-btn-primary flex-1"
+                >
+                  {running ? 'Applying…' : 'Apply to All Subscribers'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="p-4 rounded-lg bg-nms-surface-2 border border-nms-border">
+                <p className="text-sm font-semibold text-nms-text mb-3">APN Added</p>
+                <div className="space-y-1.5 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">Subscribers updated</span>
+                    <span className="font-mono text-green-400">{result.apn.updated}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-nms-text-dim">Skipped (APN existed, no overwrite)</span>
+                    <span className="font-mono text-nms-text-dim">{result.apn.skipped}</span>
+                  </div>
+                  {result.apn.errors.length > 0 && (
+                    <p className="text-xs text-nms-red mt-2">{result.apn.errors.slice(0, 3).join('\n')}</p>
+                  )}
+                </div>
+              </div>
+              {result.ips && (
+                <div className="p-4 rounded-lg bg-nms-surface-2 border border-nms-border">
+                  <p className="text-sm font-semibold text-nms-text mb-3">IPs Assigned</p>
+                  <div className="space-y-1.5 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-nms-text-dim">Assigned</span>
+                      <span className="font-mono text-green-400">{result.ips.assigned}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-nms-text-dim">Skipped</span>
+                      <span className="font-mono text-nms-text-dim">{result.ips.skipped}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {result.msisdn && (
+                <div className="p-4 rounded-lg bg-nms-surface-2 border border-nms-border">
+                  <p className="text-sm font-semibold text-nms-text mb-3">MSISDNs Assigned</p>
+                  <div className="space-y-1.5 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-nms-text-dim">Assigned</span>
+                      <span className="font-mono text-green-400">{result.msisdn.assigned}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-nms-text-dim">Skipped</span>
+                      <span className="font-mono text-nms-text-dim">{result.msisdn.skipped}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={() => { onDone(); onClose(); }}
+                className="nms-btn-primary w-full"
+              >
+                Done
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Subscriber Group Colors ──────────────────────────────────────────────────
+const GROUP_COLORS = [
+  '#6366f1', '#ec4899', '#f59e0b', '#10b981',
+  '#3b82f6', '#f97316', '#8b5cf6', '#06b6d4',
+];
+
+// ── Group Modal (create / rename) ────────────────────────────────────────────
+function GroupModal({
+  initial,
+  onConfirm,
+  onClose,
+}: {
+  initial?: { name: string; color: string };
+  onConfirm: (name: string, color: string) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [color, setColor] = useState(initial?.color ?? GROUP_COLORS[0]);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-nms-surface border border-nms-border rounded-xl shadow-2xl w-full max-w-sm">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-nms-border">
+          <h2 className="text-base font-semibold font-display">
+            {initial ? 'Rename Group' : 'Create Group'}
+          </h2>
+          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="nms-label">Group Name</label>
+            <input
+              autoFocus
+              className="nms-input mt-1"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. Paul's iPhone, Lab phones"
+              onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onConfirm(name.trim(), color); }}
+            />
+          </div>
+          <div>
+            <label className="nms-label mb-2 block">Color</label>
+            <div className="flex gap-2 flex-wrap">
+              {GROUP_COLORS.map(c => (
+                <button
+                  key={c}
+                  onClick={() => setColor(c)}
+                  className="w-7 h-7 rounded-full transition-transform hover:scale-110 focus:outline-none"
+                  style={{ backgroundColor: c, boxShadow: color === c ? `0 0 0 2px white, 0 0 0 4px ${c}` : undefined }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-nms-border flex justify-end gap-2">
+          <button onClick={onClose} className="nms-btn-ghost">Cancel</button>
+          <button
+            onClick={() => { if (name.trim()) onConfirm(name.trim(), color); }}
+            disabled={!name.trim()}
+            className="nms-btn-primary"
+          >
+            {initial ? 'Rename' : 'Create Group'}
           </button>
         </div>
       </div>
@@ -311,10 +1189,11 @@ interface GeneratedSIMData {
   provisionError?: string;
 }
 
-function SIMGeneratorDialog({ onClose }: { 
+function SIMGeneratorDialog({ onClose }: {
   onClose: () => void;
 }): JSX.Element {
   const { keys, fetchKeys } = useSuciStore();
+  const copyToClipboard = useCopyToClipboard();
   const [mccOption, setMccOption] = useState('001');
   const [customMcc, setCustomMcc] = useState('');
   const [mnc, setMnc] = useState('01');
@@ -499,9 +1378,10 @@ function SIMGeneratorDialog({ onClose }: {
     setGenerated(sims);
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast.success('Copied to clipboard');
+  const handleCopyToClipboard = async (text: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) toast.success('Copied to clipboard');
+    else toast.error('Copy failed — please copy manually');
   };
 
   const downloadCSV = () => {
@@ -844,7 +1724,7 @@ function SIMGeneratorDialog({ onClose }: {
                         </div>
                         {selectedKey.publicKeyHex && (
                           <button
-                            onClick={() => copyToClipboard(selectedKey.publicKeyHex!)}
+                            onClick={() => handleCopyToClipboard(selectedKey.publicKeyHex!)}
                             className="nms-btn-ghost text-xs flex items-center gap-1"
                           >
                             <Copy className="w-3 h-3" />
@@ -945,7 +1825,7 @@ function SIMGeneratorDialog({ onClose }: {
                         )}
                       </div>
                       <button
-                        onClick={() => copyToClipboard(JSON.stringify(sim, null, 2))}
+                        onClick={() => handleCopyToClipboard(JSON.stringify(sim, null, 2))}
                         className="text-nms-accent hover:text-nms-accent/80 text-xs flex items-center gap-1"
                       >
                         <Copy className="w-3 h-3" />
@@ -1023,19 +1903,49 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
     setForm({ ...form, slice: newSlices });
   };
 
-  const addSession = (sliceIdx: number) => {
+  const addSession = (sliceIdx: number, template?: SubscriberSession) => {
     const newSlices = [...form.slice];
     newSlices[sliceIdx] = {
       ...newSlices[sliceIdx],
       session: [
         ...newSlices[sliceIdx].session,
-        {
+        template ?? {
           name: 'internet',
           type: 3,
           ambr: { uplink: { value: 1, unit: 3 }, downlink: { value: 1, unit: 3 } },
           qos: { index: 9, arp: { priority_level: 8, pre_emption_capability: 1, pre_emption_vulnerability: 1 } },
-        }
+          pcc_rule: [],
+        },
       ]
+    };
+    setForm({ ...form, slice: newSlices });
+  };
+
+  const addPccRule = (sliceIdx: number, sessIdx: number) => {
+    const newSlices = [...form.slice];
+    const sess = newSlices[sliceIdx].session[sessIdx];
+    newSlices[sliceIdx].session[sessIdx] = {
+      ...sess,
+      pcc_rule: [...(sess.pcc_rule ?? []), { ...DEFAULT_PCC_RULE, qos: { ...DEFAULT_PCC_RULE.qos } }],
+    };
+    setForm({ ...form, slice: newSlices });
+  };
+
+  const updatePccRule = (sliceIdx: number, sessIdx: number, ruleIdx: number, rule: PccRule) => {
+    const newSlices = [...form.slice];
+    const sess = newSlices[sliceIdx].session[sessIdx];
+    const rules = [...(sess.pcc_rule ?? [])];
+    rules[ruleIdx] = rule;
+    newSlices[sliceIdx].session[sessIdx] = { ...sess, pcc_rule: rules };
+    setForm({ ...form, slice: newSlices });
+  };
+
+  const removePccRule = (sliceIdx: number, sessIdx: number, ruleIdx: number) => {
+    const newSlices = [...form.slice];
+    const sess = newSlices[sliceIdx].session[sessIdx];
+    newSlices[sliceIdx].session[sessIdx] = {
+      ...sess,
+      pcc_rule: (sess.pcc_rule ?? []).filter((_, i) => i !== ruleIdx),
     };
     setForm({ ...form, slice: newSlices });
   };
@@ -1344,18 +2254,14 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                   <div className="grid grid-cols-3 gap-3 mb-3">
                     <div>
                       <label className="nms-label">ARP Priority (1-15) *</label>
-                      <input 
+                      <input
                         className="nms-input font-mono"
                         type="number"
                         value={sess.qos.arp.priority_level}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
-                          qos: { 
-                            ...sess.qos, 
-                            arp: { ...sess.qos.arp, priority_level: parseInt(e.target.value) || 8 }
-                          }
+                          qos: { ...sess.qos, arp: { ...sess.qos.arp, priority_level: parseInt(e.target.value) || 8 } }
                         })}
-                        min={1}
-                        max={15}
+                        min={1} max={15}
                       />
                     </div>
                     <div>
@@ -1364,14 +2270,11 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                         className="nms-input"
                         value={sess.qos.arp.pre_emption_capability}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
-                          qos: { 
-                            ...sess.qos, 
-                            arp: { ...sess.qos.arp, pre_emption_capability: parseInt(e.target.value) }
-                          }
+                          qos: { ...sess.qos, arp: { ...sess.qos.arp, pre_emption_capability: parseInt(e.target.value) } }
                         })}
                       >
-                        <option value={1}>Enabled</option>
-                        <option value={2}>Disabled</option>
+                        <option value={1}>Disabled</option>
+                        <option value={2}>Enabled</option>
                       </select>
                     </div>
                     <div>
@@ -1380,14 +2283,11 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                         className="nms-input"
                         value={sess.qos.arp.pre_emption_vulnerability}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
-                          qos: { 
-                            ...sess.qos, 
-                            arp: { ...sess.qos.arp, pre_emption_vulnerability: parseInt(e.target.value) }
-                          }
+                          qos: { ...sess.qos, arp: { ...sess.qos.arp, pre_emption_vulnerability: parseInt(e.target.value) } }
                         })}
                       >
-                        <option value={1}>Enabled</option>
-                        <option value={2}>Disabled</option>
+                        <option value={1}>Disabled</option>
+                        <option value={2}>Enabled</option>
                       </select>
                     </div>
                   </div>
@@ -1395,32 +2295,48 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                   {/* Session AMBR */}
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
-                      <label className="nms-label">Session-AMBR Uplink (Gbps) *</label>
-                      <input 
-                        className="nms-input font-mono"
-                        type="number"
-                        value={sess.ambr.uplink.value}
-                        onChange={e => updateSession(sliceIdx, sessIdx, {
-                          ambr: { 
-                            ...sess.ambr, 
-                            uplink: { value: parseInt(e.target.value) || 1, unit: 3 }
-                          }
-                        })}
-                      />
+                      <label className="nms-label">Session-AMBR Uplink *</label>
+                      <div className="flex gap-1">
+                        <input
+                          className="nms-input font-mono"
+                          type="number" min={0}
+                          value={sess.ambr.uplink.value}
+                          onChange={e => updateSession(sliceIdx, sessIdx, {
+                            ambr: { ...sess.ambr, uplink: { value: parseInt(e.target.value) || 0, unit: sess.ambr.uplink.unit } }
+                          })}
+                        />
+                        <select
+                          className="nms-input w-24 flex-shrink-0"
+                          value={sess.ambr.uplink.unit}
+                          onChange={e => updateSession(sliceIdx, sessIdx, {
+                            ambr: { ...sess.ambr, uplink: { value: sess.ambr.uplink.value, unit: parseInt(e.target.value) } }
+                          })}
+                        >
+                          {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                        </select>
+                      </div>
                     </div>
                     <div>
-                      <label className="nms-label">Session-AMBR Downlink (Gbps) *</label>
-                      <input 
-                        className="nms-input font-mono"
-                        type="number"
-                        value={sess.ambr.downlink.value}
-                        onChange={e => updateSession(sliceIdx, sessIdx, {
-                          ambr: { 
-                            ...sess.ambr, 
-                            downlink: { value: parseInt(e.target.value) || 1, unit: 3 }
-                          }
-                        })}
-                      />
+                      <label className="nms-label">Session-AMBR Downlink *</label>
+                      <div className="flex gap-1">
+                        <input
+                          className="nms-input font-mono"
+                          type="number" min={0}
+                          value={sess.ambr.downlink.value}
+                          onChange={e => updateSession(sliceIdx, sessIdx, {
+                            ambr: { ...sess.ambr, downlink: { value: parseInt(e.target.value) || 0, unit: sess.ambr.downlink.unit } }
+                          })}
+                        />
+                        <select
+                          className="nms-input w-24 flex-shrink-0"
+                          value={sess.ambr.downlink.unit}
+                          onChange={e => updateSession(sliceIdx, sessIdx, {
+                            ambr: { ...sess.ambr, downlink: { value: sess.ambr.downlink.value, unit: parseInt(e.target.value) } }
+                          })}
+                        >
+                          {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                        </select>
+                      </div>
                     </div>
                   </div>
 
@@ -1428,62 +2344,302 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">UE IPv4 Address</label>
-                      <input 
+                      <input
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv4 || ''}
-                        onChange={e => updateSession(sliceIdx, sessIdx, {
-                          ue: { ...sess.ue, ipv4: e.target.value || undefined }
-                        })}
+                        onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv4: e.target.value || undefined } })}
                         placeholder="10.45.0.2"
                       />
                     </div>
                     <div>
                       <label className="nms-label">UE IPv6 Address</label>
-                      <input 
+                      <input
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv6 || ''}
-                        onChange={e => updateSession(sliceIdx, sessIdx, {
-                          ue: { ...sess.ue, ipv6: e.target.value || undefined }
-                        })}
+                        onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv6: e.target.value || undefined } })}
                         placeholder="2001:db8:cafe::1"
                       />
                     </div>
                   </div>
 
                   {/* SMF Addresses */}
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">SMF IPv4 Address</label>
-                      <input 
+                      <input
                         className="nms-input font-mono text-sm"
                         value={sess.smf?.ipv4 || ''}
-                        onChange={e => updateSession(sliceIdx, sessIdx, {
-                          smf: { ...sess.smf, ipv4: e.target.value || undefined }
-                        })}
+                        onChange={e => updateSession(sliceIdx, sessIdx, { smf: { ...sess.smf, ipv4: e.target.value || undefined } })}
                         placeholder="127.0.0.4"
                       />
                     </div>
                     <div>
                       <label className="nms-label">SMF IPv6 Address</label>
-                      <input 
+                      <input
                         className="nms-input font-mono text-sm"
                         value={sess.smf?.ipv6 || ''}
-                        onChange={e => updateSession(sliceIdx, sessIdx, {
-                          smf: { ...sess.smf, ipv6: e.target.value || undefined }
-                        })}
+                        onChange={e => updateSession(sliceIdx, sessIdx, { smf: { ...sess.smf, ipv6: e.target.value || undefined } })}
                         placeholder="::1"
                       />
                     </div>
                   </div>
+
+                  {/* Framed Routes (TS 23.501 §5.6.14) — IP subnets routed behind the UE */}
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <label className="nms-label">Framed Routes IPv4</label>
+                      <input
+                        className="nms-input font-mono text-sm"
+                        value={sess.ipv4_framed_routes?.join(', ') || ''}
+                        onChange={e => updateSession(sliceIdx, sessIdx, {
+                          ipv4_framed_routes: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                        })}
+                        placeholder="10.45.33.0/24, 10.45.34.0/24"
+                      />
+                    </div>
+                    <div>
+                      <label className="nms-label">Framed Routes IPv6</label>
+                      <input
+                        className="nms-input font-mono text-sm"
+                        value={sess.ipv6_framed_routes?.join(', ') || ''}
+                        onChange={e => updateSession(sliceIdx, sessIdx, {
+                          ipv6_framed_routes: e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+                        })}
+                        placeholder="2001:db8:cafe:1::/64"
+                      />
+                    </div>
+                  </div>
+
+                  {((sess.ipv4_framed_routes?.length ?? 0) > 0 || (sess.ipv6_framed_routes?.length ?? 0) > 0) && (
+                    <div className="mb-3">
+                      <label
+                        className="flex items-center gap-2 text-xs text-nms-text-secondary cursor-pointer"
+                        title="Adds/removes a local ip route on this host automatically. The rest of your network still needs its own route to this subnet — pointing at THIS Open5GS host's IP, never the UE's IP — either via a dynamic routing advertisement (e.g. EIGRP) or a manual static route on your core/edge router."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!sess.framed_routes_static}
+                          onChange={e => updateSession(sliceIdx, sessIdx, { framed_routes_static: e.target.checked })}
+                          className="w-4 h-4 rounded border-nms-border accent-nms-accent cursor-pointer"
+                        />
+                        Apply static route on host (adds/removes <code>ip route</code> on the DNN's tun device automatically)
+                      </label>
+                      {sess.framed_routes_static && (
+                        <div className="mt-2 text-xs text-nms-text-dim bg-nms-surface-2/50 rounded px-3 py-2 space-y-2">
+                          <p>
+                            This adds the local route on this host only. Traffic still has to get routed <em>to</em> this
+                            host from the rest of your network — that's a separate step, done one of two ways:
+                          </p>
+                          <div>
+                            <span className="font-semibold text-nms-text-secondary">Option A — dynamic routing (e.g. EIGRP):</span> add
+                            this to <code>frr.conf</code>'s <code>router eigrp 1</code> block yourself (not automated):
+                            <div className="font-mono mt-1">
+                              {[...(sess.ipv4_framed_routes ?? []), ...(sess.ipv6_framed_routes ?? [])].map(cidr => (
+                                <div key={cidr}>network {cidr}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="font-semibold text-nms-text-secondary">Option B — manual static route:</span> on your
+                            core/edge router, point the route at <strong>this Open5GS host's own IP</strong> on the link
+                            to that router — <strong>never the UE's IP</strong> (the UE isn't a direct L3 hop from outside
+                            this host; this host is what forwards into the UE's tunnel). Example, if this host's IP toward
+                            your router is <code>192.168.253.2</code>:
+                            <div className="font-mono mt-1">
+                              {[...(sess.ipv4_framed_routes ?? []), ...(sess.ipv6_framed_routes ?? [])].map(cidr => (
+                                <div key={cidr}>ip route {cidr} 192.168.253.2  <span className="text-nms-text-dim">(replace with this host's real IP)</span></div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Dedicated Bearers / PCC Rules */}
+                  <div className="border-t border-nms-border/30 pt-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <h6 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wide">Dedicated Bearers</h6>
+                      <button
+                        onClick={() => addPccRule(sliceIdx, sessIdx)}
+                        className="nms-btn-ghost text-xs"
+                      >
+                        + Add Bearer
+                      </button>
+                    </div>
+                    {(sess.pcc_rule ?? []).length === 0 && (
+                      <p className="text-xs text-nms-text-dim italic">No dedicated bearers — add for IMS voice/video (QCI 1/2)</p>
+                    )}
+                    {(sess.pcc_rule ?? []).map((rule, ruleIdx) => (
+                      <div key={ruleIdx} className="bg-nms-bg/60 rounded border border-nms-border/20 p-3 mb-2">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-xs font-medium text-nms-text-dim">Bearer {ruleIdx + 1} (QCI {rule.qos.index})</span>
+                          <button onClick={() => removePccRule(sliceIdx, sessIdx, ruleIdx)} className="text-nms-red hover:text-nms-red/80 text-xs">Remove</button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 mb-2">
+                          <div>
+                            <label className="nms-label">5QI/QCI</label>
+                            <input
+                              className="nms-input font-mono"
+                              type="number" min={1} max={255}
+                              value={rule.qos.index}
+                              onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                ...rule, qos: { ...rule.qos, index: parseInt(e.target.value) || 1 }
+                              })}
+                            />
+                          </div>
+                          <div>
+                            <label className="nms-label">ARP Priority</label>
+                            <input
+                              className="nms-input font-mono"
+                              type="number" min={1} max={15}
+                              value={rule.qos.arp.priority_level}
+                              onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                ...rule, qos: { ...rule.qos, arp: { ...rule.qos.arp, priority_level: parseInt(e.target.value) || 1 } }
+                              })}
+                            />
+                          </div>
+                          <div className="grid grid-cols-2 gap-1">
+                            <div>
+                              <label className="nms-label">Capability</label>
+                              <select
+                                className="nms-input"
+                                value={rule.qos.arp.pre_emption_capability}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, arp: { ...rule.qos.arp, pre_emption_capability: parseInt(e.target.value) } }
+                                })}
+                              >
+                                <option value={1}>Disabled</option>
+                                <option value={2}>Enabled</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className="nms-label">Vulnerability</label>
+                              <select
+                                className="nms-input"
+                                value={rule.qos.arp.pre_emption_vulnerability}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, arp: { ...rule.qos.arp, pre_emption_vulnerability: parseInt(e.target.value) } }
+                                })}
+                              >
+                                <option value={1}>Disabled</option>
+                                <option value={2}>Enabled</option>
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 mb-2">
+                          <div>
+                            <label className="nms-label">MBR Uplink</label>
+                            <div className="flex gap-1">
+                              <input
+                                className="nms-input font-mono"
+                                type="number" min={0}
+                                value={rule.qos.mbr.uplink.value}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, mbr: { ...rule.qos.mbr, uplink: { value: parseInt(e.target.value) || 0, unit: rule.qos.mbr.uplink.unit } } }
+                                })}
+                              />
+                              <select
+                                className="nms-input w-20 flex-shrink-0"
+                                value={rule.qos.mbr.uplink.unit}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, mbr: { ...rule.qos.mbr, uplink: { value: rule.qos.mbr.uplink.value, unit: parseInt(e.target.value) } } }
+                                })}
+                              >
+                                {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="nms-label">MBR Downlink</label>
+                            <div className="flex gap-1">
+                              <input
+                                className="nms-input font-mono"
+                                type="number" min={0}
+                                value={rule.qos.mbr.downlink.value}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, mbr: { ...rule.qos.mbr, downlink: { value: parseInt(e.target.value) || 0, unit: rule.qos.mbr.downlink.unit } } }
+                                })}
+                              />
+                              <select
+                                className="nms-input w-20 flex-shrink-0"
+                                value={rule.qos.mbr.downlink.unit}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, mbr: { ...rule.qos.mbr, downlink: { value: rule.qos.mbr.downlink.value, unit: parseInt(e.target.value) } } }
+                                })}
+                              >
+                                {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="nms-label">GBR Uplink</label>
+                            <div className="flex gap-1">
+                              <input
+                                className="nms-input font-mono"
+                                type="number" min={0}
+                                value={rule.qos.gbr.uplink.value}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, gbr: { ...rule.qos.gbr, uplink: { value: parseInt(e.target.value) || 0, unit: rule.qos.gbr.uplink.unit } } }
+                                })}
+                              />
+                              <select
+                                className="nms-input w-20 flex-shrink-0"
+                                value={rule.qos.gbr.uplink.unit}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, gbr: { ...rule.qos.gbr, uplink: { value: rule.qos.gbr.uplink.value, unit: parseInt(e.target.value) } } }
+                                })}
+                              >
+                                {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                          <div>
+                            <label className="nms-label">GBR Downlink</label>
+                            <div className="flex gap-1">
+                              <input
+                                className="nms-input font-mono"
+                                type="number" min={0}
+                                value={rule.qos.gbr.downlink.value}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, gbr: { ...rule.qos.gbr, downlink: { value: parseInt(e.target.value) || 0, unit: rule.qos.gbr.downlink.unit } } }
+                                })}
+                              />
+                              <select
+                                className="nms-input w-20 flex-shrink-0"
+                                value={rule.qos.gbr.downlink.unit}
+                                onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
+                                  ...rule, qos: { ...rule.qos, gbr: { ...rule.qos.gbr, downlink: { value: rule.qos.gbr.downlink.value, unit: parseInt(e.target.value) } } }
+                                })}
+                              >
+                                {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               ))}
 
-              <button
-                onClick={() => addSession(sliceIdx)}
-                className="nms-btn-ghost text-xs w-full"
-              >
-                + Add Session
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => addSession(sliceIdx)}
+                  className="nms-btn-ghost text-xs flex-1"
+                >
+                  + Internet APN
+                </button>
+                <button
+                  onClick={() => addSession(sliceIdx, { ...IMS_SESSION_TEMPLATE })}
+                  className="nms-btn-ghost text-xs flex-1"
+                >
+                  + IMS APN
+                </button>
+              </div>
             </div>
           </div>
         ))}
@@ -1499,6 +2655,7 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
     </div>
   );
 }
+
 
 interface SubscriberPageProps {
   initialImsiToEdit?: string;
@@ -1517,6 +2674,28 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
   const sortOrder  = useSubscriberStore(s => s.sortOrder);
   const setSort    = useSubscriberStore(s => s.setSort);
 
+  // ── Grouping state (must be declared before useMemos that reference them) ──
+  const [groups, setGroups] = useState<SubscriberGroup[]>([]);
+  const [selectedImsis, setSelectedImsis] = useState<Set<string>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [groupModal, setGroupModal] = useState<{ mode: 'create' } | { mode: 'rename'; group: SubscriberGroup } | null>(null);
+
+  const fetchGroups = useCallback(async () => {
+    try { setGroups(await subscriberGroupsApi.list()); } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { fetchGroups(); }, [fetchGroups]);
+
+  const toggleSelect = (imsi: string) => {
+    setSelectedImsis(prev => {
+      const next = new Set(prev);
+      next.has(imsi) ? next.delete(imsi) : next.add(imsi);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedImsis(new Set());
+
   // Client-side sort — no backend call, instant
   const sortedSubscribers = useMemo(() => {
     const dir = sortOrder === 'asc' ? 1 : -1;
@@ -1528,13 +2707,44 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
       return dir * av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
     });
   }, [subscribers, sortBy, sortOrder]);
+
+  // Build the rendered list: grouped clusters first, then ungrouped
+  type RenderedItem =
+    | { type: 'group-header'; group: SubscriberGroup }
+    | { type: 'group-member'; sub: SubscriberListItem; group: SubscriberGroup }
+    | { type: 'ungrouped'; sub: SubscriberListItem };
+
+  const renderedItems = useMemo((): RenderedItem[] => {
+    const groupedImsiSet = new Set(groups.flatMap(g => g.imsis));
+    const subMap = new Map(sortedSubscribers.map(s => [s.imsi, s]));
+    const items: RenderedItem[] = [];
+    for (const group of groups) {
+      const members = group.imsis.map(imsi => subMap.get(imsi)).filter(Boolean) as SubscriberListItem[];
+      if (members.length === 0) continue;
+      items.push({ type: 'group-header', group });
+      if (!collapsedGroups.has(group._id)) {
+        for (const sub of members) items.push({ type: 'group-member', sub, group });
+      }
+    }
+    for (const sub of sortedSubscribers) {
+      if (!groupedImsiSet.has(sub.imsi)) items.push({ type: 'ungrouped', sub });
+    }
+    return items;
+  }, [sortedSubscribers, groups, collapsedGroups]);
+
   const [showForm, setShowForm] = useState(false);
   const [editImsi, setEditImsi] = useState<string|null>(null);
   const [editSub, setEditSub] = useState<Subscriber|null>(null);
   const [si, setSi] = useState('');
   const [showGenerator, setShowGenerator] = useState(false);
+  const [showEsimModal, setShowEsimModal] = useState(false);
+  const [esimSubscriber, setEsimSubscriber] = useState<Subscriber | undefined>(undefined);
   const [showIPAssignments, setShowIPAssignments] = useState(false);
-  const [assigningIPs, setAssigningIPs] = useState(false);
+  const [showFramedRoutes, setShowFramedRoutes] = useState(false);
+  const [showAutoAssignIPs, setShowAutoAssignIPs] = useState(false);
+  const [showMsisdnAssign, setShowMsisdnAssign] = useState(false);
+  const [showAddressMenu, setShowAddressMenu] = useState(false);
+  const [showBulkApn, setShowBulkApn]         = useState(false);
   const [importing, setImporting] = useState(false);
   const [importMode, setImportMode] = useState<'skip' | 'overwrite'>('skip');
   const importRef = useRef<HTMLInputElement>(null);
@@ -1555,40 +2765,6 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
   }, [initialImsiToEdit]);
 
   useEffect(() => { fetch(); }, [fetch]);
-
-  const handleAutoAssignIPs = async () => {
-    const confirmed = window.confirm(
-      'Auto-assign IPv4 addresses to all subscribers?\n\n' +
-      'This will:\n' +
-      '• Read the IP pool from UPF Session Pool configuration\n' +
-      '• Assign sequential IPs to subscribers without IPs\n' +
-      '• Skip subscribers that already have IPs assigned\n\n' +
-      'Continue?'
-    );
-
-    if (!confirmed) return;
-
-    setAssigningIPs(true);
-    try {
-      const result = await subscriberApi.autoAssignIPs();
-      if (result.success) {
-        const { assigned, skipped, failed, ipPool } = result.data;
-        toast.success(
-          `✅ IP Assignment Complete!\n` +
-          `Pool: ${ipPool}\n` +
-          `Assigned: ${assigned} | Skipped: ${skipped}${failed > 0 ? ` | Failed: ${failed}` : ''}`,
-          { duration: 5000 }
-        );
-        fetch(); // Refresh subscriber list
-      } else {
-        toast.error('IP assignment failed');
-      }
-    } catch (error) {
-      toast.error(`Failed to assign IPs: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setAssigningIPs(false);
-    }
-  };
 
   const handleExport = () => {
     const a = document.createElement('a');
@@ -1618,51 +2794,118 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="shrink-0">
           <h1 className="text-2xl font-semibold font-display">Subscribers</h1>
           <p className="text-sm text-nms-text-dim mt-1">{total} provisioned</p>
         </div>
-        <div className="flex gap-3 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-center">
           {/* Export — available to all */}
-          <button onClick={handleExport} className="nms-btn-ghost flex items-center gap-2" title="Export all subscribers to CSV">
-            <Download className="w-4 h-4" /> Export CSV
+          <button onClick={handleExport} className="nms-btn-ghost flex items-center gap-1.5" title="Export all subscribers to CSV">
+            <Download className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">Export CSV</span>
+          </button>
+
+          {/* Generate eSIM (Simlessly) — available to all */}
+          <button
+            onClick={() => { setEsimSubscriber(undefined); setShowEsimModal(true); }}
+            className="nms-btn-ghost flex items-center gap-1.5"
+            title="Generate an eSIM activation-code JSON via Simlessly"
+          >
+            <Smartphone className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">Generate eSIM</span>
           </button>
 
           {/* Import — admin only */}
           {!isViewer && (
             <>
               <select value={importMode} onChange={e => setImportMode(e.target.value as 'skip' | 'overwrite')}
-                className="nms-input text-xs w-32" title="Import mode">
+                className="nms-input text-xs w-auto sm:w-32 hidden sm:block" title="Import mode">
                 <option value="skip">Skip duplicates</option>
                 <option value="overwrite">Overwrite duplicates</option>
               </select>
               <button onClick={() => importRef.current?.click()} disabled={importing}
-                className="nms-btn-ghost flex items-center gap-2" title="Import subscribers from CSV">
-                <Upload className="w-4 h-4" /> {importing ? 'Importing...' : 'Import CSV'}
+                className="nms-btn-ghost flex items-center gap-1.5" title="Import subscribers from CSV">
+                <Upload className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">{importing ? 'Importing…' : 'Import CSV'}</span>
               </button>
               <input ref={importRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(f); }} />
             </>
           )}
 
-          <button onClick={() => setShowIPAssignments(true)} className="nms-btn-ghost flex items-center gap-2"
-            title="View IP address assignments">
-            <List className="w-4 h-4" /> IP Assignments
-          </button>
+          {/* Addressing dropdown — IP Assignments + Auto-Assign IPs + Auto-Assign MSISDN */}
+          <div className="relative">
+            {showAddressMenu && (
+              <div className="fixed inset-0 z-10" onClick={() => setShowAddressMenu(false)} />
+            )}
+            <button
+              onClick={() => setShowAddressMenu(v => !v)}
+              className="nms-btn-ghost flex items-center gap-1.5 relative z-20"
+              title="IP and MSISDN addressing"
+            >
+              <Network className="w-4 h-4 shrink-0" />
+              <span className="hidden sm:inline">Addressing</span>
+              <ChevronDown className="w-3 h-3 shrink-0" />
+            </button>
+            {showAddressMenu && (
+              <div className="absolute right-0 top-full mt-1 z-20 w-56 bg-nms-surface border border-nms-border rounded-lg shadow-2xl py-1 overflow-hidden">
+                <button
+                  onClick={() => { setShowIPAssignments(true); setShowAddressMenu(false); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-nms-text hover:bg-nms-surface-2 transition-colors text-left"
+                >
+                  <List className="w-4 h-4 text-nms-text-dim shrink-0" />
+                  <div>
+                    <div className="font-medium">IP Assignments</div>
+                    <div className="text-xs text-nms-text-dim">View current UE IP addresses</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => { setShowFramedRoutes(true); setShowAddressMenu(false); }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-nms-text hover:bg-nms-surface-2 transition-colors text-left"
+                >
+                  <Network className="w-4 h-4 text-nms-text-dim shrink-0" />
+                  <div>
+                    <div className="font-medium">Framed Routes</div>
+                    <div className="text-xs text-nms-text-dim">Registry of subnets routed behind UEs</div>
+                  </div>
+                </button>
+                {!isViewer && (
+                  <>
+                    <div className="border-t border-nms-border/40 my-1" />
+                    <button
+                      onClick={() => { setShowAutoAssignIPs(true); setShowAddressMenu(false); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-nms-text hover:bg-nms-surface-2 transition-colors text-left"
+                    >
+                      <Network className="w-4 h-4 text-nms-text-dim shrink-0" />
+                      <div>
+                        <div className="font-medium">Auto-Assign IPs</div>
+                        <div className="text-xs text-nms-text-dim">Assign IPv4 from UPF pool</div>
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => { setShowMsisdnAssign(true); setShowAddressMenu(false); }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-sm text-nms-text hover:bg-nms-surface-2 transition-colors text-left"
+                    >
+                      <Shield className="w-4 h-4 text-nms-text-dim shrink-0" />
+                      <div>
+                        <div className="font-medium">Auto-Assign MSISDN</div>
+                        <div className="text-xs text-nms-text-dim">Assign phone numbers to subscribers</div>
+                      </div>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           {!isViewer && (
             <>
-              <button onClick={handleAutoAssignIPs} disabled={assigningIPs}
-                className="nms-btn-secondary flex items-center gap-2"
-                title="Auto-assign IPv4 addresses from UPF pool">
-                <Network className="w-4 h-4" /> {assigningIPs ? 'Assigning...' : 'Auto-Assign IPs'}
+              <button onClick={() => setShowGenerator(true)} className="nms-btn-ghost flex items-center gap-1.5" title="SIM Generator">
+                <CreditCard className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">SIM Generator</span>
               </button>
-              <button onClick={() => setShowGenerator(true)} className="nms-btn-ghost flex items-center gap-2">
-                <CreditCard className="w-4 h-4" /> SIM Generator
+              <button onClick={() => setShowBulkApn(true)} className="nms-btn-ghost flex items-center gap-1.5" title="Bulk Add APN">
+                <Network className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">Bulk Add APN</span>
               </button>
-              <button onClick={() => { setShowForm(true); setEditImsi(null); }} className="nms-btn-primary flex items-center gap-2">
-                <Plus className="w-4 h-4" /> Add Subscriber
+              <button onClick={() => { setShowForm(true); setEditImsi(null); }} className="nms-btn-primary flex items-center gap-1.5">
+                <Plus className="w-4 h-4 shrink-0" /><span className="hidden xs:inline">Add Subscriber</span>
               </button>
             </>
           )}
@@ -1683,21 +2926,68 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
         <SIMGeneratorDialog onClose={() => setShowGenerator(false)} />
       )}
 
+
       {showIPAssignments && <IPAssignmentsModal onClose={() => setShowIPAssignments(false)} />}
+      {showFramedRoutes && <FramedRoutesModal onClose={() => setShowFramedRoutes(false)} />}
+      {showEsimModal && (
+        <EsimGeneratorModal
+          subscriber={esimSubscriber}
+          onClose={() => { setShowEsimModal(false); setEsimSubscriber(undefined); }}
+        />
+      )}
+      {showAutoAssignIPs && !isViewer && (
+        <AutoAssignIPsDialog
+          onClose={() => setShowAutoAssignIPs(false)}
+          onDone={() => { fetch(); }}
+        />
+      )}
+      {showMsisdnAssign && !isViewer && (
+        <MsisdnAssignDialog
+          totalSubscribers={total}
+          onClose={() => setShowMsisdnAssign(false)}
+          onDone={() => { setShowMsisdnAssign(false); fetch(); }}
+        />
+      )}
+      {showBulkApn && !isViewer && (
+        <BulkApnDialog
+          totalSubscribers={total}
+          onClose={() => setShowBulkApn(false)}
+          onDone={() => fetch()}
+        />
+      )}
+
+      {groupModal && !isViewer && (
+        <GroupModal
+          initial={groupModal.mode === 'rename' ? { name: groupModal.group.name, color: groupModal.group.color ?? GROUP_COLORS[0] } : undefined}
+          onConfirm={async (name, color) => {
+            if (groupModal.mode === 'create') {
+              const imsis = [...selectedImsis];
+              await subscriberGroupsApi.create(name, imsis, color);
+              clearSelection();
+            } else {
+              await subscriberGroupsApi.update(groupModal.group._id, { name, color });
+            }
+            await fetchGroups();
+            setGroupModal(null);
+          }}
+          onClose={() => setGroupModal(null)}
+        />
+      )}
 
       {showForm && !isViewer && (
         <SubForm 
           sub={DEFAULT_SUB} 
           onSave={async s => {
             try {
-              await subscriberApi.create(s);
+              const result = await subscriberApi.create(s);
               toast.success('Subscriber created');
+              result?.warnings?.forEach(w => toast(w, { icon: '⚠️', duration: 8000 }));
               setShowForm(false);
               fetch();
             } catch(e:any) {
               toast.error(e?.message || 'Failed to create subscriber');
             }
-          }} 
+          }}
           onCancel={() => setShowForm(false)} 
           isNew 
         />
@@ -1708,24 +2998,70 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
           sub={editSub} 
           onSave={async s => {
             try {
-              await subscriberApi.update(editImsi, s);
+              const result = await subscriberApi.update(editImsi, s);
               toast.success('Subscriber updated');
+              result?.warnings?.forEach(w => toast(w, { icon: '⚠️', duration: 8000 }));
               setEditImsi(null);
               setEditSub(null);
               fetch();
             } catch(e:any) {
               toast.error(e?.message || 'Failed to update subscriber');
             }
-          }} 
+          }}
           onCancel={() => { setEditImsi(null); setEditSub(null); }} 
           isNew={false} 
         />
+      )}
+
+      {/* Floating selection toolbar */}
+      {selectedImsis.size > 0 && !isViewer && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-nms-surface border border-nms-accent/40 rounded-xl px-5 py-3 shadow-2xl">
+          <span className="text-sm font-semibold text-nms-accent">{selectedImsis.size} selected</span>
+          <div className="w-px h-4 bg-nms-border" />
+          <button
+            onClick={() => setGroupModal({ mode: 'create' })}
+            className="nms-btn-primary text-xs flex items-center gap-1.5"
+          >
+            <Users className="w-3.5 h-3.5" />
+            Group selected
+          </button>
+          {/* Add selected to existing group */}
+          {groups.length > 0 && (
+            <div className="relative group">
+              <button className="nms-btn-ghost text-xs flex items-center gap-1.5">
+                Add to group <ChevronDown className="w-3 h-3" />
+              </button>
+              <div className="absolute bottom-full mb-1 left-0 hidden group-hover:block bg-nms-surface border border-nms-border rounded-lg shadow-2xl py-1 min-w-40 z-50">
+                {groups.map(g => (
+                  <button
+                    key={g._id}
+                    onClick={async () => {
+                      const merged = [...new Set([...g.imsis, ...selectedImsis])];
+                      await subscriberGroupsApi.update(g._id, { imsis: merged });
+                      await fetchGroups();
+                      clearSelection();
+                      toast.success(`Added to "${g.name}"`);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-nms-surface-2 text-left"
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: g.color ?? '#6366f1' }} />
+                    {g.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <button onClick={clearSelection} className="text-nms-text-dim hover:text-nms-text">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       )}
 
       <div className="nms-card overflow-hidden p-0">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-nms-border">
+              {!isViewer && <th className="w-10 px-3 py-3" />}
               {[
                 { key: 'imsi',    label: 'IMSI' },
                 { key: null,      label: 'Nickname' },
@@ -1759,67 +3095,186 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
             </tr>
           </thead>
           <tbody>
-            {sortedSubscribers.map((sub: SubscriberListItem) => (
-              <tr key={sub.imsi} className="border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors">
-                <td className="px-4 py-3 font-mono text-xs">{sub.imsi}</td>
-                <td className="px-4 py-3 text-xs">
-                  {sub.nickname
-                    ? <span className="text-nms-accent font-medium">{sub.nickname}</span>
-                    : <span className="text-nms-text-dim">—</span>}
-                </td>
-                <td className="px-4 py-3 font-mono text-xs text-nms-text-dim">
-                  {sub.iccid || <span className="text-nms-text-dim">—</span>}
-                </td>
-                <td className="px-4 py-3 text-xs text-nms-text-dim">{sub.msisdn?.join(', ') || '—'}</td>
-                <td className="px-4 py-3 text-xs font-mono text-nms-text-dim">{sub.apn || '—'}</td>
-                <td className="px-4 py-3 text-xs font-mono text-nms-accent">{sub.ue_ipv4 || '—'}</td>
-                <td className="px-4 py-3">
-                  <span className="bg-nms-green/10 text-nms-green text-xs px-2 py-0.5 rounded-full">Active</span>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="bg-nms-accent/10 text-nms-accent text-xs px-2 py-0.5 rounded-full">{sub.slice_count}</span>
-                </td>
-                <td className="px-4 py-3 text-right">
+            {renderedItems.map((item) => {
+              if (item.type === 'group-header') {
+                const { group } = item;
+                const collapsed = collapsedGroups.has(group._id);
+                const memberCount = group.imsis.filter(imsi => sortedSubscribers.some(s => s.imsi === imsi)).length;
+                return (
+                  <tr key={`group-${group._id}`} className="border-b border-nms-border" style={{ backgroundColor: (group.color ?? '#6366f1') + '14' }}>
+                    {!isViewer && <td className="w-10 px-3 py-2" />}
+                    <td colSpan={9} className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setCollapsedGroups(prev => {
+                            const next = new Set(prev);
+                            next.has(group._id) ? next.delete(group._id) : next.add(group._id);
+                            return next;
+                          })}
+                          className="text-nms-text-dim hover:text-nms-text transition-colors"
+                        >
+                          <ChevronRight className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                        </button>
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: group.color ?? '#6366f1' }} />
+                        <span className="text-sm font-semibold text-nms-text">{group.name}</span>
+                        <span className="text-xs text-nms-text-dim">({memberCount} SIM{memberCount !== 1 ? 's' : ''})</span>
+                        {!isViewer && (
+                          <div className="ml-auto flex items-center gap-1">
+                            <button
+                              title="Rename group"
+                              onClick={() => setGroupModal({ mode: 'rename', group })}
+                              className="text-nms-text-dim hover:text-nms-accent p-1 transition-colors"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              title="Dissolve group (members stay, group removed)"
+                              onClick={async () => {
+                                if (!confirm(`Dissolve group "${group.name}"? Members will remain as ungrouped subscribers.`)) return;
+                                await subscriberGroupsApi.delete(group._id);
+                                await fetchGroups();
+                                toast.success(`Group "${group.name}" dissolved`);
+                              }}
+                              className="text-nms-text-dim hover:text-nms-red p-1 transition-colors"
+                            >
+                              <Unlink className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              }
+
+              const sub = item.type === 'group-member' ? item.sub : item.sub;
+              const inGroup = item.type === 'group-member';
+              const groupColor = inGroup ? (item.group.color ?? '#6366f1') : null;
+              const isSelected = selectedImsis.has(sub.imsi);
+
+              return (
+                <tr
+                  key={sub.imsi}
+                  className={`border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors ${isSelected ? 'bg-nms-accent/5' : ''}`}
+                  style={inGroup ? { borderLeft: `3px solid ${groupColor}` } : undefined}
+                >
                   {!isViewer && (
-                    <>
-                      <button 
-                        onClick={async () => {
-                          try {
-                            const s = await subscriberApi.get(sub.imsi);
-                            setEditSub(s);
-                            setEditImsi(sub.imsi);
-                          } catch {
-                            toast.error('Failed to load subscriber');
-                          }
-                        }} 
-                        className="text-nms-text-dim hover:text-nms-accent mr-2"
-                      >
-                        <Edit className="w-4 h-4 inline" />
-                      </button>
-                      <button 
-                        onClick={async () => {
-                          if (!confirm(`Delete subscriber ${sub.imsi}?`)) return;
-                          try {
-                            await subscriberApi.delete(sub.imsi);
-                            toast.success('Subscriber deleted');
-                            fetch();
-                          } catch {
-                            toast.error('Failed to delete subscriber');
-                          }
-                        }} 
-                        className="text-nms-text-dim hover:text-nms-red"
-                      >
-                        <Trash2 className="w-4 h-4 inline" />
-                      </button>
-                    </>
+                    <td className="w-10 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(sub.imsi)}
+                        className="w-4 h-4 rounded border-nms-border accent-nms-accent cursor-pointer"
+                      />
+                    </td>
                   )}
-                  {isViewer && <span className="text-xs text-nms-text-dim">view only</span>}
-                </td>
-              </tr>
-            ))}
+                  <td className={`px-4 py-3 font-mono text-xs ${inGroup ? 'pl-5' : ''}`}>{sub.imsi}</td>
+                  <td className="px-4 py-3 text-xs">
+                    {sub.nickname
+                      ? <span className="text-nms-accent font-medium">{sub.nickname}</span>
+                      : <span className="text-nms-text-dim">—</span>}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-nms-text-dim">
+                    {sub.iccid || <span className="text-nms-text-dim">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-nms-text-dim">{sub.msisdn?.join(', ') || '—'}</td>
+                  <td className="px-4 py-3 text-xs font-mono text-nms-text-dim">
+                    {sub.sessions && sub.sessions.length > 0
+                      ? sub.sessions.map((s, i) => <div key={i}>{s.apn || '—'}</div>)
+                      : (sub.apn || '—')}
+                  </td>
+                  <td className="px-4 py-3 text-xs font-mono text-nms-accent">
+                    {sub.sessions && sub.sessions.length > 0
+                      ? sub.sessions.map((s, i) => (
+                          <div key={i}>
+                            {s.ipv4 || '—'}
+                            {s.framedRoutes && s.framedRoutes.length > 0 && (
+                              <div className="text-nms-text-dim">↳ {s.framedRoutes.join(', ')}</div>
+                            )}
+                          </div>
+                        ))
+                      : (sub.ue_ipv4 || '—')}
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="bg-nms-green/10 text-nms-green text-xs px-2 py-0.5 rounded-full">Active</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="bg-nms-accent/10 text-nms-accent text-xs px-2 py-0.5 rounded-full">{sub.slice_count}</span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {!isViewer && (
+                      <div className="flex items-center justify-end gap-2">
+                        {inGroup && (
+                          <button
+                            title="Remove from group"
+                            onClick={async () => {
+                              const updated = item.group.imsis.filter(i => i !== sub.imsi);
+                              if (updated.length === 0) {
+                                await subscriberGroupsApi.delete(item.group._id);
+                              } else {
+                                await subscriberGroupsApi.update(item.group._id, { imsis: updated });
+                              }
+                              await fetchGroups();
+                            }}
+                            className="text-nms-text-dim hover:text-nms-text-dim/60 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <Unlink className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <button
+                          onClick={async () => {
+                            try {
+                              const s = await subscriberApi.get(sub.imsi);
+                              setEditSub(s);
+                              setEditImsi(sub.imsi);
+                            } catch {
+                              toast.error('Failed to load subscriber');
+                            }
+                          }}
+                          className="text-nms-text-dim hover:text-nms-accent"
+                        >
+                          <Edit className="w-4 h-4 inline" />
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              const s = await subscriberApi.get(sub.imsi);
+                              setEsimSubscriber(s);
+                              setShowEsimModal(true);
+                            } catch {
+                              toast.error('Failed to load subscriber');
+                            }
+                          }}
+                          className="text-nms-text-dim hover:text-nms-accent"
+                          title="Generate eSIM (Simlessly)"
+                        >
+                          <Smartphone className="w-4 h-4 inline" />
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Delete subscriber ${sub.imsi}?`)) return;
+                            try {
+                              await subscriberApi.delete(sub.imsi);
+                              toast.success('Subscriber deleted');
+                              fetch();
+                            } catch {
+                              toast.error('Failed to delete subscriber');
+                            }
+                          }}
+                          className="text-nms-text-dim hover:text-nms-red"
+                        >
+                          <Trash2 className="w-4 h-4 inline" />
+                        </button>
+                      </div>
+                    )}
+                    {isViewer && <span className="text-xs text-nms-text-dim">view only</span>}
+                  </td>
+                </tr>
+              );
+            })}
             {subscribers.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-nms-text-dim">
+                <td colSpan={isViewer ? 9 : 10} className="px-4 py-12 text-center text-nms-text-dim">
                   No subscribers found
                 </td>
               </tr>

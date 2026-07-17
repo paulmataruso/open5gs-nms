@@ -225,6 +225,11 @@ export const subscriberSessionSchema = z.object({
     ipv4: ipv4Schema.optional(),   // SMF IPv4 address
     ipv6: z.string().optional(),   // SMF IPv6 address
   }).optional(),
+  ipv4_framed_routes: z.array(cidrSchema).optional(),
+  ipv6_framed_routes: z.array(
+    z.string().regex(/^[0-9a-fA-F:]+\/\d{1,3}$/, 'Invalid IPv6 CIDR notation'),
+  ).optional(),
+  framed_routes_static: z.boolean().optional(),
 });
 
 export const subscriberSliceSchema = z.object({

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Plus, X, AlertTriangle, Info, Map } from 'lucide-react';
 import type { AllConfigs } from '../../../types';
-import { LoggerSection } from './SharedComponents';
+import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { TopologyModal } from './TopologyModal';
 
 interface Props {
@@ -120,6 +120,12 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
   return (
     <div className="space-y-8">
       {showTopology && <TopologyModal focus="sgwu" onClose={() => setShowTopology(false)} />}
+
+      <FunctionInfoBox
+        title="Serving Gateway — Control Plane (SGW-C)"
+        generation="4G"
+        description="The SGW-C is the control-plane component of the Serving Gateway in a CUPS (Control and User Plane Separation) architecture. It manages GTP tunnel signalling between the MME (S11), the PGW-C/SMF (S5/S8-C), and the SGW-U data plane (via PFCP/Sxa). The SGW-C handles session setup and teardown but passes no user traffic itself — all data flows through the SGW-U."
+      />
 
       {/* ── Section 1: GTP-C Server ── */}
       <div>

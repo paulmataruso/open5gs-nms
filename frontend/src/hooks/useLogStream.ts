@@ -1,18 +1,33 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
+export type MajorEventType =
+  | 'radio_connect' | 'radio_disconnect'
+  | 'ue_attach' | 'ue_detach'
+  | 'ue_register' | 'ue_deregister'
+  | 'pdu_session_up' | 'pdu_session_down';
+
 export interface LogEntry {
   timestamp: string;
   service: string;
   message: string;
+  // Populated only when majorEventsOnly is set — see backend major-event-classifier.ts
+  event?: { type: MajorEventType; imsi?: string; radioIp?: string; apn?: string };
 }
 
 interface UseLogStreamOptions {
-  source: 'open5gs' | 'docker' | 'genieacs';
+  source: 'open5gs' | 'docker' | 'genieacs' | 'frr';
   services: string[];
   maxLines: number;
   autoScroll: boolean;
   paused: boolean;
   filter?: string; // e.g. 'sas' — server-side line filter
+  // Major Events mode: classify+filter open5gs log lines server-side instead of streaming
+  // everything. imsis/radioIps/eventTypes narrow further (empty/omitted = no restriction on
+  // that axis) — combined with AND across axes, OR within each.
+  majorEventsOnly?: boolean;
+  imsis?: string[];
+  radioIps?: string[];
+  eventTypes?: MajorEventType[];
 }
 
 export const useLogStream = (options: UseLogStreamOptions) => {
@@ -21,7 +36,7 @@ export const useLogStream = (options: UseLogStreamOptions) => {
   const wsRef = useRef<WebSocket | null>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
-  const { services, maxLines, autoScroll, paused, source, filter } = options;
+  const { services, maxLines, autoScroll, paused, source, filter, majorEventsOnly, imsis, radioIps, eventTypes } = options;
 
   // Connect to WebSocket
   useEffect(() => {
@@ -82,26 +97,37 @@ export const useLogStream = (options: UseLogStreamOptions) => {
         return;
       }
 
+      const eventOptions = {
+        ...(majorEventsOnly ? { majorEventsOnly: true } : {}),
+        ...(imsis && imsis.length > 0 ? { imsis } : {}),
+        ...(radioIps && radioIps.length > 0 ? { radioIps } : {}),
+        ...(eventTypes && eventTypes.length > 0 ? { eventTypes } : {}),
+      };
+
       // Subscribe with source
       wsRef.current?.send(JSON.stringify({
         type: 'subscribe_logs',
         source,
         services,
         ...(filter ? { filter } : {}),
+        ...eventOptions,
       }));
 
-      // Request recent logs
+      // Request recent logs — normal live-log views want a quick recent snapshot regardless
+      // of maxLines, but the Major Events view wants as much of its (much rarer) history as
+      // maxLines allows, so use it as the request limit in that mode.
       wsRef.current?.send(JSON.stringify({
         type: 'get_recent_logs',
         source,
         services,
-        limit: 100,
+        limit: majorEventsOnly ? maxLines : 100,
         ...(filter ? { filter } : {}),
+        ...eventOptions,
       }));
     }, 300); // 300ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [services, source, filter]);
+  }, [services, source, filter, majorEventsOnly, imsis, radioIps, eventTypes, maxLines]);
 
   // Auto-scroll
   useEffect(() => {

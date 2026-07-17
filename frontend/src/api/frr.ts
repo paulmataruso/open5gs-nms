@@ -33,6 +33,11 @@ export const frrApi = {
   cutover:    () => fetch('/api/frr/migration/cutover',     { method: 'POST', credentials: 'include' }),
   rollback:   () => fetch('/api/frr/migration/rollback',    { method: 'POST', credentials: 'include' }),
 
+  // Standalone dummy interface management
+  listDummies:   async () => { const { data } = await api.get('/dummy-interfaces');             return data as { success: boolean; interfaces: DummyInterface[] }; },
+  createDummy:   async (body: { name: string; ip: string; prefix: number; advertise?: boolean }) => { const { data } = await api.post('/dummy-interfaces', body); return data as { success: boolean; name: string; ip: string; prefix: number; addedToFrr: boolean }; },
+  deleteDummy:   async (name: string) => { const { data } = await api.delete(`/dummy-interfaces/${name}`); return data; },
+
   discoverUeSubnets: async (): Promise<{ subnets: UeSubnet[]; stored: UeSubnet[] }> => {
     const { data } = await api.get('/ue-subnets');
     return data;
@@ -45,7 +50,49 @@ export const frrApi = {
   rollbackUeSubnets: () => fetch('/api/frr/ue-subnets/rollback', {
     method: 'POST', credentials: 'include',
   }),
+
+  setLogLevel: async (level: FrrLogLevel) => { const { data } = await api.post('/log-level', { level }); return data; },
 };
+
+// Mirrors backend/src/interfaces/rest/frr-controller.ts FRR_LOG_LEVELS.
+export const FRR_LOG_LEVELS = [
+  'emergencies', 'alerts', 'critical', 'errors',
+  'warnings', 'notifications', 'informational', 'debugging',
+] as const;
+export type FrrLogLevel = typeof FRR_LOG_LEVELS[number];
+
+const sourceBuildApi = axios.create({ baseURL: '/api/frr/source-build', withCredentials: true });
+
+export interface FrrBuildState {
+  status: 'idle' | 'preparing' | 'building_libyang' | 'building_frr' | 'swapping'
+    | 'starting_service' | 'verifying' | 'complete' | 'failed' | 'rolled_back';
+  currentStepLabel: string;
+  targetTag: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: string | null;
+  backupPath: string | null;
+  snapshotPath: string | null;
+  log: string;
+  defaultTargetTag: string;
+}
+
+export const frrSourceBuildApi = {
+  getStatus: async (): Promise<FrrBuildState> => { const { data } = await sourceBuildApi.get('/status'); return data; },
+  getLog:    async (): Promise<string> => { const { data } = await sourceBuildApi.get('/log', { responseType: 'text' }); return data; },
+  streamLog: () => fetch('/api/frr/source-build/log/stream', { credentials: 'include' }),
+  backup:    async () => { const { data } = await sourceBuildApi.post('/backup'); return data; },
+  start:     async (targetTag: string) => { const { data } = await sourceBuildApi.post('/start', { targetTag }); return data; },
+  rollback:  async () => { const { data } = await sourceBuildApi.post('/rollback'); return data; },
+  resetState: async () => { const { data } = await sourceBuildApi.post('/state/reset'); return data; },
+};
+
+export interface DummyInterface {
+  name: string;
+  state: 'up' | 'down';
+  managed: boolean;
+  addrs: { ip: string; prefix: number }[];
+}
 
 export interface UeSubnet {
   subnet: string;

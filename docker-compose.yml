@@ -6,6 +6,7 @@ services:
     network_mode: host
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/nms.conf:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/certs:/etc/nginx/certs
       - ./logs/nginx:/var/log/nginx
     depends_on:
@@ -37,6 +38,7 @@ services:
     volumes:
       - /etc/open5gs:/etc/open5gs
       - /var/log/open5gs:/var/log/open5gs
+      - /var/log/frr:/var/log/frr:ro
       - /run/systemd/system:/run/systemd/system:ro
       - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
       - /usr/bin/systemctl:/usr/bin/systemctl:ro
@@ -47,12 +49,14 @@ services:
       - ./data:/app/data
       - /etc/open5gs/backups/config:/etc/open5gs/backups/config
       - /etc/open5gs/backups/mongodb:/etc/open5gs/backups/mongodb
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/ue-validation:/tmp/ue-validation
       - ./monitoring:/app/monitoring
       - ./genieacs/logs:/var/log/genieacs:ro
       - ./nginx/certs:/etc/nginx/certs:ro
       - ./logs/nginx:/var/log/nginx-sas:ro
     environment:
+      - TZ=${TZ:-America/New_York}
       - NODE_ENV=production
       - PORT=3001
       - MONGODB_URI=mongodb://127.0.0.1:27017/open5gs
@@ -61,6 +65,7 @@ services:
       - LOG_LEVEL=info
       - WS_PORT=3002
       - HOST_SYSTEMCTL_PATH=/usr/bin/systemctl
+      - GENIEACS_LOG_HOST_DIR=/DOCKER/open5gs-nms/genieacs/logs
       # Auth
       - AUTH_DB_PATH=/app/data/auth.db
       - SESSION_MAX_AGE=86400
@@ -69,6 +74,10 @@ services:
       # Prometheus sync
       - PROMETHEUS_CONFIG_PATH=/app/monitoring/prometheus.yml
       - PROMETHEUS_PORT=${PROMETHEUS_PORT:-9099}
+      # Simlessly eSIM RSP API — get these from the Developer module on your
+      # Simlessly account and set them in a .env file (never commit real values)
+      - SIMLESSLY_ACCESS_KEY=${SIMLESSLY_ACCESS_KEY:-}
+      - SIMLESSLY_SECRET_KEY=${SIMLESSLY_SECRET_KEY:-}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s
@@ -94,6 +103,11 @@ services:
         - VITE_WS_URL=
         - VITE_PROMETHEUS_PORT=${PROMETHEUS_PORT:-9099}
         - VITE_GRAFANA_PORT=${GRAFANA_PORT:-3000}
+        - VITE_ENABLE_SMS=${ENABLE_SMS_MODULE:-true}
+        - VITE_ENABLE_IMS=${ENABLE_IMS_MODULE:-true}
+        - VITE_ENABLE_VALIDATION=${ENABLE_VALIDATION_MODULE:-true}
+        - VITE_ENABLE_VOWIFI=${ENABLE_VOWIFI_MODULE:-true}
+        - VITE_ENABLE_DNS_MIGRATION=${ENABLE_DNS_MIGRATION_MODULE:-true}
     container_name: open5gs-nms-frontend
     restart: unless-stopped
     network_mode: host

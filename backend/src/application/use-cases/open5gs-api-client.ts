@@ -36,7 +36,7 @@ export interface AmfGnbInfo {
 }
 
 export interface AmfUeInfo {
-  supi: string;                 // "imsi-999702959493689"
+  supi?: string;                // "imsi-999702959493689" — absent for unauthenticated UEs (suci-only)
   suci?: string;
   cm_state: string;             // "connected" | "idle"
   guti?: string;

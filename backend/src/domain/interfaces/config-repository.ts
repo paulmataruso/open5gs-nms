@@ -9,6 +9,7 @@ import { UdrConfig } from '../entities/udr-config';
 import { PcfConfig } from '../entities/pcf-config';
 import { NssfConfig } from '../entities/nssf-config';
 import { BsfConfig } from '../entities/bsf-config';
+import { SeppConfig } from '../entities/sepp-config';
 import { MmeConfig } from '../entities/mme-config';
 import { HssConfig } from '../entities/hss-config';
 import { PcrfConfig } from '../entities/pcrf-config';
@@ -28,6 +29,7 @@ export interface AllConfigs {
   pcf?: PcfConfig;
   nssf?: NssfConfig;
   bsf?: BsfConfig;
+  sepp1?: SeppConfig;
   // 4G EPC
   mme?: MmeConfig;
   hss?: HssConfig;
@@ -48,6 +50,7 @@ export interface IConfigRepository {
   loadPcf(): Promise<PcfConfig>;
   loadNssf(): Promise<NssfConfig>;
   loadBsf(): Promise<BsfConfig>;
+  loadSepp1(): Promise<SeppConfig>;
   loadMme(): Promise<MmeConfig>;
   loadHss(): Promise<HssConfig>;
   loadPcrf(): Promise<PcrfConfig>;
@@ -66,6 +69,7 @@ export interface IConfigRepository {
   savePcf(config: PcfConfig): Promise<void>;
   saveNssf(config: NssfConfig): Promise<void>;
   saveBsf(config: BsfConfig): Promise<void>;
+  saveSepp1(config: SeppConfig): Promise<void>;
   saveMme(config: MmeConfig): Promise<void>;
   saveHss(config: HssConfig): Promise<void>;
   savePcrf(config: PcrfConfig): Promise<void>;

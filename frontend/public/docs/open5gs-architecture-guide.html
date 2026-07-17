@@ -1,0 +1,1496 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Open5GS Deep Guide</title>
+<style>
+  /* ── Tokens (inherited from the project's existing open5gs-yaml-reference.html doc) ── */
+  :root {
+    --bg:         #F4F6FB;
+    --surface:    #FFFFFF;
+    --surface2:   #EDF0F7;
+    --border:     #D8DEEA;
+    --text:       #1B2033;
+    --dim:        #6B7896;
+    --accent:     #2159C8;
+    --accent-lo:  #EBF0FC;
+    --hidden:     #B45309;
+    --hidden-lo:  #FEF3E2;
+    --dep:        #9B1C1C;
+    --dep-lo:     #FEF2F2;
+    --code-bg:    #1C2233;
+    --code-text:  #C8D0E7;
+    --key-col:    #60A5FA;
+    --val-col:    #A8D8A8;
+    --comment-col:#636E8A;
+    --ph-col:     #F9A84D;
+    --bool-col:   #C084FC;
+    --punct-col:  #94A3B8;
+    --tag-4g:     #1D4ED8;
+    --tag-5g:     #7C3AED;
+    --tag-both:   #065F46;
+    --tag-4g-lo:  #EBF0FC;
+    --tag-5g-lo:  #F3EEFD;
+    --tag-both-lo:#EAF7F2;
+    --sidebar-w:  264px;
+    --good:       #0F8A5F;
+    --good-lo:    #E7F7EF;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #10141E;
+      --surface:   #181D2C;
+      --surface2:  #1E2538;
+      --border:    #262E44;
+      --text:      #D0D8F0;
+      --dim:       #8391B5;
+      --accent:    #4D8EF0;
+      --accent-lo: #1A2540;
+      --hidden:    #F59E0B;
+      --hidden-lo: #241C08;
+      --dep:       #FCA5A5;
+      --dep-lo:    #1C0808;
+      --tag-4g-lo: #12203F;
+      --tag-5g-lo: #201A38;
+      --tag-both-lo:#0E241D;
+      --good:      #34D399;
+      --good-lo:   #0C2419;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#F4F6FB;--surface:#FFFFFF;--surface2:#EDF0F7;--border:#D8DEEA;
+    --text:#1B2033;--dim:#6B7896;--accent:#2159C8;--accent-lo:#EBF0FC;
+    --hidden:#B45309;--hidden-lo:#FEF3E2;--dep:#9B1C1C;--dep-lo:#FEF2F2;
+    --tag-4g-lo:#EBF0FC;--tag-5g-lo:#F3EEFD;--tag-both-lo:#EAF7F2;
+    --good:#0F8A5F;--good-lo:#E7F7EF;
+  }
+  :root[data-theme="dark"] {
+    --bg:#10141E;--surface:#181D2C;--surface2:#1E2538;--border:#262E44;
+    --text:#D0D8F0;--dim:#8391B5;--accent:#4D8EF0;--accent-lo:#1A2540;
+    --hidden:#F59E0B;--hidden-lo:#241C08;--dep:#FCA5A5;--dep-lo:#1C0808;
+    --tag-4g-lo:#12203F;--tag-5g-lo:#201A38;--tag-both-lo:#0E241D;
+    --good:#34D399;--good-lo:#0C2419;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: #fff; }
+
+  /* ── Layout ── */
+  .layout { display: flex; min-height: 100vh; max-width: 1280px; margin: 0 auto; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding: 28px 0 40px;
+    border-right: 1px solid var(--border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .sidebar-header { padding: 0 20px 20px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .sidebar-header .logo {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--dim); margin-bottom: 4px;
+  }
+  .sidebar-header h2 { font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.3; }
+  .toc-section {
+    padding: 6px 20px 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--dim); margin-top: 12px;
+  }
+  .toc-link {
+    display: flex; align-items: center; gap: 6px; padding: 4px 20px; font-size: 12.5px;
+    color: var(--dim); text-decoration: none; transition: color 0.15s;
+    border-left: 2px solid transparent; margin-left: -1px;
+  }
+  .toc-link:hover { color: var(--text); }
+  .toc-link.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-lo); font-weight: 600; }
+  .toc-link .tag { font-size: 9px; font-weight: 700; letter-spacing: 0.05em; padding: 1px 5px; border-radius: 3px; flex-shrink: 0; }
+  .tag-4g   { background: var(--tag-4g);   color: #fff; }
+  .tag-5g   { background: var(--tag-5g);   color: #fff; }
+  .tag-both { background: var(--tag-both); color: #fff; }
+
+  /* ── Main content ── */
+  main { flex: 1; min-width: 0; padding: 40px 48px 100px; }
+
+  /* ── Page header ── */
+  .page-header { margin-bottom: 40px; padding-bottom: 32px; border-bottom: 1px solid var(--border); }
+  .page-header .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-bottom: 12px; }
+  .page-header h1 { font-size: 34px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; color: var(--text); text-wrap: balance; margin-bottom: 14px; }
+  .page-header p { font-size: 14.5px; color: var(--dim); max-width: 620px; line-height: 1.65; }
+  .meta-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
+  .meta-badge {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 1px solid var(--border);
+    border-radius: 20px; font-size: 11.5px; color: var(--dim); background: var(--surface);
+  }
+  .meta-badge .dot { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* ── Section ── */
+  .section { margin-bottom: 64px; }
+  .section-anchor { display: block; position: relative; top: -24px; visibility: hidden; }
+  h2.section-h {
+    font-size: 23px; font-weight: 800; letter-spacing: -0.025em; color: var(--text);
+    margin-bottom: 8px; display: flex; align-items: center; gap: 10px; text-wrap: balance;
+  }
+  .section-num {
+    font-family: 'SF Mono','Cascadia Code',monospace; font-size: 13px; font-weight: 700; color: var(--dim);
+  }
+  .section-intro { font-size: 13.5px; color: var(--dim); max-width: 680px; margin-bottom: 28px; line-height: 1.7; }
+  h3.sub-h {
+    font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--accent); margin: 32px 0 14px;
+  }
+  p.body { font-size: 13.5px; color: var(--dim); margin-bottom: 16px; line-height: 1.75; max-width: 720px; }
+  p.body strong { color: var(--text); font-weight: 600; }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 48px 0; }
+
+  /* ── NF cards ── */
+  .nf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 28px; }
+  .nf-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 16px 18px; }
+  .nf-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .nf-key {
+    font-family: 'SF Mono','Cascadia Code',monospace; font-size: 15px; font-weight: 700; color: var(--key-col);
+    background: var(--code-bg); padding: 3px 9px; border-radius: 5px;
+  }
+  .nf-name { font-size: 12.5px; font-weight: 700; color: var(--text); flex: 1; }
+  .nf-desc { font-size: 12px; color: var(--dim); line-height: 1.6; margin-bottom: 10px; }
+  .nf-rolegrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 11px; }
+  .nf-role { padding: 6px 8px; border-radius: 6px; }
+  .nf-role .lbl { font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; font-size: 9px; margin-bottom: 3px; display: block; }
+  .nf-role.client { background: var(--tag-5g-lo); color: var(--tag-5g); }
+  .nf-role.server { background: var(--tag-both-lo); color: var(--tag-both); }
+  .nf-role .lbl { color: inherit; opacity: 0.8; }
+  .nf-role div.txt { color: var(--text); font-weight: 500; }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 24px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  thead tr { background: var(--surface2); }
+  th { padding: 9px 14px; text-align: left; font-size: 10.5px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--dim); white-space: nowrap; }
+  td { padding: 9px 14px; border-top: 1px solid var(--border); vertical-align: top; line-height: 1.55; }
+  tbody tr:hover { background: var(--surface2); }
+  td code, th code {
+    font-family: 'SF Mono','Cascadia Code',monospace; font-size: 11px; background: var(--surface2);
+    padding: 1px 5px; border-radius: 3px; color: var(--accent);
+  }
+
+  /* ── Callouts ── */
+  .callout { padding: 14px 18px; border-radius: 6px; font-size: 13px; line-height: 1.6; margin-bottom: 20px; max-width: 720px; }
+  .callout-info  { background: var(--accent-lo); border-left: 3px solid var(--accent); color: var(--text); }
+  .callout-info strong { color: var(--accent); }
+  .callout-warn  { background: var(--hidden-lo); border-left: 3px solid var(--hidden); color: var(--text); }
+  .callout-warn strong { color: var(--hidden); }
+  .callout-good  { background: var(--good-lo); border-left: 3px solid var(--good); color: var(--text); }
+  .callout-good strong { color: var(--good); }
+
+  /* ── Code blocks (reused for YAML/CLI snippets) ── */
+  .code-block { background: var(--code-bg); border-radius: 8px; overflow: hidden; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.04); max-width: 720px; }
+  .code-label {
+    display: flex; align-items: center; gap: 8px; padding: 8px 16px; background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--comment-col);
+  }
+  pre {
+    margin: 0; padding: 16px 18px; overflow-x: auto; font-family: 'SF Mono','Cascadia Code',monospace;
+    font-size: 12px; line-height: 1.7; color: var(--code-text);
+  }
+
+  /* ── Diagram frame ── */
+  .diagram-frame {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+    padding: 24px; margin-bottom: 24px; overflow-x: auto;
+  }
+  .diagram-caption { font-size: 11.5px; color: var(--dim); text-align: center; margin-top: 12px; }
+  .diagram-frame svg { display: block; margin: 0 auto; }
+
+  /* ── Identifier composition bars ── */
+  .id-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 18px 20px; margin-bottom: 18px; }
+  .id-card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+  .id-name { font-family: 'SF Mono','Cascadia Code',monospace; font-size: 15px; font-weight: 700; color: var(--text); }
+  .id-full { font-size: 12px; color: var(--dim); }
+  .id-desc { font-size: 12.5px; color: var(--dim); line-height: 1.65; margin: 8px 0 14px; max-width: 680px; }
+  .id-bar { display: flex; border-radius: 6px; overflow: hidden; max-width: 560px; font-family: 'SF Mono','Cascadia Code',monospace; }
+  .id-seg { padding: 8px 10px; font-size: 11px; color: #fff; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .id-seg-label { display: block; font-size: 8.5px; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.85; margin-bottom: 2px; }
+  .id-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 11px; color: var(--dim); }
+  .id-legend span.sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+  /* ── Key hierarchy tree ── */
+  .khier { font-family: 'SF Mono','Cascadia Code',monospace; font-size: 12px; }
+  .khier-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .khier-node {
+    padding: 6px 12px; border-radius: 6px; background: var(--tag-5g-lo); border: 1px solid var(--tag-5g);
+    color: var(--tag-5g); font-weight: 700; flex-shrink: 0;
+  }
+  .khier-arrow { color: var(--dim); flex-shrink: 0; }
+  .khier-note { font-family: -apple-system, sans-serif; font-size: 11.5px; color: var(--dim); }
+
+  /* ── Sequence flow (numbered message steps) ── */
+  .flow { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow: hidden; margin-bottom: 20px; }
+  .flow-step { display: flex; gap: 14px; padding: 11px 18px; border-bottom: 1px solid var(--border); align-items: flex-start; }
+  .flow-step:last-child { border-bottom: none; }
+  .flow-step:nth-child(odd) { background: var(--surface2); }
+  .flow-num {
+    font-family: 'SF Mono','Cascadia Code',monospace; font-size: 10.5px; font-weight: 700; color: var(--dim);
+    flex-shrink: 0; width: 20px; padding-top: 2px;
+  }
+  .flow-route { flex-shrink: 0; display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700; width: 150px; }
+  .flow-route .who { padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+  .flow-body { flex: 1; min-width: 0; }
+  .flow-msg { font-family: 'SF Mono','Cascadia Code',monospace; font-size: 12px; font-weight: 700; color: var(--text); }
+  .flow-desc { font-size: 11.5px; color: var(--dim); margin-top: 2px; line-height: 1.5; }
+  .who.ue   { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .who.ran  { background: var(--tag-both-lo); color: var(--tag-both); }
+  .who.amf  { background: var(--tag-5g-lo); color: var(--tag-5g); }
+  .who.mme  { background: var(--tag-4g-lo); color: var(--tag-4g); }
+  .who.core { background: var(--accent-lo); color: var(--accent); }
+
+  /* focus */
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  /* ── Responsive ── */
+  @media (max-width: 860px) {
+    .layout { flex-direction: column; }
+    .sidebar { width: 100%; height: auto; position: static; border-right: none; border-bottom: 1px solid var(--border); padding: 20px 0 12px; }
+    main { padding: 28px 20px 60px; }
+    .nf-grid { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<div class="layout">
+  <nav class="sidebar" aria-label="Table of contents">
+    <div class="sidebar-header">
+      <div class="logo">Open5GS</div>
+      <h2>Deep Guide &amp; Reference</h2>
+    </div>
+
+    <div class="toc-section">Start Here</div>
+    <a class="toc-link" href="#overview">Overview</a>
+
+    <div class="toc-section">Core Concepts</div>
+    <a class="toc-link" href="#4g-vs-5g">4G EPC vs 5G SA</a>
+    <a class="toc-link" href="#nf-overview">Network functions at a glance</a>
+
+    <div class="toc-section">Network Functions</div>
+    <a class="toc-link" href="#nf-4g">4G EPC functions <span class="tag tag-4g">4G</span></a>
+    <a class="toc-link" href="#nf-5g">5G SA functions <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#nf-shared">Shared functions <span class="tag tag-both">4G+5G</span></a>
+
+    <div class="toc-section">Deployment</div>
+    <a class="toc-link" href="#deploy-overview">Topology scenarios</a>
+
+    <div class="toc-section">Plumbing</div>
+    <a class="toc-link" href="#interfaces">Interface map</a>
+
+    <div class="toc-section">Concepts &amp; Protocol</div>
+    <a class="toc-link" href="#identifiers">Identifiers</a>
+    <a class="toc-link" href="#security">Security &amp; AKA</a>
+    <a class="toc-link" href="#nas">NAS vs AS</a>
+
+    <div class="toc-section">Walkthroughs</div>
+    <a class="toc-link" href="#attach-5g">5G Registration <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#attach-4g">4G LTE Attach <span class="tag tag-4g">4G</span></a>
+    <a class="toc-link" href="#pdu-session">PDU Session Establishment <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#service-request">Service Request <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#handover">Handover (Xn/N2) <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#deregistration">Deregistration <span class="tag tag-5g">5G</span></a>
+    <a class="toc-link" href="#tau">Service Request &amp; TAU <span class="tag tag-4g">4G</span></a>
+
+    <div class="toc-section">Wrap-up</div>
+    <a class="toc-link" href="#glossary">Glossary</a>
+
+  </nav>
+
+  <main>
+    <div class="page-header">
+      <div class="eyebrow">Reference Guide</div>
+      <h1>Understanding Open5GS: architecture, plumbing, and protocol</h1>
+      <p>A from-scratch guide to how Open5GS's network functions work, how they're wired together over IP, how to lay them out across real infrastructure, and what actually happens on the wire when a phone joins the network.</p>
+      <div class="meta-badges">
+        <span class="meta-badge"><span class="dot" style="background:var(--tag-4g)"></span>4G EPC</span>
+        <span class="meta-badge"><span class="dot" style="background:var(--tag-5g)"></span>5G SA</span>
+      </div>
+    </div>
+
+    <!-- ─── OVERVIEW ─── -->
+    <div class="section">
+      <span class="section-anchor" id="overview"></span>
+      <h2 class="section-h">What is Open5GS</h2>
+      <p class="body">Open5GS is a C-language open-source implementation of the mobile core network — the part of a 4G or 5G network that sits behind the radio, handling everything from authentication to routing your phone's traffic onto the internet. It implements both a full 4G EPC (Evolved Packet Core) and a full 5G SA (Standalone) core, tracking 3GPP Release-19. It's licensed under the GNU AGPL-3.0, with commercial licensing and support available separately through NewPlane.</p>
+      <p class="body">Both cores are built the same way: a set of independent daemons, one per network function, each its own OS process with its own YAML config file, talking to each other over the network — even when that network is just loopback on one laptop. That's the whole idea of this guide: once you understand <strong>what each daemon does</strong> and <strong>what protocol it uses to talk to its neighbors</strong>, the leap from "everything on one machine" to "spread across a real network, with an edge site 40ms away" is just moving IP addresses around — not redesigning anything.</p>
+      <div class="callout callout-info">
+        This guide covers <strong>architecture and protocol</strong> — what each daemon does and how they're wired together. For exact YAML syntax and every config key, see the <a href="/docs/open5gs-yaml-reference.html" style="color:var(--accent)">YAML Config Reference</a> alongside it.
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── 4G vs 5G ─── -->
+    <div class="section">
+      <span class="section-anchor" id="4g-vs-5g"></span>
+      <h2 class="section-h">4G EPC vs 5G SA, at a glance</h2>
+      <p class="section-intro">The two cores solve the same problem — authenticate a device, track where it is, and get its traffic to the internet — with different protocols and a different split of responsibilities. Open5GS runs both at once if you want, sharing the SMF and UPF between them.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Concern</th><th>4G EPC</th><th>5G SA</th></tr></thead>
+          <tbody>
+            <tr><td>Control-plane signaling to the radio</td><td><code>S1AP</code> to the eNB</td><td><code>NGAP</code> to the gNB</td></tr>
+            <tr><td>Mobility/session anchor</td><td>MME (mobility) + SGW-C/PGW-C (session)</td><td>AMF (mobility) + SMF (session) — the same split, renamed and SBI-native</td></tr>
+            <tr><td>User-plane forwarding</td><td>SGW-U / PGW-U (GTP-U)</td><td>UPF (GTP-U) — literally the same daemon in Open5GS, shared across both cores</td></tr>
+            <tr><td>Inter-NF communication style</td><td>Diameter (S6a, Gx) — point-to-point, peer knows its peer's address</td><td>SBI — HTTP/2 + JSON, NFs discover each other via NRF instead of static peer lists</td></tr>
+            <tr><td>Subscriber store</td><td>HSS (Diameter)</td><td>UDM + UDR (SBI + MongoDB)</td></tr>
+            <tr><td>Policy</td><td>PCRF (Diameter Gx)</td><td>PCF (SBI Npcf)</td></tr>
+            <tr><td>UE identity over the air</td><td>IMSI sent in the clear on first attach in most deployments</td><td>SUCI — IMSI-derived SUPI concealed by public-key encryption before it ever touches the air interface</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout callout-info">
+        <strong>Why this matters for the rest of the guide:</strong> everything from here on groups naturally into "4G-only", "5G-only", and "shared" — the same three-way split you'll see on the sidebar tags throughout.
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NF OVERVIEW ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nf-overview"></span>
+      <h2 class="section-h">Network functions at a glance</h2>
+      <p class="section-intro">Open5GS ships one daemon per network function. This is the full roster — the next section covers each one in depth.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Daemon</th><th>Full name</th><th>Core</th><th>One-line role</th></tr></thead>
+          <tbody>
+            <tr><td><code>mme</code></td><td>Mobility Management Entity</td><td><span class="tag tag-4g">4G</span></td><td>Control-plane hub of the EPC — the eNB's only point of contact.</td></tr>
+            <tr><td><code>hss</code></td><td>Home Subscriber Server</td><td><span class="tag tag-4g">4G</span></td><td>Subscriber database and authentication vector generation over Diameter.</td></tr>
+            <tr><td><code>sgwc</code></td><td>Serving Gateway — Control</td><td><span class="tag tag-4g">4G</span></td><td>Session control plane between MME and the user-plane gateway.</td></tr>
+            <tr><td><code>sgwu</code></td><td>Serving Gateway — User</td><td><span class="tag tag-4g">4G</span></td><td>Forwards user-plane bearer traffic between the eNB and PGW-U.</td></tr>
+            <tr><td><code>pcrf</code></td><td>Policy and Charging Rules Function</td><td><span class="tag tag-4g">4G</span></td><td>4G policy/charging decisions over Diameter Gx.</td></tr>
+            <tr><td><code>smf</code></td><td>Session Management Function</td><td><span class="tag tag-both">4G+5G</span></td><td>Session control plane — plays PGW-C's role in 4G and SMF's in 5G, same process.</td></tr>
+            <tr><td><code>upf</code></td><td>User Plane Function</td><td><span class="tag tag-both">4G+5G</span></td><td>User-plane forwarding for both cores — plays PGW-U's role in 4G too.</td></tr>
+            <tr><td><code>amf</code></td><td>Access and Mobility Management Function</td><td><span class="tag tag-5g">5G</span></td><td>5G control-plane hub — the gNB's only point of contact, MME's counterpart.</td></tr>
+            <tr><td><code>nrf</code></td><td>Network Repository Function</td><td><span class="tag tag-5g">5G</span></td><td>Service registry every other 5G NF registers with and discovers peers through.</td></tr>
+            <tr><td><code>ausf</code></td><td>Authentication Server Function</td><td><span class="tag tag-5g">5G</span></td><td>Runs the 5G-AKA/EAP-AKA' authentication exchange between UDM and AMF.</td></tr>
+            <tr><td><code>udm</code></td><td>Unified Data Management</td><td><span class="tag tag-5g">5G</span></td><td>Subscriber data front-end and SUCI de-concealment — UDM's role, HSS's 5G counterpart.</td></tr>
+            <tr><td><code>udr</code></td><td>Unified Data Repository</td><td><span class="tag tag-5g">5G</span></td><td>The actual MongoDB-backed data store behind UDM and PCF.</td></tr>
+            <tr><td><code>pcf</code></td><td>Policy Control Function</td><td><span class="tag tag-5g">5G</span></td><td>5G policy over SBI — PCRF's SBI-native successor.</td></tr>
+            <tr><td><code>nssf</code></td><td>Network Slice Selection Function</td><td><span class="tag tag-5g">5G</span></td><td>Helps the AMF pick the right network slice for a UE.</td></tr>
+            <tr><td><code>bsf</code></td><td>Binding Support Function</td><td><span class="tag tag-5g">5G</span></td><td>Tracks which PCF is handling a given UE session, for other NFs to discover.</td></tr>
+            <tr><td><code>scp</code></td><td>Service Communication Proxy</td><td><span class="tag tag-5g">5G</span></td><td>Optional indirect-communication hop so NFs don't need every peer's address.</td></tr>
+            <tr><td><code>sepp</code></td><td>Security Edge Protection Proxy</td><td><span class="tag tag-5g">5G</span></td><td>Inter-PLMN roaming boundary — the only NF that talks to another operator's core.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NF REFERENCE: 4G ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nf-4g"></span>
+      <h2 class="section-h">4G EPC functions <span class="tag tag-4g">4G</span></h2>
+      <p class="section-intro">Five daemons, all Diameter- or GTP-based, none of them SBI. The MME is the hub everything else in this list reaches through.</p>
+
+      <div class="nf-grid">
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">mme</span><span class="nf-name">Mobility Management Entity</span></div>
+          <div class="nf-desc">The only core node the eNB talks to. Owns UE mobility state (which tracking area, which eNB), drives attach/detach and handover, and relays NAS signaling between the UE and the rest of the core — it never touches user-plane traffic itself. Every UE it's serving has an <strong>EMM context</strong> (EPS Mobility Management: GUTI, security context, TAI list) and, per active bearer, an <strong>ECM/EPS bearer context</strong> (which SGW/PGW, which QCI). It's the one node that has to track both at once, which is why it's the busiest signaling point in the whole 4G core.</div>
+          <div class="nf-desc" style="margin-top:8px"><strong>Handles directly:</strong> Attach/Detach, Tracking Area Update, Service Request, S1/X2 handover decisions, paging (triggering it, not executing the radio side), GUTI (re)allocation, NAS security mode control.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">HSS (S6a: auth vectors, location update), SGW-C (S11: session setup)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">eNB (S1AP signaling)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">hss</span><span class="nf-name">Home Subscriber Server</span></div>
+          <div class="nf-desc">The subscriber system of record for 4G — stores subscriber profiles (IMSI, MSISDN, provisioned APNs, QoS profile per APN, roaming permissions) and generates authentication vectors on request using the subscriber's permanent key K. Purely a Diameter server; it never initiates a connection to anything — every operation is <em>some other NF asking HSS a question</em>.</div>
+          <div class="nf-desc" style="margin-top:8px"><strong>Key S6a operations:</strong> Update-Location-Request/Answer (MME registers as the UE's current server), Authentication-Information-Request/Answer (fetch auth vectors), Purge-UE, Cancel-Location (network-initiated deregistration), Insert-Subscriber-Data (mid-session profile push).</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">— (none; pure responder)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">MME (Diameter S6a)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">sgwc</span><span class="nf-name">Serving Gateway — Control</span></div>
+          <div class="nf-desc">The control-plane half of the Serving Gateway, split out by Open5GS to mirror the 3GPP CUPS architecture even in 4G — it manages GTP-C session/bearer state (which TEIDs map to which UE, which QCI per bearer) and tells SGW-U what forwarding rules to install over PFCP, but forwards no user data itself. Every bearer it tracks has a pair of GTP tunnel endpoint identifiers (TEIDs) — one on the eNB side, one on the PGW/UPF side — that SGW-U actually switches packets between.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">SGW-U (PFCP session/rule push)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">MME (GTP-C S11)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">sgwu</span><span class="nf-name">Serving Gateway — User</span></div>
+          <div class="nf-desc">The forwarding-only counterpart to SGW-C — takes PFCP instructions and moves actual GTP-U bearer packets between the eNB and the PGW-U side, on the fast path, with no signaling logic of its own. It holds no session state beyond what SGW-C hands it: a TEID-keyed forwarding table. This is deliberate — it's the one component in the chain that has to be fast, not smart, and it's the one you'd scale out first under load since it's stateless from the control plane's point of view.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">— (rule-taker, not initiator)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">SGW-C (PFCP), eNB (GTP-U bearer data)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">pcrf</span><span class="nf-name">Policy and Charging Rules Function</span></div>
+          <div class="nf-desc">Decides QoS and charging policy for a session and pushes the decision down over Diameter Gx when the PGW-C (SMF, in Open5GS) asks for one at session setup. The decision itself is a set of <strong>PCC rules</strong> — traffic filters bound to a QCI (QoS Class Identifier, the 4G equivalent of 5G's 5QI) and a charging key. Can also push mid-session rule updates (Re-Auth-Request) if policy needs to change without tearing the session down.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">— (pure responder)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">SMF/PGW-C (Diameter Gx)</div></div>
+          </div>
+        </div>
+      </div>
+      <p class="body" style="font-size:11.5px">Protocol/port specifics for each interface are covered together in the <a href="#interfaces" style="color:var(--accent)">Interface Map</a> section, so they can be cross-checked in one place rather than repeated per card.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NF REFERENCE: 5G ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nf-5g"></span>
+      <h2 class="section-h">5G SA functions <span class="tag tag-5g">5G</span></h2>
+      <p class="section-intro">Twelve daemons. Everything here is SBI (Service-Based Interface) — HTTP/2 with JSON bodies — except the AMF's radio-facing side. The defining difference from 4G: instead of static Diameter peers, every one of these registers with the NRF and discovers its peers dynamically.</p>
+
+      <div class="nf-grid">
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">amf</span><span class="nf-name">Access and Mobility Management Function</span></div>
+          <div class="nf-desc">The gNB's only point of contact and 5G's counterpart to the MME — owns UE mobility/registration state and relays NAS signaling, but (unlike MME) reaches every other core NF over SBI instead of Diameter. Tracks each UE's <strong>5GMM state</strong> (registered/deregistered) and <strong>connection state</strong> (idle/connected) independently — a UE can be registered but idle (no active N2 signaling connection, radio resources torn down to save power) without ever deregistering.</div>
+          <div class="nf-desc" style="margin-top:8px"><strong>Handles directly:</strong> Registration, Deregistration, Service Request (idle→connected), paging orchestration, GUTI/GUAMI allocation, NAS security context (post-AKA), Xn/N2 handover decisions, N1N2MessageTransfer (piggybacking NAS onto NGAP for the gNB to deliver).</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP, AUSF (N12), UDM (N8), SMF (N11), PCF (N15), NSSF (N22)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">gNB (N2/NGAP), peer NFs (SBI)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">nrf</span><span class="nf-name">Network Repository Function</span></div>
+          <div class="nf-desc">The phone book every other 5G NF is registered in. There's no static config anywhere telling the AMF "the SMF is at this address" — it asks the NRF, every time, which is what makes 5G's SBI mesh dynamically discoverable instead of hand-wired. Each registrant submits an <strong>NF Profile</strong>: NF type, instance ID, the PLMN(s) and S-NSSAI(s) it serves, and its own SBI address — the NRF matches discovery queries against these fields.</div>
+          <div class="nf-desc" style="margin-top:8px"><strong>Handles directly:</strong> Nnrf_NFManagement (register/update/deregister, heartbeat keepalive), Nnrf_NFDiscovery (the actual lookup query), and NF status change subscriptions so a watching NF gets notified if a peer it depends on goes down.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">— (registry root; rarely a client itself)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">every other 5G NF (registration + discovery)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">ausf</span><span class="nf-name">Authentication Server Function</span></div>
+          <div class="nf-desc">A thin, mostly stateless broker: takes an authentication request from the AMF, asks the UDM for the actual authentication vectors, and hands the result back — it never talks to the UE or the gNB directly. It's the SEAF-adjacent anchor for K<sub>AUSF</sub>/K<sub>SEAF</sub> derivation in the key hierarchy (see the Security section), and decides between full 5G-AKA and EAP-AKA' based on what the subscriber's profile supports.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP, UDM (N13)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">AMF (SBI N12/Nausf)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">udm</span><span class="nf-name">Unified Data Management</span></div>
+          <div class="nf-desc">5G's subscriber-data front end — HSS's counterpart — plus a job HSS never had: running the <strong>SIDF</strong> (Subscription Identifier De-concealing Function), which holds the Home Network private key(s) and reverses a UE's SUCI back into its real SUPI during authentication. UDM is technically a stateless front-end in the spec (UDM-FE) — the actual subscriber records live in UDR; UDM adds the crypto and business logic on top.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP, UDR (actual data storage)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">AUSF (N13), AMF (N8), SMF (N10) — SBI Nudm</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">udr</span><span class="nf-name">Unified Data Repository</span></div>
+          <div class="nf-desc">The actual database behind UDM (and PCF) — MongoDB-backed in Open5GS — exposed over SBI (Nudr) instead of a direct DB connection, so UDM and PCF never talk to Mongo themselves. Holds four broad data categories: subscription data (auth/mobility/session profiles), policy data (PCF's rule sets), exposure/application data, and structured data for AF-facing exposure.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP, MongoDB (<code>db_uri</code>)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">UDM, PCF (SBI Nudr)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">pcf</span><span class="nf-name">Policy Control Function</span></div>
+          <div class="nf-desc">PCRF's SBI-native successor — session, mobility, and UE policy decisions, queried by the AMF and SMF instead of pushed over Diameter Gx. Splits into two policy types that get requested separately: <strong>AM Policy</strong> (access/mobility — RFSP index, service-area restrictions, queried by AMF over N15) and <strong>SM Policy</strong> (session/QoS — PCC rules, queried by SMF over N7).</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP, UDR</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">AMF (N15), SMF (N7) — SBI Npcf</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">nssf</span><span class="nf-name">Network Slice Selection Function</span></div>
+          <div class="nf-desc">Answers the AMF's "which slice should this UE land on" question — and for roaming, which NSSF at the visited network to defer to. Reconciles three distinct NSSAI lists per UE: what the UE <em>requested</em>, what the subscriber's profile <em>allows</em>, and what the network actually <em>configures</em> — the resolved intersection determines which slice-scoped AMF/SMF instances get used.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">AMF (N22, SBI Nnssf)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">bsf</span><span class="nf-name">Binding Support Function</span></div>
+          <div class="nf-desc">Remembers which PCF instance is handling a given UE/session, so a policy-facing NF elsewhere in the network can find the right PCF instead of guessing. The binding record itself is small — UE address (or SUPI) plus DNN/S-NSSAI plus which PCF owns the associated policy session — but it's the piece that makes multi-PCF deployments (and AF-triggered policy changes from outside) actually route correctly.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">PCF, other NFs needing a binding lookup (SBI Nbsf)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">scp</span><span class="nf-name">Service Communication Proxy</span></div>
+          <div class="nf-desc">Optional. Lets NFs address it instead of every peer directly — indirect communication — so a topology change or peer failure doesn't mean reconfiguring every NF that talks to it. Skippable entirely in a single-operator lab. The spec distinguishes two indirect-communication models: NFs can either resolve the target themselves and just route the message through the SCP, or delegate discovery to the SCP entirely and let it pick (and re-pick, on failure) the destination instance.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF, next-hop SCP (multi-tier)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">any NF configured to route through it</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">sepp</span><span class="nf-name">Security Edge Protection Proxy</span></div>
+          <div class="nf-desc">The only NF that ever talks to another operator's core — sits at the inter-PLMN boundary, speaks N32 to the visited/home network's own SEPP, and applies topology hiding so internal NF addresses never leak to a roaming partner. N32 itself splits into <strong>N32-c</strong> (control — one-time capability negotiation/handshake between the two SEPPs) and <strong>N32-f</strong> (forwarding — the actual per-message relay, with each message re-formatted to strip internal topology details before it crosses the boundary).</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">NRF/SCP, remote SEPP (N32)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">remote SEPP (N32)</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NF REFERENCE: SHARED ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nf-shared"></span>
+      <h2 class="section-h">Shared functions <span class="tag tag-both">4G+5G</span></h2>
+      <p class="section-intro">Two daemons Open5GS runs identically for both cores — the same running process serves 4G and 5G sessions side by side.</p>
+
+      <div class="nf-grid">
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">smf</span><span class="nf-name">Session Management Function</span></div>
+          <div class="nf-desc">The busiest config surface in Open5GS: plays PGW-C's role for 4G sessions (GTP-C to SGW-C, Diameter Gx to PCRF) and SMF's role for 5G sessions (SBI to AMF/PCF, PFCP to UPF) — out of the same process, same YAML file. For every 5G session it holds an <strong>SM context</strong> keyed by PDU Session ID, and drives that session through establishment, modification, and release by <em>compiling policy into PFCP rules</em> — it never touches a packet itself, only tells the UPF what to do with packets via four rule types: <strong>PDR</strong> (Packet Detection Rule — how to recognize traffic for this session), <strong>FAR</strong> (Forwarding Action Rule — where to send it), <strong>QER</strong> (QoS Enforcement Rule — rate-limit/mark it), and <strong>URR</strong> (Usage Reporting Rule — count it, for charging).</div>
+          <div class="nf-desc" style="margin-top:8px"><strong>UPF selection</strong> happens here too — the DNN/TAC/Cell-ID matching covered in the Deployment section is literally the SMF choosing which UPF gets the PDR/FAR/QER/URR set for a given session.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">UPF (PFCP/N4), NRF/SCP, PCF (N7), UDM (N10), SGW-C (4G, GTP-C)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">AMF (N11, SBI), SGW-C (GTP-C, 4G)</div></div>
+          </div>
+        </div>
+        <div class="nf-card">
+          <div class="nf-card-head"><span class="nf-key">upf</span><span class="nf-name">User Plane Function</span></div>
+          <div class="nf-desc">Where actual subscriber traffic goes. Terminates the 4G S5-U path from SGW-U and the 5G N3 path straight from the gNB, on the same forwarding engine — it has no SBI interface at all; PFCP is the only control channel it understands. Everything it does is executing the PDR/FAR/QER/URR rule set the SMF programmed into it: match a packet (PDR), decide where it goes and how to encapsulate it (FAR), apply the QoS treatment (QER), and count it for the URR's usage report back to the SMF.</div>
+          <div class="nf-rolegrid">
+            <div class="nf-role client"><span class="lbl">Client toward</span><div class="txt">— (rule-taker from SMF)</div></div>
+            <div class="nf-role server"><span class="lbl">Server for</span><div class="txt">SMF (N4/PFCP), eNB/gNB (GTP-U bearer data)</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout callout-good">
+        <strong>Why this matters for deployment:</strong> because SMF and UPF are the two NFs that bridge both cores, they're also the two that show up in every deployment-topology decision later in this guide — where you place the UPF is, in a real sense, where you place "the network."
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── DEPLOYMENT SCENARIOS ─── -->
+    <div class="section">
+      <span class="section-anchor" id="deploy-overview"></span>
+      <h2 class="section-h">Deployment scenarios</h2>
+      <p class="section-intro">Every scenario below is the <em>same set of daemons</em> — nothing architecturally changes. What moves is which IP address each daemon binds to, and whether that address is <code>127.0.0.x</code> or something reachable across a real network. This is the direct, practical payoff of the client/server map above.</p>
+
+      <h3 class="sub-h" id="deploy-allinone">Scenario 1 — All-in-one (Open5GS's own default)</h3>
+      <p class="body">Every daemon runs as a process on one machine, all bound to <code>127.0.0.x</code> loopback aliases: MME <code>127.0.0.2</code>, SGWC/SGWU <code>127.0.0.3</code>/<code>127.0.0.6</code>, SMF <code>127.0.0.4</code>, AMF <code>127.0.0.5</code>, UPF <code>127.0.0.7</code>, HSS/PCRF <code>127.0.0.8</code>/<code>127.0.0.9</code>, and the 5G SBI NFs spread across <code>127.0.0.10</code>–<code>127.0.0.20</code>. This is exactly what Open5GS ships as its quickstart config.</p>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 700 400" width="100%" style="max-width:700px">
+          <!-- host boundary -->
+          <rect x="10" y="10" width="590" height="368" rx="14" fill="none" stroke="var(--border)" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <text x="26" y="30" font-size="11" font-weight="700" fill="var(--dim)" letter-spacing="1">ONE HOST</text>
+
+          <g font-family="SF Mono, monospace" font-size="10.5" text-anchor="middle">
+            <!-- ══ vertical loopback spine ══ -->
+            <line x1="560" y1="82" x2="560" y2="322" stroke="var(--accent)" stroke-width="1.6"/>
+            <text x="574" y="86" font-size="9" fill="var(--accent)" text-anchor="start" transform="rotate(90 574 86)">127.0.0.x loopback</text>
+
+            <!-- Row 1 — 4G (y top=44) -->
+            <rect x="30"  y="44" width="86" height="34" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="73"  y="65" fill="var(--tag-4g)" font-weight="700">mme</text>
+            <rect x="132" y="44" width="86" height="34" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="175" y="65" fill="var(--tag-4g)" font-weight="700">hss</text>
+            <rect x="234" y="44" width="86" height="34" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="277" y="65" fill="var(--tag-4g)" font-weight="700">sgwc</text>
+            <rect x="336" y="44" width="86" height="34" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="379" y="65" fill="var(--tag-4g)" font-weight="700">sgwu</text>
+            <rect x="438" y="44" width="86" height="34" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="481" y="65" fill="var(--tag-4g)" font-weight="700">pcrf</text>
+            <!-- row1 collector + stubs -->
+            <line x1="73" y1="78" x2="73" y2="92" stroke="var(--dim)"/><line x1="175" y1="78" x2="175" y2="92" stroke="var(--dim)"/>
+            <line x1="277" y1="78" x2="277" y2="92" stroke="var(--dim)"/><line x1="379" y1="78" x2="379" y2="92" stroke="var(--dim)"/>
+            <line x1="481" y1="78" x2="481" y2="92" stroke="var(--dim)"/>
+            <line x1="73" y1="92" x2="560" y2="92" stroke="var(--dim)"/>
+
+            <!-- Row 2 — shared (y top=110) -->
+            <rect x="30"  y="110" width="86" height="34" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="73"  y="131" fill="var(--tag-both)" font-weight="700">smf</text>
+            <rect x="132" y="110" width="86" height="34" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="175" y="131" fill="var(--tag-both)" font-weight="700">upf</text>
+            <line x1="73" y1="144" x2="73" y2="158" stroke="var(--dim)"/><line x1="175" y1="144" x2="175" y2="158" stroke="var(--dim)"/>
+            <line x1="73" y1="158" x2="560" y2="158" stroke="var(--dim)"/>
+
+            <!-- Row 3 — 5G core (y top=176) -->
+            <rect x="30"  y="176" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="73"  y="197" fill="var(--tag-5g)" font-weight="700">amf</text>
+            <rect x="132" y="176" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="175" y="197" fill="var(--tag-5g)" font-weight="700">nrf</text>
+            <rect x="234" y="176" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="277" y="197" fill="var(--tag-5g)" font-weight="700">scp</text>
+            <rect x="336" y="176" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="379" y="197" fill="var(--tag-5g)" font-weight="700">ausf</text>
+            <rect x="438" y="176" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="481" y="197" fill="var(--tag-5g)" font-weight="700">udm</text>
+            <line x1="73" y1="210" x2="73" y2="224" stroke="var(--dim)"/><line x1="175" y1="210" x2="175" y2="224" stroke="var(--dim)"/>
+            <line x1="277" y1="210" x2="277" y2="224" stroke="var(--dim)"/><line x1="379" y1="210" x2="379" y2="224" stroke="var(--dim)"/>
+            <line x1="481" y1="210" x2="481" y2="224" stroke="var(--dim)"/>
+            <line x1="73" y1="224" x2="560" y2="224" stroke="var(--dim)"/>
+
+            <!-- Row 4 — 5G rest (y top=242) -->
+            <rect x="30"  y="242" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="73"  y="263" fill="var(--tag-5g)" font-weight="700">udr</text>
+            <rect x="132" y="242" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="175" y="263" fill="var(--tag-5g)" font-weight="700">pcf</text>
+            <rect x="234" y="242" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="277" y="263" fill="var(--tag-5g)" font-weight="700">nssf</text>
+            <rect x="336" y="242" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="379" y="263" fill="var(--tag-5g)" font-weight="700">bsf</text>
+            <rect x="438" y="242" width="86" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="481" y="263" fill="var(--tag-5g)" font-weight="700">sepp</text>
+            <line x1="73" y1="276" x2="73" y2="290" stroke="var(--dim)"/><line x1="175" y1="276" x2="175" y2="290" stroke="var(--dim)"/>
+            <line x1="277" y1="276" x2="277" y2="290" stroke="var(--dim)"/><line x1="379" y1="276" x2="379" y2="290" stroke="var(--dim)"/>
+            <line x1="481" y1="276" x2="481" y2="290" stroke="var(--dim)"/>
+            <line x1="73" y1="290" x2="560" y2="290" stroke="var(--dim)"/>
+
+            <!-- spine end-caps at the two outermost collector rows -->
+            <line x1="560" y1="82" x2="560" y2="92" stroke="var(--accent)" stroke-width="1.6"/>
+          </g>
+
+          <!-- external RAN, outside the loopback boundary entirely -->
+          <g font-family="SF Mono, monospace" font-size="10.5" text-anchor="middle">
+            <rect x="614" y="150" width="76" height="60" rx="8" fill="var(--surface2)" stroke="var(--border)" stroke-dasharray="3 2"/>
+            <text x="652" y="176" fill="var(--dim)" font-weight="700">eNB /</text>
+            <text x="652" y="190" fill="var(--dim)" font-weight="700">gNB</text>
+          </g>
+          <text x="614" y="230" font-size="9" fill="var(--dim)" text-anchor="start">physical device —</text>
+          <text x="614" y="242" font-size="9" fill="var(--dim)" text-anchor="start">outside the host,</text>
+          <text x="614" y="254" font-size="9" fill="var(--dim)" text-anchor="start">needs a real NIC</text>
+
+          <text x="26" y="392" font-size="9.5" fill="var(--dim)">All inter-NF traffic (blue spine) stays on loopback — nothing inside the box is reachable off-host.</text>
+        </svg>
+        <p class="diagram-caption">Fig. 1 — all 17 daemons, one host, wired over loopback only. The RAN device is the one thing that was never on loopback, even in "all-in-one" mode.</p>
+      </div>
+
+      <h3 class="sub-h" id="deploy-distributed">Scenario 2 — Distributed core (multi-host)</h3>
+      <p class="body">Each daemon (or a small group of them) moves to its own host, and every loopback address in its config gets replaced with a real, reachable IP. Open5GS's own guidance is explicit about two things here: the AMF's <code>ngap.server</code> and the UPF's <code>gtpu.server</code> must bind to the real LAN-facing address (they're the two interfaces a physical gNB actually has to reach), and a firewall should block a UE from ever reaching another NF's address directly — the UE only ever has a path to the gNB/eNB, never straight into the core. This is also the split a predecessor project (NextEPC, same author/architecture lineage) documented concretely years earlier, down to the specific gotcha that MongoDB itself must move off <code>localhost</code> to a real bind address once HSS/PCRF live on a different host from it.</p>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 720 250" width="100%" style="max-width:720px">
+          <g font-family="SF Mono, monospace" font-size="10.5">
+            <!-- Host A: control plane -->
+            <rect x="10" y="10" width="230" height="160" rx="10" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+            <text x="24" y="28" font-size="10" font-weight="700" fill="var(--dim)" letter-spacing="0.8">HOST A — CONTROL PLANE</text>
+            <rect x="24" y="40" width="90" height="34" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="69" y="61" text-anchor="middle" fill="var(--tag-4g)" font-weight="700">mme</text>
+            <rect x="124" y="40" width="90" height="34" rx="5" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/>
+            <text x="169" y="61" text-anchor="middle" fill="var(--tag-5g)" font-weight="700">amf</text>
+            <rect x="24" y="84" width="90" height="34" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="69" y="105" text-anchor="middle" fill="var(--tag-both)" font-weight="700">smf</text>
+            <rect x="124" y="84" width="90" height="34" rx="5" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/>
+            <text x="169" y="105" text-anchor="middle" fill="var(--tag-5g)" font-weight="700">nrf</text>
+            <text x="226" y="158" fill="var(--dim)" font-size="9" text-anchor="end">10.0.1.10</text>
+
+            <!-- Host B: subscriber/policy -->
+            <rect x="255" y="10" width="200" height="160" rx="10" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+            <text x="269" y="28" font-size="10" font-weight="700" fill="var(--dim)" letter-spacing="0.8">HOST B — SUBSCRIBER DATA</text>
+            <rect x="269" y="40" width="80" height="34" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="309" y="61" text-anchor="middle" fill="var(--tag-4g)" font-weight="700">hss</text>
+            <rect x="359" y="40" width="80" height="34" rx="5" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/>
+            <text x="399" y="61" text-anchor="middle" fill="var(--tag-5g)" font-weight="700">udm</text>
+            <rect x="269" y="84" width="80" height="34" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="309" y="105" text-anchor="middle" fill="var(--tag-4g)" font-weight="700">pcrf</text>
+            <rect x="359" y="84" width="80" height="34" rx="5" fill="var(--surface2)" stroke="var(--border)"/>
+            <text x="399" y="105" text-anchor="middle" fill="var(--dim)" font-weight="700">mongo</text>
+            <text x="441" y="158" fill="var(--dim)" font-size="9" text-anchor="end">10.0.1.20</text>
+
+            <!-- Host C: user plane -->
+            <rect x="480" y="10" width="230" height="160" rx="10" fill="var(--surface)" stroke="var(--border)" stroke-width="1.5"/>
+            <text x="494" y="28" font-size="10" font-weight="700" fill="var(--dim)" letter-spacing="0.8">HOST C — USER PLANE</text>
+            <rect x="494" y="40" width="90" height="34" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="539" y="61" text-anchor="middle" fill="var(--tag-both)" font-weight="700">sgwu</text>
+            <rect x="494" y="84" width="90" height="34" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="539" y="105" text-anchor="middle" fill="var(--tag-both)" font-weight="700">upf</text>
+            <text x="696" y="158" fill="var(--dim)" font-size="9" text-anchor="end">10.0.2.30 (RAN-facing)</text>
+
+            <!-- ══ orthogonal connectors — all right angles, routed through clear gaps ══ -->
+            <!-- A↔B: short bus across the inter-host gap, in the row1/row2 gutter (y=79) -->
+            <line x1="240" y1="79" x2="255" y2="79" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="247" y="72" font-size="8" fill="var(--accent)" text-anchor="middle">S6a·N8·Gx</text>
+
+            <!-- A→C: SMF→UPF (N4), routed BELOW all three hosts to avoid cutting through Host B -->
+            <line x1="69"  y1="118" x2="69"  y2="200" stroke="var(--accent)" stroke-width="1.5"/>
+            <line x1="69"  y1="200" x2="539" y2="200" stroke="var(--accent)" stroke-width="1.5"/>
+            <line x1="539" y1="200" x2="539" y2="118" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="304" y="213" font-size="8" fill="var(--accent)" text-anchor="middle">N4 / PFCP — routed around Host B, not through it</text>
+          </g>
+          <text x="360" y="235" text-anchor="middle" fill="var(--dim)" font-size="9.5">Solid lines = real routed IP, not loopback. Firewall: UE traffic reaches only Host C, never A or B directly.</text>
+        </svg>
+        <p class="diagram-caption">Fig. 2 — same daemons, three hosts, real routable IPs between them.</p>
+      </div>
+
+      <h3 class="sub-h" id="deploy-cups">The idea underneath: CUPS</h3>
+      <p class="body">Every scenario above works because Open5GS builds on <strong>CUPS — Control and User Plane Separation</strong>, a 3GPP Release-14 concept (TS 23.214) that splits SGW/PGW into a control-plane half (SGW-C/PGW-C) and a user-plane half (SGW-U/PGW-U), talking to each other over a dedicated protocol — PFCP, defined in TS 29.244, UDP port 8805. Open5GS's <code>sgwc</code>/<code>sgwu</code> pair <em>is</em> that split. 5G didn't need a retrofit for this: the SMF/UPF split was CUPS-native in TS 23.501 from day one — it's not that 5G "added" CUPS, it's that 5G's session architecture assumed the split from the start. This is the mechanism that makes every scenario below possible: because the user-plane half has no session logic of its own, it can be relocated anywhere reachable over PFCP without the control-plane half caring.</p>
+
+      <h3 class="sub-h" id="deploy-coreremote">Scenario 3 — Combined 4G/5G core, single remote UPF</h3>
+      <p class="body">The simplest real-world split, and arguably the most common one outside a pure lab: <strong>everything</strong> stays together at one core site — both 4G control (MME, HSS, SGW-C, PCRF) and 5G control (AMF, NRF, AUSF, UDM, UDR, PCF, NSSF, BSF, SCP), plus the shared SMF — and only the user-plane pair, SGW-U and UPF, moves out to a single remote site. That remote site is typically wherever the radio itself physically lives, since the whole point is keeping the GTP-U bearer path (S1-U, N3) short and local rather than backhauling every packet to the core.</p>
+      <p class="body">This differs from the generic "distributed core" in Scenario 2 in one important way: <strong>nothing else splits</strong>. One site to manage certs, MongoDB, and subscriber data for the whole control plane; one remote site that's pure forwarding. It also differs from the multi-edge-site Scenario 4 below in scale — this is one remote UPF, not several — which makes it the natural starting point before scaling out to more sites.</p>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 760 390" width="100%" style="max-width:760px">
+          <g font-family="SF Mono, monospace" font-size="10.5" text-anchor="middle">
+            <!-- Core site -->
+            <rect x="140" y="10" width="480" height="100" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="380" y="26" font-size="10" font-weight="700" fill="var(--accent)" letter-spacing="0.8">CORE SITE — ALL CONTROL PLANE, 4G + 5G</text>
+
+            <rect x="155" y="35" width="75" height="30" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="192" y="54" fill="var(--tag-4g)" font-weight="700">mme</text>
+            <rect x="240" y="35" width="75" height="30" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="277" y="54" fill="var(--tag-4g)" font-weight="700">hss</text>
+            <rect x="325" y="35" width="75" height="30" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="362" y="54" fill="var(--tag-4g)" font-weight="700">sgwc</text>
+            <rect x="410" y="35" width="75" height="30" rx="5" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/><text x="447" y="54" fill="var(--tag-4g)" font-weight="700">pcrf</text>
+
+            <rect x="155" y="75" width="75" height="30" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="192" y="94" fill="var(--tag-both)" font-weight="700">smf</text>
+            <rect x="530" y="75" width="75" height="30" rx="5" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="567" y="94" fill="var(--tag-5g)" font-weight="700">amf</text>
+
+            <!-- PFCP WAN links: Sxa (sgwc->sgwu) and N4 (smf->upf), staggered so their jogs cross cleanly instead of running into each other -->
+            <line x1="362" y1="65"  x2="362" y2="140" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="325" y1="140" x2="362" y2="140" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="325" y1="140" x2="325" y2="212" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="192" y1="105" x2="192" y2="155" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="192" y1="155" x2="445" y2="155" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="445" y1="155" x2="445" y2="212" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <text x="255" y="132" font-size="8.5" fill="var(--dim)" text-anchor="middle">Sxa</text>
+            <text x="470" y="167" font-size="8.5" fill="var(--dim)" text-anchor="middle">N4</text>
+
+            <!-- S1AP long-haul: eNB back to MME, routed via the left margin -->
+            <line x1="280" y1="296" x2="60"  y2="296" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="60"  y1="296" x2="60"  y2="50"  stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="60"  y1="50"  x2="155" y2="50"  stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow-core)"/>
+            <text x="30" y="180" font-size="8.5" fill="var(--accent)" text-anchor="middle" transform="rotate(-90 30 180)">S1AP — control, over WAN</text>
+
+            <!-- N2 long-haul: gNB back to AMF, routed via the right margin -->
+            <line x1="490" y1="296" x2="700" y2="296" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="700" y1="296" x2="700" y2="90"  stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="700" y1="90"  x2="605" y2="90"  stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow-core)"/>
+            <text x="730" y="190" font-size="8.5" fill="var(--accent)" text-anchor="middle" transform="rotate(90 730 190)">N2 — control, over WAN</text>
+
+            <!-- Remote UPF site -->
+            <rect x="260" y="190" width="280" height="70" rx="10" fill="var(--surface)" stroke="var(--tag-both)" stroke-width="1.5"/>
+            <text x="400" y="204" font-size="9.5" font-weight="700" fill="var(--dim)" text-anchor="middle">REMOTE SITE — USER PLANE ONLY</text>
+            <rect x="280" y="212" width="90" height="30" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="325" y="231" fill="var(--tag-both)" font-weight="700">sgwu</text>
+            <rect x="400" y="212" width="90" height="30" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="445" y="231" fill="var(--tag-both)" font-weight="700">upf</text>
+            <line x1="370" y1="227" x2="400" y2="227" stroke="var(--good)" stroke-width="1.4"/>
+            <text x="385" y="220" font-size="7.5" fill="var(--good)" text-anchor="middle">S5-U</text>
+
+            <!-- Internet / DN offload, local to the remote site -->
+            <rect x="560" y="212" width="110" height="30" rx="5" fill="var(--surface2)" stroke="var(--border)"/>
+            <text x="615" y="231" fill="var(--dim)" font-weight="700">Internet / DN</text>
+            <line x1="490" y1="227" x2="560" y2="227" stroke="var(--good)" stroke-width="1.4" marker-end="url(#arrow-good)"/>
+            <text x="525" y="220" font-size="7.5" fill="var(--good)" text-anchor="middle">SGi · N6</text>
+
+            <!-- local bearer links down to the co-located RAN -->
+            <line x1="325" y1="242" x2="325" y2="280" stroke="var(--good)" stroke-width="1.4"/>
+            <line x1="445" y1="242" x2="445" y2="280" stroke="var(--good)" stroke-width="1.4"/>
+            <text x="290" y="264" font-size="8" fill="var(--good)" text-anchor="middle">S1-U</text>
+            <text x="480" y="264" font-size="8" fill="var(--good)" text-anchor="middle">N3</text>
+
+            <rect x="280" y="280" width="90" height="32" rx="5" fill="var(--surface2)" stroke="var(--border)"/><text x="325" y="300" fill="var(--dim)" font-weight="700">eNB</text>
+            <rect x="400" y="280" width="90" height="32" rx="5" fill="var(--surface2)" stroke="var(--border)"/><text x="445" y="300" fill="var(--dim)" font-weight="700">gNB</text>
+          </g>
+          <defs>
+            <marker id="arrow-core" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent)"/></marker>
+            <marker id="arrow-good" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--good)"/></marker>
+          </defs>
+          <text x="140" y="340" font-size="9.5" fill="var(--dim)" text-anchor="start">Blue = control plane, crosses the WAN either way (S1AP/N2 direct to the core; Sxa/N4 as PFCP).</text>
+          <text x="140" y="354" font-size="9.5" fill="var(--dim)" text-anchor="start">Green = bearer traffic and internet offload — stays entirely local to the remote site.</text>
+        </svg>
+        <p class="diagram-caption">Fig. 3 — one core, one remote user-plane site. Control signaling (blue) reaches all the way back to the core no matter which generation; only bearer traffic and its internet exit (green) stay local.</p>
+      </div>
+      <p class="body">To answer directly: <strong>yes</strong> — every control-plane interface (S1AP, N2, plus the PFCP session-control links N4 and Sxa) reaches back to the core site across the WAN, regardless of topology. What <em>doesn't</em> cross the WAN is the bearer traffic itself: the eNB/gNB hand user-plane packets to the co-located SGW-U/UPF over S1-U/N3, SGW-U forwards onward to UPF over the local S5-U hop (UPF plays the PGW-U role for 4G too, so it's the one place both generations' traffic actually converges), and UPF exits directly to the internet/data network over SGi/N6 right there at the remote site — never routed back through the core at all. That asymmetry (control always goes to the core, user-plane exits locally) is the entire mechanism CUPS is built around, and it's true of every scenario in this section, not just this one.</p>
+      <p class="body" style="font-size:12px">This is the same CUPS mechanism as every other scenario in this section, applied at its smallest useful scale — see the multi-site generalization in Scenario 4 below, and the DNN/TAC/Cell-ID selection mechanism that makes either topology configurable rather than hardcoded.</p>
+
+      <h3 class="sub-h" id="deploy-edge">Scenario 4 — Central control-plane, multiple edge user-plane sites</h3>
+      <p class="body">Open5GS names this scenario directly: keep AMF/SMF (or MME/SGW-C) centralized, and deploy UPF (or SGW-U/PGW-U) instances out in the field near where traffic actually needs to exit — "somewhere with a high speed Internet connection" — while control functionality stays centralized. This is 3GPP's own recognized architecture too: TS 23.501 clause 6.3.3 covers UPF selection explicitly in terms of "centrally located UPF and distributed UPF located close to or at the Access Network site," and clause 5.13 covers the edge-computing mechanisms that make it work — Uplink Classifier (UL CL) and Local Area Data Network (LADN), both introduced in Release 15.</p>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 720 250" width="100%" style="max-width:720px">
+          <g font-family="SF Mono, monospace" font-size="10.5">
+            <!-- Central -->
+            <rect x="230" y="10" width="260" height="90" rx="10" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="360" y="28" text-anchor="middle" font-size="10" font-weight="700" fill="var(--accent)" letter-spacing="0.8">CENTRAL SITE — CONTROL PLANE</text>
+            <rect x="248" y="40" width="90" height="34" rx="5" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/>
+            <text x="293" y="61" text-anchor="middle" fill="var(--tag-5g)" font-weight="700">amf</text>
+            <rect x="348" y="40" width="90" height="34" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="393" y="61" text-anchor="middle" fill="var(--tag-both)" font-weight="700">smf</text>
+            <text x="360" y="88" fill="var(--dim)" font-size="9" text-anchor="middle">+ nrf / ausf / udm / pcf ...</text>
+
+            <!-- ══ orthogonal distribution tree: drop, then bus, then drop to each edge ══ -->
+            <line x1="360" y1="100" x2="360" y2="127" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="120" y1="127" x2="600" y2="127" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="120" y1="127" x2="120" y2="150" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="360" y1="127" x2="360" y2="150" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <line x1="600" y1="127" x2="600" y2="150" stroke="var(--dim)" stroke-width="1.4" stroke-dasharray="4 3"/>
+            <text x="480" y="120" text-anchor="middle" fill="var(--dim)" font-size="9">N4 / Sxa over WAN</text>
+
+            <!-- Edge sites -->
+            <rect x="30" y="150" width="180" height="70" rx="10" fill="var(--surface)" stroke="var(--tag-both)" stroke-width="1.5"/>
+            <text x="120" y="167" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--dim)">EDGE SITE 1</text>
+            <rect x="75" y="176" width="90" height="30" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="120" y="195" text-anchor="middle" fill="var(--tag-both)" font-weight="700">upf</text>
+
+            <rect x="270" y="150" width="180" height="70" rx="10" fill="var(--surface)" stroke="var(--tag-both)" stroke-width="1.5"/>
+            <text x="360" y="167" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--dim)">EDGE SITE 2</text>
+            <rect x="315" y="176" width="90" height="30" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="360" y="195" text-anchor="middle" fill="var(--tag-both)" font-weight="700">upf</text>
+
+            <rect x="510" y="150" width="180" height="70" rx="10" fill="var(--surface)" stroke="var(--tag-both)" stroke-width="1.5"/>
+            <text x="600" y="167" text-anchor="middle" font-size="9.5" font-weight="700" fill="var(--dim)">EDGE SITE 3</text>
+            <rect x="555" y="176" width="90" height="30" rx="5" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="600" y="195" text-anchor="middle" fill="var(--tag-both)" font-weight="700">upf</text>
+          </g>
+        </svg>
+        <p class="diagram-caption">Fig. 4 — one control plane, UPF pushed out to each edge site's local breakout. Each gNB's N3 traffic never has to cross the WAN to reach its UPF.</p>
+      </div>
+
+      <h3 class="sub-h" id="deploy-multiupf">Selecting which UPF: DNN, TAC, or Cell ID</h3>
+      <p class="body">The mechanism behind Fig. 4 isn't hypothetical — it's a real, documented field in Open5GS's own SMF config. The SMF can pick a UPF per session by matching on the requested DNN, the UE's Tracking Area Code, or even the specific cell/gNB it's attached to, evaluating entries in order and taking the first match. Note the direction of connection here too: the <strong>UPF connects to the SMF</strong>, not the other way around — so adding a new edge UPF is purely additive, nothing on the SMF side has to change except this list.</p>
+
+      <div class="code-block">
+        <div class="code-label">smf.yaml — pfcp.client.upf[] selection keys</div>
+        <pre>smf:
+  pfcp:
+    client:
+      upf:
+        - address: 10.10.1.7      # Edge site 1's UPF
+          dnn: internet
+          tac: 1                  # match by Tracking Area Code
+        - address: 10.10.2.7      # Edge site 2's UPF
+          dnn: ims
+          nr_cell_id: 0x1000001   # match by specific 5G cell (36-bit)
+        - address: 10.10.3.7      # Edge site 3's UPF — fallback
+          dnn: internet</pre>
+      </div>
+      <p class="body" style="font-size:12px">This is Open5GS's canonical sample config, <code>configs/open5gs/smf.yaml.in</code>. TAC-based selection maps directly onto 3GPP's own selection criteria — TS 23.501 §6.3.3.3 lists "5G-AN-provided identities e.g. CellID, TAI" as inputs to UPF selection.</p>
+
+
+      <h3 class="sub-h" id="deploy-firewall">What actually has to cross the firewall, per scenario</h3>
+      <p class="body">Every diagram above shows the happy-path wiring — what's easy to miss is that once a link stops being loopback, it's now something a firewall rule, a routing table, and (across sites) a WAN link all have opinions about. Concretely, per scenario:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Scenario</th><th>Must be reachable</th><th>Must be blocked</th><th>Latency sensitivity</th></tr></thead>
+          <tbody>
+            <tr><td>All-in-one</td><td>Nothing — all loopback</td><td>N/A</td><td>None — same kernel, same host</td></tr>
+            <tr><td>Distributed core</td><td>Host A↔B↔C per Fig. 2; AMF's N2 and UPF's N3/GTP-U from the RAN subnet</td><td>UE subnet → any NF address except the RAN-facing one on Host C</td><td>Low — N4/PFCP control messages are infrequent per session, not per-packet</td></tr>
+            <tr><td>Combined core + remote UPF</td><td>Core↔remote: N4 and Sxa (PFCP, UDP 8805) <em>and</em> the RAN's own S1AP (SCTP 36412) and N2 (SCTP 38412) reaching all the way to MME/AMF — control plane always goes to the core, regardless of generation</td><td>Core's internal SBI/Diameter mesh from the remote site entirely; anything but the RAN itself from the remote site's radio-facing addresses</td><td><strong>Control plane (S1AP/N2/N4/Sxa):</strong> all tolerant of WAN latency — infrequent, per-session or per-procedure, not per-packet. <strong>Bearer traffic:</strong> never crosses the WAN — S1-U/N3 terminate locally and exit to the internet right there via SGi/N6</td></tr>
+            <tr><td>Central CP + edge UPF</td><td>Central↔each edge site's N4/PFCP (UDP 8805); each edge UPF's own N3/GTP-U from its local gNB</td><td>Edge sites from reaching each other directly (no inter-edge traffic needed); UE subnet from the WAN entirely</td><td><strong>N4 control:</strong> tolerant of 50–100ms WAN RTT. <strong>N3/N6 user-plane:</strong> this is exactly what you're trying to keep low by placing UPF at the edge in the first place — a central UPF instead would add that same WAN RTT to <em>every packet</em>, not just control messages</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">The asymmetry in that last row is the entire argument for edge UPF placement: PFCP is a control protocol, so it tolerates WAN latency between SMF and a remote UPF just fine — Open5GS's default <code>heartbeatInterval</code>-style keepalives run on the order of seconds, not milliseconds. But GTP-U is the actual user data, one packet at a time, and <em>that's</em> the path where round-trip latency directly becomes the user's experienced latency. A central UPF serving a far-away site adds WAN RTT to every single packet the UE sends or receives; an edge UPF only adds that same RTT to the comparatively rare N4 control exchanges.</p>
+
+      <h3 class="sub-h" id="deploy-failure">Failure modes worth planning for</h3>
+      <p class="body">Splitting a single-host system across a real network doesn't just add IPs — it adds ways for the system to be <em>partially</em> broken instead of cleanly up or down, which is a qualitatively different failure mode to design against.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>What fails</th><th>Effect</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Edge site's WAN link drops</td><td>Existing PDU sessions on that edge UPF keep forwarding local traffic (UPF doesn't need the SMF link for data-plane forwarding it's already programmed for) — but no <em>new</em> sessions can be established, and PFCP heartbeat timeout will eventually mark the association stale</td><td>This is the direct payoff of CUPS: the user-plane rule set, once installed, doesn't need the control channel to keep working</td></tr>
+            <tr><td>Central AMF/SMF site fails entirely</td><td>Total outage in the topologies shown above</td><td>HA/redundancy (e.g. multiple AMF instances behind a load balancer, NRF-mediated failover) is a separate deployment concern this guide doesn't cover in depth</td></tr>
+            <tr><td>NRF (or SCP) goes down</td><td>Existing NF-to-NF connections already established keep working; anything requiring a <em>fresh</em> discovery lookup (e.g. AMF resolving a new SMF for a first PDU session) fails until NRF/SCP returns</td><td>Motivates running NRF as the one NF you'd prioritize for redundancy even in an otherwise minimal deployment</td></tr>
+            <tr><td>MongoDB unreachable (HSS/UDM/UDR/PCF)</td><td>New authentication and new session policy lookups fail; already-authenticated, already-connected UEs are typically unaffected until they need a fresh lookup</td><td>The NextEPC-era gotcha about binding Mongo off <code>localhost</code> is exactly the kind of change that turns "works in the lab" into "single point of failure in production" if it's not paired with real DB redundancy</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── INTERFACE MAP ─── -->
+    <div class="section">
+      <span class="section-anchor" id="interfaces"></span>
+      <h2 class="section-h">Interface map — how the functions tie together</h2>
+      <p class="section-intro">Every arrow in the diagrams below is a real reference point with a name (S1AP, N4, Gx...), a protocol, and — for anything not SBI — a fixed port. This is the wiring diagram behind every card in the previous section.</p>
+
+      <h3 class="sub-h">4G EPC interfaces</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Interface</th><th>Between</th><th>Protocol / Port</th><th>Carries</th><th>Key messages</th></tr></thead>
+          <tbody>
+            <tr><td><code>S1AP</code></td><td>eNB → MME</td><td>SCTP, port <strong>36412</strong></td><td>4G RAN control-plane signaling</td><td>Initial UE Message, Initial Context Setup Req/Resp, UE Context Release, Handover Required/Command</td></tr>
+            <tr><td><code>S1-U</code></td><td>eNB ↔ SGW-U</td><td>GTPv1-U, UDP <strong>2152</strong></td><td>4G user-plane bearer traffic</td><td>Encapsulated user IP packets, keyed by TEID — no signaling messages, purely data-plane</td></tr>
+            <tr><td><code>S11</code></td><td>MME → SGW-C</td><td>GTPv2-C, UDP <strong>2123</strong></td><td>Session/bearer control between MME and the gateway's control half</td><td>Create Session Req/Resp, Modify Bearer Req/Resp, Delete Session Req/Resp, Release Access Bearers Req/Resp</td></tr>
+            <tr><td><code>S5/S8</code></td><td>SGW-C ↔ SMF (PGW-C role)</td><td>GTPv2-C (control) / GTP-U UDP 2152 (S5-U/S8-U user-plane, SGW-U↔UPF)</td><td>Session establishment and the actual bearer path onward to the PDN gateway</td><td>Same GTPv2-C message set as S11, extended onward toward PGW-C</td></tr>
+            <tr><td><code>Gx</code></td><td>SMF (PGW-C role) → PCRF</td><td>Diameter, port <strong>3868</strong></td><td>Policy and charging rule installation</td><td>Credit-Control-Request/Answer (CCR/CCA) — Initial, Update, and Terminate variants</td></tr>
+            <tr><td><code>S6a</code></td><td>MME → HSS</td><td>Diameter, port 3868</td><td>Subscriber authentication data and profile retrieval</td><td>Update-Location-Request/Answer, Authentication-Information-Request/Answer, Purge-UE, Cancel-Location</td></tr>
+            <tr><td><code>SGi</code></td><td>UPF (PGW-U role) → Data Network</td><td>Plain IP</td><td>UE traffic's final hop onto the internet/DN</td><td>N/A — plain IP, no 3GPP signaling protocol of its own</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body" style="font-size:12px">Ports and protocols per TS 36.413 (S1AP), TS 29.281 (GTP-U), TS 29.274 (GTPv2-C), TS 29.212 (Gx), TS 29.272 (S6a).</p>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 720 145" width="100%" style="max-width:720px">
+          <g font-family="SF Mono, monospace" font-size="10.5" text-anchor="middle">
+            <!-- row0: subscriber/policy, sits above the control-plane row -->
+            <rect x="140" y="0"  width="80" height="30" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="180" y="20" fill="var(--tag-4g)" font-weight="700">hss</text>
+            <rect x="400" y="0"  width="80" height="30" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="440" y="20" fill="var(--tag-4g)" font-weight="700">pcrf</text>
+
+            <!-- eNB: one tall box spanning both the control row and the user-plane row below it -->
+            <rect x="10" y="45" width="80" height="90" rx="6" fill="var(--surface2)" stroke="var(--border)"/>
+            <text x="50" y="93" fill="var(--dim)" font-weight="700">eNB</text>
+
+            <!-- row1: control plane -->
+            <rect x="140" y="45" width="80" height="40" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="180" y="69" fill="var(--tag-4g)" font-weight="700">mme</text>
+            <rect x="270" y="45" width="80" height="40" rx="6" fill="var(--tag-4g-lo)" stroke="var(--tag-4g)"/>
+            <text x="310" y="69" fill="var(--tag-4g)" font-weight="700">sgwc</text>
+            <rect x="400" y="45" width="80" height="40" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="440" y="69" fill="var(--tag-both)" font-weight="700">smf</text>
+
+            <!-- row2: user plane -->
+            <rect x="270" y="95" width="80" height="40" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="310" y="119" fill="var(--tag-both)" font-weight="700">sgwu</text>
+            <rect x="530" y="95" width="80" height="40" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/>
+            <text x="570" y="119" fill="var(--tag-both)" font-weight="700">upf</text>
+            <rect x="640" y="95" width="70" height="40" rx="6" fill="var(--surface2)" stroke="var(--border)"/>
+            <text x="675" y="119" fill="var(--dim)" font-weight="700">SGi</text>
+
+            <!-- ══ every connector below is a single straight orthogonal segment — grid is aligned so none need a bend ══ -->
+            <line x1="90"  y1="65"  x2="140" y2="65"  stroke="var(--accent)" stroke-width="1.3" marker-end="url(#arrow)"/>
+            <text x="115" y="58" font-size="8.5" fill="var(--dim)">S1AP</text>
+            <line x1="180" y1="45"  x2="180" y2="30"  stroke="var(--accent)" stroke-width="1.3"/>
+            <text x="196" y="40" font-size="8.5" fill="var(--dim)">S6a</text>
+            <line x1="220" y1="65"  x2="270" y2="65"  stroke="var(--accent)" stroke-width="1.3" marker-end="url(#arrow)"/>
+            <text x="245" y="58" font-size="8.5" fill="var(--dim)">S11</text>
+            <line x1="310" y1="85"  x2="310" y2="95"  stroke="var(--accent)" stroke-width="1.3" marker-end="url(#arrow)"/>
+            <line x1="350" y1="65"  x2="400" y2="65"  stroke="var(--accent)" stroke-width="1.3" marker-end="url(#arrow)"/>
+            <text x="375" y="58" font-size="8.5" fill="var(--dim)">S5/8-C</text>
+            <line x1="440" y1="45"  x2="440" y2="30"  stroke="var(--accent)" stroke-width="1.3"/>
+            <text x="456" y="40" font-size="8.5" fill="var(--dim)">Gx</text>
+            <line x1="90"  y1="115" x2="270" y2="115" stroke="var(--good)" stroke-width="1.3" marker-end="url(#arrow-g)"/>
+            <text x="180" y="108" font-size="8.5" fill="var(--dim)">S1-U (GTP-U)</text>
+            <line x1="350" y1="115" x2="530" y2="115" stroke="var(--good)" stroke-width="1.3" marker-end="url(#arrow-g)"/>
+            <text x="440" y="108" font-size="8.5" fill="var(--dim)">S5/8-U (GTP-U)</text>
+            <line x1="610" y1="115" x2="640" y2="115" stroke="var(--dim)" stroke-width="1.3"/>
+          </g>
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent)"/></marker>
+            <marker id="arrow-g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--good)"/></marker>
+          </defs>
+        </svg>
+        <p class="diagram-caption">Fig. 5 — 4G control plane (blue) vs user plane (green, GTP-U). The eNB box spans both rows because it's the one node that sits on both chains at once.</p>
+      </div>
+
+      <h3 class="sub-h">5G SA interfaces</h3>
+      <p class="body">Everything except N1/N2/N3 is HTTP/2 + JSON — the "SBI mesh." Reference-point letters (N7, N8...) name <em>who talks to whom</em>; they aren't separate protocols, just labeled pairings inside the same SBI framework.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Interface</th><th>Between</th><th>Protocol / Port</th><th>Carries</th><th>Key operations</th></tr></thead>
+          <tbody>
+            <tr><td><code>N1</code></td><td>UE ↔ AMF</td><td>NAS, carried inside NGAP (transparent to the gNB)</td><td>5G NAS signaling — registration, authentication, session requests</td><td>Registration Request/Accept, Authentication Request/Response, PDU Session Establishment Request</td></tr>
+            <tr><td><code>N2</code></td><td>gNB → AMF</td><td>NGAP, SCTP, port <strong>38412</strong></td><td>5G RAN control-plane signaling</td><td>Initial UE Message, Initial Context Setup, PDU Session Resource Setup, Handover Required/Command</td></tr>
+            <tr><td><code>N3</code></td><td>gNB ↔ UPF</td><td>GTP-U, UDP 2152</td><td>5G user-plane bearer traffic</td><td>Encapsulated user IP, keyed by TEID — data-plane only</td></tr>
+            <tr><td><code>N4</code></td><td>SMF → UPF</td><td>PFCP, UDP <strong>8805</strong></td><td>SMF installs forwarding rules on the UPF</td><td>Session Establishment/Modification/Deletion Request-Response — carrying PDR/FAR/QER/URR rule sets</td></tr>
+            <tr><td><code>N6</code></td><td>UPF → Data Network</td><td>Plain IP</td><td>UE traffic's final hop onto the internet/DN</td><td>N/A — plain IP</td></tr>
+            <tr><td><code>N7</code></td><td>SMF → PCF</td><td>SBI (HTTP/2)</td><td>Session Management policy</td><td>Npcf_SMPolicyControl_Create/Update/Delete</td></tr>
+            <tr><td><code>N8</code></td><td>AMF → UDM</td><td>SBI (HTTP/2)</td><td>Mobility and subscription data</td><td>Nudm_UECM_Registration, Nudm_SDM_Get/Subscribe</td></tr>
+            <tr><td><code>N9</code></td><td>UPF ↔ UPF</td><td>GTP-U</td><td>Chaining between UPFs (e.g. edge UPF → central UPF)</td><td>Encapsulated user IP — data-plane only</td></tr>
+            <tr><td><code>N10</code></td><td>SMF → UDM</td><td>SBI (HTTP/2)</td><td>Session-related subscription data</td><td>Nudm_SDM_Get (session management subscription data)</td></tr>
+            <tr><td><code>N11</code></td><td>AMF ↔ SMF</td><td>SBI (HTTP/2)</td><td>Session management signaling</td><td>Nsmf_PDUSession_CreateSMContext / UpdateSMContext, Namf_Communication_N1N2MessageTransfer</td></tr>
+            <tr><td><code>N12</code></td><td>AMF → AUSF</td><td>SBI (HTTP/2)</td><td>Authentication request/response</td><td>Nausf_UEAuthentication_Authenticate Request/Response</td></tr>
+            <tr><td><code>N13</code></td><td>UDM ↔ AUSF</td><td>SBI (HTTP/2)</td><td>Authentication vector retrieval</td><td>Nudm_UEAuthentication_Get Request/Response</td></tr>
+            <tr><td><code>N15</code></td><td>AMF → PCF</td><td>SBI (HTTP/2)</td><td>Access/mobility policy</td><td>Npcf_AMPolicyControl_Create/Update</td></tr>
+            <tr><td><code>N22</code></td><td>AMF → NSSF</td><td>SBI (HTTP/2)</td><td>Network slice selection</td><td>Nnssf_NSSelection_Get</td></tr>
+            <tr><td><code>N32</code></td><td>SEPP ↔ SEPP</td><td>HTTP/2 (N32-c control, N32-f forwarding)</td><td>Inter-PLMN roaming, with topology hiding</td><td>N32-c capability negotiation handshake; N32-f per-message forward/reformat</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body" style="font-size:12px">Reference points and ports per TS 23.501 §4.2.7 and TS 29.244 (N4/PFCP), TS 29.281 (GTP-U), TS 38.412/ETSI TS 138 412 (N2/NGAP transport). Note N17 (AMF↔5G-EIR) doesn't apply to Open5GS, since it doesn't implement a 5G-EIR daemon.</p>
+
+      <p class="body">Splitting this into two diagrams on purpose: the discovery plane (everyone registers with NRF/SCP) and the actual call chain (who calls whom once discovery has already happened) are different graphs, and drawing them as one hub-and-spoke mess is exactly what made the old version hard to read.</p>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 640 190" width="100%" style="max-width:640px">
+          <g font-family="SF Mono, monospace" font-size="10.5" text-anchor="middle">
+            <!-- Row 1 -->
+            <rect x="20"  y="30" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="70"  y="51" fill="var(--tag-5g)" font-weight="700">amf</text>
+            <rect x="130" y="30" width="100" height="34" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="180" y="51" fill="var(--tag-both)" font-weight="700">smf</text>
+            <rect x="240" y="30" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="290" y="51" fill="var(--tag-5g)" font-weight="700">ausf</text>
+            <rect x="350" y="30" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="400" y="51" fill="var(--tag-5g)" font-weight="700">udm</text>
+            <!-- Row 1 comb -->
+            <line x1="70" y1="64" x2="70" y2="76" stroke="var(--dim)"/><line x1="180" y1="64" x2="180" y2="76" stroke="var(--dim)"/>
+            <line x1="290" y1="64" x2="290" y2="76" stroke="var(--dim)"/><line x1="400" y1="64" x2="400" y2="76" stroke="var(--dim)"/>
+            <line x1="70" y1="76" x2="470" y2="76" stroke="var(--dim)"/>
+
+            <!-- Row 2 -->
+            <rect x="20"  y="100" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="70"  y="121" fill="var(--tag-5g)" font-weight="700">udr</text>
+            <rect x="130" y="100" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="180" y="121" fill="var(--tag-5g)" font-weight="700">pcf</text>
+            <rect x="240" y="100" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="290" y="121" fill="var(--tag-5g)" font-weight="700">nssf</text>
+            <rect x="350" y="100" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="400" y="121" fill="var(--tag-5g)" font-weight="700">bsf</text>
+            <!-- Row 2 comb -->
+            <line x1="70" y1="100" x2="70" y2="88" stroke="var(--dim)"/><line x1="180" y1="100" x2="180" y2="88" stroke="var(--dim)"/>
+            <line x1="290" y1="100" x2="290" y2="88" stroke="var(--dim)"/><line x1="400" y1="100" x2="400" y2="88" stroke="var(--dim)"/>
+            <line x1="70" y1="88" x2="470" y2="88" stroke="var(--dim)"/>
+
+            <!-- spine connecting both row-combs to the hub -->
+            <line x1="470" y1="76" x2="470" y2="88" stroke="var(--dim)"/>
+            <line x1="470" y1="82" x2="490" y2="82" stroke="var(--accent)" stroke-width="1.6"/>
+
+            <!-- hub -->
+            <rect x="490" y="64" width="110" height="36" rx="6" fill="var(--surface2)" stroke="var(--accent)" stroke-width="1.6"/>
+            <text x="545" y="86" fill="var(--accent)" font-weight="700">nrf / scp</text>
+          </g>
+          <text x="20" y="175" font-size="9.5" fill="var(--dim)" text-anchor="start">Discovery plane — every 5G NF registers with, and queries, NRF (or SCP as its default proxy).</text>
+        </svg>
+        <p class="diagram-caption">Fig. 6a — the discovery plane. This is a hub, but drawn as a comb: every NF's connection to it is a straight run, not a diagonal spoke.</p>
+      </div>
+
+      <div class="diagram-frame">
+        <svg viewBox="0 0 640 220" width="100%" style="max-width:640px">
+          <g font-family="SF Mono, monospace" font-size="10.5" text-anchor="middle">
+            <!-- AMF root -->
+            <rect x="250" y="10" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/>
+            <text x="300" y="31" fill="var(--tag-5g)" font-weight="700">amf</text>
+
+            <!-- distribution comb from AMF to row1 -->
+            <line x1="300" y1="44" x2="300" y2="62" stroke="var(--dim)"/>
+            <line x1="70" y1="62" x2="530" y2="62" stroke="var(--dim)"/>
+            <line x1="70"  y1="62" x2="70"  y2="90" stroke="var(--dim)"/><text x="46"  y="58" font-size="8.5" fill="var(--accent)">N11</text>
+            <line x1="190" y1="62" x2="190" y2="90" stroke="var(--dim)"/><text x="166" y="58" font-size="8.5" fill="var(--accent)">N12</text>
+            <line x1="310" y1="62" x2="310" y2="90" stroke="var(--dim)"/><text x="286" y="58" font-size="8.5" fill="var(--accent)">N8</text>
+            <line x1="430" y1="62" x2="430" y2="90" stroke="var(--dim)"/><text x="406" y="58" font-size="8.5" fill="var(--accent)">N15</text>
+            <line x1="530" y1="62" x2="530" y2="90" stroke="var(--dim)"/><text x="506" y="58" font-size="8.5" fill="var(--accent)">N22</text>
+
+            <!-- row1 -->
+            <rect x="20"  y="90" width="100" height="34" rx="6" fill="var(--tag-both-lo)" stroke="var(--tag-both)"/><text x="70"  y="111" fill="var(--tag-both)" font-weight="700">smf</text>
+            <rect x="140" y="90" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="190" y="111" fill="var(--tag-5g)" font-weight="700">ausf</text>
+            <rect x="260" y="90" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="310" y="111" fill="var(--tag-5g)" font-weight="700">udm</text>
+            <rect x="380" y="90" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="430" y="111" fill="var(--tag-5g)" font-weight="700">pcf</text>
+            <rect x="480" y="90" width="100" height="34" rx="6" fill="var(--tag-5g-lo)" stroke="var(--tag-5g)"/><text x="530" y="111" fill="var(--tag-5g)" font-weight="700">nssf</text>
+
+            <!-- N13: direct link between adjacent ausf/udm -->
+            <line x1="240" y1="107" x2="260" y2="107" stroke="var(--accent)" stroke-width="1.4"/>
+            <text x="250" y="100" font-size="8" fill="var(--accent)" text-anchor="middle">N13</text>
+
+            <!-- N10/N7: smf branches down and across to udm, then pcf, via a back-channel below row1 -->
+            <line x1="70"  y1="124" x2="70"  y2="145" stroke="var(--accent)" stroke-width="1.4"/>
+            <line x1="70"  y1="145" x2="430" y2="145" stroke="var(--accent)" stroke-width="1.4"/>
+            <line x1="310" y1="145" x2="310" y2="124" stroke="var(--accent)" stroke-width="1.4" marker-end="url(#arrow5)"/>
+            <line x1="430" y1="145" x2="430" y2="124" stroke="var(--accent)" stroke-width="1.4" marker-end="url(#arrow5)"/>
+            <text x="150" y="158" font-size="8.5" fill="var(--accent)">N10 (SMF→UDM)</text>
+            <text x="400" y="158" font-size="8.5" fill="var(--accent)">N7 (SMF→PCF)</text>
+          </g>
+          <defs><marker id="arrow5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="var(--accent)"/></marker></defs>
+          <text x="20" y="205" font-size="9.5" fill="var(--dim)">Session-establishment call chain — the direct calls that happen once NRF/SCP has already told each NF where its peer is.</text>
+        </svg>
+        <p class="diagram-caption">Fig. 6b — a UE registration + PDU session touches this whole chain: AMF fans out to SMF/AUSF/UDM/PCF/NSSF, AUSF and UDM talk directly (N13), and SMF reaches back to UDM (N10) and PCF (N7).</p>
+      </div>
+
+      <div class="callout callout-info">
+        <strong>A finding worth flagging directly:</strong> checking Open5GS's own current sample configs (<code>configs/open5gs/*.yaml.in</code> on the <code>main</code> branch) shows every 5G NF's direct <code>sbi.client.nrf</code> entry commented out by default, with <code>sbi.client.scp</code> (→ SCP at <code>127.0.0.200:7777</code>) active instead — meaning Open5GS's own reference topology now routes indirectly through SCP by default, not NF-to-NF-via-NRF-lookup directly. NSSF's <code>sbi.client.nsi</code> entry is the one exception, still pointing straight at NRF's discovery endpoint. Worth checking your own installed version's actual <code>.yaml</code> against this before assuming either mode.
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── IDENTIFIERS ─── -->
+    <div class="section">
+      <span class="section-anchor" id="identifiers"></span>
+      <h2 class="section-h">Identifiers — IMSI, SUPI, SUCI, and friends</h2>
+      <p class="section-intro">Every one of these answers a version of "who/where is this device," but they're deliberately not the same thing — the whole point of SUCI existing is that IMSI/SUPI must never cross the air interface in the clear.</p>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">IMSI</span><span class="id-full">International Mobile Subscriber Identity</span></div>
+        <p class="id-desc">The permanent subscriber identity baked into the SIM, used as-is in 4G. Up to 15 digits: country code, network code, then a subscriber number unique within that network.</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--tag-4g);flex:3"><span class="id-seg-label">MCC</span>3 digits</div>
+          <div class="id-seg" style="background:var(--accent);flex:2.5"><span class="id-seg-label">MNC</span>2–3 digits</div>
+          <div class="id-seg" style="background:var(--dim);flex:5"><span class="id-seg-label">MSIN</span>9–10 digits</div>
+        </div>
+        <div class="id-legend">
+          <span><span class="sw" style="background:var(--tag-4g)"></span>Country</span>
+          <span><span class="sw" style="background:var(--accent)"></span>Network operator</span>
+          <span><span class="sw" style="background:var(--dim)"></span>Subscriber number</span>
+        </div>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">SUPI</span><span class="id-full">Subscription Permanent Identifier</span></div>
+        <p class="id-desc">5G's name for the same permanent identity concept — for ordinary 3GPP access it's just an IMSI-shaped value (MCC+MNC+MSIN); it only takes a different shape (a Network Access Identifier, RFC 4282-style) for non-3GPP access scenarios.</p>
+        <div class="callout callout-warn" style="margin:0 0 4px">The critical rule: <strong>SUPI must never be sent over the air unencrypted.</strong> That's what SUCI exists to prevent.</div>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">SUCI</span><span class="id-full">Subscription Concealed Identifier</span></div>
+        <p class="id-desc">What the UE actually transmits instead of a plaintext SUPI — the SUPI's MSIN portion is public-key-encrypted (ECIES) using a Home Network public key baked into the SIM; only that home network's UDM holds the matching private key to reverse it.</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--tag-5g);flex:2">SUPI type</div>
+          <div class="id-seg" style="background:var(--accent);flex:2.5">Home Network ID</div>
+          <div class="id-seg" style="background:var(--good);flex:2">Routing Ind.</div>
+          <div class="id-seg" style="background:var(--hidden);flex:2">Scheme ID</div>
+          <div class="id-seg" style="background:var(--dim);flex:5">Encrypted MSIN (scheme output)</div>
+        </div>
+        <div class="id-legend">
+          <span><span class="sw" style="background:var(--tag-5g)"></span>0/1 = IMSI/NAI</span>
+          <span><span class="sw" style="background:var(--accent)"></span>MCC+MNC (plaintext — routing needs it)</span>
+          <span><span class="sw" style="background:var(--good)"></span>picks UDM instance</span>
+          <span><span class="sw" style="background:var(--hidden)"></span>0=null, 1=Profile A, 2=Profile B</span>
+          <span><span class="sw" style="background:var(--dim)"></span>the actual ciphertext</span>
+        </div>
+        <p class="body" style="font-size:11.5px;margin-top:12px;margin-bottom:0">Scheme 0 sends the MSIN in the clear (no concealment — used only where SUCI protection is deliberately disabled). Scheme 1 (Profile A) uses Curve25519; Scheme 2 (Profile B) uses NIST P-256.</p>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">GUAMI</span><span class="id-full">Globally Unique AMF Identifier</span></div>
+        <p class="id-desc">Identifies not a device but an AMF instance — assigned once at deployment, handed to the UE inside its 5G-GUTI so a later reconnect can route straight back to (approximately) the same AMF without a fresh lookup.</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--tag-4g);flex:3">MCC+MNC</div>
+          <div class="id-seg" style="background:var(--accent);flex:2">Region ID (8 bit)</div>
+          <div class="id-seg" style="background:var(--good);flex:2.5">Set ID (10 bit)</div>
+          <div class="id-seg" style="background:var(--dim);flex:1.5">Pointer (6 bit)</div>
+        </div>
+        <p class="body" style="font-size:11.5px;margin-top:12px;margin-bottom:0">This is exactly the <code>guami.amf_id</code> block you configure in <code>amf.yaml</code> — region/set/pointer aren't arbitrary, they're this literal identifier.</p>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">5G-GUTI</span><span class="id-full">5G Globally Unique Temporary Identifier</span></div>
+        <p class="id-desc">The temporary identity a UE actually uses once registered, precisely so its permanent SUPI doesn't need to be re-transmitted on every reconnect — GUAMI (which AMF) plus a 5G-TMSI (which UE, within that AMF).</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--accent);flex:3">GUAMI (as above)</div>
+          <div class="id-seg" style="background:var(--dim);flex:2">5G-TMSI</div>
+        </div>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">TAI</span><span class="id-full">Tracking Area Identity</span></div>
+        <p class="id-desc">Which tracking area the UE is currently in — the PLMN plus a Tracking Area Code unique within it. This is the same TAC the SMF can key UPF selection on, covered in the deployment section above.</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--tag-4g);flex:3">MCC+MNC (PLMN)</div>
+          <div class="id-seg" style="background:var(--dim);flex:2">TAC</div>
+        </div>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">PEI</span><span class="id-full">Permanent Equipment Identifier</span></div>
+        <p class="id-desc">5G's name for the device identity, as opposed to the subscriber identity — in practice, just the phone's own IMEI or IMEISV. It identifies the <em>handset</em>, not the SIM, and by itself can never be used to authenticate a UE. TS 23.003 requires it only be sent once NAS security (integrity + ciphering) is already active — never in the clear.</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--tag-5g);flex:7">IMEI — 14 digits + check digit</div>
+          <div class="id-seg" style="background:var(--dim);flex:1.5">or +2 for IMEISV</div>
+        </div>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">S-NSSAI</span><span class="id-full">Single Network Slice Selection Assistance Information</span></div>
+        <p class="id-desc">Which network slice a session belongs to — the thing NSSF resolves. Standardized SST values 1–4 (eMBB, URLLC, MIoT, V2X) are defined in TS 23.501; values 128–255 are free for operators to define their own slice types. The optional SD further distinguishes multiple slices sharing the same SST.</p>
+        <div class="id-bar">
+          <div class="id-seg" style="background:var(--tag-5g);flex:2">SST (8 bit)</div>
+          <div class="id-seg" style="background:var(--dim);flex:5">SD (24 bit, optional)</div>
+        </div>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">DNN</span><span class="id-full">Data Network Name</span></div>
+        <p class="id-desc">5G's name for the 4G APN — TS 23.003's own clause on DNN states it follows the identical structural rules as APN, just renamed for the 5G context. This is the same field the SMF matches on for UPF selection.</p>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">QFI / 5QI</span><span class="id-full">QoS Flow Identifier / 5G QoS Identifier</span></div>
+        <p class="id-desc">QFI names a specific QoS flow within a PDU session — 5G's finer-grained replacement for 4G's per-bearer QCI. 5QI is a lookup key into a standardized table of QoS characteristics (resource type — GBR/Non-GBR/Delay-Critical GBR — plus priority level, packet delay budget, and packet error rate); 5QI=9 is the common default/best-effort Non-GBR flow.</p>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">PDU Session ID</span><span class="id-full">—</span></div>
+        <p class="id-desc">A small integer identifying which of a UE's (possibly several) concurrent PDU sessions a message concerns — carried in 5GSM NAS messages.</p>
+      </div>
+
+      <div class="id-card">
+        <div class="id-card-head"><span class="id-name">RAN-UE-NGAP-ID / AMF-UE-NGAP-ID</span><span class="id-full">—</span></div>
+        <p class="id-desc">The pair of per-UE identifiers carried on every N2/NGAP message — one assigned by the gNB, one by the AMF — so either side can immediately tell which UE's context a given message belongs to without a lookup. This is the pair you'll see labeled <code>RAN_UE_NGAP_ID</code> / <code>AMF_UE_NGAP_ID</code> in the AMF's own logs.</p>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── SECURITY & AKA ─── -->
+    <div class="section">
+      <span class="section-anchor" id="security"></span>
+      <h2 class="section-h">Security &amp; authentication — 5G-AKA</h2>
+      <p class="section-intro">One shared secret, provisioned once into the SIM and the UDM, fans out through a strict key-derivation chain into a different key for every layer that needs one — so a compromise at, say, the gNB's radio-layer key doesn't expose anything upstream of it.</p>
+
+      <div class="khier">
+        <div class="khier-row"><div class="khier-node">K</div><span class="khier-arrow">→</span><span class="khier-note">the one long-term secret, in the SIM and in UDM — never leaves either</span></div>
+        <div class="khier-row" style="margin-left:24px"><div class="khier-node">CK, IK</div><span class="khier-arrow">→</span><span class="khier-note">cipher/integrity keys from the Milenage/TUAK algorithm</span></div>
+        <div class="khier-row" style="margin-left:48px"><div class="khier-node">K<sub>AUSF</sub></div><span class="khier-arrow">→</span><span class="khier-note">derived for this specific authentication run</span></div>
+        <div class="khier-row" style="margin-left:72px"><div class="khier-node">K<sub>SEAF</sub></div><span class="khier-arrow">→</span><span class="khier-note">anchor key for the serving network (binds the session to this PLMN)</span></div>
+        <div class="khier-row" style="margin-left:96px"><div class="khier-node">K<sub>AMF</sub></div><span class="khier-arrow">→</span><span class="khier-note">this specific AMF's key</span></div>
+        <div class="khier-row" style="margin-left:120px">
+          <div class="khier-node">K<sub>gNB</sub></div>
+          <div class="khier-node">K<sub>NASint</sub> / K<sub>NASenc</sub></div>
+          <span class="khier-note">radio-layer key (sent to the gNB) and NAS-layer integrity/ciphering keys</span>
+        </div>
+      </div>
+      <p class="body" style="font-size:12px;margin-top:16px">Per TS 33.501 §6.2 (key hierarchy).</p>
+
+      <h3 class="sub-h">Milenage — the actual cryptographic algorithm</h3>
+      <p class="body">CK/IK in the hierarchy above don't come from nowhere — they're the output of <strong>Milenage</strong>, the reference AKA algorithm set defined in TS 35.205 (overview) through TS 35.208 (conformance test data), built on AES (Rijndael) as its block-cipher kernel rather than a bespoke design.</p>
+
+      <div class="callout callout-warn">
+        <strong>Naming collision worth flagging explicitly:</strong> one of Milenage's own input fields is called <strong>AMF</strong> — Authentication Management Field, a 16-bit operator-controlled flag set (algorithm versioning, key lifetime hints) baked into every authentication vector. This has <em>nothing to do</em> with the Access and Mobility Management Function network function this whole guide is otherwise about. Same three letters, completely unrelated concepts, and 3GPP's own naming is the reason for the collision, not this guide's.
+      </div>
+
+      <p class="body">Milenage takes four real inputs — <strong>K</strong> (the 128-bit permanent key), <strong>RAND</strong> (128-bit random challenge), <strong>SQN</strong> (48-bit sequence number), and the AMF field above — plus <strong>OPc</strong>, an operator-specific value derived by combining a constant OP with K through the cipher kernel, used everywhere OP itself would otherwise appear so that OP never has to be exposed on every single computation. From those, seven functions produce everything else:</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Function</th><th>Output</th><th>Size</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>f1</code></td><td>MAC-A</td><td>64-bit</td><td>Network authentication code, carried inside AUTN — proves the challenge really came from the home network</td></tr>
+            <tr><td><code>f1*</code></td><td>MAC-S</td><td>64-bit</td><td>Re-synchronization MAC, carried inside AUTS (see below)</td></tr>
+            <tr><td><code>f2</code></td><td>RES / XRES</td><td>64-bit</td><td>The response the UE computes and the network compares against</td></tr>
+            <tr><td><code>f3</code></td><td>CK</td><td>128-bit</td><td>Confidentiality (cipher) key — feeds the key hierarchy above</td></tr>
+            <tr><td><code>f4</code></td><td>IK</td><td>128-bit</td><td>Integrity key — feeds the key hierarchy above</td></tr>
+            <tr><td><code>f5</code></td><td>AK</td><td>48-bit</td><td>Anonymity key — XORed with SQN so the sequence number isn't sent in the clear</td></tr>
+            <tr><td><code>f5*</code></td><td>AK (resync)</td><td>48-bit</td><td>A separate anonymity key used specifically when the UE builds a resync AUTS</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body" style="font-size:12px">Per ETSI TS 135.206, corroborated by open reference implementations (e.g. libosmocore, wpa_supplicant's Milenage module).</p>
+
+      <h3 class="sub-h">SQN and the AUTS resync mechanism</h3>
+      <p class="body">SQN exists purely for freshness — replay protection against a captured-and-replayed authentication vector. Home network and USIM each keep their own counter (SQN<sub>HE</sub>, SQN<sub>MS</sub>) and the USIM checks any network-supplied SQN falls within an acceptable window before accepting the challenge as fresh. When the two drift out of sync — plausible after a SIM swap between devices, or vectors generated but never used — the UE rejects the challenge with <strong>Authentication Failure (cause: SYNC_FAILURE)</strong> and returns:</p>
+      <div class="code-block">
+        <div class="code-label">AUTS construction (UE side, on resync)</div>
+        <pre>AUTS = CONC || MAC-S
+
+  where  CONC  = SQN_MS ⊕ f5*(RAND)      # the UE's own SQN, concealed
+         MAC-S = f1*(SQN_MS || RAND || AMF)   # proves the UE holds K</pre>
+      </div>
+      <p class="body">The network verifies MAC-S, resynchronizes SQN<sub>HE</sub> to the UE's own counter, discards any stale unused vectors, fetches fresh ones, and restarts authentication from scratch.</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── NAS vs AS ─── -->
+    <div class="section">
+      <span class="section-anchor" id="nas"></span>
+      <h2 class="section-h">NAS vs AS — two layers of signaling</h2>
+      <p class="section-intro">Every message in the walkthroughs below belongs to one of two layers, and mixing them up is the single most common source of confusion when reading a 3GPP trace for the first time.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Layer</th><th>Runs between</th><th>Carries</th><th>Cares about radio tech?</th></tr></thead>
+          <tbody>
+            <tr><td><strong>AS</strong> — Access Stratum</td><td>UE ↔ eNB/gNB</td><td>Radio-specific signaling: RRC connection setup, radio bearer config, handover measurement</td><td>Yes — this <em>is</em> the radio-specific layer</td></tr>
+            <tr><td><strong>NAS</strong> — Non-Access Stratum</td><td>UE ↔ MME/AMF</td><td>Mobility management (attach/registration) and session management (bearer/PDU session setup)</td><td>No — identical NAS message flows regardless of eNB or gNB underneath; the RAN just transparently relays it</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">4G NAS is specified in TS 24.301; 5G NAS in TS 24.501. 5G NAS itself splits into two sub-protocols: <strong>5GMM</strong> (5G Mobility Management — registration, authentication, idle/connected state) and <strong>5GSM</strong> (5G Session Management — PDU session establish/modify/release).</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── UE ATTACHMENT WALKTHROUGH ─── -->
+    <div class="section">
+      <span class="section-anchor" id="attach-5g"></span>
+      <h2 class="section-h">Walkthrough — 5G Registration <span class="tag tag-5g">5G</span></h2>
+      <p class="section-intro">What actually happens, message by message, from a gNB relaying the UE's first signal to the AMF telling it "you're in." RRC-layer radio access steps (random-access preamble, RRC connection setup) are compressed into step 1 — the rest is the NAS/SBI procedure this guide is about.</p>
+
+      <div class="flow">
+        <div class="flow-step"><span class="flow-num">01</span><span class="flow-route"><span class="who ue">UE</span>→<span class="who ran">gNB</span></span><div class="flow-body"><div class="flow-msg">RRC Setup Complete</div><div class="flow-desc">Carries the Registration Request as an opaque NAS container — the gNB can't read it, only forward it.</div></div></div>
+        <div class="flow-step"><span class="flow-num">02</span><span class="flow-route"><span class="who ran">gNB</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">Initial UE Message</div><div class="flow-desc">First N2/NGAP contact for this UE — hands the Registration Request up to the AMF.</div></div></div>
+        <div class="flow-step"><span class="flow-num">03</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">Identity Request</div><div class="flow-desc">Sent when the AMF has no usable identity for this UE yet (e.g. first-ever registration).</div></div></div>
+        <div class="flow-step"><span class="flow-num">04</span><span class="flow-route"><span class="who ue">UE</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">Identity Response <span style="font-weight:400;color:var(--dim)">(SUCI)</span></div><div class="flow-desc">The UE's concealed identity — never the plaintext SUPI.</div></div></div>
+        <div class="flow-step"><span class="flow-num">05</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who core">AUSF</span></span><div class="flow-body"><div class="flow-msg">Nausf_UEAuthentication_Authenticate Request</div><div class="flow-desc">AMF asks AUSF to run authentication for this SUCI.</div></div></div>
+        <div class="flow-step"><span class="flow-num">06</span><span class="flow-route"><span class="who core">AUSF</span>↔<span class="who core">UDM</span></span><div class="flow-body"><div class="flow-msg">Nudm_UEAuthentication_Get</div><div class="flow-desc">AUSF asks UDM to de-conceal the SUCI back to a SUPI and generate authentication vectors.</div></div></div>
+        <div class="flow-step"><span class="flow-num">07</span><span class="flow-route"><span class="who amf">AMF</span>↔<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">Authentication Request / Response</div><div class="flow-desc">RAND + AUTN challenge down, RES up — the actual 5G-AKA exchange.</div></div></div>
+        <div class="flow-step"><span class="flow-num">08</span><span class="flow-route"><span class="who amf">AMF</span>↔<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">NAS Security Mode Command / Complete</div><div class="flow-desc">Turns on NAS-layer integrity and ciphering using the keys derived in the previous step.</div></div></div>
+        <div class="flow-step"><span class="flow-num">09</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who ran">gNB</span></span><div class="flow-body"><div class="flow-msg">Initial Context Setup Request</div><div class="flow-desc">Carries the Registration Accept; tells the gNB to set up AS-layer security and radio bearers.</div></div></div>
+        <div class="flow-step"><span class="flow-num">10</span><span class="flow-route"><span class="who ran">gNB</span>↔<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">RRC Security Mode + Reconfiguration</div><div class="flow-desc">AS-layer counterpart to step 8 — the gNB's own security context, plus delivering Registration Accept over RRC.</div></div></div>
+        <div class="flow-step"><span class="flow-num">11</span><span class="flow-route"><span class="who ue">UE</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">Registration Complete</div><div class="flow-desc">UE confirms. The UE is now registered — a PDU Session Establishment request (AMF→SMF→UPF, N4/PFCP rule install) typically follows immediately so the UE actually gets an IP.</div></div></div>
+      </div>
+      <p class="body" style="font-size:12px">Message sequence per TS 23.502 §4.2.2.2.</p>
+
+      <span class="section-anchor" id="attach-4g"></span>
+      <h2 class="section-h" style="margin-top:48px">Walkthrough — 4G LTE Attach <span class="tag tag-4g">4G</span></h2>
+      <p class="section-intro">The same shape, older protocols: Diameter instead of SBI, GTP-C instead of PFCP, and the MME doing everything the AMF+SMF split does in 5G.</p>
+
+      <div class="flow">
+        <div class="flow-step"><span class="flow-num">01</span><span class="flow-route"><span class="who ue">UE</span>→<span class="who mme">MME</span></span><div class="flow-body"><div class="flow-msg">Attach Request + PDN Connectivity Request</div><div class="flow-desc">Bundled together — 4G combines "let me on the network" and "give me an IP" into one initial exchange, via the eNB.</div></div></div>
+        <div class="flow-step"><span class="flow-num">02</span><span class="flow-route"><span class="who mme">MME</span>→<span class="who core">HSS</span></span><div class="flow-body"><div class="flow-msg">Diameter Authentication-Information Request/Answer (S6a)</div><div class="flow-desc">MME asks HSS for authentication vectors.</div></div></div>
+        <div class="flow-step"><span class="flow-num">03</span><span class="flow-route"><span class="who mme">MME</span>↔<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">Authentication Request / Response</div><div class="flow-desc">RAND/AUTN down, RES up — carried over S1AP NAS transport, same shape as 5G-AKA's exchange.</div></div></div>
+        <div class="flow-step"><span class="flow-num">04</span><span class="flow-route"><span class="who mme">MME</span>↔<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">Security Mode Command / Complete</div><div class="flow-desc">NAS security activation.</div></div></div>
+        <div class="flow-step"><span class="flow-num">05</span><span class="flow-route"><span class="who mme">MME</span>→<span class="who core">HSS</span></span><div class="flow-body"><div class="flow-msg">Diameter Update Location Request/Answer</div><div class="flow-desc">Registers this MME as the UE's current serving node in the HSS.</div></div></div>
+        <div class="flow-step"><span class="flow-num">06</span><span class="flow-route"><span class="who mme">MME</span>→<span class="who core">SGW</span></span><div class="flow-body"><div class="flow-msg">GTP-C Create Session Request</div><div class="flow-desc">Forwarded on to the PGW (SMF, in Open5GS) — begins bearer setup.</div></div></div>
+        <div class="flow-step"><span class="flow-num">07</span><span class="flow-route"><span class="who core">PGW</span>↔<span class="who core">PCRF</span></span><div class="flow-body"><div class="flow-msg">Diameter Credit Control Request/Answer (Gx)</div><div class="flow-desc">PGW asks PCRF for the policy/charging rules to apply to this session.</div></div></div>
+        <div class="flow-step"><span class="flow-num">08</span><span class="flow-route"><span class="who core">PGW</span>→<span class="who mme">MME</span></span><div class="flow-body"><div class="flow-msg">Create Session Response <span style="font-weight:400;color:var(--dim)">(UE IP address)</span></div><div class="flow-desc">Relayed back through SGW — the UE's actual IP address is assigned here.</div></div></div>
+        <div class="flow-step"><span class="flow-num">09</span><span class="flow-route"><span class="who mme">MME</span>→<span class="who ran">eNB</span></span><div class="flow-body"><div class="flow-msg">Initial Context Setup Request</div><div class="flow-desc">Carries Attach Accept; sets up the radio bearer.</div></div></div>
+        <div class="flow-step"><span class="flow-num">10</span><span class="flow-route"><span class="who ue">UE</span>→<span class="who mme">MME</span></span><div class="flow-body"><div class="flow-msg">Attach Complete</div><div class="flow-desc">Via the eNB — attach finished.</div></div></div>
+        <div class="flow-step"><span class="flow-num">11</span><span class="flow-route"><span class="who mme">MME</span>→<span class="who core">SGW</span></span><div class="flow-body"><div class="flow-msg">GTP-C Modify Bearer Request/Response</div><div class="flow-desc">Final bearer-path confirmation — the S1-U tunnel is now live and the UE has real connectivity.</div></div></div>
+      </div>
+      <p class="body" style="font-size:12px">Message sequence per TS 23.401 §5.3.2.</p>
+
+      <div class="callout callout-good">
+        <strong>Notice the symmetry:</strong> both procedures are "authenticate, secure the channel, set up the session" in the same order — 5G just does it over an HTTP/2 SBI mesh with SUCI-concealed identity instead of Diameter with a plaintext IMSI.
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── BEYOND ATTACH ─── -->
+    <div class="section">
+      <span class="section-anchor" id="pdu-session"></span>
+      <h2 class="section-h">Beyond initial attach — session, mobility, and teardown</h2>
+      <p class="section-intro">Registration only gets the UE <em>onto</em> the network. Getting it an actual IP address, moving between cells without dropping, reconnecting from idle, and eventually leaving cleanly are all separate procedures — this is where AMF, SMF, PCF, and UPF actually do the work the earlier NF cards described.</p>
+
+      <h3 class="sub-h">5G PDU Session Establishment <span class="tag tag-5g">5G</span></h3>
+      <p class="body">In practice this runs immediately after Registration Complete — it's what actually gets the UE a usable IP address. Sixteen steps, spanning NAS, SBI, PFCP, and NGAP in sequence:</p>
+      <div class="flow">
+        <div class="flow-step"><span class="flow-num">01</span><span class="flow-route"><span class="who ue">UE</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">PDU Session Establishment Request</div><div class="flow-desc">NAS-5GSM message, carried inside a NAS transport container.</div></div></div>
+        <div class="flow-step"><span class="flow-num">02</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who core">SMF</span></span><div class="flow-body"><div class="flow-msg">Nsmf_PDUSession_CreateSMContext Request</div><div class="flow-desc">AMF picks an SMF (via NRF/SCP discovery) and hands off session ownership.</div></div></div>
+        <div class="flow-step"><span class="flow-num">03</span><span class="flow-route"><span class="who core">SMF</span>→<span class="who core">UDM</span></span><div class="flow-body"><div class="flow-msg">Nudm_SDM_Get / UECM_Registration</div><div class="flow-desc">Fetch session-management subscription data; register as the serving SMF.</div></div></div>
+        <div class="flow-step"><span class="flow-num">04</span><span class="flow-route"><span class="who core">UDM</span>→<span class="who core">SMF</span></span><div class="flow-body"><div class="flow-msg">SM subscription data response</div><div class="flow-desc">&nbsp;</div></div></div>
+        <div class="flow-step"><span class="flow-num">05</span><span class="flow-route"><span class="who core">SMF</span>→<span class="who core">PCF</span></span><div class="flow-body"><div class="flow-msg">Npcf_SMPolicyControl_Create</div><div class="flow-desc">Ask for the session's PCC rules.</div></div></div>
+        <div class="flow-step"><span class="flow-num">06</span><span class="flow-route"><span class="who core">PCF</span>→<span class="who core">SMF</span></span><div class="flow-body"><div class="flow-msg">PCC rules / QoS decision</div><div class="flow-desc">&nbsp;</div></div></div>
+        <div class="flow-step"><span class="flow-num">07</span><span class="flow-route"><span class="who core">SMF</span>→<span class="who core">UPF</span></span><div class="flow-body"><div class="flow-msg">N4 Session Establishment Request</div><div class="flow-desc">Compiles the PCC rules into PDR/FAR/QER/URR and pushes them over PFCP.</div></div></div>
+        <div class="flow-step"><span class="flow-num">08</span><span class="flow-route"><span class="who core">UPF</span>→<span class="who core">SMF</span></span><div class="flow-body"><div class="flow-msg">N4 Session Establishment Response</div><div class="flow-desc">&nbsp;</div></div></div>
+        <div class="flow-step"><span class="flow-num">09</span><span class="flow-route"><span class="who core">SMF</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">Nsmf_PDUSession_CreateSMContext Response</div><div class="flow-desc">&nbsp;</div></div></div>
+        <div class="flow-step"><span class="flow-num">10</span><span class="flow-route"><span class="who core">SMF</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">Namf_Communication_N1N2MessageTransfer</div><div class="flow-desc">Hands the AMF the Establishment Accept (N1) plus the N2 resource-setup instructions, bundled.</div></div></div>
+        <div class="flow-step"><span class="flow-num">11</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who ran">gNB</span></span><div class="flow-body"><div class="flow-msg">PDU Session Resource Setup Request</div><div class="flow-desc">N2 message carrying the PDU Session Establishment Accept for the UE.</div></div></div>
+        <div class="flow-step"><span class="flow-num">12</span><span class="flow-route"><span class="who ran">gNB</span>↔<span class="who ue">UE</span></span><div class="flow-body"><div class="flow-msg">RRC Reconfiguration / Complete</div><div class="flow-desc">Sets up the actual radio Data Radio Bearer (DRB) for this session.</div></div></div>
+        <div class="flow-step"><span class="flow-num">13</span><span class="flow-route"><span class="who ran">gNB</span>→<span class="who amf">AMF</span></span><div class="flow-body"><div class="flow-msg">PDU Session Resource Setup Response</div><div class="flow-desc">Carries the gNB's own N3 GTP-U tunnel endpoint.</div></div></div>
+        <div class="flow-step"><span class="flow-num">14</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who core">SMF</span></span><div class="flow-body"><div class="flow-msg">N2 SM information forward</div><div class="flow-desc">Passes the gNB's tunnel info on to the SMF.</div></div></div>
+        <div class="flow-step"><span class="flow-num">15</span><span class="flow-route"><span class="who core">SMF</span>→<span class="who core">UPF</span></span><div class="flow-body"><div class="flow-msg">N4 Session Modification Request</div><div class="flow-desc">Installs the gNB's tunnel endpoint into the UPF's FAR — the N3 path is now live and the UE has real connectivity.</div></div></div>
+        <div class="flow-step"><span class="flow-num">16</span><span class="flow-route"><span class="who core">UPF</span>→<span class="who core">SMF</span></span><div class="flow-body"><div class="flow-msg">N4 Session Modification Response</div><div class="flow-desc">Session fully established end-to-end.</div></div></div>
+      </div>
+      <p class="body" style="font-size:12px">Per TS 23.502 §4.3.2.2, TS 24.501 §6.4.1.2/§8.3.2.1.</p>
+
+      <h3 class="sub-h" id="service-request">5G Service Request <span class="tag tag-5g">5G</span></h3>
+      <p class="body">How a UE gets from idle back to connected without a full re-registration or a fresh AKA run — the existing security context (from K<sub>AMF</sub> down) is simply reactivated, not rebuilt.</p>
+      <div class="flow">
+        <div class="flow-step"><span class="flow-num">01a</span><span class="flow-route"><span class="who ue">UE</span> — has UL data</span><div class="flow-body"><div class="flow-msg">UE-triggered</div><div class="flow-desc">UE establishes RRC, sends a <strong>Service Request</strong> NAS message listing which PDU sessions to reactivate.</div></div></div>
+        <div class="flow-step"><span class="flow-num">01b</span><span class="flow-route"><span class="who amf">AMF</span> — has DL data</span><div class="flow-body"><div class="flow-msg">Network-triggered</div><div class="flow-desc">AMF pages the idle UE; if the UE responds, it proceeds with the same UE-triggered Service Request above.</div></div></div>
+        <div class="flow-step"><span class="flow-num">02</span><span class="flow-route"><span class="who amf">AMF</span>→<span class="who ran">gNB</span></span><div class="flow-body"><div class="flow-msg">N2 resource setup for the requested sessions</div><div class="flow-desc">Radio bearers re-established; 5GMM state moves IDLE → CONNECTED.</div></div></div>
+      </div>
+      <p class="body" style="font-size:12px">Per TS 23.502 §4.2.3.</p>
+
+      <h3 class="sub-h" id="handover">5G Handover — Xn-based vs N2-based <span class="tag tag-5g">5G</span></h3>
+      <p class="body">Two paths depending on whether the source and target gNB have a direct Xn link and are allowed to use it.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>Xn-based (direct gNB↔gNB)</th><th>N2-based (via AMF)</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>UE→Src gNB: Measurement Report</td><td>UE→Src gNB: Measurement Report</td></tr>
+            <tr><td>2</td><td>Src gNB→Tgt gNB: XnAP Handover Request</td><td>Src gNB→AMF: Handover Required</td></tr>
+            <tr><td>3</td><td>Tgt gNB→Src gNB: XnAP Handover Acknowledge</td><td>AMF→Tgt gNB: Handover Request</td></tr>
+            <tr><td>4</td><td>Src gNB→UE: RRC Reconfiguration</td><td>Tgt gNB→AMF: Handover Request Acknowledge</td></tr>
+            <tr><td>5</td><td>Src gNB→Tgt gNB: SN Status Transfer (PDCP SN/HFN)</td><td>AMF→Src gNB: Handover Command</td></tr>
+            <tr><td>6</td><td>UE→Tgt gNB: Random Access</td><td>Src gNB→UE: RRC Reconfiguration</td></tr>
+            <tr><td>7</td><td>UE→Tgt gNB: RRC Reconfiguration Complete</td><td>Src gNB→AMF: Uplink RAN Status Transfer</td></tr>
+            <tr><td>8</td><td>Tgt gNB→AMF: NGAP Path Switch Request</td><td>AMF→Tgt gNB: Downlink RAN Status Transfer</td></tr>
+            <tr><td>9</td><td>AMF→Tgt gNB: Path Switch Request Ack</td><td>UE→Tgt gNB: Random Access</td></tr>
+            <tr><td>10</td><td>Tgt gNB→Src gNB: XnAP UE Context Release</td><td>UE→Tgt gNB: RRC Reconfiguration Complete</td></tr>
+            <tr><td>11</td><td>—</td><td>Tgt gNB→AMF: Handover Notify</td></tr>
+            <tr><td>12</td><td>—</td><td>AMF→Src gNB: UE Context Release Command</td></tr>
+            <tr><td>13</td><td>—</td><td>Src gNB→AMF: UE Context Release Complete</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="body">The AMF only gets involved in Xn-based handover <em>after the fact</em> (the Path Switch step, to re-point N2/N3 at the new gNB) — the actual handover decision and radio switch happen directly between the two gNBs. N2-based handover routes every step through the AMF instead, which is what's needed when there's no Xn link (e.g. different AMF, inter-vendor gap, or Xn deliberately disabled).</p>
+      <p class="body" style="font-size:12px">Per TS 23.502 §4.9.1 (Xn) / §4.9.2 (N2); NGAP/RRC message-level detail per TS 38.300/38.401/38.412.</p>
+
+      <h3 class="sub-h" id="deregistration">Deregistration <span class="tag tag-5g">5G</span></h3>
+      <p class="body"><strong>UE-initiated:</strong> UE sends Deregistration Request → AMF releases SM contexts with every SMF the UE has an active session with, deregisters with UDM, unsubscribes from SDM notifications, releases policy associations with PCF, and removes the UE context → AMF replies Deregistration Accept (skipped entirely if the UE indicated it's powering off). <strong>Network-initiated:</strong> AMF sends Deregistration Request to a still-connected UE, which replies Deregistration Accept.</p>
+      <p class="body" style="font-size:12px">Per TS 23.502 §4.2.6.</p>
+
+      <h3 class="sub-h" id="tau">4G Service Request &amp; Tracking Area Update <span class="tag tag-4g">4G</span></h3>
+      <p class="body">4G's equivalent mechanisms: <strong>Service Request</strong> is a UE (ECM-IDLE, with uplink data) sending a Service Request NAS message to the MME, which re-establishes S1 signaling and triggers SGW/eNB bearer setup — the downlink-triggered counterpart has the SGW buffer the first packet and signal the MME to page the UE. <strong>Tracking Area Update (TAU)</strong> is 4G's periodic "I'm still here, and possibly in a new tracking area" message: UE→MME Tracking Area Update Request (carrying GUTI + old TAI); if the MME changed since last update, old and new MME exchange UE context; MME→UE Tracking Area Update Accept (may assign a new GUTI, refreshes the T3412 periodic-TAU timer from the shared time section); UE→MME Tracking Area Update Complete only if the GUTI changed.</p>
+      <p class="body" style="font-size:12px">Per TS 23.401 (Service Request / TAU clauses).</p>
+    </div>
+
+    <hr class="divider">
+
+    <!-- ─── GLOSSARY ─── -->
+    <div class="section">
+      <span class="section-anchor" id="glossary"></span>
+      <h2 class="section-h">Glossary</h2>
+      <p class="section-intro">Every acronym used in this guide, in one place — for whoever lands mid-page from a search and hasn't read the section that first defined it.</p>
+
+      <h3 class="sub-h">Network functions</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>MME</code></td><td>Mobility Management Entity — 4G control-plane hub</td></tr>
+            <tr><td><code>HSS</code></td><td>Home Subscriber Server — 4G subscriber database</td></tr>
+            <tr><td><code>SGW-C / SGW-U</code></td><td>Serving Gateway, control and user-plane halves</td></tr>
+            <tr><td><code>PGW-C / PGW-U</code></td><td>PDN Gateway, control and user-plane halves — SMF and UPF play these roles in Open5GS</td></tr>
+            <tr><td><code>PCRF</code></td><td>Policy and Charging Rules Function — 4G policy over Diameter Gx</td></tr>
+            <tr><td><code>AMF</code></td><td>Access and Mobility Management Function — 5G control-plane hub. (Also a Milenage field name — see the Security section.)</td></tr>
+            <tr><td><code>SMF</code></td><td>Session Management Function — shared 4G/5G session control</td></tr>
+            <tr><td><code>UPF</code></td><td>User Plane Function — shared 4G/5G user-plane forwarding</td></tr>
+            <tr><td><code>NRF</code></td><td>Network Repository Function — 5G NF registry/discovery</td></tr>
+            <tr><td><code>AUSF</code></td><td>Authentication Server Function</td></tr>
+            <tr><td><code>UDM</code></td><td>Unified Data Management — subscriber data front-end, SUCI de-concealment</td></tr>
+            <tr><td><code>UDR</code></td><td>Unified Data Repository — the actual database behind UDM/PCF</td></tr>
+            <tr><td><code>PCF</code></td><td>Policy Control Function — 5G's SBI-native PCRF successor</td></tr>
+            <tr><td><code>NSSF</code></td><td>Network Slice Selection Function</td></tr>
+            <tr><td><code>BSF</code></td><td>Binding Support Function — tracks which PCF owns a session</td></tr>
+            <tr><td><code>SCP</code></td><td>Service Communication Proxy — optional indirect NF routing</td></tr>
+            <tr><td><code>SEPP</code></td><td>Security Edge Protection Proxy — inter-PLMN roaming boundary</td></tr>
+            <tr><td><code>5G-EIR</code></td><td>5G Equipment Identity Register — not implemented by Open5GS</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="sub-h">Identifiers</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>IMSI</code></td><td>International Mobile Subscriber Identity — permanent 4G identity, MCC+MNC+MSIN</td></tr>
+            <tr><td><code>SUPI</code></td><td>Subscription Permanent Identifier — 5G's IMSI-equivalent</td></tr>
+            <tr><td><code>SUCI</code></td><td>Subscription Concealed Identifier — SUPI encrypted for over-the-air transmission</td></tr>
+            <tr><td><code>PEI</code></td><td>Permanent Equipment Identifier — the device's own IMEI/IMEISV</td></tr>
+            <tr><td><code>GUTI / 5G-GUTI</code></td><td>Globally Unique Temporary Identifier — GUAMI + a temporary UE identifier</td></tr>
+            <tr><td><code>GUAMI</code></td><td>Globally Unique AMF Identifier — which AMF instance is serving a UE</td></tr>
+            <tr><td><code>TAI / TAC</code></td><td>Tracking Area Identity / Code — which tracking area a UE is in</td></tr>
+            <tr><td><code>S-NSSAI</code></td><td>Single Network Slice Selection Assistance Information — SST + optional SD, names a slice</td></tr>
+            <tr><td><code>DNN</code></td><td>Data Network Name — 5G's renamed APN</td></tr>
+            <tr><td><code>QFI</code></td><td>QoS Flow Identifier — names a QoS flow within a PDU session</td></tr>
+            <tr><td><code>5QI</code></td><td>5G QoS Identifier — lookup key into standardized QoS characteristics</td></tr>
+            <tr><td><code>RAN-UE-NGAP-ID / AMF-UE-NGAP-ID</code></td><td>Per-UE identifiers on the N2/NGAP interface, one assigned by each side</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="sub-h">Protocols &amp; interfaces</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>NAS</code></td><td>Non-Access Stratum — UE↔core signaling, independent of radio tech</td></tr>
+            <tr><td><code>AS</code></td><td>Access Stratum — the radio-specific layer below NAS</td></tr>
+            <tr><td><code>5GMM / 5GSM</code></td><td>5G NAS sub-protocols — mobility management / session management</td></tr>
+            <tr><td><code>SBI</code></td><td>Service-Based Interface — the HTTP/2 + JSON mesh 5G NFs use to talk to each other</td></tr>
+            <tr><td><code>PFCP</code></td><td>Packet Forwarding Control Protocol — the control channel between a session-control NF and its user-plane NF (N4, Sxa)</td></tr>
+            <tr><td><code>GTP-C / GTP-U</code></td><td>GPRS Tunneling Protocol, control and user-plane variants</td></tr>
+            <tr><td><code>S1AP / NGAP</code></td><td>4G / 5G RAN control-plane signaling protocols (eNB↔MME, gNB↔AMF)</td></tr>
+            <tr><td><code>CUPS</code></td><td>Control and User Plane Separation — the architectural split this whole guide's deployment section is built on</td></tr>
+            <tr><td><code>AKA</code></td><td>Authentication and Key Agreement — the challenge-response authentication procedure</td></tr>
+            <tr><td><code>PDR / FAR / QER / URR</code></td><td>The four PFCP rule types SMF programs into UPF — detect, forward, enforce QoS, report usage</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+const sections = document.querySelectorAll('.section-anchor');
+const links = document.querySelectorAll('.toc-link[href]');
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      const id = e.target.id;
+      links.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + id));
+    }
+  });
+}, { rootMargin: '-20% 0px -70% 0px' });
+sections.forEach(s => obs.observe(s));
+</script>
+</body>
+</html>

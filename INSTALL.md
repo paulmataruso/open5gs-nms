@@ -145,7 +145,7 @@ sudo systemctl enable open5gs-nrfd
 sudo systemctl enable open5gs-amfd
 sudo systemctl enable open5gs-smfd
 sudo systemctl enable open5gs-upfd
-# ... (repeat for all 16 services, or use the service_control.sh script below)
+# ... (repeat for all 17 services, or use the service_control.sh script below)
 
 # Start services
 sudo systemctl start open5gs-nrfd
@@ -424,6 +424,18 @@ If you want to move from flat L2 service IPs to a fully routed L3 design using F
 
 > **Requires:** 3 separate network interfaces (management, current service interface, L3 transit uplink) and a pre-configured upstream router.
 
+### Enable Voice / SMS / UE Validation (Optional)
+
+These are optional modules, each installed on-demand from its own page — no manual `apt install` needed beyond what the page's own "Install" button runs for you. See **[docs/requirements.md](docs/requirements.md#optional-module-software)** for exactly what each one installs, and **[docs/features.md](docs/features.md)** for full usage detail.
+
+- **IMS / VoLTE** *(⚠️ alpha, not production-ready — real-phone VoLTE is unconfirmed and will likely need manual configuration beyond this page)* — Navigate to the **IMS** page, click **Install**, then **Configure**. The Diameter HSS (PyHSS) is installed automatically as part of this step — no separate manual install needed.
+- **SMS over SGs** — Navigate to the **SMS** page, click **Install**, then **Configure** with your OsmoMSC/OsmoHLR bind IPs.
+- **VoWiFi** *(⚠️ alpha, highly experimental — real handsets unconfirmed)* — Navigate to the **VoWiFi** page, click **Install**, then **Configure**. This builds `osmo-epdg` and `strongswan-epdg` from source (heaviest optional install, see [docs/requirements.md](docs/requirements.md#optional-module-software)).
+- **UE Validation** — Navigate to the **Validation** page and start a 4G or 5G test session. First run will pull/build the required Docker images (`free5gc/ueransim` and a locally-built `srsran4g-noavx` image), which needs internet access.
+- **Syslog Forwarding** — On the **Logs** page, click **Syslog Forwarding**, install rsyslog if prompted, then enter your syslog server's host/port/protocol.
+
+> These modules can be hidden from the UI entirely at build time via `.env` (`ENABLE_SMS_MODULE`, `ENABLE_IMS_MODULE`, `ENABLE_VALIDATION_MODULE`, `ENABLE_VOWIFI_MODULE`) if you don't want them available at all — requires `docker compose build frontend && docker compose up -d frontend` to take effect. SEPP and DNS (BIND9)/FQDN Migration are core NMS features, not optional modules — no install step or flag needed.
+
 ---
 
 ## Verification
@@ -464,7 +476,7 @@ curl http://localhost:8888
 In the NMS web interface:
 
 1. Navigate to the **Services** page.
-2. All 16 services should display their status.
+2. All 17 services should display their status.
 3. Verify that critical services are **active** (green): NRF, AMF, SMF, UPF (5G core) and MME, HSS, SGW-C, SGW-U (4G core).
 
 Or via the command line:

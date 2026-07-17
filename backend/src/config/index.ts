@@ -19,6 +19,9 @@ export interface AppConfig {
   prometheusUrl: string;
   // GenieACS
   genieacsNbiUrl: string;
+  // Simlessly eSIM RSP API
+  simlesslyAccessKey: string;
+  simlesslySecretKey: string;
 }
 
 export function loadAppConfig(): AppConfig {
@@ -48,5 +51,9 @@ export function loadAppConfig(): AppConfig {
     prometheusUrl: process.env.PROMETHEUS_URL || `http://127.0.0.1:${process.env.PROMETHEUS_PORT || '9099'}`,
     // GenieACS NBI — internal, not exposed to users
     genieacsNbiUrl: process.env.GENIEACS_NBI_URL || 'http://127.0.0.1:7557',
+    // Simlessly eSIM RSP API — obtained from the Developer module on the user's
+    // Simlessly account; empty until the user supplies real values.
+    simlesslyAccessKey: process.env.SIMLESSLY_ACCESS_KEY || '',
+    simlesslySecretKey: process.env.SIMLESSLY_SECRET_KEY || '',
   };
 }

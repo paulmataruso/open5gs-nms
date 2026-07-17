@@ -39,6 +39,14 @@ export interface ChronyConfig {
   logdir:       string;
 }
 
+export interface ChronyClient {
+  hostname: string;
+  ntpRequests: number;
+  ntpDropped:  number;
+  ntpInterval: string;
+  ntpLast:     string;
+}
+
 export interface ChronySource {
   mode:    string;
   state:   string;
@@ -152,6 +160,28 @@ function parseSources(raw: string): ChronySource[] {
     });
   }
   return sources;
+}
+
+function parseClients(raw: string): ChronyClient[] {
+  const clients: ChronyClient[] = [];
+  let pastHeader = false;
+  for (const line of raw.split('\n')) {
+    if (!pastHeader) {
+      if (/^=+$/.test(line.trim())) { pastHeader = true; }
+      continue;
+    }
+    // Format: hostname  ntpReq  ntpDrop  ntpInt  ntpIntL  ntpLast  cmdReq  cmdDrop  cmdInt  cmdLast
+    const m = line.match(/^(\S+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+    if (!m) continue;
+    clients.push({
+      hostname:    m[1],
+      ntpRequests: parseInt(m[2]),
+      ntpDropped:  parseInt(m[3]),
+      ntpInterval: m[4],
+      ntpLast:     m[6],
+    });
+  }
+  return clients;
 }
 
 function parseTracking(raw: string): ChronyTracking {
@@ -288,6 +318,16 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
       res.json({ success: true, message: 'Chrony started.' });
     } catch (err) {
       res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // GET /api/chrony/clients
+  router.get('/clients', async (_req: Request, res: Response) => {
+    try {
+      const { stdout } = await nsenter('chronyc', ['clients']).catch(() => ({ stdout: '' }));
+      res.json({ success: true, clients: parseClients(stdout) });
+    } catch (err) {
+      res.json({ success: true, clients: [] });
     }
   });
 

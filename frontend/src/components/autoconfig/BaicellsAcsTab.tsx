@@ -2,9 +2,13 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, RefreshCw, Send, ChevronDown, ChevronUp,
   AlertCircle, Clock, ExternalLink, RotateCw, Wifi, WifiOff,
+  Satellite, Users, Signal, Copy, Check,
 } from 'lucide-react';
-import { genieacsApi, BaicellsRadio, ProvisionInput, NbiTask } from '../../api';
+import { genieacsApi, radioTagsApi, BaicellsRadio, ProvisionInput, NbiTask } from '../../api';
+import { sasApi } from '../../api/sas';
+import { useTopologyStore } from '../../stores';
 import { ProvisionConfirmModal } from './ProvisionConfirmModal';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
@@ -19,6 +23,96 @@ function formatLastInform(ts: string | null): string {
   if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return d.toLocaleDateString();
+}
+
+// ─── Copy button ──────────────────────────────────────────────────────────────
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copyToClipboard = useCopyToClipboard();
+  return (
+    <button
+      onClick={async () => {
+        const ok = await copyToClipboard(text);
+        if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+        else toast.error('Copy failed — please copy manually');
+      }}
+      className="p-1 rounded hover:bg-nms-surface text-nms-text-dim hover:text-nms-accent transition-colors flex-shrink-0"
+    >
+      {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
+
+// ─── SAS grant cross-check ───────────────────────────────────────────────────
+// GenieACS's cached sasEnableMode is only as reliable as the radio's own
+// self-report — Baicells firmware has been observed to keep operating on a
+// previously-granted channel even after enableMode is toggled off (no
+// relinquish/reboot forces re-sync). Cross-checking against our own SAS
+// server's grant records catches that kind of drift independently of what
+// the radio itself claims.
+interface CbsdGrant {
+  state: string;
+  grantExpireTime: string;
+  operationParam?: { operationFrequencyRange?: { lowFrequency: number; highFrequency: number } };
+}
+interface CbsdWithGrants {
+  cbsdSerialNumber: string;
+  fccId: string;
+  grants: CbsdGrant[];
+}
+interface GrantCrossCheck {
+  status: 'ok' | 'mismatch';
+  message: string;
+}
+
+function crossCheckGrant(radio: BaicellsRadio, cbsds: CbsdWithGrants[]): GrantCrossCheck {
+  const cbsd = cbsds.find(c =>
+    c.cbsdSerialNumber === radio.serial && (!radio.sasFccId || c.fccId === radio.sasFccId),
+  );
+  if (!cbsd) return { status: 'ok', message: '' };
+
+  const now = Date.now();
+  const activeGrants = (cbsd.grants || []).filter(
+    g => g.state !== 'TERMINATED' && new Date(g.grantExpireTime).getTime() > now,
+  );
+  const isSasMode = radio.sasEnableMode === '2';
+
+  if (isSasMode && activeGrants.length === 0) {
+    return {
+      status: 'mismatch',
+      message: 'Radio reports SAS mode 2, but no active grant is on file for this CBSD in the SAS server.',
+    };
+  }
+
+  if (!isSasMode && activeGrants.length > 0) {
+    const g       = activeGrants[0];
+    const lowMhz  = (g.operationParam?.operationFrequencyRange?.lowFrequency  ?? 0) / 1e6;
+    const highMhz = (g.operationParam?.operationFrequencyRange?.highFrequency ?? 0) / 1e6;
+    const expiry  = new Date(g.grantExpireTime).toLocaleString();
+    return {
+      status: 'mismatch',
+      message: `Radio reports SAS enableMode ${radio.sasEnableMode} (not mode 2), but the SAS server has an active grant on ${lowMhz}–${highMhz} MHz (expires ${expiry}). The radio is likely still operating on that grant — the enableMode flag is stale. Push Config with SAS mode 2 to resync it.`,
+    };
+  }
+
+  if (isSasMode && activeGrants.length > 0) {
+    const g          = activeGrants[0];
+    const lowMhz     = (g.operationParam?.operationFrequencyRange?.lowFrequency  ?? 0) / 1e6;
+    const highMhz    = (g.operationParam?.operationFrequencyRange?.highFrequency ?? 0) / 1e6;
+    const grantCenter = (lowMhz + highMhz) / 2;
+    const liveEarfcn  = parseFloat(radio.earfcn || '0');
+    if (liveEarfcn > 0) {
+      const liveFreq = 3550 + 0.1 * (liveEarfcn - 55240);
+      if (Math.abs(liveFreq - grantCenter) > 0.5) {
+        return {
+          status: 'mismatch',
+          message: `Live EARFCN ${radio.earfcn} (${liveFreq.toFixed(1)} MHz) doesn't match the active grant's channel (${lowMhz}–${highMhz} MHz, center ${grantCenter.toFixed(1)} MHz).`,
+        };
+      }
+    }
+  }
+
+  return { status: 'ok', message: '' };
 }
 
 function RfDot({ status }: { status: BaicellsRadio['rfStatus'] }) {
@@ -197,8 +291,28 @@ const BAND_PRESETS: Record<string, {
   },
 };
 
+// ─── S1 status chips from Open5GS interface-status API ───────────────────────
+function S1Chips({ ip }: { ip: string }) {
+  const ifStatus = useTopologyStore(s => s.interfaceStatus);
+  if (!ifStatus || !ip) return null;
+  const s1cRadio = ifStatus.s1mme.connectedEnodebs.find(r => r.ip === ip);
+  const s1uRadio = ifStatus.s1u.connectedEnodebs.find(r => r.ip === ip);
+  const s1cUp = s1cRadio?.setupSuccess ?? false;
+  const s1uUp = s1uRadio?.setupSuccess ?? false;
+  return (
+    <>
+      <span title={s1cUp ? 'S1-C (MME) connected' : 'S1-C not connected'} className={clsx('text-xs font-mono', s1cUp ? 'text-green-400' : 'text-red-400')}>
+        S1-C{s1cUp ? '✓' : '✗'}
+      </span>
+      <span title={s1uUp ? 'S1-U (SGW-U) active' : 'S1-U not active'} className={clsx('text-xs font-mono', s1uUp ? 'text-green-400' : 'text-red-400')}>
+        S1-U{s1uUp ? '✓' : '✗'}
+      </span>
+    </>
+  );
+}
+
 // ─── Single radio row ─────────────────────────────────────────────────────────
-const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ radio, onRefresh }) => {
+const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname?: string; cbsds: CbsdWithGrants[] }> = ({ radio, onRefresh, nickname, cbsds }) => {
   const [expanded, setExpanded]   = useState(false);
   const [form, setForm]           = useState<RadioForm>(radioToForm(radio));
   const [refreshing, setRefreshing] = useState(false);
@@ -207,11 +321,39 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
   const [previewTasks, setPreviewTasks] = useState<NbiTask[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  useEffect(() => { setForm(radioToForm(radio)); }, [radio]);
+  // Only resync from the radio's ACS-reported state while the card is collapsed.
+  // While expanded, the user may be mid-edit — a background poll landing every
+  // 30s must not stomp on unsaved changes. Collapsing (or the initial expand,
+  // which reads whatever was last synced while collapsed) still picks up
+  // fresh data, and an explicit Refresh always re-syncs regardless (see
+  // handleRefresh below), so the data is never more than one poll cycle stale.
+  useEffect(() => {
+    if (!expanded) setForm(radioToForm(radio));
+  }, [radio, expanded]);
 
   const set = (key: keyof RadioForm) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       setForm(f => ({ ...f, [key]: e.target.value }));
+
+  // ── Preferred Frequency backfills Req Low/High so users don't have to
+  // hand-compute the spectrumInquiry range that matches their channel pick ──
+  const handlePreferredFrequencyChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = e.target.value;
+    setForm(f => {
+      if (!value) return { ...f, sasPreferredFrequency: value };
+      const center = parseFloat(value.split(':')[0]);
+      const bw     = parseFloat(f.bandwidthMhz) || 20;
+      if (isNaN(center)) return { ...f, sasPreferredFrequency: value };
+      const low  = Math.max(3550, +(center - bw / 2).toFixed(1));
+      const high = Math.min(3700, +(center + bw / 2).toFixed(1));
+      return {
+        ...f,
+        sasPreferredFrequency: value,
+        sasReqLowFrequency:  String(low),
+        sasReqHighFrequency: String(high),
+      };
+    });
+  };
 
   // ── Band preset auto-fill ────────────────────────────────────────────────
   const applyBandPreset = (bandNum: string) => {
@@ -243,6 +385,11 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
     if (form.band === '48') return e < 55240 || e > 56739;
     return false;
   })();
+
+  // Cross-check GenieACS's reported SAS state against our own SAS server's
+  // actual grant records — catches a stale enableMode flag (see B0669 case:
+  // radio kept operating on a valid grant after enableMode reverted to 0).
+  const grantCheck = crossCheckGrant(radio, cbsds);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -313,10 +460,22 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
         >
           <RfDot status={radio.rfStatus} />
           <Radio className="w-4 h-4 text-nms-accent flex-shrink-0" />
-          <span className="font-mono text-sm text-nms-text flex-1 truncate">{radio.serial}</span>
+          <span className="font-mono text-sm text-nms-text truncate">{radio.serial}</span>
+          <span className="flex-1" />
+          {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
           {radio.ip && (
-            <span className="text-xs text-nms-text-dim font-mono">{radio.ip}</span>
+            <span className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
+              <span className="text-xs text-nms-text-dim font-mono">{radio.ip}</span>
+              <CopyBtn text={radio.ip} />
+            </span>
           )}
+          <span className={clsx(
+            'text-xs font-mono flex items-center gap-1',
+            parseInt(radio.ueCount || '0') > 0 ? 'text-green-400' : 'text-nms-text-dim',
+          )} title="Active UEs">
+            <Users className="w-3 h-3" />{radio.ueCount || '0'}
+          </span>
+          <S1Chips ip={radio.ip} />
           <span className={clsx(
             'text-xs px-2 py-0.5 rounded-full flex items-center gap-1',
             radio.lastInform ? 'bg-green-500/15 text-green-400' : 'bg-nms-surface-2 text-nms-text-dim',
@@ -325,10 +484,13 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
             {formatLastInform(radio.lastInform)}
           </span>
           <span className="text-xs font-mono"
-            title={radio.sasEnableMode === '2'
-              ? `SAS-granted EARFCN calculated from req ${radio.sasReqLowFrequency}–${radio.sasReqHighFrequency} MHz`
-              : 'EARFCN from TR-069'}>
+            title={grantCheck.status === 'mismatch'
+              ? `⚠ SAS cross-check mismatch: ${grantCheck.message}`
+              : radio.sasEnableMode === '2'
+                ? `SAS-granted EARFCN calculated from req ${radio.sasReqLowFrequency}–${radio.sasReqHighFrequency} MHz`
+                : 'EARFCN from TR-069'}>
             {(() => {
+              const mismatchClass = grantCheck.status === 'mismatch' ? 'text-amber-400' : undefined;
               if (radio.sasEnableMode === '2') {
                 // Calculate EARFCN from center of SAS req frequency range
                 const low  = parseFloat(radio.sasReqLowFrequency  || '0');
@@ -338,14 +500,19 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
                   const centerMhz = (low + high) / 2;
                   const earfcn = Math.round(55240 + (centerMhz - 3550) * 10);
                   return (
-                    <span className="text-nms-accent">
+                    <span className={mismatchClass ?? 'text-nms-accent'}>
                       EARFCN {earfcn}
-                      <span className="text-nms-text-dim ml-1">(SAS)</span>
+                      <span className="text-nms-text-dim ml-1">{mismatchClass ? '(SAS ⚠)' : '(SAS)'}</span>
                     </span>
                   );
                 }
               }
-              return <span className="text-nms-text-dim">EARFCN {radio.earfcn || '—'}</span>;
+              return (
+                <span className={mismatchClass ?? 'text-nms-text-dim'}>
+                  EARFCN {radio.earfcn || '—'}
+                  {mismatchClass && <span className="ml-1">⚠</span>}
+                </span>
+              );
             })()}
           </span>
           <span className="text-xs text-nms-text-dim font-mono">PCI {radio.pci || '—'}</span>
@@ -367,6 +534,71 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
         {/* ── Edit form ── */}
         {expanded && (
           <div className="px-4 pb-4 pt-3 bg-nms-surface-2 border-t border-nms-border space-y-4">
+
+            {/* Live Status — only shown when the radio has full parameter tree */}
+            {(radio.mmeStatus || radio.uptime || radio.gpsStatus || radio.latitude) && (
+              <div className="bg-nms-surface rounded-lg border border-nms-border p-3">
+                <p className="text-xs font-semibold text-nms-text mb-2 flex items-center gap-2">
+                  <Signal className="w-3.5 h-3.5 text-nms-accent" />
+                  Live Status
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-6 gap-y-1.5 text-xs font-mono">
+                  {radio.mmeStatus !== '' && (
+                    <div className="flex items-center gap-1.5">
+                      <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', radio.mmeStatus === '1' ? 'bg-green-400' : 'bg-red-400')} />
+                      <span className="text-nms-text-dim">S1 (MME)</span>
+                      <span className={radio.mmeStatus === '1' ? 'text-green-400' : 'text-red-400'}>
+                        {radio.mmeStatus === '1' ? 'Connected' : 'Down'}
+                      </span>
+                    </div>
+                  )}
+                  {radio.ueCount !== '' && (
+                    <div className="flex items-center gap-1.5">
+                      <Users className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
+                      <span className="text-nms-text-dim">UEs</span>
+                      <span className={parseInt(radio.ueCount) > 0 ? 'text-green-400' : 'text-nms-text'}>
+                        {radio.ueCount}
+                      </span>
+                    </div>
+                  )}
+                  {radio.gpsStatus !== '' && (
+                    <div className="flex items-center gap-1.5">
+                      <Satellite className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
+                      <span className="text-nms-text-dim">GPS</span>
+                      <span className={radio.gpsStatus === '1' ? 'text-green-400' : 'text-amber-400'}>
+                        {radio.gpsStatus === '1' ? `Locked` : 'Searching'}
+                        {radio.gpsSatCount ? ` (${radio.gpsSatCount} sv)` : ''}
+                      </span>
+                    </div>
+                  )}
+                  {radio.uptime !== '' && (
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
+                      <span className="text-nms-text-dim">Uptime</span>
+                      <span className="text-nms-text">{radio.uptime}</span>
+                    </div>
+                  )}
+                  {radio.latitude !== '' && radio.longitude !== '' && (
+                    <div className="flex items-center gap-1.5 col-span-2">
+                      <span className="text-nms-text-dim">GPS Coords</span>
+                      <span className="text-nms-text">
+                        {parseFloat(radio.latitude).toFixed(6)}, {parseFloat(radio.longitude).toFixed(6)}
+                      </span>
+                    </div>
+                  )}
+                  {radio.swVersion !== '' && (
+                    <div className="flex items-center gap-1.5 col-span-2">
+                      <span className="text-nms-text-dim">SW</span>
+                      <span className="text-nms-text">{radio.swVersion}</span>
+                      {radio.hwVersion !== '' && (
+                        <><span className="text-nms-text-dim ml-2">HW</span><span className="text-nms-text">{radio.hwVersion}</span></>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               <div><label className="nms-label">MCC</label>
                 <input className="nms-input font-mono" placeholder="999" value={form.mcc} onChange={set('mcc')} maxLength={3} /></div>
@@ -533,13 +765,13 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void }> = ({ r
                       </div>
                       <div>
                         <label className="nms-label">Preferred Frequency (Primary:Secondary)</label>
-                        <select className="nms-input font-mono" value={form.sasPreferredFrequency} onChange={set('sasPreferredFrequency')}>
+                        <select className="nms-input font-mono" value={form.sasPreferredFrequency} onChange={handlePreferredFrequencyChange}>
                           <option value="">— None —</option>
                           {earfcnOptions.map(({ earfcn, freqMhz }) => (
                             <option key={earfcn} value={`${freqMhz}:${freqMhz}`}>EARFCN {earfcn} — {freqMhz} MHz</option>
                           ))}
                         </select>
-                        <p className="text-xs text-nms-text-dim mt-1">Format: primary:secondary — options shown for Band {form.band || '48'}</p>
+                        <p className="text-xs text-nms-text-dim mt-1">Format: primary:secondary — options shown for Band {form.band || '48'}. Selecting a value auto-fills Req Low/High Frequency below to match.</p>
                       </div>
                       <div>
                         <label className="nms-label">Preferred Bandwidth</label>
@@ -640,7 +872,10 @@ export const BaicellsAcsTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState<string | null>(null);
   const [globalBusy, setGlobalBusy] = useState(false);
+  const [radioTags, setRadioTags]   = useState<Record<string, string>>({});
+  const [cbsds, setCbsds] = useState<CbsdWithGrants[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fetchInterfaceStatus = useTopologyStore(s => s.fetchInterfaceStatus);
 
   const fetchDevices = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -655,12 +890,26 @@ export const BaicellsAcsTab: React.FC = () => {
     }
   }, []);
 
+  const fetchCbsds = useCallback(async () => {
+    try {
+      const data = await sasApi.getCbsds();
+      if (data?.success) setCbsds(data.cbsds ?? []);
+    } catch {
+      // Cross-check is a nice-to-have — if the SAS admin API is unreachable,
+      // just skip it silently rather than surfacing an error banner for it.
+    }
+  }, []);
+
+  useEffect(() => { radioTagsApi.getAll().then(setRadioTags).catch(() => {}); }, []);
+
   // Initial load + 30s polling
   useEffect(() => {
     fetchDevices();
-    pollRef.current = setInterval(() => fetchDevices(true), POLL_INTERVAL_MS);
+    fetchInterfaceStatus();
+    fetchCbsds();
+    pollRef.current = setInterval(() => { fetchDevices(true); fetchInterfaceStatus(); fetchCbsds(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchDevices]);
+  }, [fetchDevices, fetchInterfaceStatus, fetchCbsds]);
 
   const handleRebootAll = async () => {
     if (!confirm(`Reboot ALL ${radios.length} radio(s)?\n\nAll radios will be unreachable for ~2 minutes.`)) return;
@@ -798,10 +1047,11 @@ export const BaicellsAcsTab: React.FC = () => {
       </div>
 
       {/* Status dot legend */}
-      <div className="flex items-center gap-4 text-xs text-nms-text-dim">
+      <div className="flex items-center gap-4 text-xs text-nms-text-dim flex-wrap">
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-green-400 inline-block" /> RF On</span>
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 inline-block" /> RF Off (radio up)</span>
         <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block" /> Offline</span>
+        <span className="flex items-center gap-1.5 text-amber-400">EARFCN ⚠ SAS cross-check mismatch — hover for details</span>
       </div>
 
       {/* Error */}
@@ -836,7 +1086,7 @@ export const BaicellsAcsTab: React.FC = () => {
       {!loading && !error && radios.length > 0 && (
         <div className="space-y-2">
           {radios.map(radio => (
-            <RadioRow key={radio.id} radio={radio} onRefresh={() => fetchDevices(true)} />
+            <RadioRow key={radio.id} radio={radio} onRefresh={() => fetchDevices(true)} nickname={radio.ip ? radioTags[radio.ip] : undefined} cbsds={cbsds} />
           ))}
         </div>
       )}

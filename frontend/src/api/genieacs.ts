@@ -25,6 +25,16 @@ export interface BaicellsRadio {
   pci:          string;
   band:         string;
   txPower:      string;
+  // Live status (from full parameter tree — only populated after bootstrap)
+  mmeStatus:   string;
+  ueCount:     string;
+  gpsStatus:   string;
+  gpsSatCount: string;
+  uptime:      string;
+  latitude:    string;
+  longitude:   string;
+  hwVersion:   string;
+  swVersion:   string;
   // SAS
   sasEnable:           string;
   sasServerUrl:        string;
@@ -80,6 +90,7 @@ export interface SercommRadio {
   mnc:           string;
   tac:           string;
   mmeIp:         string;
+  mmeCfgIdList:  string;
   earfcn:        string;
   earfcn2:       string;
   bandwidth:     string;
@@ -99,11 +110,13 @@ export interface SercommRadio {
   latitude:      string;
   longitude:     string;
   enable256QAM:  string;
+  s1Status:      string;
+  ueCount:       string;
 }
 
 export interface SercommProvisionInput {
   mcc: string; mnc: string; tac: string;
-  mmeIp: string;
+  mmeIp: string; mmeCfgIdList: string;
   earfcn: string; earfcn2: string;
   pci: string;
   cellIdentity: string; cellIdentity2: string;
@@ -127,11 +140,10 @@ export interface SercommProvisionInput {
   sasUserId: string;
   sasIcgGroupId: string;
   sasPeerCertVerify: boolean;
+  sasGrantMethod: string;
   sasServerUrl?: string;
   latitude: string;
   longitude: string;
-  cipheringAlgorithmList:  string;
-  integrityAlgorithmList:  string;
   enable256QAM: boolean;
 }
 

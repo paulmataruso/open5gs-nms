@@ -258,7 +258,7 @@ sudo add-apt-repository ppa:open5gs/latest
 sudo apt update
 sudo apt install open5gs
 
-# Verify all 16 config files exist:
+# Verify all 17 config files exist:
 ls /etc/open5gs/*.yaml | wc -l  # Should show 16
 ```
 
@@ -855,6 +855,28 @@ sudo ufw allow from 192.168.1.0/24 to any port 8888
 docker inspect open5gs-nms-nginx | grep NetworkMode
 # Should show: "NetworkMode": "host"
 ```
+
+---
+
+### FRR `eigrpd` Crashes, Taking Down All EIGRP-Learned Routes
+
+**Symptom:** `open5gs-frr-eigrpd` (or `frr.service`) crashes/core-dumps, and every route
+learned via EIGRP on this host disappears — a full RAN outage on setups where EIGRP
+carries the RAN-facing routes.
+
+**Cause:** A long-standing, upstream-unfixed bug in FRR's EIGRP DUAL finite state machine
+([FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943)) — six FSM event
+handlers in `eigrpd/eigrp_fsm.c` assume a lookup can never return NULL; when it does
+(triggers vary, including external EIGRP neighbor events), the process asserts and dies.
+
+**Fix (partial, not a guaranteed full resolution):** this project ships a hand-built
+patch that replaces the `assert()` with a graceful skip-and-log — see
+[`docs/frr-eigrpd-crash-guard-patch.md`](../docs/frr-eigrpd-crash-guard-patch.md) for the
+full writeup, patch file, and build/apply steps (built on top of the **L3 Routing →
+Reinstall (Source)** feature's from-source FRR 10.6.1 build). This has stopped the crash
+in every case tested so far, but the underlying DUAL FSM inconsistency the patch works
+around is not something this project can fully fix upstream — treat this as a real
+mitigation, not a guarantee it can never recur under a scenario not yet seen.
 
 ---
 

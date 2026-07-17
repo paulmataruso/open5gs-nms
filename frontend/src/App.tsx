@@ -7,7 +7,6 @@ import { RANPage } from './components/ran/RANPage';
 import { ServicesPage } from './components/services/ServicesPage';
 import { ConfigPage } from './components/config/ConfigPage';
 import { SubscriberPage } from './components/subscribers/SubscriberPage';
-import { AuditPage } from './components/audit/AuditPage';
 import { BackupPage } from './pages/BackupPage';
 import { LogsPage } from './pages/LogsPage';
 import { AutoConfigPage } from './pages/AutoConfigPage';
@@ -17,8 +16,14 @@ import { MetricsPage } from './components/metrics/MetricsPage';
 import { SASPage } from './pages/SASPage';
 import { TimeServerPage } from './pages/TimeServerPage';
 import { FRRPage } from './pages/FRRPage';
+import { SMSPage } from './pages/SMSPage';
+import { IMSPage } from './pages/IMSPage';
+import { VoWiFiPage } from './pages/VoWiFiPage';
+import { BindPage } from './pages/BindPage';
+import { ValidationPage } from './pages/ValidationPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
+import { FEATURES } from './config/features';
 
 function App(): JSX.Element {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -52,8 +57,6 @@ function App(): JSX.Element {
         return <ConfigPage />;
       case 'subscribers':
         return <SubscriberPage initialImsiToEdit={subscriberToEdit} />;
-      case 'audit':
-        return <AuditPage />;
       case 'backup':
         return <BackupPage />;
       case 'logs':
@@ -70,6 +73,16 @@ function App(): JSX.Element {
         return <TimeServerPage />;
       case 'frr':
         return <FRRPage />;
+      case 'bind':
+        return <BindPage />;
+      case 'sms':
+        return FEATURES.sms ? <SMSPage /> : <DashboardPage />;
+      case 'ims':
+        return FEATURES.ims ? <IMSPage /> : <DashboardPage />;
+      case 'vowifi':
+        return FEATURES.vowifi ? <VoWiFiPage /> : <DashboardPage />;
+      case 'validation':
+        return FEATURES.validation ? <ValidationPage /> : <DashboardPage />;
       case 'users':
         return <UserManagementPage />;
       default:

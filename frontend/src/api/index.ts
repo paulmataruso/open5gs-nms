@@ -9,6 +9,7 @@ import type {
   ValidationResult,
   ApplyResult,
   AuditLogEntry,
+  FramedRouteEntry,
 } from '../types';
 import type { InterfaceStatus } from '../stores';
 
@@ -111,19 +112,47 @@ export const subscriberApi = {
   get: (imsi: string) =>
     api.get<Subscriber>(`/subscribers/${imsi}`).then((r) => r.data),
   create: (subscriber: Subscriber) =>
-    api.post('/subscribers', subscriber).then((r) => r.data),
+    api.post<{ message: string; warnings?: string[] }>('/subscribers', subscriber).then((r) => r.data),
   update: (imsi: string, subscriber: Partial<Subscriber>) =>
-    api.put(`/subscribers/${imsi}`, subscriber).then((r) => r.data),
+    api.put<{ message: string; warnings?: string[] }>(`/subscribers/${imsi}`, subscriber).then((r) => r.data),
+  getFramedRoutes: () =>
+    api.get<FramedRouteEntry[]>('/subscribers/framed-routes').then((r) => r.data),
   delete: (imsi: string) =>
     api.delete(`/subscribers/${imsi}`).then((r) => r.data),
-  autoAssignIPs: () =>
-    api.post<{ success: boolean; data: { assigned: number; skipped: number; failed: number; ipPool: string; errors?: string[] } }>('/subscribers/auto-assign-ips').then((r) => r.data),
+  getAutoAssignIPsPool: () =>
+    api.get<{ success: boolean; data: { ipPool: string; startIp: string; endIp: string; gatewayIp: string | null; totalSubscribers: number; withIp: number; withoutIp: number; imsApn?: string; imsPool?: string; imsStartIp?: string; imsEndIp?: string; imsGatewayIp?: string | null; imsWithIp?: number; imsWithoutIp?: number } }>('/subscribers/auto-assign-ips/pool').then((r) => r.data),
+  autoAssignIPs: (opts?: { startIp?: string; endIp?: string; overwrite?: boolean; imsStartIp?: string; imsEndIp?: string; imsOverwrite?: boolean }) =>
+    api.post<{ success: boolean; data: { assigned: number; skipped: number; failed: number; ipPool: string; errors?: string[] } }>('/subscribers/auto-assign-ips', opts ?? {}).then((r) => r.data),
+  autoAssignMsisdn: (startingNumber: string, overwrite: boolean) =>
+    api.post<{ success: boolean; data: { assigned: number; skipped: number } }>('/subscribers/auto-assign-msisdn', { startingNumber, overwrite }).then((r) => r.data),
   getIPAssignments: () =>
     api.get<{ success: boolean; data: Array<{ imsi: string; ipv4: string }> }>('/subscribers/ip-assignments').then((r) => r.data),
   exportCSV: (format: 'csv' | 'tsv' = 'csv') =>
     `${API_URL}/api/subscribers/export?format=${format}`,
   importCSV: (csv: string, mode: 'skip' | 'overwrite' = 'skip') =>
     api.post<{ success: boolean; imported: number; skipped: number; overwritten: number; errors: string[] }>('/subscribers/import', { csv, mode }).then((r) => r.data),
+  bulkAddApn: (sessions: any[], overwrite: boolean, sst: number, sd?: string) =>
+    api.post<{ success: boolean; data: { updated: number; skipped: number; errors: string[] } }>('/subscribers/bulk-add-apn', { sessions, overwrite, sst, sd: sd || undefined }).then((r) => r.data),
+};
+
+// ── Subscriber Groups ──
+export interface SubscriberGroup {
+  _id: string;
+  name: string;
+  imsis: string[];
+  color: string | null;
+  createdAt: number;
+}
+
+export const subscriberGroupsApi = {
+  list: () =>
+    api.get<{ success: boolean; data: SubscriberGroup[] }>('/subscriber-groups').then(r => r.data.data),
+  create: (name: string, imsis: string[], color?: string) =>
+    api.post<{ success: boolean; data: SubscriberGroup }>('/subscriber-groups', { name, imsis, color }).then(r => r.data.data),
+  update: (id: string, patch: { name?: string; imsis?: string[]; color?: string }) =>
+    api.put(`/subscriber-groups/${id}`, patch).then(r => r.data),
+  delete: (id: string) =>
+    api.delete(`/subscriber-groups/${id}`).then(r => r.data),
 };
 
 // ── Audit ──
@@ -248,3 +277,149 @@ export const autoConfigApi = {
 
 export { genieacsApi } from './genieacs';
 export type { BaicellsRadio, ProvisionInput, NbiTask, RadioBackup, SercommRadio, SercommProvisionInput } from './genieacs';
+
+// ── Sercomm NR (5G) ──
+export interface SercommNRDevice {
+  id: string;
+  serial: string;
+  model: string;
+  ip: string | null;
+  mac: string | null;
+  lastInform: string | null;
+  nrConfig: {
+    plmn: string;
+    gnbId: number;
+    tac: number;
+    amfIp: string;
+    upfIp: string;
+    adminState: string;
+    pci: string | null;
+    encAlg: string | null;
+    intAlg: string | null;
+    nrPci: string | null;
+    nrArfcn: string | null;
+    nrArfcn2: string | null;
+    nrPci2: string | null;
+    nrArfcn3: string | null;
+    nrPci3: string | null;
+    nrBandWidth: string | null;
+    nrFreqBand: string | null;
+    txPwr: string | null;
+    prachCfgIdx: string | null;
+    numDlSlot: string | null;
+    numUlSlot: string | null;
+    numDlSymbol: string | null;
+    numUlSymbol: string | null;
+    np2Pres: string | null;
+    numDlSlot2: string | null;
+    numUlSlot2: string | null;
+    numDlSymbolP2: string | null;
+    numUlSymbolP2: string | null;
+    snssaiSst: number;
+    snssaiSd: string;
+    gNBCUName: string | null;
+    maxNumUes: string | null;
+    antennaGain: string | null;
+    antennaAzimuth: string | null;
+    antennaBeamwidth: string | null;
+    antennaDowntilt: string | null;
+    sasMaxTxPower: string | null;
+  };
+  sasConfig: {
+    enable: boolean;
+    url: string;
+    latitude: number;
+    longitude: number;
+    category: string;
+    location: string;
+    heightType: string;
+    groupId: string;
+    peerVerify: boolean;
+    bwAllowList: string;
+    cellNum: number | null;
+  };
+  sasStatus: {
+    state: string;
+    registered: string;
+    cbsdId: string;
+    grantedArfcn: string;
+    grantedArfcn2: string;
+    grantedArfcn3: string;
+    sasStatus: string;
+  };
+}
+
+export interface NRConfigInput {
+  mcc: string;
+  mnc: string;
+  tac: number;
+  gnbId: number;
+  cellCount: number;
+  amfIp: string;
+  upfIp: string;
+  sasUrl: string;
+  sasEnable: boolean;
+  sasCategory?: string;
+  sasLocation?: string;
+  sasLocationSource?: string;
+  sasHeightType?: string;
+  sasIcgGroupId?: string;
+  sasPeerCertVerify?: boolean;
+  sasUserId?: string;
+  latitude: number;
+  longitude: number;
+  unlockCell: boolean;
+  neaAlgorithm?: string;
+  niaAlgorithm?: string;
+  nrPci?: number;
+  nrArfcn?: number;
+  nrArfcn2?: number; nrPci2?: number;
+  nrArfcn3?: number; nrPci3?: number;
+  sasCellNum?: number;
+  nrBandWidth?: number;
+  nrFreqBand?: number;
+  txPwr?: number;
+  prachCfgIdx?: number;
+  numDlSlot?: number;
+  numUlSlot?: number;
+  numDlSymbol?: number;
+  numUlSymbol?: number;
+  np2Pres?: number;
+  numDlSlot2?: number;
+  numUlSlot2?: number;
+  numDlSymbolP2?: number;
+  numUlSymbolP2?: number;
+  snssaiSst?: number;
+  snssaiSd?: string;
+  gNBCUName?: string;
+  maxNumUes?: number;
+  antennaGain?: number;
+  antennaAzimuth?: number;
+  antennaBeamwidth?: number;
+  antennaDowntilt?: number;
+  sasMaxTxPower?: number;
+  bwAllowList?: string;
+}
+
+export const sercommNRApi = {
+  listDevices: (): Promise<{ success: boolean; devices: SercommNRDevice[] }> =>
+    api.get('/femto/nr/devices').then(r => r.data),
+
+  configure: (id: string, input: NRConfigInput): Promise<{ success: boolean; message: string }> =>
+    api.post(`/femto/nr/devices/${encodeURIComponent(id)}/configure`, input).then(r => r.data),
+
+  unlock: (id: string): Promise<{ success: boolean }> =>
+    api.post(`/femto/nr/devices/${encodeURIComponent(id)}/unlock`).then(r => r.data),
+
+  lock: (id: string): Promise<{ success: boolean }> =>
+    api.post(`/femto/nr/devices/${encodeURIComponent(id)}/lock`).then(r => r.data),
+
+  reboot: (id: string): Promise<{ success: boolean }> =>
+    api.post(`/femto/nr/devices/${encodeURIComponent(id)}/reboot`).then(r => r.data),
+
+  refresh: (id: string): Promise<{ success: boolean }> =>
+    api.post(`/femto/nr/devices/${encodeURIComponent(id)}/refresh`).then(r => r.data),
+
+  sasRestart: (id: string): Promise<{ success: boolean; message: string }> =>
+    api.post(`/femto/nr/devices/${encodeURIComponent(id)}/sas-restart`).then(r => r.data),
+};

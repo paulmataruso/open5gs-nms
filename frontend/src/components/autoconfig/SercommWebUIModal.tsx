@@ -1,20 +1,34 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Copy, Check, Terminal } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 interface Props {
   ip:        string;
+  mac?:      string;
   rootPass:  string;
   webuiPass: string;
   onClose:   () => void;
 }
 
+async function fetchDerivedCredentials(mac: string): Promise<{ rootPass: string; webuiPass: string } | null> {
+  try {
+    const clean = mac.replace(/[^0-9a-fA-F]/g, '');
+    if (clean.length !== 12) return null;
+    const formatted = clean.match(/.{2}/g)!.join(':').toUpperCase();
+    const res = await fetch(`/api/femto/derive-credentials?mac=${encodeURIComponent(formatted)}`, { credentials: 'include' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+  const copyToClipboard = useCopyToClipboard();
+  const copy = async () => {
+    const ok = await copyToClipboard(text);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else toast.error('Copy failed — please copy manually');
   };
   return (
     <button
@@ -36,16 +50,40 @@ function CodeBlock({ children, copyText }: { children: React.ReactNode; copyText
   );
 }
 
-export const SercommWebUIModal: React.FC<Props> = ({ ip, rootPass, webuiPass, onClose }) => {
-  const displayIp   = ip       || '11.11.11.188';
-  const displayRoot = rootPass || '(enter MAC address to derive)';
-  const displayWeb  = webuiPass|| '(enter MAC address to derive)';
+export const SercommWebUIModal: React.FC<Props> = ({ ip, mac: initialMac = '', rootPass: initialRoot, webuiPass: initialWebui, onClose }) => {
+  const [localMac,   setLocalMac]   = useState(initialMac);
+  const [rootPass,   setRootPass]   = useState(initialRoot);
+  const [webuiPass,  setWebuiPass]  = useState(initialWebui);
+  const [deriving,   setDeriving]   = useState(false);
 
-  const sshCmd     = `ssh root@${displayIp}`;
-  const femtoCmd1  = `femto_cli sset Device.X_SCM_DeviceFeature.X_SCM_WebServerEnable="1"`;
-  const femtoCmd2  = `femto_cli fsave`;
-  const rebootCmd  = `reboot`;
-  const webuiUrl   = `https://${displayIp}`;
+  // If parent already derived credentials, use them; otherwise derive from initialMac
+  useEffect(() => {
+    if (initialRoot) { setRootPass(initialRoot); setWebuiPass(initialWebui); return; }
+    if (initialMac) handleMacChange(initialMac);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleMacChange = async (value: string) => {
+    setLocalMac(value);
+    setRootPass('');
+    setWebuiPass('');
+    const clean = value.replace(/[^0-9a-fA-F]/g, '');
+    if (clean.length !== 12) return;
+    setDeriving(true);
+    const creds = await fetchDerivedCredentials(value);
+    setDeriving(false);
+    if (creds) { setRootPass(creds.rootPass); setWebuiPass(creds.webuiPass); }
+  };
+
+  const displayIp   = ip       || '11.11.11.188';
+  const displayRoot = rootPass || (deriving ? 'Deriving…' : '(enter MAC address above to derive)');
+  const displayWeb  = webuiPass|| (deriving ? 'Deriving…' : '(enter MAC address above to derive)');
+
+  const sshCmd    = `ssh root@${displayIp}`;
+  const femtoCmd1 = `femto_cli sset Device.X_SCM_DeviceFeature.X_SCM_WebServerEnable="1"`;
+  const femtoCmd2 = `femto_cli fsave`;
+  const rebootCmd = `reboot`;
+  const webuiUrl  = `https://${displayIp}`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -68,17 +106,30 @@ export const SercommWebUIModal: React.FC<Props> = ({ ip, rootPass, webuiPass, on
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5 text-sm">
 
+          {/* MAC address input */}
+          <div>
+            <label className="block text-xs font-semibold text-nms-text mb-1">MAC Address</label>
+            <input
+              className="nms-input font-mono w-full"
+              value={localMac}
+              onChange={e => handleMacChange(e.target.value)}
+              placeholder="3C:62:F0:AA:AA:AA"
+              autoFocus
+            />
+            <p className="text-xs text-nms-text-dim mt-1">Enter the radio's MAC to auto-derive SSH root and WebUI passwords</p>
+          </div>
+
           {/* Generated credentials */}
           <div className="bg-nms-accent/5 border border-nms-accent/30 rounded-lg px-4 py-3 space-y-2">
             <p className="text-xs font-semibold text-nms-text">Generated Credentials (from MAC address)</p>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-xs text-nms-text-dim mb-1">Root SSH Password</p>
-                <CodeBlock copyText={rootPass || ''}>{displayRoot}</CodeBlock>
+                <CodeBlock copyText={rootPass || undefined}>{displayRoot}</CodeBlock>
               </div>
               <div>
                 <p className="text-xs text-nms-text-dim mb-1">Debug WebUI Password</p>
-                <CodeBlock copyText={webuiPass || ''}>{displayWeb}</CodeBlock>
+                <CodeBlock copyText={webuiPass || undefined}>{displayWeb}</CodeBlock>
               </div>
             </div>
           </div>
@@ -138,7 +189,7 @@ export const SercommWebUIModal: React.FC<Props> = ({ ip, rootPass, webuiPass, on
               </div>
               <div>
                 <p className="text-xs text-nms-text-dim mb-1">Password</p>
-                <CodeBlock copyText={webuiPass || ''}>{displayWeb}</CodeBlock>
+                <CodeBlock copyText={webuiPass || undefined}>{displayWeb}</CodeBlock>
               </div>
             </div>
             <p className="text-xs text-nms-text-dim mt-2">

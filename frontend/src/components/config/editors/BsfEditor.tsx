@@ -1,5 +1,5 @@
 import type { AllConfigs } from '../../../types';
-import { LoggerSection, SbiClientSection } from './SharedComponents';
+import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS } from '../../../data/tooltips';
 
@@ -29,6 +29,11 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
 
   return (
     <div className="space-y-6">
+      <FunctionInfoBox
+        title="Binding Support Function (BSF)"
+        generation="5G"
+        description="The BSF maintains a registry of PCF-to-PDU-session bindings. When multiple PCF instances are running, the BSF allows Application Functions and the NEF to look up which specific PCF instance is managing a given UE's session, ensuring policy updates are delivered to the correct PCF. The BSF exposes the Nbsf interface (N24) and stores its bindings in MongoDB."
+      />
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
@@ -47,6 +52,15 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
               className="nms-input font-mono text-xs"
               value={server.port}
               onChange={(e) => updateBsf({ sbi: { ...bsf.sbi, server: [{ ...server, port: parseInt(e.target.value) || 7777 }] } })}
+            />
+          </div>
+          <div>
+            <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
+            <input
+              className="nms-input font-mono text-xs"
+              value={server.advertise || ''}
+              onChange={(e) => updateBsf({ sbi: { ...bsf.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}
+              placeholder="bsf.5gc.mnc070.mcc999.3gppnetwork.org:7777"
             />
           </div>
         </div>
