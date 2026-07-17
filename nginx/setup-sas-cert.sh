@@ -1,6 +1,15 @@
 #!/bin/sh
 # setup-sas-cert.sh
-# Generates a self-signed TLS certificate for the SAS HTTPS endpoint.
+# Generates the self-signed TLS certificates nginx needs to start:
+#   - sas.crt/sas.key — SAS HTTPS endpoint (port 8443, any hostname)
+#   - acs.crt/acs.key — Sercomm factory-default ACS DNS-hijack relay
+#                        (port 443, must be CN=acs.sc.sercomm.com — that
+#                        hostname is hardcoded in nginx.conf's server_name
+#                        and in every factory-reset Sercomm radio's ACS URL)
+#
+# Without both of these, nginx fails to start at all — it loads every
+# server block in conf.d/ up front, so a missing cert for either vhost is
+# fatal even if you don't own a Sercomm radio yet.
 #
 # Used two ways:
 #   1. Automatically by the cert-init Docker service on first docker compose up
@@ -14,36 +23,44 @@ else
   CERT_DIR="$(dirname "$0")/certs"
 fi
 
-CERT_FILE="$CERT_DIR/sas.crt"
-KEY_FILE="$CERT_DIR/sas.key"
-
-# Skip if cert already exists
-if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
-  expiry=$(openssl x509 -in "$CERT_FILE" -noout -enddate 2>/dev/null | cut -d= -f2)
-  echo "SAS cert already exists (expires: $expiry) -- skipping"
-  exit 0
-fi
-
 mkdir -p "$CERT_DIR"
 
 SERVER_IP=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="src") print $(i+1)}' | head -1)
 [ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
 HOSTNAME=$(hostname)
 
-echo "Generating SAS TLS certificate"
-echo "  Output : $CERT_DIR"
-echo "  IP     : $SERVER_IP"
-echo "  Host   : $HOSTNAME"
+generate_cert() {
+  name="$1"
+  cn="$2"
+  san="$3"
+  cert_file="$CERT_DIR/$name.crt"
+  key_file="$CERT_DIR/$name.key"
 
-openssl req -x509 \
-  -newkey rsa:4096 \
-  -keyout "$KEY_FILE" \
-  -out "$CERT_FILE" \
-  -days 3650 \
-  -nodes \
-  -subj "/C=US/ST=CBRS/L=Private/O=Open5GS NMS/CN=sas.local" \
-  -addext "subjectAltName=IP:${SERVER_IP},DNS:${HOSTNAME},DNS:sas.local,DNS:localhost"
+  if [ -f "$cert_file" ] && [ -f "$key_file" ]; then
+    expiry=$(openssl x509 -in "$cert_file" -noout -enddate 2>/dev/null | cut -d= -f2)
+    echo "$name cert already exists (expires: $expiry) -- skipping"
+    return 0
+  fi
 
-echo "Certificate generated successfully"
-openssl x509 -in "$CERT_FILE" -noout -subject -dates
+  echo "Generating $name TLS certificate"
+  echo "  Output : $CERT_DIR"
+  echo "  CN     : $cn"
 
+  openssl req -x509 \
+    -newkey rsa:4096 \
+    -keyout "$key_file" \
+    -out "$cert_file" \
+    -days 3650 \
+    -nodes \
+    -subj "/C=US/ST=CBRS/L=Private/O=Open5GS NMS/CN=$cn" \
+    -addext "subjectAltName=$san"
+
+  echo "$name certificate generated successfully"
+  openssl x509 -in "$cert_file" -noout -subject -dates
+}
+
+generate_cert "sas" "sas.local" \
+  "IP:${SERVER_IP},DNS:${HOSTNAME},DNS:sas.local,DNS:localhost"
+
+generate_cert "acs" "acs.sc.sercomm.com" \
+  "IP:${SERVER_IP},DNS:${HOSTNAME},DNS:acs.sc.sercomm.com,DNS:localhost"

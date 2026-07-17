@@ -4,6 +4,40 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.13] - 2026-07-17
+
+### Fixed — nginx fails to start on a fresh install
+
+- **Real bug, found on a genuinely clean-host install**: nginx crash-looped forever
+  (`cannot load certificate "/etc/nginx/certs/acs.crt"`), making the entire web UI
+  unreachable. Root cause: `nginx.conf`'s port-443 vhost (the Sercomm factory-default
+  ACS DNS-hijack relay, `server_name acs.sc.sercomm.com`) requires `acs.crt`/`acs.key`,
+  but no script anywhere ever generated them — only `sas.crt`/`sas.key` had an
+  auto-generation step (`nginx/setup-sas-cert.sh`, run by the `cert-init` Docker
+  service). On existing dev hosts `acs.crt` had been created manually at some point in
+  the past and just sat there, masking the gap; a fresh host never gets it.
+- `nginx/setup-sas-cert.sh` now generates **both** certs — refactored into a
+  `generate_cert()` helper called once for `sas` (CN=`sas.local`, any hostname) and
+  once for `acs` (CN=`acs.sc.sercomm.com`, matching nginx.conf's hardcoded
+  `server_name` and every factory-reset Sercomm radio's hardcoded ACS URL). Same
+  skip-if-exists behavior as before, same manual-run instructions, no docker-compose.yml
+  changes needed — `cert-init` already mounts and runs this exact file.
+
+### Added — SEPP wired into Services/Logs pages
+
+- Follow-up from SEPP shipping in v2.0-beta_0.10: SEPP is now a valid target for the
+  Services page's individual Start/Stop/Restart/Enable/Disable controls and the "Start/
+  Stop 5G Group" bulk action (`sepp1` added to `service-controller.ts`'s validation
+  gates and `ServicesPage.tsx`'s `SERVICES_5G` group), and to the Logs page's log
+  source menu (`open5gs-seppd` already logs to `/var/log/open5gs/sepp1.log` by
+  convention, so this needed no backend changes). Confirmed live: SEPP was already
+  showing on the Dashboard automatically (it has no hardcoded per-NF list, just
+  reflects whatever the service-status feed returns) — the actual gap was only the
+  Services page's per-action allowlist. Deliberately not wired into the Auto-Config
+  Wizard, per explicit decision — that wizard's scope stays as-is.
+
+---
+
 ## [v2.0-beta_0.12] - 2026-07-16
 
 ### Added — Framed Routing
