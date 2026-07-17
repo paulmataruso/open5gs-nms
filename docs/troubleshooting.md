@@ -949,6 +949,40 @@ BIND9 instance were found and fixed while chasing this class of issue — see CH
   zones, SEPP's advertise FQDN all depend on it), removing IMS used to take the whole DNS
   layer down with it. Fixed: IMS's uninstall now only ever touches its own `ims.*` zone.
 
+### `systemd-resolved` Competing With BIND9 For DNS Resolution
+
+**Symptom:** BIND9 itself looks healthy (`systemctl status bind9` active, config valid,
+`dig @127.0.0.1 <name>` works), but system-level lookups (`apt-get`, `git`, plain
+`nslookup`/`ping` with no explicit server) are still inconsistent, or a manual edit to
+`/etc/resolv.conf` seems to get silently reverted after a while.
+
+**Cause:** most Ubuntu hosts run `systemd-resolved` by default, which usually manages
+`/etc/resolv.conf` as a **symlink** to `/run/systemd/resolve/stub-resolv.conf`, pointing
+at its own stub listener on `127.0.0.53` — not at BIND on `127.0.0.1`. Editing
+`/etc/resolv.conf` directly only sticks until `systemd-resolved` next touches it
+(network change, service restart, `netplan apply`), and even when it does stick,
+whichever resolver is *actually* being queried depends on which tool respects
+`resolv.conf` vs. NSS vs. `systemd-resolved`'s own D-Bus API — easy to get inconsistent
+results debugging with different tools.
+
+**Diagnose:**
+```
+ls -la /etc/resolv.conf        # is it a symlink into systemd-resolved's territory?
+resolvectl status              # shows the actually-active DNS server per interface + global
+systemctl status systemd-resolved
+```
+
+**Fix** — make BIND unambiguously the system resolver, disable systemd-resolved's stub:
+```
+sudo sed -i 's/^#\?DNSStubListener=.*/DNSStubListener=no/' /etc/systemd/resolved.conf
+sudo systemctl restart systemd-resolved
+
+sudo rm -f /etc/resolv.conf
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+```
+This survives reboots/network changes (no more silent reverts) since `resolv.conf` is
+now a static file, not a symlink `systemd-resolved` manages.
+
 ---
 
 ## Performance Issues
