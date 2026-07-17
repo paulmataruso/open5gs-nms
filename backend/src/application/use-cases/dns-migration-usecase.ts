@@ -154,6 +154,45 @@ export class DnsMigrationUseCase {
     await this.hostExecutor.writeFile(MIGRATION_STATE_FILE, JSON.stringify(state, null, 2));
   }
 
+  // Real incident (2026-07-17): Phase A can make BIND answer every record perfectly
+  // (confirmed via `dig @127.0.0.1`) while every NF still crash-loops at Phase C,
+  // because `dig` talks DNS directly but getaddrinfo() — what every NF actually calls
+  // to resolve its own advertise FQDN at startup — goes through /etc/resolv.conf. If
+  // that still points at systemd-resolved's stub (127.0.0.53, the stock Ubuntu
+  // default), BIND being perfectly healthy is irrelevant; it's never consulted. This
+  // used to require a separate manual call to POST /api/bind/fix-resolver after Phase
+  // A and before Phase C — folded in here so it can't be forgotten.
+  private async ensureSystemResolverUsesBind(details: string[]): Promise<void> {
+    const resolvConfPath = '/proc/1/root/etc/resolv.conf';
+    let firstNameserver: string | undefined;
+    try {
+      const raw = await this.hostExecutor.readFile(resolvConfPath);
+      firstNameserver = raw.match(/^nameserver\s+(\S+)/m)?.[1];
+    } catch { /* doesn't exist yet — treat as needing a fix */ }
+
+    if (firstNameserver === '127.0.0.1') {
+      details.push('System resolver already routes through BIND (127.0.0.1) — no fix needed');
+      return;
+    }
+
+    const resolvedConfPath = '/proc/1/root/etc/systemd/resolved.conf';
+    if (await this.hostExecutor.fileExists(resolvedConfPath)) {
+      let raw = await this.hostExecutor.readFile(resolvedConfPath);
+      raw = /^#?DNSStubListener=/m.test(raw)
+        ? raw.replace(/^#?DNSStubListener=.*/m, 'DNSStubListener=no')
+        : raw.trimEnd() + '\nDNSStubListener=no\n';
+      await this.hostExecutor.writeFile(resolvedConfPath, raw);
+    }
+    await this.hostExecutor.restartService('systemd-resolved').catch(() => {});
+
+    // writeFile() writes to a temp path then rename()s over the target — rename()
+    // replaces whatever directory entry is there (symlink or not) rather than
+    // following it, so this safely swaps out the systemd-resolved symlink instead of
+    // corrupting its stub file the way a naive open-and-truncate write would.
+    await this.hostExecutor.writeFile(resolvConfPath, 'nameserver 127.0.0.1\n');
+    details.push(`Fixed system resolver: /etc/resolv.conf was pointing at ${firstNameserver ?? '(unreadable)'}, now static "nameserver 127.0.0.1" with systemd-resolved's stub listener disabled`);
+  }
+
   // ── Phase 1: dry-run diff, writes nothing ────────────────────────────────
 
   async computeMigrationPlan(): Promise<DnsMigrationPlan> {
@@ -440,6 +479,11 @@ export class DnsMigrationUseCase {
       await this.writeMigrationState({ sgcDomain: plan.sgcDomain, epcDomain: plan.epcDomain, peerIps });
       details.push('Recorded migration state for future re-runs');
 
+      // BIND itself answering correctly (verified above via dig) isn't sufficient —
+      // make sure the host's actual resolver path (getaddrinfo(), what every NF calls)
+      // routes through it too, before any NF is asked to resolve its own FQDN.
+      await this.ensureSystemResolverUsesBind(details);
+
       await this.auditLogger.log({ action: 'dns_migration_phase_a', user: 'admin', details: details.join('; '), success: true });
       return { phase: 'A', success: true, details };
     } catch (err) {
@@ -584,6 +628,12 @@ export class DnsMigrationUseCase {
   async applyPhaseC(plan: DnsMigrationPlan): Promise<PhaseResult> {
     const details: string[] = [];
     try {
+      // Defense in depth: Phase A already does this at its own end, but Phase C is the
+      // highest-risk phase (every restarted NF does a synchronous getaddrinfo() on its
+      // own advertise FQDN and FATAL-aborts if it can't resolve) — re-check right before
+      // restarting anything in case something reverted the resolver since Phase A ran.
+      await this.ensureSystemResolverUsesBind(details);
+
       const bySvc = new Map<string, SbiChange[]>();
       for (const change of plan.sbiChanges) {
         if (!bySvc.has(change.service)) bySvc.set(change.service, []);
@@ -639,10 +689,39 @@ export class DnsMigrationUseCase {
         details.push(`Restarted ${service}`);
       }
 
-      // Verify via SBI curl to NRF (health/discovery endpoint)
+      // Give any fatal FQDN-resolution abort a moment to actually manifest — Open5GS
+      // exits near-instantly on an unresolvable advertise FQDN, but a restart command
+      // returning exit 0 only means systemd successfully issued the start, not that the
+      // process stayed up (the exact historical bug this phase used to have: reporting
+      // success:true while one of 11 NF restarts had actually crashed).
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const crashedServices: string[] = [];
+      for (const svc of SGC_ZONE_SERVICES) {
+        const unit = SERVICE_UNIT_MAP[svc];
+        const active = await this.hostExecutor.isServiceActive(unit);
+        details.push(`${unit}: ${active ? 'active' : 'INACTIVE — crashed after restart'}`);
+        if (!active) crashedServices.push(svc);
+      }
+
+      // SBI reachability via FQDN. Open5GS's SBI servers are HTTP/2-cleartext (h2c)
+      // only and expect prior-knowledge, not the classic Upgrade: h2c dance — a plain
+      // HTTP/1.1 request (curl's default) gets its request line parsed as garbage HTTP/2
+      // framing and the server drops the connection ("nghttp2_session_mem_recv() failed
+      // (-903:Received bad client magic byte string)" in the NF's own log), which showed
+      // up as a misleading "HTTP 000" even when the NF was perfectly healthy. Confirmed
+      // live (2026-07-17): a healthy NRF returns HTTP 000 to a plain request but a real
+      // 400 (hitting "/", not a registered SBI route, but still a genuine HTTP response)
+      // to the same request with --http2-prior-knowledge.
       for (const entry of plan.dnsEntries.filter(e => e.zone === '5gc')) {
-        const curl = await this.hostExecutor.executeLocalCommand('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '3', `http://${entry.fqdn}:7777/`]);
-        details.push(`curl http://${entry.fqdn}:7777/ -> HTTP ${curl.stdout.trim() || 'no response'}`);
+        const curl = await this.hostExecutor.executeLocalCommand('curl', ['-s', '--http2-prior-knowledge', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '3', `http://${entry.fqdn}:7777/`]);
+        const code = curl.stdout.trim();
+        const reachable = code !== '' && code !== '000';
+        details.push(`curl --http2-prior-knowledge http://${entry.fqdn}:7777/ -> HTTP ${code || 'no response'}${reachable ? ' [OK]' : ' [UNREACHABLE]'}`);
+      }
+
+      if (crashedServices.length > 0) {
+        throw new Error(`${crashedServices.length} NF(s) not active after restart: ${crashedServices.join(', ')} — check journalctl -u <unit> for FQDN resolution or other startup failures`);
       }
 
       await this.auditLogger.log({ action: 'dns_migration_phase_c', user: 'admin', details: details.join('; '), success: true });

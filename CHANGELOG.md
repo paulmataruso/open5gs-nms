@@ -4,6 +4,65 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.15] - 2026-07-17
+
+### Fixed — DNS/FQDN Migration Wizard: systemd-resolved bypass no longer requires a manual fix
+
+Live end-to-end wizard run on a freshly-redeployed host (test01) surfaced that Phase A
+can make BIND answer every record correctly while `getaddrinfo()` (what every NF
+actually calls) still bypasses it entirely, because `/etc/resolv.conf` points at
+systemd-resolved's stub — this used to require a separate, easy-to-forget manual call
+to `POST /api/bind/fix-resolver` before Phase C. `dns-migration-usecase.ts` now checks
+and fixes this automatically at the end of Phase A and again as a pre-flight guard at
+the start of Phase C, reusing the same detection logic as the BIND page's own health
+check.
+
+### Fixed — DNS Migration Phase C's own verification was always wrong
+
+Phase C's post-restart check (`curl` to each NF's SBI port) reported `HTTP 000` for
+every NF regardless of health, because Open5GS's SBI servers are HTTP/2-cleartext
+(h2c) only and expect prior-knowledge, not a plain HTTP/1.1 request — confirmed live
+against a genuinely healthy NRF (000 without `--http2-prior-knowledge`, a real 400
+with it). Also added a `systemctl is-active` check for all 11 SBI NFs after restart —
+Phase C now actually fails if any NF crashed, instead of reporting `success:true`
+regardless (the exact historical failure class already called out in this project's
+conventions).
+
+### Fixed — IMS install/configure: several real gaps that made a fresh install non-functional
+
+A live install/configure run on a freshly-redeployed host surfaced that IMS had
+effectively never worked on any host other than the original dev machine, which had
+accumulated undocumented, hand-applied fixes from earlier sessions that were never
+written back into the actual application code:
+
+- The `cdp.so` process-slot patch (works around a real Kamailio bug where the CDP
+  timer hits "Process limit exceeded", breaking Cx/Rx Diameter) silently failed on
+  Ubuntu 24.04 — its deb-src detection false-positived on a comment inside cloud-init's
+  `ubuntu.sources.curtin.orig` backup file, and it never understood the new deb822
+  `ubuntu.sources` format Ubuntu 24.04 defaults to. The step's exit code also was never
+  checked, so a failed patch was reported as install success. Fixed the deb-src setup
+  and now warns loudly on failure.
+- The ~1200-line main Kamailio routing-script configs for P/I/S-CSCF, and all 6
+  systemd units (P/I/S-CSCF + PyHSS hss/api/diameter), were never written by any code
+  path — they only existed because an earlier session placed them by hand on one dev
+  host. Bundled as static templates (`backend/src/config/ims-templates/`, following the
+  existing `config/defaults` convention) and wired into `/configure`.
+- Three Kamailio modules the templates require (`presence`, `sctp`, `json`) were never
+  in `/install`'s package list.
+- The bundled configs need Kamailio 5.8.x — Ubuntu 24.04's own archive only has 5.7.4,
+  which cannot resolve a `#!substdef` used across an `import_file` boundary that these
+  configs rely on. `/install` now adds the official `deb.kamailio.org` repo before
+  installing (this repo previously only existed as a hand-added file on one dev host,
+  from 2026-06-20, predating this session — never in the codebase or its git history).
+- `/sync-subscribers` restarts `pyhss-hss`, which now correctly cascades to restart
+  `pyhss-api` too (now that `pyhss-api`'s systemd unit correctly `Requires=pyhss-hss`,
+  fixing the second bullet above) — but PyHSS's own startup reliably takes ~25-30s
+  (Diameter library init), while the code only waited a fixed 3 seconds, so every
+  subscriber sync call hit an API that wasn't listening yet. Replaced with a real
+  readiness poll (up to 45s).
+
+---
+
 ## [v2.0-beta_0.14] - 2026-07-17
 
 ### Added — SMS over SGs uninstall

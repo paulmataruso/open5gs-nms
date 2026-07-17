@@ -57,6 +57,9 @@ COPY tools/ ./tools/
 # Copy default config YAMLs into dist (tsc doesn't copy non-TS files)
 COPY src/config/defaults ./dist/config/defaults
 
+# Copy IMS Kamailio main-config templates (P/I/S-CSCF routing scripts) into dist
+COPY src/config/ims-templates ./dist/config/ims-templates
+
 RUN mkdir -p /var/log/open5gs-nms && mkdir -p /app/data
 
 ENV NODE_ENV=production
