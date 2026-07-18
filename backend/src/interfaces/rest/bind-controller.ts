@@ -48,9 +48,28 @@ function listBindFiles(): BindFile[] {
 const IP_RE = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const NAMED_OPTIONS_PATH = `${HOST_BIND_DIR}/named.conf.options`;
 
+// Ubuntu's stock named.conf.options ships a *commented-out* forwarders example:
+//   // forwarders {
+//   // 	0.0.0.0;
+//   // };
+// A plain `/forwarders\s*\{[^}]*\}\s*;/` regex doesn't know about `//` comment markers
+// and matches straight through them (starting at the bare word "forwarders", ignoring
+// the leading "// "). Confirmed live (2026-07-18): running the replace against this
+// produced `// forwarders { 8.8.8.8; 8.8.4.4; };` (the whole thing collapsed onto one
+// still-commented line) — a dead comment as far as BIND's parser is concerned, but one
+// that *also* fools this exact same regex, so the health check reported "healthy" while
+// forwarders stayed permanently non-functional, and repeated /repair calls kept
+// reproducing the exact same broken one-liner instead of fixing it. Match is intentionally
+// terminated at the nearest "};" regardless of whether that closing brace itself has a
+// "//" prefix, so this strips both the original multi-line stock comment *and* the
+// already-corrupted single-line form left behind by the old buggy replace.
+function stripStockForwardersComment(raw: string): string {
+  return raw.replace(/^[ \t]*\/\/[ \t]*forwarders\b[\s\S]*?\};[ \t]*\r?\n?/m, '');
+}
+
 function readForwarders(): string[] {
   if (!fs.existsSync(NAMED_OPTIONS_PATH)) return [];
-  const raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
+  const raw = stripStockForwardersComment(fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8'));
   const m = raw.match(/forwarders\s*\{([^}]*)\}\s*;/);
   if (!m) return [];
   return m[1].split(';').map(s => s.trim()).filter(s => IP_RE.test(s));
@@ -59,6 +78,7 @@ function readForwarders(): string[] {
 function writeForwarders(forwarders: string[]): void {
   const block = `forwarders { ${forwarders.map(f => `${f};`).join(' ')} };`;
   let raw = fs.existsSync(NAMED_OPTIONS_PATH) ? fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8') : 'options {\n};\n';
+  raw = stripStockForwardersComment(raw);
   if (/forwarders\s*\{[^}]*\}\s*;/.test(raw)) {
     raw = raw.replace(/forwarders\s*\{[^}]*\}\s*;/, block);
   } else {
@@ -160,9 +180,10 @@ function checkBindHealth(): BindHealth {
   let optionsNeedsRepair = true;
   if (fs.existsSync(NAMED_OPTIONS_PATH)) {
     const raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
+    const rawForForwardersCheck = stripStockForwardersComment(raw);
     optionsNeedsRepair = !/recursion\s+yes\s*;/.test(raw)
       || !/allow-query\s*\{[^}]*\}\s*;/.test(raw)
-      || !/forwarders\s*\{[^}]*\}\s*;/.test(raw)
+      || !/forwarders\s*\{[^}]*\}\s*;/.test(rawForForwardersCheck)
       || !/listen-on\s*\{[^}]*127\.0\.0\.1/.test(raw);
   }
 
@@ -355,20 +376,19 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
       write('=== Installing BIND9 ===');
       await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils 2>&1');
       fs.mkdirSync(`${HOST_BIND_DIR}/zones`, { recursive: true });
-      // Seed a working baseline only if nothing configured it yet — stock apt-installed
-      // bind9 has no forwarders and recursion left at its package default, which answers
-      // fine for zones we add later but won't usefully resolve the wider internet until
-      // this exists. Never overwrites an existing file — this page owns listen-on/
-      // forwarders going forward, but if the user (or an old install) already customized
-      // this file, leave it alone.
-      if (!fs.existsSync(NAMED_OPTIONS_PATH)) {
-        writeForwarders(['8.8.8.8', '8.8.4.4']);
-        writeListenOn(['127.0.0.1']);
-        let raw = fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8');
-        if (!/recursion\s+yes\s*;/.test(raw)) {
-          raw = raw.replace(/\}\s*;?\s*$/, '\trecursion yes;\n\tallow-query { any; };\n};\n');
-          fs.writeFileSync(NAMED_OPTIONS_PATH, raw, 'utf-8');
-        }
+      // Seed a working baseline only if it isn't already actively configured — reuses
+      // the exact same repair logic /api/bind/repair uses, since "never configured yet"
+      // and "reset to stock by an apt purge" are the same underlying condition (missing
+      // recursion/allow-query/forwarders/listen-on). Checking mere file *existence*
+      // doesn't work here: bind9's own postinst always creates named.conf.options
+      // immediately as part of `apt-get install`, so that check could never actually
+      // fire — confirmed live (2026-07-18), this seeding silently never ran on a fresh
+      // install and the DNS page kept reporting "needs repair" until /repair was called
+      // by hand. If the user (or an old install) already actively configured this file,
+      // checkBindHealth().optionsNeedsRepair is false and this is a no-op, same as before.
+      if (checkBindHealth().optionsNeedsRepair) {
+        repairZonesAndOptions();
+        await nsenter('systemctl', ['restart', 'bind9']).catch(() => {});
         write('Seeded default named.conf.options (recursion on, forwarders 8.8.8.8/8.8.4.4, listen-on 127.0.0.1).');
       }
       await auditLogger.log({ action: 'bind_install', user, success: true });
