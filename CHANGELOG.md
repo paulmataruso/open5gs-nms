@@ -4,6 +4,40 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.17] - 2026-07-18
+
+### Added — Automated VoLTE end-to-end test module (UE Validation)
+
+New "Run VoLTE Test" card on the UE Validation page
+(`POST /api/validation/volte/run`, streamed NDJSON progress). Provisions two
+disposable PyHSS-only test subscribers, drives two `linphonec` instances through
+REGISTER (both) → place call → answer → verify bidirectional RTP → hang up, and
+always cleans up (deprovision subscribers, revert S-CSCF back to `HSS-Selected`
+auth) regardless of outcome. Deliberately isolated to the IMS/SIP signaling layer —
+no RAN/NAS/UERANSIM/srsRAN involvement, unlike the rest of this module's sessions.
+
+### Fixed — real bugs surfaced while live-verifying the new test module
+
+- `ims-controller.ts`'s `/configure` route used `systemctl enable --now` to bring
+  up the 4 kamailio-* CSCF services, which is a no-op on an already-running unit —
+  since none of them hot-reload config (cdp's Diameter Peer/DefaultRoute config is
+  parsed once at startup), a *re*-Configure on a long-running host silently left a
+  stale process running against newly-regenerated config files. Now uses `enable` +
+  unconditional `restart` for those 4 services, matching what `/api/ims/restart`
+  already did correctly.
+- New test module's step-streaming helper only invoked its callback on success —
+  a failing step's name/detail never reached the client, only a generic error on
+  the final line. Fixed so both outcomes stream immediately.
+- New test module wrote its scratch config files via the container's own `/tmp`
+  instead of the host's (`/proc/1/root` prefix was missing) — `linphonec`, which
+  runs inside the host's mount namespace via `nsenter -m`, couldn't find them.
+- New test module hardcoded P-CSCF's address as `127.0.0.1` instead of reading the
+  actual configured `pcscfIp`/`pcscfPort` from `.ims-config.json`.
+- Added `restart: unless-stopped` to MongoDB's compose service
+  (`mongo_docker/docker-compose-basic.yaml`) — found stopped with no auto-restart
+  during this session's earlier DNS-outage triage.
+
+
 ## [v2.0-beta_0.16] - 2026-07-17
 
 ### Fixed — VoLTE SIP REGISTER now actually completes (real end-to-end test, `linphonec`)

@@ -92,7 +92,8 @@ export type AuditAction =
   | 'dns_migration_backup'
   | 'dns_migration_rollback'
   | 'esim_generate'
-  | 'sepp_generate_certs';
+  | 'sepp_generate_certs'
+  | 'volte_validation_test';
 
 export interface AuditLogEntry {
   id: string;

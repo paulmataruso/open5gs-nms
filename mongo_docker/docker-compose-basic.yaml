@@ -4,6 +4,7 @@ services:
   mongodb:
     image: mongo:4.4
     container_name: mongodb
+    restart: unless-stopped
     network_mode: host
     command: ["--bind_ip", "0.0.0.0"]
     ports:

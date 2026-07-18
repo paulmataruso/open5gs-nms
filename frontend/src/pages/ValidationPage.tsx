@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   Play, Square, RefreshCw, Wifi, Radio, ChevronDown, ChevronUp,
-  CheckCircle, XCircle, Loader, AlertTriangle, Network, Signal, Trash2, Download,
+  CheckCircle, XCircle, Loader, AlertTriangle, Network, Signal, Trash2, Download, PhoneCall,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
@@ -11,6 +11,7 @@ import {
   InferredConfig, SessionSummary, UeStatus, HostCapacity, PingResult, RawLogs,
 } from '../api/validation';
 import { swuEmulatorApi, SwuEmulatorStatus } from '../api/swuEmulator';
+import { getVolteStatus, runVolteTest, VolteValidationStatus, VolteTestStep } from '../api/volteValidation';
 
 // ─── UE state badge ──────────────────────────────────────────────────────────
 
@@ -249,6 +250,139 @@ function SwuEmulatorCard() {
               {busy === 'stop' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Square className="w-4 h-4" />} Stop Test Tunnel
             </button>
             <SwuLogTerminal lines={runLog} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── VoLTE E2E validation test card ─────────────────────────────────────────
+
+function VolteStepRow({ step }: { step: VolteTestStep }) {
+  return (
+    <div className="flex items-center gap-2 text-xs py-1 border-b border-nms-border/30 last:border-0">
+      {step.ok ? <CheckCircle className="w-3.5 h-3.5 text-green-400 shrink-0" /> : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+      <span className={clsx('flex-1', step.ok ? 'text-nms-text' : 'text-red-400')}>{step.name}</span>
+      <span className="text-nms-text-dim font-mono">{step.durationMs}ms</span>
+      {!step.ok && step.detail && (
+        <span className="text-red-400/80 font-mono truncate max-w-xs" title={step.detail}>{step.detail}</span>
+      )}
+    </div>
+  );
+}
+
+function VolteTestCard() {
+  const [status, setStatus] = useState<VolteValidationStatus | null>(null);
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<VolteTestStep[]>([]);
+  const [result, setResult] = useState<{ success: boolean; error?: string } | null>(null);
+
+  const load = useCallback(async () => {
+    try { setStatus(await getVolteStatus()); } catch { /* backend not reachable */ }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, running ? 3000 : 8000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, running]);
+
+  const doRun = async () => {
+    setRunning(true);
+    setSteps([]);
+    setResult(null);
+    try {
+      const resp = await runVolteTest();
+      if (!resp.ok || !resp.body) {
+        const j = await resp.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${resp.status}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'step') {
+            setSteps(prev => [...prev, parsed as VolteTestStep]);
+          } else if (parsed.type === 'result') {
+            setResult({ success: parsed.success, error: parsed.error });
+          }
+        }
+      }
+    } catch (err: any) {
+      toast.error('VoLTE test failed: ' + String(err.message ?? err));
+      setResult({ success: false, error: String(err.message ?? err) });
+    } finally {
+      setRunning(false);
+      await load();
+    }
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden border-nms-border bg-nms-surface">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-nms-border/50">
+        <div className="flex items-center gap-2">
+          <PhoneCall className="w-4 h-4 text-nms-accent" />
+          <span className="font-semibold text-nms-text">VoLTE End-to-End Test</span>
+          <span className="text-[10px] text-nms-text-dim bg-nms-surface border border-nms-border px-1.5 py-0.5 rounded">IMS / SIP</span>
+        </div>
+        {result && (
+          <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
+            result.success ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
+            {result.success ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {result.success ? 'PASS' : 'FAIL'}
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-4 space-y-4">
+        <p className="text-xs text-nms-text-dim leading-relaxed">
+          Provisions two disposable IMS-only test subscribers directly in PyHSS (no Open5GS/Mongo subscribers, no
+          RAN involved), registers both over SIP via <span className="font-mono">linphonec</span>, places a call
+          from one to the other, answers it, verifies bidirectional RTP media, hangs up, and then deprovisions
+          both test subscribers and reverts the S-CSCF auth mode — all automatically, regardless of outcome.
+        </p>
+
+        {status && !status.imsConfigured && (
+          <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            IMS is not configured yet — go to the IMS page and run Configure first.
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={doRun}
+            disabled={running || !status?.imsConfigured || status?.running}
+            className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40"
+          >
+            {running ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+            {running ? 'Running...' : 'Run VoLTE Test'}
+          </button>
+          {status?.imsDomain && <span className="text-xs text-nms-text-dim">IMS domain: <span className="font-mono text-nms-text">{status.imsDomain}</span></span>}
+        </div>
+
+        {steps.length > 0 && (
+          <div className="pt-2 border-t border-nms-border">
+            <p className="text-xs text-nms-text-dim mb-1">Test steps</p>
+            <div className="bg-nms-bg rounded p-3 border border-nms-border">
+              {steps.map((s, i) => <VolteStepRow key={i} step={s} />)}
+            </div>
+          </div>
+        )}
+
+        {result && !result.success && result.error && (
+          <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 font-mono whitespace-pre-wrap">
+            {result.error}
           </div>
         )}
       </div>
@@ -585,6 +719,8 @@ export function ValidationPage() {
       </div>
 
       <SwuEmulatorCard />
+
+      <VolteTestCard />
 
       {/* Inferred config pills */}
       {inferredCfg && (

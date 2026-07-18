@@ -1211,7 +1211,7 @@ async function mysqlExecFile(filePath: string, database: string): Promise<void> 
   await nsenter('bash', ['-c', `mysql --user=root --protocol=socket ${database} < ${filePath}`], 120000);
 }
 
-async function pyhssApiCall(method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: object): Promise<any> {
+export async function pyhssApiCall(method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: object): Promise<any> {
   const args = ['-s', '-f', '-X', method, `http://127.0.0.1:8080${path}`, '-H', 'Content-Type: application/json'];
   if (body) args.push('-d', JSON.stringify(body));
   const { stdout } = await nsenter('curl', args, 15000);
@@ -1984,11 +1984,24 @@ export function createImsRouter(
       await nsenter('systemctl', ['stop', 'kamailio']).catch(() => {});
       await nsenter('systemctl', ['disable', 'kamailio']).catch(() => {});
 
-      // 16. Enable + start all services (ordered)
+      // 16. Enable + start all services (ordered). The four kamailio-* units parse their
+      // .cfg/.xml config only once at process startup (cdp's Diameter Peer/DefaultRoute
+      // config in particular is never hot-reloaded) — `enable --now` is a no-op on an
+      // already-running unit, so a *re*-Configure would otherwise silently leave a stale
+      // process running against the config this same call just regenerated on disk.
+      // Confirmed live: this caused kamailio-icscf to keep running without a DefaultRoute
+      // entry (cdp's "Empty routing table" error) after a Configure re-run that fixed
+      // icscf.xml — enable+restart for these four instead of enable --now.
+      const kamailioCscfServices = new Set(['kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc']);
       const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-hss', 'pyhss-api', 'pyhss-diameter',
                     'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
       for (const svc of svcs) {
-        await nsenter('systemctl', ['enable', '--now', svc]).catch(() => {});
+        if (kamailioCscfServices.has(svc)) {
+          await nsenter('systemctl', ['enable', svc]).catch(() => {});
+          await nsenter('systemctl', ['restart', svc]).catch(() => {});
+        } else {
+          await nsenter('systemctl', ['enable', '--now', svc]).catch(() => {});
+        }
         if (svc === 'redis-server') {
           await new Promise(r => setTimeout(r, 2000)); // let redis bind before pyhss services
         }
