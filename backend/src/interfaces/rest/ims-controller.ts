@@ -228,7 +228,16 @@ function pcscfDiameterXml(p: { pcscfIp: string; imsDomain: string; pcrfFqdn: str
 }
 
 function icscfDiameterXml(p: { icscfIp: string; imsDomain: string }): string {
-  // cdp configparser only matches <Peer> — <ConnectPeer> is silently ignored
+  // cdp configparser only matches <Peer> — <ConnectPeer> is silently ignored.
+  // <DefaultRoute> is NOT optional decoration — <Peer> alone only drives CER/CEA
+  // connectivity; cdp's outbound message routing table (used by every
+  // AAASendMessage(), including the UAR this module sends for every REGISTER) is
+  // built exclusively from <DefaultRoute> elements (confirmed against cdp's own
+  // configparser.c: DefaultRoute is the only element that populates x->r_table).
+  // Without it the peer connection comes up (CER/CEA succeeds, TCP shows
+  // ESTABLISHED) but every actual request fails with cdp's "Empty routing table"
+  // — confirmed live, 2026-07-17, as "480 Temporarily Unavailable - Diameter Cx
+  // interface failed" on every REGISTER.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <DiameterPeer
     FQDN="icscf.${p.imsDomain}"
@@ -249,11 +258,14 @@ function icscfDiameterXml(p: { icscfIp: string; imsDomain: string }): string {
   <SupportedVendor vendor="4491"/>
   <SupportedVendor vendor="13019"/>
   <Peer FQDN="hss.${p.imsDomain}" port="3868"/>
+  <DefaultRoute FQDN="hss.${p.imsDomain}" metric="10"/>
 </DiameterPeer>
 `;
 }
 
 function scscfDiameterXml(p: { scscfIp: string; imsDomain: string }): string {
+  // See icscfDiameterXml()'s comment — same DefaultRoute requirement applies here
+  // for S-CSCF's Cx (MAR/SAR) messages.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <DiameterPeer
     FQDN="scscf.${p.imsDomain}"
@@ -276,6 +288,7 @@ function scscfDiameterXml(p: { scscfIp: string; imsDomain: string }): string {
   <SupportedVendor vendor="4491"/>
   <SupportedVendor vendor="13019"/>
   <Peer FQDN="hss.${p.imsDomain}" port="3868"/>
+  <DefaultRoute FQDN="hss.${p.imsDomain}" metric="10"/>
 </DiameterPeer>
 `;
 }
@@ -370,8 +383,8 @@ ${extraScscfs}
   provisioning_key: "open5gs-nms"
   SLh_enabled: False
   CancelLocationRequest_Enabled: False
-  Default_iFC: '/opt/pyhss/default_ifc.xml'
-  Default_Sh_UserData: '/opt/pyhss/default_sh_user_data.xml'
+  Default_iFC: 'pyhss/default_ifc.xml'
+  Default_Sh_UserData: 'pyhss/default_sh_user_data.xml'
 
 database:
   db_type: mysql
@@ -379,6 +392,18 @@ database:
   username: pyhss
   password: ims_db_pass
   database: ims_hss_db
+
+# Not actually used (single-HSS deployment, no geo-redundant peer) — but required
+# to exist regardless: database.py's Update_Serving_CSCF() (called on every
+# successful SIP REGISTER's Server-Assignment-Request) does an unguarded
+# config['geored']['sync_actions'] with no .get()/default, unlike every other
+# geored reference in the codebase — a missing section here throws KeyError:
+# 'geored' and silently fails every registration's SAR. Confirmed live,
+# 2026-07-17.
+geored:
+  enabled: False
+  sync_actions: []
+  endpoints: []
 
 redis:
   host: localhost
@@ -403,21 +428,37 @@ api:
 }
 
 function defaultIfcXml(imsDomain: string): string {
+  // Jinja2 variables must be prefixed with `iFC_vars.` — PyHSS's Answer_16777216_301
+  // renders with `template.render(iFC_vars=ims_subscriber_details)`, nesting every
+  // field (imsi, msisdn, scscf_realm, ...) under a single top-level `iFC_vars` dict,
+  // not as bare top-level template variables. A bare `{{ imsi }}` silently renders
+  // as an empty string (Jinja2's default for an undefined variable — no error), which
+  // is what produced `<PrivateID>@</PrivateID>` and got the whole SAA rejected by
+  // Kamailio's XML schema validator — confirmed live, 2026-07-17. There's no
+  // `ims_realm` field on the ims_subscriber row either; `scscf_realm` is what's
+  // actually set (to the IMS domain) at subscriber-creation time — see
+  // ims-controller.ts's `/sync-subscribers` route.
+  //
+  // <Identity>, not <IMSAddressOfRecord> — the real 3GPP Rel7 XSD
+  // (CxDataType_Rel7.xsd, tPublicIdentity) requires the child element inside
+  // PublicIdentity to be named "Identity"; "IMSAddressOfRecord" doesn't exist in
+  // this schema at all and gets rejected with "This element is not expected.
+  // Expected is ( Identity )." — confirmed live, 2026-07-17.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <IMSSubscription>
-  <PrivateID>{{ imsi }}@{{ ims_realm }}</PrivateID>
+  <PrivateID>{{ iFC_vars.imsi }}@{{ iFC_vars.scscf_realm }}</PrivateID>
   <ServiceProfile>
     <PublicIdentity>
       <BarringIndication>0</BarringIndication>
-      <IMSAddressOfRecord>sip:{{ msisdn }}@{{ ims_realm }}</IMSAddressOfRecord>
+      <Identity>sip:{{ iFC_vars.msisdn }}@{{ iFC_vars.scscf_realm }}</Identity>
     </PublicIdentity>
     <PublicIdentity>
       <BarringIndication>0</BarringIndication>
-      <IMSAddressOfRecord>tel:{{ msisdn }}</IMSAddressOfRecord>
+      <Identity>tel:{{ iFC_vars.msisdn }}</Identity>
     </PublicIdentity>
     <PublicIdentity>
       <BarringIndication>0</BarringIndication>
-      <IMSAddressOfRecord>sip:{{ imsi }}@{{ ims_realm }}</IMSAddressOfRecord>
+      <Identity>sip:{{ iFC_vars.imsi }}@{{ iFC_vars.scscf_realm }}</Identity>
     </PublicIdentity>
 
     <!-- Route SIP MESSAGE to SMSC (SMS over IMS) -->
@@ -456,10 +497,11 @@ function defaultIfcXml(imsDomain: string): string {
 }
 
 function defaultShUserDataXml(): string {
+  // Same iFC_vars.-prefix requirement as defaultIfcXml() above.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Sh-Data>
   <PublicIdentifiers>
-    <IMSPublicIdentity>sip:{{ imsi }}@{{ ims_realm }}</IMSPublicIdentity>
+    <IMSPublicIdentity>sip:{{ iFC_vars.imsi }}@{{ iFC_vars.scscf_realm }}</IMSPublicIdentity>
   </PublicIdentifiers>
 </Sh-Data>
 `;
@@ -860,6 +902,22 @@ function bindZoneFile(p: {
 @   IN NS    ns1
 ns1 IN A     ${p.dnsIp}
 
+; Apex A record, pointed at I-CSCF (not P-CSCF). Two independent things need this:
+;  1. A UE/softphone that REGISTERs against the bare home-network domain (the
+;     conventional Request-URI) needs it to resolve at all, or RFC 3263 UA-side
+;     resolution hard-fails even with an explicit outbound proxy configured
+;     (confirmed live, 2026-07-17: linphonec's belle-sip stack refused with
+;     "Unresolvable destination" on a REGISTER to the bare domain).
+;  2. More importantly: P-CSCF's own route[REGISTER] (route/register.cfg) never
+;     sets an explicit destination — dispatcher.list is only consulted under
+;     WITH_SBC, which isn't enabled here — so its final t_relay() falls back to
+;     Kamailio's own RFC 3263 resolution of the Request-URI domain to decide
+;     where to relay the REGISTER next. That must land on I-CSCF (which does the
+;     Cx UAR/LIR S-CSCF lookup), not loop back to P-CSCF itself — confirmed live:
+;     pointing this at P-CSCF caused P-CSCF to try relaying to itself and fail
+;     with "504 Server Time-Out".
+@ IN A ${p.icscfIp}
+
 ; CSCF A records
 pcscf IN A   ${p.pcscfIp}
 icscf IN A   ${p.icscfIp}
@@ -868,6 +926,8 @@ smsc  IN A   ${p.pcscfIp}
 hss   IN A   ${p.hssIp}
 
 ; SRV records
+_sip._udp        IN SRV 0 0 ${p.icscfPort} icscf
+_sip._tcp        IN SRV 0 0 ${p.icscfPort} icscf
 _sip._tcp.pcscf  IN SRV 0 0 ${p.pcscfPort} pcscf
 _sip._udp.pcscf  IN SRV 0 0 ${p.pcscfPort} pcscf
 _sips._tcp.pcscf IN SRV 0 0 5061 pcscf
@@ -876,7 +936,10 @@ _sip._tcp.icscf  IN SRV 0 0 ${p.icscfPort} icscf
 _sip._udp.scscf  IN SRV 0 0 ${p.scscfPort} scscf
 _sip._tcp.scscf  IN SRV 0 0 ${p.scscfPort} scscf
 
-; NAPTR records for P-CSCF discovery (RFC 3455)
+; NAPTR records for P-CSCF discovery (RFC 3455) — both at the apex (for UEs that
+; resolve the bare home-network domain per RFC 3263) and under pcscf (existing).
+@     IN NAPTR 10 0 "s" "SIP+D2T" "" _sip._tcp
+@     IN NAPTR 20 0 "s" "SIP+D2U" "" _sip._udp
 pcscf IN NAPTR 10 0 "s" "SIP+D2T" "" _sip._tcp.pcscf
 pcscf IN NAPTR 20 0 "s" "SIP+D2U" "" _sip._udp.pcscf
 `;
@@ -1783,6 +1846,13 @@ export function createImsRouter(
       deployImsTemplate('kamailio_icscf/kamailio_icscf.cfg', `${HOST_KAMAILIO_ICSCF_DIR}/kamailio_icscf.cfg`);
       deployImsTemplate('kamailio_scscf/kamailio_scscf.cfg', `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg`);
       deployImsTemplate('kamailio_scscf/dispatcher.list', `${HOST_KAMAILIO_SCSCF_DIR}/dispatcher.list`);
+      // Required by modparam("ims_registrar_scscf", "user_data_xsd", ...) — without
+      // it, every SAA's iFC XML fails schema validation and the whole SIP REGISTER
+      // fails with "500 Server error on UAR select next S-CSCF" once no more
+      // candidate S-CSCFs are left to retry (confirmed live, 2026-07-17). Sourced
+      // directly from Kamailio's own ims_registrar_scscf module source — the exact
+      // schema its own C code validates against, not a hand-authored guess.
+      deployImsTemplate('kamailio_scscf/CxDataType_Rel7.xsd', `${HOST_KAMAILIO_SCSCF_DIR}/CxDataType_Rel7.xsd`);
 
       // 4c. Systemd units for P/I/S-CSCF + all 3 PyHSS services — same gap as 4b:
       // these generator functions existed but were never actually called anywhere.
@@ -2113,6 +2183,20 @@ export function createImsRouter(
               scscf: subScscfUri,
               scscf_realm: subDomain,
               scscf_peer: `scscf.${subDomain}`,
+              // Must be set explicitly — PyHSS's own "fall back to the globally
+              // configured Default_iFC" logic doesn't actually work: its SAR
+              // handler (Answer_16777216_301) does
+              // `templateEnv.get_template(ims_subscriber_details['ifc_path'])`
+              // with no None-check, so a NULL ifc_path (the default for a row
+              // created without this field) crashes with `AttributeError:
+              // 'NoneType' object has no attribute 'split'` deep in Jinja2's
+              // loader — confirmed live, 2026-07-17, and it's what was silently
+              // timing out every SIP REGISTER's Server-Assignment-Request.
+              // Path is relative to PyHSS's own Jinja2 FileSystemLoader
+              // (`searchpath="../"`, resolved from its /opt/pyhss cwd → /opt) —
+              // NOT the filesystem's /opt/pyhss/default_ifc.xml absolute path,
+              // which 404s as a template name (confirmed live).
+              ifc_path: 'pyhss/default_ifc.xml',
             });
 
             msisdnOwnerMap.set(msisdn, { imsi, id: 0 }); // mark MSISDN as claimed for subsequent subs

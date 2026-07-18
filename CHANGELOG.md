@@ -4,6 +4,62 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.16] - 2026-07-17
+
+### Fixed — VoLTE SIP REGISTER now actually completes (real end-to-end test, `linphonec`)
+
+Following the v2.0-beta_0.15 install/configure fixes, drove a real SIP REGISTER
+through the full P-CSCF → I-CSCF → S-CSCF → PyHSS chain using `linphonec` (a
+console SIP client) against a Digest-MD5 test subscriber. Found and fixed 7 more
+real bugs uncovered only by an actual end-to-end auth handshake — none of these
+were reachable by the install/configure smoke-testing alone:
+
+- IMS DNS zone had no apex A record. Added one pointing at **I-CSCF**, not
+  P-CSCF: P-CSCF's own `route[REGISTER]` has no explicit dispatcher target (that
+  only exists under `WITH_SBC`, unused here) — its `t_relay()` falls back to
+  Kamailio's own RFC 3263 resolution of the Request-URI domain, which must land
+  on I-CSCF (does the Cx UAR/LIR S-CSCF lookup) or P-CSCF ends up relaying to
+  itself. Also added apex SRV/NAPTR records for UEs that resolve the bare
+  home-network domain directly.
+- `icscfDiameterXml()`/`scscfDiameterXml()` had a `<Peer>` element but no
+  `<DefaultRoute>` — confirmed against cdp's own `configparser.c`: `<Peer>` only
+  drives CER/CEA connectivity, `<DefaultRoute>` is the *only* thing that
+  populates cdp's outbound routing table. Without it, Diameter connections came
+  up (TCP ESTABLISHED) but every UAR/MAR/SAR failed with "Empty routing table".
+- `ifc_path` was never set when creating `ims_subscriber` rows. PyHSS's
+  documented "falls back to the globally configured Default_iFC" behavior
+  doesn't actually exist in its SAR handler — a NULL `ifc_path` crashes with
+  `AttributeError: 'NoneType' object has no attribute 'split'`, silently timing
+  out every registration's Server-Assignment-Request.
+- PyHSS's `config.yaml` needs a `geored:` section unconditionally — one code
+  path (`Update_Serving_CSCF`, called on every successful SAR) skips the safe
+  `.get()` pattern used everywhere else in the codebase and does a bare
+  `config['geored']['sync_actions']`, throwing `KeyError: 'geored'` without it.
+- Missing `CxDataType_Rel7.xsd` (`modparam("ims_registrar_scscf", "user_data_xsd", ...)`)
+  — every SAA's iFC XML failed schema validation, surfacing as a confusing
+  `"500 Server error on UAR select next S-CSCF"` once no more candidate S-CSCFs
+  were left to retry. Bundled the authoritative copy straight from Kamailio's
+  own `ims_registrar_scscf` module source.
+- The bundled iFC Jinja2 templates used bare `{{ imsi }}`/`{{ msisdn }}` —
+  PyHSS actually renders with `template.render(iFC_vars=ims_subscriber_details)`,
+  nesting every field under a single `iFC_vars` dict. Bare variables silently
+  render as empty strings (no error), producing `<PrivateID>@</PrivateID>` and
+  failing schema validation. Fixed to `{{ iFC_vars.imsi }}` etc.
+- Template used `<IMSAddressOfRecord>` inside `PublicIdentity`; the real 3GPP
+  Rel7 XSD (`tPublicIdentity`) requires the child element to be named
+  `<Identity>` — `IMSAddressOfRecord` doesn't exist in this schema at all.
+
+Also fixed `Default_iFC`/`Default_Sh_UserData`/per-subscriber `ifc_path` to use
+paths relative to PyHSS's own Jinja2 `FileSystemLoader` (`searchpath="../"`,
+resolved from its `/opt/pyhss` cwd) instead of filesystem-absolute paths, which
+404 as Jinja2 template names.
+
+With all of the above, a full REGISTER → 401 challenge → credentialed REGISTER →
+200 OK round trip now completes cleanly, confirmed registered in S-CSCF's usrloc
+with a proper `Service-Route` and `P-Associated-URI`.
+
+---
+
 ## [v2.0-beta_0.15] - 2026-07-17
 
 ### Fixed — DNS/FQDN Migration Wizard: systemd-resolved bypass no longer requires a manual fix
