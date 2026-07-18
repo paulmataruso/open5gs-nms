@@ -94,11 +94,26 @@ function makeTestIdentity(mcc: string, mnc: string, idx: number): TestIdentity {
   };
 }
 
+// Same "ensure the internet APN exists" logic as ims-controller.ts's /sync-subscribers —
+// a fresh PyHSS install has an empty apn table, and subscriber.default_apn/apn_list are
+// real foreign keys, so hardcoding apn_id=1 fails on any host that hasn't already synced
+// a real subscriber at least once (confirmed live on a from-scratch test01 rebuild).
+async function ensureInternetApnId(): Promise<number> {
+  const apnList: any[] = await pyhssApiCall('GET', '/apn/list');
+  const existing = Array.isArray(apnList) ? apnList.find((a: any) => a.apn === 'internet') : null;
+  if (existing) return existing.apn_id;
+  const created = await pyhssApiCall('PUT', '/apn/', {
+    apn: 'internet', apn_ambr_dl: 999999, apn_ambr_ul: 999999, qci: 9, arp_priority: 4,
+  });
+  return created.apn_id;
+}
+
 async function provisionPyhssTestSubscriber(identity: TestIdentity, imsDomain: string, scscfPort: number): Promise<void> {
+  const apnId = await ensureInternetApnId();
   const newAuc = await pyhssApiCall('PUT', '/auc/', { ki: identity.ki, opc: identity.opc, amf: '8000', sqn: 0, imsi: identity.imsi });
   await pyhssApiCall('PUT', '/subscriber/', {
     imsi: identity.imsi, msisdn: identity.msisdn, auc_id: newAuc.auc_id,
-    default_apn: 1, apn_list: '1', enabled: true,
+    default_apn: apnId, apn_list: String(apnId), enabled: true,
   });
   await pyhssApiCall('PUT', '/ims_subscriber/', {
     imsi: identity.imsi, msisdn: identity.msisdn, msisdn_list: identity.msisdn,
