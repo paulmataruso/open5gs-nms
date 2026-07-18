@@ -25,17 +25,17 @@ import { pyhssApiCall } from './ims-controller';
 // S-CSCF into that mode and ALWAYS switches it back in a finally block, since
 // leaving it on would be a real security regression for actual subscribers.
 
-const HOST_ROOT       = '/proc/1/root';
+export const HOST_ROOT = '/proc/1/root';
 const HOST_IMS_STATE  = `${HOST_ROOT}/etc/open5gs/.ims-config.json`;
 const HOST_SCSCF_CFG  = `${HOST_ROOT}/etc/kamailio_scscf/scscf.cfg`;
 const VOLTE_TEST_ROOT = '/tmp/volte-validation';
 
-interface ImsState {
+export interface ImsState {
   imsDomain: string;
   config: { mcc: string; mnc: string; scscfPort?: number; pcscfIp: string; pcscfPort?: number };
 }
 
-function readImsState(): ImsState | null {
+export function readImsState(): ImsState | null {
   try {
     return JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
   } catch {
@@ -53,7 +53,7 @@ async function nsenter(cmd: string, args: string[] = [], timeoutMs = 20000): Pro
   }) as unknown as Promise<{ stdout: string; stderr: string }>;
 }
 
-async function ensureLinphoneInstalled(): Promise<void> {
+export async function ensureLinphoneInstalled(): Promise<void> {
   try {
     await nsenter('which', ['linphonec']);
     return;
@@ -78,14 +78,14 @@ function randomTestImsi(mcc: string, mnc: string, idx: number): string {
   return (plmn + suffix).slice(0, 15).padEnd(15, String(idx));
 }
 
-interface TestIdentity {
+export interface TestIdentity {
   imsi: string;
   msisdn: string;
   ki: string;
   opc: string;
 }
 
-function makeTestIdentity(mcc: string, mnc: string, idx: number): TestIdentity {
+export function makeTestIdentity(mcc: string, mnc: string, idx: number): TestIdentity {
   return {
     imsi: randomTestImsi(mcc, mnc, idx),
     msisdn: '9' + crypto.randomInt(0, 10000000000).toString().padStart(10, '0'),
@@ -108,23 +108,27 @@ async function ensureInternetApnId(): Promise<number> {
   return created.apn_id;
 }
 
-async function provisionPyhssTestSubscriber(identity: TestIdentity, imsDomain: string, scscfPort: number): Promise<void> {
+export async function provisionPyhssTestSubscriber(
+  identity: TestIdentity, imsDomain: string, scscfPort: number,
+): Promise<{ apnId: number; aucId: number }> {
   const apnId = await ensureInternetApnId();
   const newAuc = await pyhssApiCall('PUT', '/auc/', { ki: identity.ki, opc: identity.opc, amf: '8000', sqn: 0, imsi: identity.imsi });
   await pyhssApiCall('PUT', '/subscriber/', {
     imsi: identity.imsi, msisdn: identity.msisdn, auc_id: newAuc.auc_id,
     default_apn: apnId, apn_list: String(apnId), enabled: true,
   });
+  const scscfUri = `sip:scscf.${imsDomain}:${scscfPort}`;
   await pyhssApiCall('PUT', '/ims_subscriber/', {
     imsi: identity.imsi, msisdn: identity.msisdn, msisdn_list: identity.msisdn,
-    scscf: `sip:scscf.${imsDomain}:${scscfPort}`,
+    scscf: scscfUri,
     scscf_realm: imsDomain,
     scscf_peer: `scscf.${imsDomain}`,
     ifc_path: 'pyhss/default_ifc.xml',
   });
+  return { apnId, aucId: newAuc.auc_id };
 }
 
-async function deprovisionPyhssTestSubscriber(imsi: string): Promise<void> {
+export async function deprovisionPyhssTestSubscriber(imsi: string): Promise<void> {
   for (const [getPath, deletePathPrefix] of [
     [`/ims_subscriber/ims_subscriber_imsi/${imsi}`, '/ims_subscriber/'],
     [`/subscriber/imsi/${imsi}`, '/subscriber/'],
@@ -140,7 +144,7 @@ async function deprovisionPyhssTestSubscriber(imsi: string): Promise<void> {
 
 // ── S-CSCF test auth mode (Digest-MD5) — always reverted ───────────────────
 
-async function setScscfTestAuthMode(enabled: boolean): Promise<void> {
+export async function setScscfTestAuthMode(enabled: boolean): Promise<void> {
   let raw = fs.readFileSync(HOST_SCSCF_CFG, 'utf-8');
   const target = enabled ? 'MD5' : 'HSS-Selected';
   raw = raw.replace(/#!define REG_AUTH_DEFAULT_ALG "[^"]*"/, `#!define REG_AUTH_DEFAULT_ALG "${target}"`);
@@ -155,7 +159,7 @@ async function setScscfTestAuthMode(enabled: boolean): Promise<void> {
 // approach used for manual testing — much more robust for watching specific
 // state transitions with a real timeout instead of sleep-then-grep.
 
-interface LinphoneSession {
+export interface LinphoneSession {
   proc: ChildProcessWithoutNullStreams;
   buffer: string;
   send(cmd: string): void;
@@ -163,16 +167,17 @@ interface LinphoneSession {
   stop(): void;
 }
 
-function startLinphoneSession(configPath: string, homeDir: string): LinphoneSession {
+export function startLinphoneSession(configPath: string, homeDir: string, netns?: string): LinphoneSession {
   // configPath/homeDir are real HOST paths (the linphonec process below runs inside the
   // host's mount namespace via nsenter -m) — but this container's own fs.* calls need the
   // /proc/1/root bind-mount prefix to reach the same files from in here.
   fs.mkdirSync(`${HOST_ROOT}${homeDir}/.local/share/linphone`, { recursive: true });
-  const proc = spawn('nsenter', [
-    '-t', '1', '-m', '-u', '-i', '-n', '-p', '--',
-    'env', `HOME=${homeDir}`,
-    'linphonec', '-c', configPath, '-d', '3',
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  // `netns`, when given, routes linphonec's traffic through a pre-established network
+  // namespace (e.g. the SWu-IKEv2 emulator's IPsec tunnel netns for VoWiFi testing) — same
+  // pattern swu-emulator-controller.ts itself uses to launch the emulator inside that netns.
+  const target = netns ? ['ip', 'netns', 'exec', netns, 'env', `HOME=${homeDir}`, 'linphonec', '-c', configPath, '-d', '3']
+                       : ['env', `HOME=${homeDir}`, 'linphonec', '-c', configPath, '-d', '3'];
+  const proc = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-n', '-p', '--', ...target], { stdio: ['pipe', 'pipe', 'pipe'] });
 
   const session: LinphoneSession = {
     proc,
@@ -205,7 +210,7 @@ function startLinphoneSession(configPath: string, homeDir: string): LinphoneSess
   return session;
 }
 
-function linphonerc(identity: TestIdentity, imsDomain: string, tcpPort: number, pcscfIp: string, pcscfPort: number): string {
+export function linphonerc(identity: TestIdentity, imsDomain: string, tcpPort: number, pcscfIp: string, pcscfPort: number): string {
   return `[sip]
 sip_port=-1
 sip_tcp_port=${tcpPort}
@@ -235,6 +240,7 @@ export interface VolteTestStep {
   name: string;
   ok: boolean;
   detail?: string;
+  logExcerpt?: string;
   durationMs: number;
 }
 
@@ -243,6 +249,11 @@ export interface VolteTestResult {
   steps: VolteTestStep[];
   error?: string;
 }
+
+// A single step's raw log transcript can be tens of KB of belle-sip/liblinphone debug
+// noise — cap it generously (this is a debugging tool, verbosity is the point) rather
+// than truncate to a one-line summary like the old timeout-only snippet did.
+const LOG_EXCERPT_MAX = 20000;
 
 async function runStep<T>(steps: VolteTestStep[], name: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
@@ -258,13 +269,28 @@ async function runStep<T>(steps: VolteTestStep[], name: string, fn: () => Promis
 
 export async function runVolteE2ETest(onStep?: (step: VolteTestStep) => void): Promise<VolteTestResult> {
   const steps: VolteTestStep[] = [];
-  const wrap = async <T,>(name: string, fn: () => Promise<T>): Promise<T> => {
+  // `extra.detail` overrides/sets the human-readable summary on success (e.g. which
+  // IMSI/auc_id/apn_id got created); `extra.logExcerpt` attaches a raw transcript
+  // (evaluated via a closure so it can read session buffers captured at call time) —
+  // both are evaluated here, before onStep fires, since by the time `wrap()` returns to
+  // its caller the step has already been streamed to the client.
+  const wrap = async <T,>(
+    name: string, fn: () => Promise<T>,
+    extra?: { detail?: () => string; logExcerpt?: () => string },
+  ): Promise<T> => {
     try {
       const result = await runStep(steps, name, fn);
-      if (onStep) onStep(steps[steps.length - 1]);
+      const step = steps[steps.length - 1];
+      if (extra?.detail) step.detail = extra.detail();
+      if (extra?.logExcerpt) step.logExcerpt = extra.logExcerpt().slice(-LOG_EXCERPT_MAX);
+      if (onStep) onStep(step);
       return result;
     } catch (err) {
-      if (onStep) onStep(steps[steps.length - 1]);
+      const step = steps[steps.length - 1];
+      if (extra?.logExcerpt) {
+        try { step.logExcerpt = extra.logExcerpt().slice(-LOG_EXCERPT_MAX); } catch { /* best-effort */ }
+      }
+      if (onStep) onStep(step);
       throw err;
     }
   };
@@ -277,29 +303,53 @@ export async function runVolteE2ETest(onStep?: (step: VolteTestStep) => void): P
   let identityA: TestIdentity | undefined;
   let identityB: TestIdentity | undefined;
   let testAuthModeEnabled = false;
+  let ims: ImsState | null = null;
+  let provA: { apnId: number; aucId: number } | undefined;
+  let provB: { apnId: number; aucId: number } | undefined;
+  let linphoneWasAlreadyInstalled = false;
+
+  // Raw per-step transcript helpers — sessions accumulate everything (including verbose
+  // belle-sip/liblinphone debug noise) in `.buffer`; these let each step attach only the
+  // slice that happened during that step, not the other session's or a prior step's.
+  const markOf = (s?: LinphoneSession) => s?.buffer.length ?? 0;
+  const diffOf = (s: LinphoneSession | undefined, from: number) => (s?.buffer.slice(from) ?? '').trim();
+  const combinedDiff = (aFrom: number, bFrom: number): string => {
+    const a = diffOf(sessionA, aFrom);
+    const b = diffOf(sessionB, bFrom);
+    const parts: string[] = [];
+    if (a) parts.push(`── A (${identityA?.imsi}) ──\n${a}`);
+    if (b) parts.push(`── B (${identityB?.imsi}) ──\n${b}`);
+    return parts.join('\n\n');
+  };
 
   try {
     const state = await wrap('Check IMS is configured', async () => {
-      const s = readImsState();
-      if (!s) throw new Error('IMS is not configured — run the IMS Configure wizard first.');
-      return s;
-    });
+      ims = readImsState();
+      if (!ims) throw new Error('IMS is not configured — run the IMS Configure wizard first.');
+      return ims;
+    }, { detail: () => `Domain ${ims!.imsDomain}, P-CSCF ${ims!.config.pcscfIp}:${ims!.config.pcscfPort ?? 5060}, S-CSCF port ${ims!.config.scscfPort ?? 6060}` });
 
     const { mcc, mnc, scscfPort = 6060, pcscfIp, pcscfPort = 5060 } = state.config;
     identityA = makeTestIdentity(mcc, mnc, 1);
     identityB = makeTestIdentity(mcc, mnc, 2);
 
-    await wrap('Ensure linphonec is installed', ensureLinphoneInstalled);
+    await wrap('Ensure linphonec is installed', async () => {
+      try {
+        await nsenter('which', ['linphonec']);
+        linphoneWasAlreadyInstalled = true;
+      } catch { /* not installed — ensureLinphoneInstalled will apt-get it */ }
+      await ensureLinphoneInstalled();
+    }, { detail: () => linphoneWasAlreadyInstalled ? 'Already installed' : 'Installed via apt-get (linphone-cli)' });
 
-    await wrap('Provision test subscriber A in PyHSS', () =>
-      provisionPyhssTestSubscriber(identityA!, state.imsDomain, scscfPort));
-    await wrap('Provision test subscriber B in PyHSS', () =>
-      provisionPyhssTestSubscriber(identityB!, state.imsDomain, scscfPort));
+    await wrap('Provision test subscriber A in PyHSS', async () => { provA = await provisionPyhssTestSubscriber(identityA!, state.imsDomain, scscfPort); },
+      { detail: () => `IMSI ${identityA!.imsi}, MSISDN ${identityA!.msisdn}, auc_id=${provA!.aucId}, apn_id=${provA!.apnId}` });
+    await wrap('Provision test subscriber B in PyHSS', async () => { provB = await provisionPyhssTestSubscriber(identityB!, state.imsDomain, scscfPort); },
+      { detail: () => `IMSI ${identityB!.imsi}, MSISDN ${identityB!.msisdn}, auc_id=${provB!.aucId}, apn_id=${provB!.apnId}` });
 
     await wrap('Enable S-CSCF test auth mode (Digest-MD5)', async () => {
       await setScscfTestAuthMode(true);
       testAuthModeEnabled = true;
-    });
+    }, { detail: () => 'REG_AUTH_DEFAULT_ALG set to "MD5" in scscf.cfg, kamailio-scscf restarted (subscriber\'s Ki hex used directly as the SIP digest password)' });
 
     // dirA/dirB/configA/configB are real HOST paths — see startLinphoneSession's note above.
     fs.mkdirSync(`${HOST_ROOT}${dirA}`, { recursive: true });
@@ -312,35 +362,57 @@ export async function runVolteE2ETest(onStep?: (step: VolteTestStep) => void): P
     await wrap('Register subscriber A', async () => {
       sessionA = startLinphoneSession(configA, dirA);
       await sessionA.waitFor(/Register refresher \[200\]|registered, identity=/, 20000);
+    }, {
+      detail: () => `sip:${identityA!.imsi}@${state.imsDomain} registered via TCP to ${pcscfIp}:${pcscfPort}`,
+      logExcerpt: () => diffOf(sessionA, 0),
     });
     await wrap('Register subscriber B', async () => {
       sessionB = startLinphoneSession(configB, dirB);
       await sessionB.waitFor(/Register refresher \[200\]|registered, identity=/, 20000);
+    }, {
+      detail: () => `sip:${identityB!.imsi}@${state.imsDomain} registered via TCP to ${pcscfIp}:${pcscfPort}`,
+      logExcerpt: () => diffOf(sessionB, 0),
     });
 
+    let markA = markOf(sessionA), markB = markOf(sessionB);
     await wrap('Place call A → B', async () => {
       sessionA!.send(`call sip:${identityB!.imsi}@${state.imsDomain}`);
       await sessionB!.waitFor(/Incoming call ringing/, 15000);
+    }, {
+      detail: () => `INVITE sent A → sip:${identityB!.imsi}@${state.imsDomain}, ringing on B`,
+      logExcerpt: () => combinedDiff(markA, markB),
     });
 
+    markA = markOf(sessionA); markB = markOf(sessionB);
     await wrap('Answer call on B', async () => {
       sessionB!.send('answer');
       await Promise.all([
         sessionA!.waitFor(/LinphoneCallStreamsRunning|Media streams established/, 15000),
         sessionB!.waitFor(/LinphoneCallStreamsRunning|Media streams established/, 15000),
       ]);
+    }, {
+      detail: () => '200 OK sent from B, both legs report media streams established',
+      logExcerpt: () => combinedDiff(markA, markB),
     });
 
+    markA = markOf(sessionA); markB = markOf(sessionB);
     await wrap('Verify bidirectional RTP media', async () => {
       await Promise.all([
         sessionA!.waitFor(/Bandwidth usage for CallSession/, 10000),
         sessionB!.waitFor(/Bandwidth usage for CallSession/, 10000),
       ]);
+    }, {
+      detail: () => 'Bandwidth usage confirmed on both legs — RTP is actually flowing, not just signaling',
+      logExcerpt: () => combinedDiff(markA, markB),
     });
 
+    markA = markOf(sessionA); markB = markOf(sessionB);
     await wrap('Hang up cleanly', async () => {
       sessionA!.send('terminate');
       await sessionA!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000);
+    }, {
+      detail: () => 'BYE sent from A, call released cleanly',
+      logExcerpt: () => combinedDiff(markA, markB),
     });
 
     return { success: true, steps };

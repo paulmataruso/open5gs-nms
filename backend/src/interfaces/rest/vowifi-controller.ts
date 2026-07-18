@@ -318,6 +318,7 @@ WantedBy=multi-user.target
 // here, and reconstructing all of it by hand risks subtle Erlang term syntax errors.
 function patchOsmoEpdgSysConfig(template: string, opts: {
   epdgIp: string; hssSwxIp: string; smfGtpcIp: string; s6bLocalIp: string; gsupPort: number;
+  aaaFqdn: string; realm: string;
 }): string {
   let content = template;
   const replaceOnce = (from: string, to: string, label: string) => {
@@ -333,6 +334,23 @@ function patchOsmoEpdgSysConfig(template: string, opts: {
   replaceOnce('{ip, {127,0,0,2}}', `{ip, {${opts.epdgIp.split('.').join(',')}}}`, 'gtp_u_kmod socket ip');
   replaceOnce('gsup_local_ip, "0.0.0.0"', `gsup_local_ip, "${opts.epdgIp}"`, 'gsup_local_ip');
   replaceOnce('gsup_local_port, 4222', `gsup_local_port, ${opts.gsupPort}`, 'gsup_local_port');
+
+  // osmo-epdg's own S6b Diameter identity — the pristine template ships with stock
+  // "localdomain" placeholders that were never wired up to the real PLMN's realm.
+  // SMF's own S6b ConnectPeer (upsertSmfAaaPeer, below) is correctly configured to
+  // expect a peer identified as `aaaFqdn` — but until osmo-epdg is ALSO told to
+  // present that same identity in its own CER/CEA, the two never match. freeDiameter
+  // requires "the configured Diameter Identity MUST match the information received
+  // inside CEA, or the connection will be aborted" — so SMF's S6b AAR silently fails
+  // with DIAMETER_UNABLE_TO_DELIVER (its ConnectPeer for aaaFqdn never opens, since
+  // osmo-epdg keeps identifying itself as "aaa.localdomain" instead), which is misread
+  // by Open5GS's own SMF state machine as if a Gx session existed and needs
+  // terminating — the actual VoWiFi PDN session never has a chance to establish.
+  // Confirmed live (2026-07-18): this was the root cause of every VoWiFi tunnel
+  // attempt failing at the final IKE_AUTH step with a generic AUTHENTICATION_FAILED.
+  replaceOnce('dia_s6b_origin_host, "aaa.localdomain"', `dia_s6b_origin_host, "${opts.aaaFqdn}"`, 'dia_s6b_origin_host');
+  replaceOnce('dia_s6b_origin_realm, "localdomain"', `dia_s6b_origin_realm, "${opts.realm}"`, 'dia_s6b_origin_realm');
+  replaceOnce('dia_s6b_context_id, "aaa@localdomain"', `dia_s6b_context_id, "aaa@${opts.realm}"`, 'dia_s6b_context_id');
 
   if (opts.s6bLocalIp !== '127.0.0.10' && content.includes('dia_s6b_local_ip, "127.0.0.10"')) {
     content = content.replace('dia_s6b_local_ip, "127.0.0.10"', `dia_s6b_local_ip, "${opts.s6bLocalIp}"`);
@@ -649,7 +667,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         return res.status(500).json({ ok: false, error: `osmo-epdg config template not found at ${BUILD_WORKDIR}/osmo-epdg/config/sys.config — the build directory may have been removed. Reinstall to regenerate it.` });
       }
       const template = fs.readFileSync(HOST_OSMO_EPDG_TEMPLATE, 'utf-8');
-      const patched = patchOsmoEpdgSysConfig(template, { epdgIp, hssSwxIp, smfGtpcIp, s6bLocalIp, gsupPort });
+      const patched = patchOsmoEpdgSysConfig(template, { epdgIp, hssSwxIp, smfGtpcIp, s6bLocalIp, gsupPort, aaaFqdn, realm });
       fs.mkdirSync(path.dirname(HOST_OSMO_EPDG_CONFIG), { recursive: true });
       fs.writeFileSync(HOST_OSMO_EPDG_CONFIG, patched, 'utf-8');
       fs.mkdirSync(HOST_OSMO_EPDG_RUNTIME_DIR + '/log', { recursive: true });
@@ -745,10 +763,18 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      // osmo-epdg must be up before charon connects out to its GSUP port.
-      await nsenter('systemctl', ['enable', '--now', 'vowifi-osmo-epdg']);
+      // `enable --now` is a no-op on an already-running unit — same class of bug found
+      // and fixed in bind-controller.ts/ims-controller.ts's own Configure flows. If
+      // Configure just regenerated osmo-epdg.config (e.g. a new S6b identity fix), an
+      // already-running vowifi-osmo-epdg would otherwise keep serving the stale config
+      // until something else happened to restart it. `enable` + unconditional
+      // `restart` guarantees Start always actually applies whatever config currently
+      // exists on disk, whether this is a first start or a re-start after Configure.
+      await nsenter('systemctl', ['enable', 'vowifi-osmo-epdg']);
+      await nsenter('systemctl', ['restart', 'vowifi-osmo-epdg']);
       await new Promise(r => setTimeout(r, 2000));
-      await nsenter('systemctl', ['enable', '--now', 'vowifi-charon']);
+      await nsenter('systemctl', ['enable', 'vowifi-charon']);
+      await nsenter('systemctl', ['restart', 'vowifi-charon']);
       await auditLogger.log({ action: 'vowifi_start', user, success: true });
       res.json({ ok: true });
     } catch (err) {

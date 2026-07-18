@@ -1,13 +1,14 @@
-const BASE = '/api/validation/volte';
+const BASE = '/api/validation/vowifi';
 
-export interface VolteValidationStatus {
+export interface VowifiValidationStatus {
   success: boolean;
   imsConfigured: boolean;
   imsDomain: string | null;
   running: boolean;
+  tunnelAlreadyRunning: boolean;
 }
 
-export interface VolteTestStep {
+export interface VowifiTestStep {
   type: 'step';
   name: string;
   ok: boolean;
@@ -16,19 +17,19 @@ export interface VolteTestStep {
   durationMs: number;
 }
 
-export interface VolteTestResultLine {
+export interface VowifiTestResultLine {
   type: 'result';
   success: boolean;
   error?: string;
 }
 
-export type VolteTestLine = VolteTestStep | VolteTestResultLine;
+export type VowifiTestLine = VowifiTestStep | VowifiTestResultLine;
 
-export async function getVolteStatus(): Promise<VolteValidationStatus> {
+export async function getVowifiStatus(): Promise<VowifiValidationStatus> {
   const r = await fetch(`${BASE}/status`, { credentials: 'include' });
   return r.json();
 }
 
-export function runVolteTest(): Promise<Response> {
+export function runVowifiTest(): Promise<Response> {
   return fetch(`${BASE}/run`, { method: 'POST', credentials: 'include' });
 }

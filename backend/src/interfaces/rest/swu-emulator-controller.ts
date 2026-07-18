@@ -14,7 +14,7 @@ import { ipToNum, numToIp, cidrRange } from '../../domain/services/ip-utils';
 // ─── Host paths / constants ─────────────────────────────────────────────────
 const SWU_DIR           = '/opt/swu-emulator';
 const HOST_SWU_DIR      = `/proc/1/root${SWU_DIR}`;
-const SWU_NETNS         = 'swu-test';
+export const SWU_NETNS  = 'swu-test';
 const VETH_HOST         = 'veth-swu';
 const VETH_NS           = 'veth-ue';
 const HOST_VETH_CIDR    = '192.168.250.1/30';
@@ -32,7 +32,7 @@ const LOG_FILE          = '/var/log/open5gs-nms/swu-emulator.log';
 const TEST_NICKNAME_PREFIX = 'SWU-TEST-';
 
 // ─── State ──────────────────────────────────────────────────────────────────
-interface SwuState {
+export interface SwuState {
   running: boolean;
   imsi: string | null;
   k: string | null;
@@ -46,7 +46,7 @@ function defaultState(): SwuState {
   return { running: false, imsi: null, k: null, opc: null, staticIp: null, autoCreatedSubscriber: false, startedAt: null };
 }
 
-function loadState(): SwuState {
+export function loadSwuState(): SwuState {
   try {
     if (fs.existsSync(HOST_STATE_FILE)) return { ...defaultState(), ...JSON.parse(fs.readFileSync(HOST_STATE_FILE, 'utf-8')) };
   } catch { /* corrupt */ }
@@ -135,7 +135,7 @@ async function findFreeTestIp(subscriberRepo: ISubscriberRepository): Promise<st
   throw new Error('No free IP found in the "internet" subnet for a test subscriber');
 }
 
-async function ensureNetns(): Promise<void> {
+export async function ensureNetns(): Promise<void> {
   await nsenter('bash', ['-c', `
 set -e
 ip netns add ${SWU_NETNS} 2>/dev/null || true
@@ -151,9 +151,107 @@ sysctl -w net.ipv4.ip_forward=1 >/dev/null
 `], 20000);
 }
 
-async function teardownNetns(): Promise<void> {
+export async function teardownNetns(): Promise<void> {
   await nsenter('bash', ['-c',
     `ip netns del ${SWU_NETNS} 2>/dev/null || true; ip link del ${VETH_HOST} 2>/dev/null || true`], 15000);
+}
+
+// Core tunnel start/stop logic, extracted so other test modules (VoWiFi E2E validation)
+// can reuse the exact same battle-tested establish/teardown path instead of duplicating
+// it — same precedent as ims-controller.ts exporting pyhssApiCall for the VoLTE test
+// module. Throws on any precondition failure; callers (the HTTP route below, or another
+// module) decide how to surface that.
+export async function startSwuTestTunnel(
+  subscriberRepo: ISubscriberRepository,
+  overrides?: { imsi?: string; k?: string; opc?: string; staticIp?: string },
+): Promise<{ imsi: string; k: string; opc: string; staticIp: string; autoCreated: boolean }> {
+  const state = loadSwuState();
+  if (state.running) throw new Error('A test session is already running — Stop it first.');
+  const installed = fs.existsSync(`${HOST_SWU_DIR}/.venv/bin/python3`);
+  if (!installed) throw new Error('Emulator not installed yet — run Install first.');
+  const epdgIp = readVowifiEpdgIp();
+  if (!epdgIp) throw new Error('VoWiFi is not configured yet — run Configure on the VoWiFi page first.');
+
+  const { mcc, mnc } = readMccMnc();
+  const mncPadded = mnc.padStart(3, '0');
+
+  let { imsi, k, opc, staticIp } = overrides ?? {};
+  let autoCreated = false;
+
+  if (!imsi || !k || !opc) {
+    const msinLen = 15 - mcc.length - mnc.length;
+    const msin = crypto.randomInt(0, 10 ** msinLen).toString().padStart(msinLen, '0');
+    imsi = `${mcc}${mnc}${msin}`;
+    k = crypto.randomBytes(16).toString('hex').toUpperCase();
+    opc = crypto.randomBytes(16).toString('hex').toUpperCase();
+    staticIp = staticIp || await findFreeTestIp(subscriberRepo);
+    autoCreated = true;
+
+    const nickname = `${TEST_NICKNAME_PREFIX}${crypto.randomBytes(3).toString('hex')}`;
+    await subscriberRepo.create({
+      imsi, nickname, msisdn: [],
+      security: { k, opc, amf: '8000' },
+      ambr: { uplink: { value: 1, unit: 3 }, downlink: { value: 1, unit: 3 } },
+      slice: [{
+        sst: 1, default_indicator: true,
+        session: [{
+          name: 'internet', type: 3,
+          ambr: { uplink: { value: 1, unit: 3 }, downlink: { value: 1, unit: 3 } },
+          qos: { index: 9, arp: { priority_level: 8, pre_emption_capability: 1, pre_emption_vulnerability: 1 } },
+          pcc_rule: [],
+          ue: { ipv4: staticIp },
+        }],
+      }],
+      subscribed_rau_tau_timer: 12,
+      subscriber_status: 0,
+      access_restriction_data: 32,
+      network_access_mode: 0,
+    } as Subscriber);
+  } else if (!staticIp) {
+    throw new Error('staticIp is required when providing your own imsi/k/opc — never test with unconstrained dynamic allocation (risk of colliding with a real subscriber\'s IP).');
+  }
+
+  await ensureNetns();
+
+  if (fs.existsSync(LOG_FILE)) fs.writeFileSync(LOG_FILE, '');
+  const logFd = fs.openSync(LOG_FILE, 'a');
+  const child = spawn('nsenter', [
+    '-t', '1', '-m', '-u', '-i', '-n', '-p', '--',
+    'ip', 'netns', 'exec', SWU_NETNS,
+    `${SWU_DIR}/.venv/bin/python3`, `${SWU_DIR}/swu_emulator.py`,
+    '-s', NS_VETH_IP, '-d', epdgIp, '-a', 'internet',
+    '-M', mcc, '-N', mncPadded, '-K', k!, '-C', opc!, '-I', imsi!,
+  ], { stdio: ['pipe', logFd, logFd], detached: true });
+  child.unref();
+  fs.closeSync(logFd);
+
+  saveState({
+    running: true, imsi: imsi!, k: k!, opc: opc!, staticIp: staticIp!,
+    autoCreatedSubscriber: autoCreated, startedAt: new Date().toISOString(),
+  });
+  appendLog(`==RUN:start imsi=${imsi} staticIp=${staticIp} epdgIp=${epdgIp}==`);
+
+  return { imsi: imsi!, k: k!, opc: opc!, staticIp: staticIp!, autoCreated };
+}
+
+export async function stopSwuTestTunnel(subscriberRepo: ISubscriberRepository, logger: pino.Logger): Promise<void> {
+  const state = loadSwuState();
+  await nsenter('bash', ['-c', 'pkill -9 -f swu_emulator.py || true'], 10000).catch(() => {});
+  await nsenter('swanctl', ['--terminate', '--ike', 'rw'], 8000).catch(() => {});
+  await teardownNetns();
+
+  if (state.autoCreatedSubscriber && state.imsi) {
+    const existing = await subscriberRepo.findByImsi(state.imsi);
+    if (existing?.nickname?.startsWith(TEST_NICKNAME_PREFIX)) {
+      await subscriberRepo.delete(state.imsi);
+    } else if (existing) {
+      logger.error({ imsi: state.imsi, nickname: existing.nickname },
+        'SAFETY BLOCK: refusing to delete subscriber — not a SWU-TEST IMSI');
+    }
+  }
+
+  saveState(defaultState());
+  appendLog('==RUN:stopped==');
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -166,7 +264,7 @@ export function createSwuEmulatorRouter(
   const router = Router();
 
   router.get('/status', async (_req: Request, res: Response) => {
-    const state = loadState();
+    const state = loadSwuState();
     const installed = fs.existsSync(`${HOST_SWU_DIR}/.venv/bin/python3`) && fs.existsSync(`${HOST_SWU_DIR}/swu_emulator.py`);
     let tunnelEstablished = false;
     let assignedIp: string | null = null;
@@ -249,89 +347,13 @@ export function createSwuEmulatorRouter(
   router.post('/run', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const state = loadState();
-      if (state.running) {
-        return res.status(409).json({ ok: false, error: 'A test session is already running — Stop it first.' });
-      }
-      const installed = fs.existsSync(`${HOST_SWU_DIR}/.venv/bin/python3`);
-      if (!installed) {
-        return res.status(409).json({ ok: false, error: 'Emulator not installed yet — run Install first.' });
-      }
-      const epdgIp = readVowifiEpdgIp();
-      if (!epdgIp) {
-        return res.status(409).json({ ok: false, error: 'VoWiFi is not configured yet — run Configure on the VoWiFi page first.' });
-      }
-
-      const { mcc, mnc } = readMccMnc();
-      const mncPadded = mnc.padStart(3, '0'); // NAI convention (mnc0XX.mccYYY...), independent of the IMSI's own MNC digit count
-
-      let { imsi, k, opc, staticIp } = req.body as { imsi?: string; k?: string; opc?: string; staticIp?: string };
-      let autoCreated = false;
-
-      if (!imsi || !k || !opc) {
-        const msinLen = 15 - mcc.length - mnc.length;
-        const msin = crypto.randomInt(0, 10 ** msinLen).toString().padStart(msinLen, '0');
-        imsi = `${mcc}${mnc}${msin}`;
-        k = crypto.randomBytes(16).toString('hex').toUpperCase();
-        opc = crypto.randomBytes(16).toString('hex').toUpperCase();
-        staticIp = staticIp || await findFreeTestIp(subscriberRepo);
-        autoCreated = true;
-
-        const nickname = `${TEST_NICKNAME_PREFIX}${crypto.randomBytes(3).toString('hex')}`;
-        await subscriberRepo.create({
-          imsi, nickname, msisdn: [],
-          security: { k, opc, amf: '8000' },
-          ambr: { uplink: { value: 1, unit: 3 }, downlink: { value: 1, unit: 3 } },
-          slice: [{
-            sst: 1, default_indicator: true,
-            session: [{
-              name: 'internet', type: 3,
-              ambr: { uplink: { value: 1, unit: 3 }, downlink: { value: 1, unit: 3 } },
-              qos: { index: 9, arp: { priority_level: 8, pre_emption_capability: 1, pre_emption_vulnerability: 1 } },
-              pcc_rule: [],
-              ue: { ipv4: staticIp },
-            }],
-          }],
-          subscribed_rau_tau_timer: 12,
-          subscriber_status: 0,
-          access_restriction_data: 32,
-          network_access_mode: 0,
-        } as Subscriber);
-      } else if (!staticIp) {
-        return res.status(400).json({ ok: false, error: 'staticIp is required when providing your own imsi/k/opc — never test with unconstrained dynamic allocation (risk of colliding with a real subscriber\'s IP).' });
-      }
-
-      await ensureNetns();
-
-      if (fs.existsSync(LOG_FILE)) fs.writeFileSync(LOG_FILE, '');
-      const logFd = fs.openSync(LOG_FILE, 'a');
-      // stdin MUST be a real, never-closed pipe, not 'ignore' (-> /dev/null). The emulator's
-      // main loop does select.select([sys.stdin, ...]) for its interactive rekey/reauth menu —
-      // reading from /dev/null returns instant EOF, which select() reports as perpetually
-      // "ready", spinning the main process at 100% CPU forever. That starves its own sibling
-      // multiprocessing workers (the actual ESP encode/decode packet forwarders) of scheduling
-      // time, causing severe data-plane packet loss even though the tunnel itself is healthy.
-      // Confirmed via `ps -o stat` showing the main process stuck in state R (runnable/spinning).
-      // An open, unwritten pipe blocks on read instead, which is what we actually want since we
-      // never send it interactive commands (lifecycle is managed via /stop's pkill).
-      const child = spawn('nsenter', [
-        '-t', '1', '-m', '-u', '-i', '-n', '-p', '--',
-        'ip', 'netns', 'exec', SWU_NETNS,
-        `${SWU_DIR}/.venv/bin/python3`, `${SWU_DIR}/swu_emulator.py`,
-        '-s', NS_VETH_IP, '-d', epdgIp, '-a', 'internet',
-        '-M', mcc, '-N', mncPadded, '-K', k!, '-C', opc!, '-I', imsi!,
-      ], { stdio: ['pipe', logFd, logFd], detached: true });
-      child.unref();
-      fs.closeSync(logFd);
-
-      saveState({
-        running: true, imsi: imsi!, k: k!, opc: opc!, staticIp: staticIp!,
-        autoCreatedSubscriber: autoCreated, startedAt: new Date().toISOString(),
+      const { imsi, k, opc, staticIp } = req.body as { imsi?: string; k?: string; opc?: string; staticIp?: string };
+      const result = await startSwuTestTunnel(subscriberRepo, { imsi, k, opc, staticIp });
+      await auditLogger.log({
+        action: 'swu_emulator_run', user,
+        details: `imsi=${result.imsi} staticIp=${result.staticIp} autoCreated=${result.autoCreated}`, success: true,
       });
-      appendLog(`==RUN:start imsi=${imsi} staticIp=${staticIp} epdgIp=${epdgIp}==`);
-
-      await auditLogger.log({ action: 'swu_emulator_run', user, details: `imsi=${imsi} staticIp=${staticIp} autoCreated=${autoCreated}`, success: true });
-      res.json({ ok: true, imsi, staticIp, autoCreated });
+      res.json({ ok: true, ...result });
     } catch (err) {
       logger.error({ err: String(err) }, 'swu-emulator run error');
       await auditLogger.log({ action: 'swu_emulator_run', user, details: String(err), success: false });
@@ -342,26 +364,7 @@ export function createSwuEmulatorRouter(
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const state = loadState();
-      await nsenter('bash', ['-c', 'pkill -9 -f swu_emulator.py || true'], 10000).catch(() => {});
-      // Best-effort clean IKE teardown — known to sometimes hang waiting for a Delete
-      // response from an already-exited peer; bounded timeout, failure is harmless
-      // (the session still gets fully released at the process/netns level below).
-      await nsenter('swanctl', ['--terminate', '--ike', 'rw'], 8000).catch(() => {});
-      await teardownNetns();
-
-      if (state.autoCreatedSubscriber && state.imsi) {
-        const existing = await subscriberRepo.findByImsi(state.imsi);
-        if (existing?.nickname?.startsWith(TEST_NICKNAME_PREFIX)) {
-          await subscriberRepo.delete(state.imsi);
-        } else if (existing) {
-          logger.error({ imsi: state.imsi, nickname: existing.nickname },
-            'SAFETY BLOCK: refusing to delete subscriber — not a SWU-TEST IMSI');
-        }
-      }
-
-      saveState(defaultState());
-      appendLog('==RUN:stopped==');
+      await stopSwuTestTunnel(subscriberRepo, logger);
       await auditLogger.log({ action: 'swu_emulator_stop', user, success: true });
       res.json({ ok: true });
     } catch (err) {

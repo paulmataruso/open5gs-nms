@@ -12,6 +12,7 @@ import {
 } from '../api/validation';
 import { swuEmulatorApi, SwuEmulatorStatus } from '../api/swuEmulator';
 import { getVolteStatus, runVolteTest, VolteValidationStatus, VolteTestStep } from '../api/volteValidation';
+import { getVowifiStatus, runVowifiTest, VowifiValidationStatus, VowifiTestStep } from '../api/vowifiValidation';
 
 // ─── UE state badge ──────────────────────────────────────────────────────────
 
@@ -260,13 +261,33 @@ function SwuEmulatorCard() {
 // ─── VoLTE E2E validation test card ─────────────────────────────────────────
 
 function VolteStepRow({ step }: { step: VolteTestStep }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasLog = !!step.logExcerpt;
   return (
-    <div className="flex items-center gap-2 text-xs py-1 border-b border-nms-border/30 last:border-0">
-      {step.ok ? <CheckCircle className="w-3.5 h-3.5 text-green-400 shrink-0" /> : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />}
-      <span className={clsx('flex-1', step.ok ? 'text-nms-text' : 'text-red-400')}>{step.name}</span>
-      <span className="text-nms-text-dim font-mono">{step.durationMs}ms</span>
-      {!step.ok && step.detail && (
-        <span className="text-red-400/80 font-mono truncate max-w-xs" title={step.detail}>{step.detail}</span>
+    <div className="py-1.5 border-b border-nms-border/30 last:border-0">
+      <div className="flex items-center gap-2 text-xs">
+        {step.ok ? <CheckCircle className="w-3.5 h-3.5 text-green-400 shrink-0" /> : <XCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+        <span className={clsx('shrink-0', step.ok ? 'text-nms-text' : 'text-red-400')}>{step.name}</span>
+        {step.detail && (
+          <span className={clsx('flex-1 font-mono truncate', step.ok ? 'text-nms-text-dim' : 'text-red-400/80')} title={step.detail}>
+            {step.detail}
+          </span>
+        )}
+        {!step.detail && <span className="flex-1" />}
+        <span className="text-nms-text-dim font-mono shrink-0">{step.durationMs}ms</span>
+        {hasLog && (
+          <button
+            onClick={() => setExpanded(v => !v)}
+            className="shrink-0 text-nms-text-dim hover:text-nms-text flex items-center gap-0.5 text-[10px] border border-nms-border rounded px-1 py-0.5"
+          >
+            {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />} log
+          </button>
+        )}
+      </div>
+      {expanded && hasLog && (
+        <pre className="mt-1.5 bg-nms-bg rounded p-2 text-[10px] font-mono text-green-300/90 max-h-64 overflow-y-auto whitespace-pre-wrap border border-nms-border">
+          {step.logExcerpt}
+        </pre>
       )}
     </div>
   );
@@ -367,6 +388,140 @@ function VolteTestCard() {
           >
             {running ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
             {running ? 'Running...' : 'Run VoLTE Test'}
+          </button>
+          {status?.imsDomain && <span className="text-xs text-nms-text-dim">IMS domain: <span className="font-mono text-nms-text">{status.imsDomain}</span></span>}
+        </div>
+
+        {steps.length > 0 && (
+          <div className="pt-2 border-t border-nms-border">
+            <p className="text-xs text-nms-text-dim mb-1">Test steps</p>
+            <div className="bg-nms-bg rounded p-3 border border-nms-border">
+              {steps.map((s, i) => <VolteStepRow key={i} step={s} />)}
+            </div>
+          </div>
+        )}
+
+        {result && !result.success && result.error && (
+          <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 font-mono whitespace-pre-wrap">
+            {result.error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── VoWiFi E2E validation test card ────────────────────────────────────────
+// Same shape as VolteTestCard — the backend establishes a real IPsec tunnel
+// (SWu-IKEv2 emulator) and runs one linphonec instance *inside* that tunnel's
+// network namespace, so this proves SIP/RTP actually transits the encrypted
+// tunnel, not a loopback shortcut. VolteStepRow is reused as-is: VowifiTestStep
+// has the identical shape (name/ok/detail/logExcerpt/durationMs).
+
+function VowifiTestCard() {
+  const [status, setStatus] = useState<VowifiValidationStatus | null>(null);
+  const [running, setRunning] = useState(false);
+  const [steps, setSteps] = useState<VowifiTestStep[]>([]);
+  const [result, setResult] = useState<{ success: boolean; error?: string } | null>(null);
+
+  const load = useCallback(async () => {
+    try { setStatus(await getVowifiStatus()); } catch { /* backend not reachable */ }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, running ? 3000 : 8000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load, running]);
+
+  const doRun = async () => {
+    setRunning(true);
+    setSteps([]);
+    setResult(null);
+    try {
+      const resp = await runVowifiTest();
+      if (!resp.ok || !resp.body) {
+        const j = await resp.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${resp.status}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const parsed = JSON.parse(line);
+          if (parsed.type === 'step') {
+            setSteps(prev => [...prev, parsed as VowifiTestStep]);
+          } else if (parsed.type === 'result') {
+            setResult({ success: parsed.success, error: parsed.error });
+          }
+        }
+      }
+    } catch (err: any) {
+      toast.error('VoWiFi test failed: ' + String(err.message ?? err));
+      setResult({ success: false, error: String(err.message ?? err) });
+    } finally {
+      setRunning(false);
+      await load();
+    }
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden border-nms-border bg-nms-surface">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-nms-border/50">
+        <div className="flex items-center gap-2">
+          <Wifi className="w-4 h-4 text-nms-accent" />
+          <span className="font-semibold text-nms-text">VoWiFi End-to-End Test</span>
+          <span className="text-[10px] text-nms-text-dim bg-nms-surface border border-nms-border px-1.5 py-0.5 rounded">IMS / SIP over IPsec</span>
+        </div>
+        {result && (
+          <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
+            result.success ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
+            {result.success ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {result.success ? 'PASS' : 'FAIL'}
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-4 space-y-4">
+        <p className="text-xs text-nms-text-dim leading-relaxed">
+          Establishes a real IKEv2/EAP-AKA IPsec tunnel to the configured ePDG (reusing the same
+          SWu-IKEv2 emulator as the VoWiFi Test Tunnel card below), then runs{' '}
+          <span className="font-mono">linphonec</span> <em>inside that tunnel's network namespace</em> so
+          its SIP traffic genuinely transits the encrypted tunnel — the same path a real VoWiFi phone
+          takes, not a loopback shortcut. Registers, places a call to a plain local test subscriber,
+          verifies bidirectional RTP, hangs up, then tears down the tunnel and both test identities
+          automatically regardless of outcome.
+        </p>
+
+        {status && !status.imsConfigured && (
+          <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            IMS is not configured yet — go to the IMS page and run Configure first.
+          </div>
+        )}
+        {status?.tunnelAlreadyRunning && (
+          <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            A VoWiFi Test Tunnel session is already running below — stop it first, this test needs the tunnel slot free.
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={doRun}
+            disabled={running || !status?.imsConfigured || status?.running || status?.tunnelAlreadyRunning}
+            className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40"
+          >
+            {running ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+            {running ? 'Running...' : 'Run VoWiFi Test'}
           </button>
           {status?.imsDomain && <span className="text-xs text-nms-text-dim">IMS domain: <span className="font-mono text-nms-text">{status.imsDomain}</span></span>}
         </div>
@@ -721,6 +876,8 @@ export function ValidationPage() {
       <SwuEmulatorCard />
 
       <VolteTestCard />
+
+      <VowifiTestCard />
 
       {/* Inferred config pills */}
       {inferredCfg && (

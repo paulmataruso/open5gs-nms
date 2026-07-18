@@ -68,6 +68,7 @@ import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controll
 import { createBindRouter } from './interfaces/rest/bind-controller';
 import { createValidationRouter } from './interfaces/rest/validation-controller';
 import { createVolteValidationRouter } from './interfaces/rest/volte-validation-controller';
+import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validation-controller';
 import * as http from 'http';
 import { SasService } from './domain/sas/sas-service';
 import { createSasProtocolRouter, createSasAdminRouter } from './interfaces/rest/sas-controller';
@@ -313,6 +314,7 @@ async function main() {
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/bind', createBindRouter(logger, auditLogger));
   app.use('/api/validation/volte', createVolteValidationRouter(logger, auditLogger));
+  app.use('/api/validation/vowifi', createVowifiValidationRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
 

@@ -4,6 +4,53 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.18] - 2026-07-18
+
+### Added — VoWiFi end-to-end test module + VoLTE test verbosity
+
+New "Run VoWiFi Test" card on the UE Validation page, mirroring the VoLTE E2E
+test but genuinely tunneled: reuses the SWu-IKEv2 emulator to establish a real
+IKEv2/EAP-AKA IPsec tunnel to the configured ePDG, then runs `linphonec`
+*inside that tunnel's network namespace* so SIP/RTP actually transit the
+encrypted tunnel — the same path a real VoWiFi phone takes. Registers,
+places a call to a plain local test subscriber, verifies bidirectional RTP,
+tears down the tunnel and both test identities automatically regardless of
+outcome. `swu-emulator-controller.ts`'s tunnel start/stop logic was refactored
+into reusable exported functions so both the manual "Test Tunnel" UI and this
+new test module share one implementation.
+
+Also made the existing VoLTE test module's output significantly more verbose:
+every step now carries a human-readable detail (what was actually created/
+registered/sent), and SIP-signaling steps carry an expandable raw log
+transcript in the UI, not just a pass/fail pill.
+
+### Fixed — real bugs surfaced while live-verifying the new VoWiFi test
+
+- `osmo-epdg`'s S6b Diameter identity was never wired up during VoWiFi
+  Configure — it shipped with the stock `aaa.localdomain`/`localdomain`
+  placeholders while SMF's own S6b peer config correctly expected
+  `aaa.<real-plmn-realm>`. This silently broke *all* VoWiFi tunnel
+  establishment (not just the new test module): Open5GS SMF misinterprets
+  the resulting S6b failure and sends a phantom Gx CCR-Termination for a
+  session that was never created, which PCRF correctly rejects
+  (`DIAMETER_UNKNOWN_SESSION_ID`) — surfacing to the IKE client as a generic
+  `AUTHENTICATION_FAILED` with no indication the real cause was a Diameter
+  identity mismatch two hops away. Fixed `vowifi-controller.ts`'s Configure
+  to patch osmo-epdg's `dia_s6b_origin_host`/`dia_s6b_origin_realm`/
+  `dia_s6b_context_id` from the real PLMN, matching what SMF already expects.
+- VoWiFi's `/start` route had the same `systemctl enable --now` no-op bug
+  found earlier in BIND9/IMS's Configure flows — a no-op on an
+  already-running unit, so Configure changes (like the S6b fix above)
+  wouldn't take effect until something else happened to restart the
+  service. Now uses `enable` + unconditional `restart`.
+- The host's `/etc/resolv.conf` reverted to `8.8.8.8`/`8.8.4.4` for a third
+  time this session (same class of issue as the earlier NF crash-loop
+  incident), this time breaking Kamailio's own SIP domain resolution mid-test.
+  The exact trigger wasn't conclusively identified (ruled out resolvconf,
+  DHCP hooks, NetworkManager, and dummy-interface creation, which
+  deliberately avoids triggering a networkd reload) — made the file
+  immutable (`chattr +i`) as a durable safeguard pending further investigation.
+
 ## [v2.0-beta_0.17] - 2026-07-18
 
 ### Added — Automated VoLTE end-to-end test module (UE Validation)
