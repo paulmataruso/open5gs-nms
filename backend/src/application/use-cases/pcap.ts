@@ -350,7 +350,19 @@ export class PcapUseCase {
       const d = descriptors.find(x => x.nf === nfName);
       if (!d) continue;
       labels.push(d.label);
-      const portClauses = d.hostPorts.map(hp => `(host ${hp.addr} and ${hp.proto} port ${hp.port})`);
+      // BPF's "host" primitive only accepts a single IP — a CIDR range (used
+      // for the Diameter mesh's broad 127.0.0.0/8 placeholder, since a peer
+      // could be at any loopback address) needs the "net" primitive instead,
+      // or dumpcap rejects the whole filter as invalid at capture-start time.
+      // Confirmed live (2026-07-19): selecting several NFs together (any
+      // selection that includes a Diameter-bearing NF: mme/hss/pcrf/smf) blew
+      // up with "That string isn't a valid capture filter (Mask syntax for
+      // networks only)" — dumpcap exits immediately, which is what a
+      // near-zero-duration capture in the history table actually means.
+      const portClauses = d.hostPorts.map(hp => {
+        const addrKeyword = hp.addr.includes('/') ? 'net' : 'host';
+        return `(${addrKeyword} ${hp.addr} and ${hp.proto} port ${hp.port})`;
+      });
       if (portClauses.length) clauses.push(`(${portClauses.join(' or ')})`);
     }
     if (clauses.length === 0) throw new Error('No live ports found for the selected NF(s) — is the module configured?');
