@@ -91,6 +91,13 @@ export type AuditAction =
   | 'dns_migration_phase_c'
   | 'dns_migration_backup'
   | 'dns_migration_rollback'
+  | 'plmn_migration_backup'
+  | 'plmn_migration_phase_a'
+  | 'plmn_migration_phase_b'
+  | 'plmn_migration_phase_c'
+  | 'plmn_migration_phase_d'
+  | 'plmn_migration_verify'
+  | 'plmn_migration_rollback'
   | 'esim_generate'
   | 'sepp_generate_certs'
   | 'volte_validation_test';

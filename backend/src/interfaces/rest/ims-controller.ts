@@ -1522,6 +1522,23 @@ INSERT IGNORE INTO version (table_name, table_version) VALUES ('messages','1');`
 // the manual-UI path live only in the thin route wrapper.
 export type ImsConfigureFullInput = ImsConfigureInput & { mcc: string; mnc: string };
 
+// Reads back the full current config from .ims-config.json (written as a side
+// effect of every configureIms() call) — lets the PLMN migration use-case build
+// `{ ...readCurrentImsConfig(), mcc: newMcc, mnc: newMnc }` instead of an empty
+// body, which would otherwise reset pcscfIp/icscfIp/scscfIp/etc. back to the
+// hardcoded defaults that only live in the manual /configure route wrapper.
+// Returns null if IMS has never been configured (not installed, or Install-only
+// so far) — the migration use-case treats that as "skip this phase", not an error.
+export function readCurrentImsConfig(): ImsConfigureFullInput | null {
+  if (!fs.existsSync(HOST_IMS_STATE)) return null;
+  try {
+    const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    return (saved?.config as ImsConfigureFullInput) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsDomain: string }> {
   const {
     pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,

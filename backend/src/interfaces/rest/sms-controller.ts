@@ -263,6 +263,12 @@ export interface SmsConfigureInput {
   mscBindIp: string;
   hlrBindIp: string;
   mmeLocalIp: string;
+  // If provided and different from the newly-read mcc/mnc, that PLMN's sgsap map
+  // entry is dropped rather than left stale alongside the new one — mergeMapEntry()
+  // only ever adds/updates by (mcc,mnc) key, it never removes, so a primary-PLMN
+  // replace would otherwise accumulate an orphaned entry for the old PLMN forever.
+  previousMcc?: string;
+  previousMnc?: string;
 }
 
 // Reads back the currently-configured bind IPs from the live host files, so the
@@ -293,7 +299,7 @@ export function readCurrentSmsConfig(): SmsConfigureInput | null {
 }
 
 export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: string; mnc: string; tac: number }> {
-  const { mscBindIp, hlrBindIp, mmeLocalIp } = input;
+  const { mscBindIp, hlrBindIp, mmeLocalIp, previousMcc, previousMnc } = input;
 
   // Read MME config for mcc/mnc/tac
   let mcc = '001';
@@ -321,7 +327,10 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
   // wiping the whole section down to just this one PLMN.
   if (fs.existsSync(HOST_MME_YAML)) {
     const raw     = fs.readFileSync(HOST_MME_YAML, 'utf-8');
-    const existing = extractExistingMapEntries(raw);
+    let existing = extractExistingMapEntries(raw);
+    if (previousMcc && previousMnc && (previousMcc !== mcc || previousMnc !== mnc)) {
+      existing = existing.filter(e => !(e.mcc === previousMcc && e.mnc === previousMnc));
+    }
     const entries  = mergeMapEntry(existing, { mcc, mnc, tac });
     const block    = sgsapYamlBlock(mscBindIp, mmeLocalIp, entries);
     const newRaw   = replaceSgsapSection(raw, block);

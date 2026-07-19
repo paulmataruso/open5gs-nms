@@ -126,6 +126,31 @@ export class CrossServiceValidator {
         });
       }
     }
+
+    // Cross-check the 4G EPC side (mme/hss/pcrf) against AMF's own PLMN set —
+    // added for the PLMN Migration Wizard's Phase E verification, but also
+    // useful for the general "Validate Config" page: a partial/out-of-order
+    // PLMN change (e.g. Phase A/C ran but Phase B didn't, or vice versa) shows
+    // up here as a real, actionable warning instead of silently drifting.
+    const mmeRaw = (configs.mme as any)?.rawYaml?.mme;
+    const mmePlmns = new Set<string>();
+    for (const entry of mmeRaw?.gummei || []) {
+      if (entry?.plmn_id) mmePlmns.add(plmnKey(entry.plmn_id.mcc, entry.plmn_id.mnc));
+    }
+    if (mmePlmns.size > 0 && [...mmePlmns].every(pk => !amfPlmns.has(pk))) {
+      errors.push({
+        field: 'mme.gummei',
+        message: `MME's PLMN(s) [${[...mmePlmns].join(', ')}] don't match AMF's plmn_support [${[...amfPlmns].join(', ')}] — 4G and 5G sides appear to be on different PLMNs`,
+        service: 'mme',
+        severity: 'warning',
+      });
+    }
+
+    // hss.yaml/pcrf.yaml have no structured plmn_id field of their own — their
+    // real PLMN identity lives in freeDiameter's Identity/Realm (hss.conf/
+    // pcrf.conf), which this rawYaml-only method has no access to. That check
+    // is done separately, directly against the .conf files, by whichever
+    // caller needs it (see PlmnMigrationUseCase.applyPhaseE).
   }
 
   private validateSliceConsistency(configs: AllConfigs, errors: ValidationError[]): void {
