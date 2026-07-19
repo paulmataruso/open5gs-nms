@@ -4,6 +4,99 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.19] - 2026-07-19
+
+### Added — PLMN Migration Wizard
+
+New Auto Config tab (`PlmnMigrationTab.tsx`) for a coordinated mass MCC/MNC
+change across every layer that references the PLMN in one operation: core
+NF `plmn_id` values, DNS (reusing the DNS/FQDN Migration Wizard's Phase A/B/C
+logic), IMS, SMS, and VoWiFi, with a dry-run plan preview, per-phase (A–E)
+apply buttons with scrollable logs, backup, and rollback. SAS/CBRS, radio
+TR-069 provisioning, and subscriber records are deliberately out of scope.
+`configureIms`/`configureSms`/`configureVowifi` were extracted from their
+respective `/configure` HTTP routes into standalone functions so the wizard
+can call each module's real configure logic in-process with an explicit
+`{ ...currentConfig, mcc, mnc }` input, instead of an empty-body HTTP
+self-call that would silently reset every other already-configured
+parameter back to hardcoded defaults.
+
+Verified with a full live round-trip (999/070 → 001/01 → 999/070) on the dev
+host, including a 17-NF health check, the Phase E cross-service PLMN
+consistency check, and both the VoLTE and VoWiFi E2E test modules passing
+under the new PLMN. Four real bugs were found and fixed in the process, all
+the same underlying issue in different code paths: **`yaml.load()`'s YAML 1.1
+octal parsing silently corrupts leading-zero mcc/mnc/sd values** (e.g. `"070"`
+becomes the number `70`) whenever a save path re-parses a raw YAML file
+outside `YamlConfigRepository.loadRaw()`'s own string-preserving pass —
+found in `saveRaw()`'s merge-base read, `vowifi-controller.ts`'s
+`upsertSmfAaaPeer()`, and SMS's `extractExistingMapEntries()` (which also
+left behind several corrupted duplicate `sgsap` map entries in `mme.yaml`
+from repeated Configure runs before the fix). The fourth bug: Phase D's
+`configureSms()`/`configureVowifi()` wrote fresh config but never restarted
+their own daemons (osmo-stp/hlr/msc; vowifi-osmo-epdg/charon), so a running
+`osmo-epdg` kept presenting the *old* PLMN's S6b identity until an unrelated
+restart happened to pick up the change.
+
+### Added — Subscriber IMSI editing
+
+The Edit Subscriber form's IMSI field was unconditionally disabled outside
+create mode, even though the backend's `update()` already had working (if
+unreachable) conflict-detection for a renamed IMSI. Enabled the field in
+edit mode; `subscriber-management.ts` now validates the new IMSI's format
+when changed, cascades the rename into `nms_subscriber_groups.imsis` (group
+membership is stored by raw IMSI value, not a foreign key), and returns a
+warning reminding the operator to re-sync IMS/SMS afterward — both PyHSS
+and OsmoHLR keep their own IMSI-keyed copy and treat a renamed IMSI as
+"old deleted, new created" until their own sync-subscribers endpoint runs.
+
+### Added — Packet Capture module
+
+New top-level "Packet Capture" page (`ENABLE_PCAP_MODULE`, default on) for
+capturing real on-the-wire traffic on any host interface, scoped by NF, 4G/5G
+function type, all-GTP, or custom BPF at capture time, and decoded afterward
+with Wireshark display-filter presets (5G Core, IMS/VoLTE/VoWiFi, 4G EPC,
+GTP only) — including the exact filter strings requested (`gtpv2 || gtp ||
+ngap || s1ap || pfcp || diameter || http2` for 5G Core, `sip || diameter ||
+pfcp || gtp` for IMS). NF/port descriptors are built from live config, never
+hardcoded, since `auto-config.ts` can rebind MME/AMF/UPF/SGW-U off loopback
+onto real routable addresses. Captures run as transient host systemd units
+(`nsenter` + `systemd-run --collect` + `dumpcap`), not bare spawned child
+processes, specifically so an in-progress capture survives a backend
+container restart/redeploy — proven live by restarting the backend
+mid-capture and confirming it kept running and was correctly reconciled as
+still-active afterward.
+
+Clicking a packet row opens a collapsible, Wireshark-style Packet Details
+tree (parsed from `tshark -T pdml`, the same format Wireshark's own "Export
+Packet Dissection" uses) plus a hex/ASCII bytes pane, rather than a flat
+text dump — expand any protocol layer (Frame, Ethernet II, IP, ...) down to
+individual bit-level sub-fields, collapsed by default exactly like a fresh
+packet selection in the real Wireshark GUI.
+
+Interface groups (Loopback/TUN/Physical/Other) carry hover tooltips
+explaining what traffic actually lands on each — `dummy-*`/`veth`
+interfaces were dropped from the picker entirely after live-testing showed
+real unicast traffic to a dummy-interface IP (e.g. the AMF's `dummy-amf`
+address) is delivered via loopback, not the dummy device itself, which only
+ever saw unrelated broadcast traffic (EIGRP hellos).
+
+Eight real bugs were found and fixed via live testing on the dev host:
+mme/hss/pcrf/sgwc/sgwu/sepp1 silently missing from the NF picker (`loadGeneric()`
+has no `s1ap`/`freeDiameter` parser and sepp1's real YAML key is `sepp`, not
+`sepp1`); `dumpcap` silently ignoring a single trailing `-f` filter with
+multiple `-i` interfaces (must be repeated per-interface); tshark's cosmetic
+"Running as root" stderr line drowning out real error messages in the UI;
+`getSummary()` missing the SBI HTTP/2 decode-as hint, making genuinely
+captured SBI traffic look absent from the protocol hierarchy view; Node's
+default 1MB `execFile` buffer silently killing large `tshark -T fields`
+decodes with no real error (now a 100MB ceiling, a latent bug affecting
+every `LocalHostExecutor` caller, not just this module); an invalid BPF
+filter for any NF selection touching the Diameter mesh's `127.0.0.0/8`
+placeholder (`host` only accepts a single IP, needed `net` for a CIDR
+range); and `fast-xml-parser` not decoding numeric HTML entities like
+`&#x27;` in PDML attribute values by default.
+
 ## [v2.0-beta_0.18] - 2026-07-18
 
 ### Added — VoWiFi end-to-end test module + VoLTE test verbosity
