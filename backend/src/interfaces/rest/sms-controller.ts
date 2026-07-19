@@ -179,13 +179,24 @@ function extractExistingMapEntries(raw: string): SgsMapEntry[] {
     const converted = convertRepeatedMapKeysToArray(dedented);
     const doc = yaml.load(converted) as any;
     const maps = doc?.sgsap?.client?.[0]?.maps ?? [];
+
+    // yaml.load() misparses a leading-zero mcc/mnc (e.g. "070") as YAML 1.1
+    // octal, silently turning it into a different decimal number — same bug
+    // class fixed in yaml-config-repository.ts's saveRaw(). Regex-scan the
+    // raw text for the real string values instead of trusting the parsed
+    // numbers. Each map entry has two mcc (tai + lai) and two mnc occurrences,
+    // always identical by construction (see sgsapYamlBlock) — take the first
+    // of each pair, indexed positionally by entry order.
+    const mccMatches = [...dedented.matchAll(/^\s*mcc:\s*['"]?(\d+)['"]?/gm)].map(m => m[1]);
+    const mncMatches = [...dedented.matchAll(/^\s*mnc:\s*['"]?(\d+)['"]?/gm)].map(m => m[1]);
+
     return maps
-      .filter((m: any) => m?.tai?.plmn_id?.mcc != null && m?.tai?.plmn_id?.mnc != null)
-      .map((m: any) => ({
-        mcc: String(m.tai.plmn_id.mcc),
-        mnc: String(m.tai.plmn_id.mnc),
-        tac: Number(m.tai.tac ?? 1),
-      }));
+      .map((m: any, i: number) => ({
+        mcc: mccMatches[i * 2] ?? (m?.tai?.plmn_id?.mcc != null ? String(m.tai.plmn_id.mcc) : undefined),
+        mnc: mncMatches[i * 2] ?? (m?.tai?.plmn_id?.mnc != null ? String(m.tai.plmn_id.mnc) : undefined),
+        tac: Number(m?.tai?.tac ?? 1),
+      }))
+      .filter((e: any): e is SgsMapEntry => e.mcc != null && e.mnc != null);
   } catch {
     return [];
   }
