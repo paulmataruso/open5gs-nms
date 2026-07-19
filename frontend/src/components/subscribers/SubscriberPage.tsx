@@ -1973,13 +1973,17 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <label className="nms-label">IMSI *</label>
-              <input 
-                className="nms-input font-mono text-sm" 
-                value={form.imsi} 
-                disabled={!isNew}
-                onChange={e => setForm({...form, imsi: e.target.value})} 
-                placeholder="001010000000001" 
+              <input
+                className="nms-input font-mono text-sm"
+                value={form.imsi}
+                onChange={e => setForm({...form, imsi: e.target.value})}
+                placeholder="001010000000001"
               />
+              {!isNew && (
+                <p className="text-xs text-nms-text-dim mt-1">
+                  Changing this renames the subscriber everywhere it's referenced (subscriber groups). Re-sync IMS/SMS afterward if those modules are configured.
+                </p>
+              )}
             </div>
             <div>
               <label className="nms-label">Nickname</label>

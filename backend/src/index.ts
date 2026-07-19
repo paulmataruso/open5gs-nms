@@ -183,6 +183,7 @@ async function main() {
     logger,
     tunUseCase,
     configRepo,
+    subscriberRepo.getDb(),
   );
   const topologyUseCase = new TopologyUseCase(configRepo, logger);
   const backupRestoreUseCase = new BackupRestoreUseCase(

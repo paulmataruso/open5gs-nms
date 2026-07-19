@@ -1,8 +1,9 @@
 import pino from 'pino';
+import { Db } from 'mongodb';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
-import { subscriberSchema } from '../../domain/services/validation-schemas';
+import { subscriberSchema, imsiSchema } from '../../domain/services/validation-schemas';
 import { SubscriberDto } from '../dto';
 import { Subscriber, SubscriberListItem } from '../../domain/entities/subscriber';
 import { TunManagementUseCase } from './tun-management';
@@ -15,6 +16,7 @@ export class SubscriberManagementUseCase {
     private readonly logger: pino.Logger,
     private readonly tunUseCase: TunManagementUseCase,
     private readonly configRepo: IConfigRepository,
+    private readonly db: Db,
   ) {}
 
   // ── Framed Routing: static host route management ───────────────────────────
@@ -197,8 +199,13 @@ export class SubscriberManagementUseCase {
       throw new Error(`Subscriber with IMSI ${imsi} not found`);
     }
 
-    if (dto.imsi && dto.imsi !== imsi) {
-      const conflict = await this.subscriberRepo.findByImsi(dto.imsi);
+    const renamingImsi = !!dto.imsi && dto.imsi !== imsi;
+    if (renamingImsi) {
+      const parsed = imsiSchema.safeParse(dto.imsi);
+      if (!parsed.success) {
+        throw new Error(parsed.error.errors[0]?.message ?? 'Invalid IMSI');
+      }
+      const conflict = await this.subscriberRepo.findByImsi(dto.imsi!);
       if (conflict) {
         throw new Error(`Subscriber with IMSI ${dto.imsi} already exists`);
       }
@@ -208,11 +215,32 @@ export class SubscriberManagementUseCase {
     await this.syncStaticRoutes(existing.slice as any, dto.slice as any);
     const warnings = dto.slice ? await this.computeFramedRouteWarnings(imsi, dto.slice as any) : [];
 
-    this.logger.info({ imsi }, 'Subscriber updated');
+    if (renamingImsi) {
+      const newImsi = dto.imsi!;
+      // Subscriber groups reference members by raw IMSI value, not a foreign
+      // key — without this cascade, a renamed subscriber silently falls out
+      // of every group it belonged to.
+      await this.db.collection('nms_subscriber_groups').updateMany(
+        { imsis: imsi },
+        { $set: { 'imsis.$[elem]': newImsi } },
+        { arrayFilters: [{ elem: imsi }] },
+      );
+      // IMS (PyHSS) and SMS (OsmoHLR) each keep their own IMSI-keyed copy of
+      // the subscriber and reconcile by treating any IMSI missing from the
+      // current Mongo set as deleted — a rename here looks to them like
+      // "old IMSI deleted, new IMSI created" until their own sync-subscribers
+      // endpoint runs again, so surface that explicitly rather than leaving
+      // a silently stale external record.
+      warnings.push(
+        `IMSI changed from ${imsi} to ${newImsi} — re-sync IMS/SMS subscribers if those modules are configured, otherwise their external systems will still reference the old IMSI.`,
+      );
+    }
+
+    this.logger.info({ imsi, renamedTo: renamingImsi ? dto.imsi : undefined }, 'Subscriber updated');
     await this.auditLogger.log({
       action: 'subscriber_update',
       user: 'admin',
-      target: imsi,
+      target: renamingImsi ? `${imsi} -> ${dto.imsi}` : imsi,
       success: true,
     });
     return { warnings };
