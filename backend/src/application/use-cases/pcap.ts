@@ -118,6 +118,19 @@ function validateId(id: string): void {
   if (!ID_RE.test(id)) throw new Error(`Invalid capture id "${id}"`);
 }
 
+// tshark unconditionally prints this privilege-level notice to stderr when
+// run as root, on both success AND failure — it's cosmetic, not part of the
+// actual error, but since it's always the FIRST line it drowns out the real
+// reason (bad filter syntax, missing file, etc.) when surfaced to the UI as
+// one blob. Strip it before using stderr as an error message.
+function cleanTsharkStderr(stderr: string): string {
+  return stderr
+    .split('\n')
+    .filter(line => !/^Running as user .* group .*\. This could be dangerous\.$/.test(line.trim()))
+    .join('\n')
+    .trim();
+}
+
 export class PcapUseCase {
   constructor(
     private readonly hostExecutor: IHostExecutor,
@@ -495,7 +508,7 @@ export class PcapUseCase {
   async getSummary(id: string): Promise<string> {
     validateId(id);
     const r = await this.hostExecutor.executeLocalCommand('tshark', ['-r', this.pcapPath(id), '-q', '-z', 'io,phs'], 60000);
-    if (r.exitCode !== 0) throw new Error(r.stderr || 'tshark failed to summarize capture');
+    if (r.exitCode !== 0) throw new Error(cleanTsharkStderr(r.stderr) || 'tshark failed to summarize capture');
     return r.stdout;
   }
 
@@ -510,7 +523,7 @@ export class PcapUseCase {
       '-E', 'separator=\t',
     );
     const r = await this.hostExecutor.executeLocalCommand('tshark', args, 120000);
-    if (r.exitCode !== 0) throw new Error(r.stderr || 'tshark failed to decode capture (check the filter syntax)');
+    if (r.exitCode !== 0) throw new Error(cleanTsharkStderr(r.stderr) || 'tshark failed to decode capture (check the filter syntax)');
 
     const lines = r.stdout.split('\n').filter(l => l.length > 0);
     const truncated = lines.length > PACKET_ROW_LIMIT;
