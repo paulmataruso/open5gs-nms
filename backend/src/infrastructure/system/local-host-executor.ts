@@ -7,6 +7,17 @@ import { IHostExecutor, CommandResult } from '../../domain/interfaces/host-execu
 
 const execFileAsync = promisify(execFile);
 
+// Node's child_process.execFile defaults maxBuffer to 1MB — plenty for the
+// short, line-oriented output most commands here produce (systemctl, ip,
+// etc.), but silently fatal for anything that can legitimately produce more:
+// confirmed live (2026-07-19) with tshark's -T fields packet decode on a
+// ~36k-packet capture producing 6.4MB of stdout — Node killed the process
+// once the default limit was hit, giving a bare nonzero exit with no real
+// stderr (the command never got a chance to report an actual error). Set a
+// generous ceiling here so any current or future caller with legitimately
+// large output doesn't hit this silently.
+const MAX_BUFFER_BYTES = 100 * 1024 * 1024; // 100MB
+
 export class LocalHostExecutor implements IHostExecutor {
   constructor(
     private readonly logger: pino.Logger,
@@ -39,6 +50,7 @@ export class LocalHostExecutor implements IHostExecutor {
       const { stdout, stderr } = await execFileAsync('nsenter', nsenterArgs, {
         timeout: timeoutMs,
         encoding: 'utf-8',
+        maxBuffer: MAX_BUFFER_BYTES,
         env: {
           ...process.env,
           DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket',
@@ -82,6 +94,7 @@ export class LocalHostExecutor implements IHostExecutor {
       const { stdout, stderr } = await execFileAsync(command, args, {
         timeout: timeoutMs,
         encoding: 'utf-8',
+        maxBuffer: MAX_BUFFER_BYTES,
       });
 
       this.logger.debug({ command, args, stdout, stderr }, 'Local command executed successfully');
