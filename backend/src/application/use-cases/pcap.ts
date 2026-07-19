@@ -507,7 +507,14 @@ export class PcapUseCase {
 
   async getSummary(id: string): Promise<string> {
     validateId(id);
-    const r = await this.hostExecutor.executeLocalCommand('tshark', ['-r', this.pcapPath(id), '-q', '-z', 'io,phs'], 60000);
+    // Missing DECODE_AS_ARGS here (unlike getPackets()) meant SBI traffic on
+    // port 7777 never got bucketed under "http2" in the protocol hierarchy —
+    // it fell back to generic tcp/data or a heuristic partial "http" guess,
+    // which reads as "SBI wasn't captured" even though it genuinely was
+    // (confirmed live, 2026-07-19: the same capture's getPackets() with an
+    // http2 filter found dozens of real HEADERS/DATA frames the summary
+    // view's hierarchy never labeled as such).
+    const r = await this.hostExecutor.executeLocalCommand('tshark', ['-r', this.pcapPath(id), ...DECODE_AS_ARGS, '-q', '-z', 'io,phs'], 60000);
     if (r.exitCode !== 0) throw new Error(cleanTsharkStderr(r.stderr) || 'tshark failed to summarize capture');
     return r.stdout;
   }
