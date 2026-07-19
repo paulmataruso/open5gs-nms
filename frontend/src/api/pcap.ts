@@ -68,6 +68,12 @@ export interface PacketRow {
   info: string;
 }
 
+export interface PacketTreeNode {
+  name: string;
+  label: string;
+  children: PacketTreeNode[];
+}
+
 export const pcapApi = {
   listInterfaces: async (): Promise<HostInterface[]> => {
     const { data } = await api.get('/interfaces');
@@ -100,6 +106,10 @@ export const pcapApi = {
   getPackets: async (id: string, filter: string): Promise<{ rows: PacketRow[]; truncated: boolean }> => {
     const { data } = await api.get(`/captures/${id}/packets`, { params: { filter } });
     return { rows: data.rows, truncated: data.truncated };
+  },
+  getPacketDetail: async (id: string, frameNumber: number): Promise<{ tree: PacketTreeNode[]; hex: string }> => {
+    const { data } = await api.get(`/captures/${id}/packets/${frameNumber}`);
+    return { tree: data.tree, hex: data.hex };
   },
   downloadUrl: (id: string): string => `/api/pcap/captures/${id}/download`,
   delete: async (id: string): Promise<void> => {

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { X, RefreshCw, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import { clsx } from 'clsx';
-import { pcapApi, PcapManifest, DecodePreset, PacketRow } from '../../api/pcap';
+import { pcapApi, PcapManifest, DecodePreset, PacketRow, PacketTreeNode } from '../../api/pcap';
+import { PacketDetailTree } from './PacketDetailTree';
 
 type SortKey = 'frameNumber' | 'timeEpoch' | 'src' | 'dst' | 'protocol' | 'length';
 
@@ -20,6 +21,12 @@ export function PacketTableModal({ capture, presets, onClose }: {
   const [error, setError] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('frameNumber');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
+  const [selectedFrame, setSelectedFrame] = useState<number | null>(null);
+  const [detailTree, setDetailTree] = useState<PacketTreeNode[]>([]);
+  const [detailHex, setDetailHex] = useState('');
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
 
   const activeFilter = useCustom ? customFilter : (presets.find(p => p.id === presetId)?.filter ?? '');
 
@@ -43,6 +50,19 @@ export function PacketTableModal({ capture, presets, onClose }: {
 
   useEffect(() => { load(); }, []);
 
+  const selectRow = (frameNumber: number) => {
+    if (selectedFrame === frameNumber) { setSelectedFrame(null); return; }
+    setSelectedFrame(frameNumber);
+    setDetailTree([]);
+    setDetailHex('');
+    setDetailError('');
+    setDetailLoading(true);
+    pcapApi.getPacketDetail(capture.id, frameNumber)
+      .then(({ tree, hex }) => { setDetailTree(tree); setDetailHex(hex); })
+      .catch((err: any) => setDetailError(err?.response?.data?.error ?? err.message))
+      .finally(() => setDetailLoading(false));
+  };
+
   const sorted = useMemo(() => {
     const dir = sortOrder === 'asc' ? 1 : -1;
     return [...rows].sort((a, b) => {
@@ -64,7 +84,7 @@ export function PacketTableModal({ capture, presets, onClose }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-6" onClick={onClose}>
-      <div className="nms-card w-full max-w-6xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="nms-card w-[95vw] max-w-[1600px] h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold font-display">Capture: {capture.label}</h3>
           <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
@@ -117,7 +137,7 @@ export function PacketTableModal({ capture, presets, onClose }: {
           </div>
         )}
 
-        <div className="flex-1 overflow-auto border border-nms-border rounded-lg">
+        <div className={clsx('overflow-auto border border-nms-border rounded-lg min-h-0', selectedFrame !== null ? 'shrink-0 h-52' : 'flex-1')}>
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-nms-surface-2">
               <tr>
@@ -142,7 +162,14 @@ export function PacketTableModal({ capture, presets, onClose }: {
             </thead>
             <tbody>
               {sorted.map(row => (
-                <tr key={row.frameNumber} className="border-t border-nms-border hover:bg-nms-surface-2/50">
+                <tr
+                  key={row.frameNumber}
+                  onClick={() => selectRow(row.frameNumber)}
+                  className={clsx(
+                    'border-t border-nms-border cursor-pointer',
+                    selectedFrame === row.frameNumber ? 'bg-nms-accent/15' : 'hover:bg-nms-surface-2/50',
+                  )}
+                >
                   <td className="px-3 py-1.5 font-mono">{row.frameNumber}</td>
                   <td className="px-3 py-1.5 font-mono">{row.timeEpoch.toFixed(6)}</td>
                   <td className="px-3 py-1.5 font-mono">{row.src}</td>
@@ -158,6 +185,42 @@ export function PacketTableModal({ capture, presets, onClose }: {
             </tbody>
           </table>
         </div>
+
+        {selectedFrame !== null && (
+          <div className="flex-1 flex flex-col mt-3 min-h-0">
+            <div className="flex items-center justify-between mb-1.5 shrink-0">
+              <h4 className="text-sm font-semibold text-nms-text-dim uppercase tracking-wider">Frame {selectedFrame} details</h4>
+              <button onClick={() => setSelectedFrame(null)} className="text-nms-text-dim hover:text-nms-text">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto border border-nms-border rounded-lg bg-nms-bg p-4 min-h-0">
+              {detailLoading && (
+                <div className="flex items-center gap-2 text-sm text-nms-text-dim">
+                  <RefreshCw className="w-4 h-4 animate-spin" /> Decoding frame {selectedFrame}…
+                </div>
+              )}
+              {detailError && (
+                <div className="text-sm text-red-400 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> {detailError}
+                </div>
+              )}
+              {!detailLoading && !detailError && (
+                <>
+                  <PacketDetailTree tree={detailTree} />
+                  {detailHex && (
+                    <details className="mt-4">
+                      <summary className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider cursor-pointer hover:text-nms-text">
+                        Bytes
+                      </summary>
+                      <pre className="text-xs font-mono text-nms-text-dim whitespace-pre mt-1.5 overflow-x-auto">{detailHex}</pre>
+                    </details>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

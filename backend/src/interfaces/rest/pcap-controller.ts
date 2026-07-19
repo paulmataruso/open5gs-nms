@@ -91,6 +91,16 @@ export function createPcapRouter(pcapUseCase: PcapUseCase, auditLogger: IAuditLo
     }
   });
 
+  router.get('/captures/:id/packets/:frameNumber', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const frameNumber = parseInt(req.params.frameNumber, 10);
+      const { tree, hex } = await pcapUseCase.getPacketDetail(req.params.id, frameNumber);
+      res.json({ success: true, tree, hex });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   router.get('/captures/:id/download', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     const { id } = req.params;

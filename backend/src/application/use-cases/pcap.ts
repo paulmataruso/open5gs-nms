@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { XMLParser } from 'fast-xml-parser';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { ServiceName } from '../../domain/entities/service-status';
@@ -78,6 +79,17 @@ export interface PacketRow {
   info: string;
 }
 
+// One node of a Wireshark-style Packet Details tree — a protocol layer (Frame,
+// Ethernet II, Internet Protocol, ...) or a field/sub-field within one. `label` is
+// PDML's own "showname" (the full human-readable line Wireshark's GUI displays,
+// e.g. "Destination: 00:00:00_00:00:00 (00:00:00:00:00:00)"), so no re-formatting
+// of raw values is needed client-side.
+export interface PacketTreeNode {
+  name: string;
+  label: string;
+  children: PacketTreeNode[];
+}
+
 const PACKET_ROW_LIMIT = 20000;
 
 // Always applied on every decode invocation — Open5GS's SBI is plain HTTP/2
@@ -116,6 +128,52 @@ function rejectUnsafeBpf(bpf: string): void {
 
 function validateId(id: string): void {
   if (!ID_RE.test(id)) throw new Error(`Invalid capture id "${id}"`);
+}
+
+// PDML (tshark -T pdml) is the same format Wireshark's own "Export Packet
+// Dissection as XML" produces — <proto>/<field> elements nest exactly the way the
+// GUI's Packet Details tree does, and each carries a "showname" attribute that's
+// already the final human-readable line (value formatting, unit conversion, bit
+// annotations, all done by the dissector, not re-derived here). isArray forces both
+// tags to always parse as arrays regardless of how many siblings exist — otherwise
+// fast-xml-parser collapses a lone child into a bare object instead of a 1-item
+// array, which would make the recursive walk below type-inconsistent.
+const pdmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  isArray: (name: string) => name === 'proto' || name === 'field' || name === 'packet',
+  // Wireshark's showname text routinely contains apostrophes ("Don't fragment") and
+  // other punctuation XML-escapes as numeric character references (&#x27;) rather
+  // than the 5 predefined XML entities — fast-xml-parser only decodes those 5 by
+  // default even in attribute values, leaving raw "&#x27;" in labels. htmlEntities
+  // additionally enables numeric entity decoding.
+  htmlEntities: true,
+});
+
+function pdmlNodeToTree(node: any): PacketTreeNode {
+  const children: PacketTreeNode[] = [];
+  const rawChildren = [
+    ...(Array.isArray(node.field) ? node.field : []),
+    ...(Array.isArray(node.proto) ? node.proto : []),
+  ];
+  for (const child of rawChildren) {
+    if (child['@_hide'] === 'yes') continue;
+    children.push(pdmlNodeToTree(child));
+  }
+  const label = node['@_showname'] ?? node['@_show'] ?? node['@_name'] ?? '(unnamed field)';
+  return { name: node['@_name'] ?? '', label, children };
+}
+
+// "geninfo" is a synthetic PDML-only proto (frame number/timestamp/length used for
+// the packet list columns) — Wireshark's own Packet Details tree never shows it as
+// a node, so it's dropped here to match.
+function parsePacketTree(pdmlXml: string): PacketTreeNode[] {
+  const parsed = pdmlParser.parse(pdmlXml);
+  const packet = parsed?.pdml?.packet?.[0];
+  const protos: any[] = Array.isArray(packet?.proto) ? packet.proto : [];
+  return protos
+    .filter(p => p['@_hide'] !== 'yes' && p['@_name'] !== 'geninfo')
+    .map(pdmlNodeToTree);
 }
 
 // tshark unconditionally prints this privilege-level notice to stderr when
@@ -559,6 +617,33 @@ export class PcapUseCase {
       };
     });
     return { rows, truncated };
+  }
+
+  // Single-packet detail view — mirrors Wireshark's own "Packet Details" (collapsible
+  // proto/field tree, via PDML) + "Bytes" (offset/hex/ASCII dump, via -x) panes.
+  // Scoping to one frame via -Y keeps both calls fast even against a large capture.
+  async getPacketDetail(id: string, frameNumber: number): Promise<{ tree: PacketTreeNode[]; hex: string }> {
+    validateId(id);
+    if (!Number.isInteger(frameNumber) || frameNumber <= 0) {
+      throw new Error(`Invalid frame number "${frameNumber}"`);
+    }
+    const frameFilter = `frame.number==${frameNumber}`;
+    const [pdmlR, hexR] = await Promise.all([
+      this.hostExecutor.executeLocalCommand(
+        'tshark', ['-r', this.pcapPath(id), ...DECODE_AS_ARGS, '-Y', frameFilter, '-T', 'pdml'], 30000,
+      ),
+      this.hostExecutor.executeLocalCommand(
+        'tshark', ['-r', this.pcapPath(id), ...DECODE_AS_ARGS, '-Y', frameFilter, '-x'], 30000,
+      ),
+    ]);
+    if (pdmlR.exitCode !== 0) throw new Error(cleanTsharkStderr(pdmlR.stderr) || 'tshark failed to decode packet detail');
+    if (!pdmlR.stdout.includes('<packet>')) throw new Error(`Frame ${frameNumber} not found in this capture`);
+
+    const tree = parsePacketTree(pdmlR.stdout);
+    // -x's output is "<one-line summary>\n<hex dump>" per packet — strip that
+    // leading summary line since the tree above already covers it structurally.
+    const hex = hexR.exitCode === 0 ? hexR.stdout.split('\n').slice(1).join('\n').trim() : '';
+    return { tree, hex };
   }
 
   async getDownloadPath(id: string): Promise<string> {
