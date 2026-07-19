@@ -254,6 +254,86 @@ function extractSgsapBlock(raw: string): string {
   return '';
 }
 
+// ─── Configure (extracted for reuse by the PLMN Migration Wizard) ─────────────
+// mcc/mnc/tac are deliberately NOT parameters here — this always re-reads them
+// fresh from mme.yaml, same as the original route body. That's exactly why the
+// PLMN migration use-case must call this AFTER mme.yaml's plmn_id has already
+// been rewritten (its own Phase B), not before.
+export interface SmsConfigureInput {
+  mscBindIp: string;
+  hlrBindIp: string;
+  mmeLocalIp: string;
+}
+
+// Reads back the currently-configured bind IPs from the live host files, so the
+// PLMN migration use-case can pass `{ ...readCurrentSmsConfig(), }` into
+// configureSms() instead of an empty body — configureSms() has no internal
+// defaults, so an empty/partial body would otherwise write '' for fields whose
+// real value only ever lived in these on-disk configs (no .sms-config.json
+// exists for this module, unlike IMS/VoWiFi).
+export function readCurrentSmsConfig(): SmsConfigureInput | null {
+  const mscCfgPath = `${HOST_OSMOCOM_DIR}/osmo-msc.cfg`;
+  const hlrCfgPath = `${HOST_OSMOCOM_DIR}/osmo-hlr.cfg`;
+  if (!fs.existsSync(mscCfgPath) || !fs.existsSync(hlrCfgPath)) return null;
+  try {
+    const mscRaw = fs.readFileSync(mscCfgPath, 'utf-8');
+    const hlrRaw = fs.readFileSync(hlrCfgPath, 'utf-8');
+    const mscBindIp = mscRaw.match(/^\s*local-ip\s+(\S+)/m)?.[1] ?? '127.0.0.2';
+    const hlrBindIp = hlrRaw.match(/^\s*bind ip\s+(\S+)/m)?.[1] ?? '127.0.0.1';
+    let mmeLocalIp = '';
+    if (fs.existsSync(HOST_MME_YAML)) {
+      const mmeRaw = fs.readFileSync(HOST_MME_YAML, 'utf-8');
+      const block = extractSgsapBlock(mmeRaw);
+      mmeLocalIp = block.match(/local_address:\s*(\S+)/)?.[1] ?? '';
+    }
+    return { mscBindIp, hlrBindIp, mmeLocalIp };
+  } catch {
+    return null;
+  }
+}
+
+export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: string; mnc: string; tac: number }> {
+  const { mscBindIp, hlrBindIp, mmeLocalIp } = input;
+
+  // Read MME config for mcc/mnc/tac
+  let mcc = '001';
+  let mnc = '01';
+  let tac = 1;
+  if (fs.existsSync(HOST_MME_YAML)) {
+    const raw = fs.readFileSync(HOST_MME_YAML, 'utf-8');
+    // Simple regex extraction — avoids yaml.dump round-trip issues
+    const mccM = raw.match(/mcc:\s*['"]?(\d+)['"]?/);
+    const mncM = raw.match(/mnc:\s*['"]?(\d+)['"]?/);
+    const tacM = raw.match(/tac:\s*(\d+)/);
+    if (mccM) mcc = mccM[1];
+    if (mncM) mnc = mncM[1];
+    if (tacM) tac = parseInt(tacM[1]);
+  }
+
+  // Write Osmocom config files
+  fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-stp.cfg`, osmostpCfg(), 'utf-8');
+  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-hlr.cfg`, osmohlrCfg(hlrBindIp), 'utf-8');
+  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-msc.cfg`, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp), 'utf-8');
+
+  // Update MME sgsap section — preserve any other PLMN's existing map
+  // entry (e.g. a roaming PLMN configured separately) rather than
+  // wiping the whole section down to just this one PLMN.
+  if (fs.existsSync(HOST_MME_YAML)) {
+    const raw     = fs.readFileSync(HOST_MME_YAML, 'utf-8');
+    const existing = extractExistingMapEntries(raw);
+    const entries  = mergeMapEntry(existing, { mcc, mnc, tac });
+    const block    = sgsapYamlBlock(mscBindIp, mmeLocalIp, entries);
+    const newRaw   = replaceSgsapSection(raw, block);
+    fs.writeFileSync(HOST_MME_YAML, newRaw, 'utf-8');
+  }
+
+  // Restart MME to pick up the new sgsap config
+  await nsenter('systemctl', ['restart', 'open5gs-mmed']);
+
+  return { mcc, mnc, tac };
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export function createSmsRouter(
@@ -366,45 +446,7 @@ export function createSmsRouter(
       const hlrBindIp  = (req.body.hlrBindIp  as string) || '127.0.0.1';
       const mmeLocalIp = (req.body.mmeLocalIp as string) || '';
 
-      // Read MME config for mcc/mnc/tac
-      let mcc = '001';
-      let mnc = '01';
-      let tac = 1;
-      try {
-        if (fs.existsSync(HOST_MME_YAML)) {
-          const raw = fs.readFileSync(HOST_MME_YAML, 'utf-8');
-          // Simple regex extraction — avoids yaml.dump round-trip issues
-          const mccM = raw.match(/mcc:\s*['"]?(\d+)['"]?/);
-          const mncM = raw.match(/mnc:\s*['"]?(\d+)['"]?/);
-          const tacM = raw.match(/tac:\s*(\d+)/);
-          if (mccM) mcc = mccM[1];
-          if (mncM) mnc = mncM[1];
-          if (tacM) tac = parseInt(tacM[1]);
-        }
-      } catch (e) {
-        logger.warn({ err: String(e) }, 'Could not read MME config; using defaults');
-      }
-
-      // Write Osmocom config files
-      fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-stp.cfg`, osmostpCfg(), 'utf-8');
-      fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-hlr.cfg`, osmohlrCfg(hlrBindIp), 'utf-8');
-      fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-msc.cfg`, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp), 'utf-8');
-
-      // Update MME sgsap section — preserve any other PLMN's existing map
-      // entry (e.g. a roaming PLMN configured separately) rather than
-      // wiping the whole section down to just this one PLMN.
-      if (fs.existsSync(HOST_MME_YAML)) {
-        const raw     = fs.readFileSync(HOST_MME_YAML, 'utf-8');
-        const existing = extractExistingMapEntries(raw);
-        const entries  = mergeMapEntry(existing, { mcc, mnc, tac });
-        const block    = sgsapYamlBlock(mscBindIp, mmeLocalIp, entries);
-        const newRaw   = replaceSgsapSection(raw, block);
-        fs.writeFileSync(HOST_MME_YAML, newRaw, 'utf-8');
-      }
-
-      // Restart MME to pick up the new sgsap config
-      await nsenter('systemctl', ['restart', 'open5gs-mmed']);
+      const { mcc, mnc, tac } = await configureSms({ mscBindIp, hlrBindIp, mmeLocalIp });
 
       await auditLogger.log({
         action: 'sms_configure', user,

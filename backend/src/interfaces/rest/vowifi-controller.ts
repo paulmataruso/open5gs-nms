@@ -54,7 +54,7 @@ export interface VowifiConfigureInput {
   interfaceMode?: 'dummy' | 'existing';
 }
 
-interface VowifiState {
+export interface VowifiState {
   installStatus: VowifiInstallStatus;
   installStartedAt: string | null;
   installCompletedAt: string | null;
@@ -78,7 +78,7 @@ function defaultState(): VowifiState {
   };
 }
 
-function loadState(): VowifiState {
+export function loadState(): VowifiState {
   try {
     if (fs.existsSync(HOST_STATE_FILE)) {
       return { ...defaultState(), ...JSON.parse(fs.readFileSync(HOST_STATE_FILE, 'utf-8')) };
@@ -191,6 +191,15 @@ function upsertNamedZone(raw: string, zoneName: string, zoneFilePath: string): s
     return raw.replace(zoneRe, zoneBlock);
   }
   return raw.trimEnd() + '\n\n' + zoneBlock;
+}
+
+// Same shape as ims-controller.ts's removeNamedZone — used to clean up the old
+// mnc/mcc.pub zone after a primary-PLMN change (this Configure route never
+// tracked/removed a *previous* domain before; see configureVowifi's
+// previousPubDomain param).
+function removeNamedZone(raw: string, zoneName: string): string {
+  const zoneRe = new RegExp(`zone\\s+"${zoneName.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
+  return raw.replace(zoneRe, '');
 }
 
 function readSmfGtpcAddress(): string {
@@ -502,6 +511,174 @@ export async function reconcileVowifiInstallState(logger: pino.Logger): Promise<
   }
 }
 
+// ─── Configure (extracted for reuse by the PLMN Migration Wizard) ────────────
+// No internal default-fallbacks here — callers (the manual /configure route below,
+// or the PLMN migration use-case) must pass a fully-populated input. Defaults for
+// the manual-UI path live only in the thin route wrapper. Status-differentiated
+// failures (409 "not installed" vs 400 validation vs 500 unexpected) are carried
+// via VowifiConfigureError so the route wrapper can still return the right HTTP
+// status without duplicating the checks.
+export class VowifiConfigureError extends Error {
+  constructor(message: string, public status: number) {
+    super(message);
+  }
+}
+
+export interface VowifiConfigureFullInput {
+  epdgIp: string;
+  s6bLocalIp: string;
+  gsupPort: number;
+  interfaceMode: 'dummy' | 'existing';
+  // If provided and different from the newly-derived pub domain, its BIND zone +
+  // named.conf.local stanza are removed. This route never previously tracked or
+  // cleaned up a *previous* domain (only ims-controller.ts's did, via its
+  // removedDomains diff) — needed so a primary-PLMN change doesn't leave the old
+  // mnc/mcc.pub zone orphaned forever.
+  previousPubDomain?: string;
+}
+
+export async function configureVowifi(input: VowifiConfigureFullInput): Promise<{
+  epdgIp: string; interfaceMode: 'dummy' | 'existing'; s6bLocalIp: string; gsupPort: number;
+  aaaFqdn: string; hssSwxIp: string; smfGtpcIp: string; smfActive: boolean; dnsConfigured: boolean;
+}> {
+  const { epdgIp, s6bLocalIp, gsupPort, interfaceMode, previousPubDomain } = input;
+
+  const state = loadState();
+  if (state.installStatus !== 'complete') {
+    throw new VowifiConfigureError('Run Install first — VoWiFi is not built yet.', 409);
+  }
+
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(epdgIp)) {
+    throw new VowifiConfigureError('Invalid epdgIp', 400);
+  }
+  if (!/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s6bLocalIp)) {
+    throw new VowifiConfigureError('S6b local IP must be a loopback (127.0.0.0/8) address — SMF cannot route loopback-sourced Diameter traffic to a non-loopback local destination.', 400);
+  }
+
+  // 1. ePDG local IP. Two modes:
+  //   'dummy'    (default) — create+own a new dummy-epdg interface with epdgIp assigned
+  //              (persisted across reboots, NOT advertised into EIGRP — it only needs to
+  //              be reachable on this host, and EIGRP advertisement was the trigger for a
+  //              real eigrpd crash-loop incident on this host).
+  //   'existing' — the operator already bound epdgIp to a loopback or a real LAN
+  //              interface themselves; skip interface creation entirely and just confirm
+  //              it's actually present on the host before writing config that depends on
+  //              being able to bind to it.
+  if (interfaceMode === 'dummy') {
+    await createDummyInterface(DUMMY_IF_NAME, epdgIp, 24, true);
+  } else {
+    const ipPresent = await nsenter('bash', ['-c', `ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx '${epdgIp}' && echo yes || echo no`])
+      .then(r => r.stdout.trim() === 'yes').catch(() => false);
+    if (!ipPresent) {
+      throw new VowifiConfigureError(
+        `${epdgIp} is not currently assigned to any interface on this host (checked with "ip addr show"). ` +
+        `In "use existing IP" mode you must bind it yourself first — e.g. add it to a LAN interface via ` +
+        `systemd-networkd/netplan, or add it as a loopback alias (ip addr add ${epdgIp}/32 dev lo) — then retry.`,
+        400,
+      );
+    }
+  }
+
+  // 2. Read real HSS/SMF addresses — never hardcode these.
+  const hssSwxIp = readFreeDiameterListenOn(HOST_HSS_CONF, '127.0.0.8');
+  const smfGtpcIp = readSmfGtpcAddress();
+  const smfIdentity = readFreeDiameterIdentity(HOST_SMF_CONF, 'smf.localdomain');
+  const realm = realmFromIdentity(smfIdentity);
+  const aaaFqdn = `aaa.${realm}`;
+
+  // 3. osmo-epdg config, from the pristine build template
+  if (!fs.existsSync(HOST_OSMO_EPDG_TEMPLATE)) {
+    throw new VowifiConfigureError(`osmo-epdg config template not found at ${BUILD_WORKDIR}/osmo-epdg/config/sys.config — the build directory may have been removed. Reinstall to regenerate it.`, 500);
+  }
+  const template = fs.readFileSync(HOST_OSMO_EPDG_TEMPLATE, 'utf-8');
+  const patched = patchOsmoEpdgSysConfig(template, { epdgIp, hssSwxIp, smfGtpcIp, s6bLocalIp, gsupPort, aaaFqdn, realm });
+  fs.mkdirSync(path.dirname(HOST_OSMO_EPDG_CONFIG), { recursive: true });
+  fs.writeFileSync(HOST_OSMO_EPDG_CONFIG, patched, 'utf-8');
+  fs.mkdirSync(HOST_OSMO_EPDG_RUNTIME_DIR + '/log', { recursive: true });
+
+  // 4. strongSwan config
+  fs.mkdirSync(HOST_SWANCTL_DIR, { recursive: true });
+  fs.writeFileSync(HOST_SWANCTL_CONF, swanctlConf(epdgIp), 'utf-8');
+  fs.mkdirSync(`${HOST_STRONGSWAN_D}/charon`, { recursive: true });
+  fs.writeFileSync(HOST_EAP_AKA_CONF, eapAkaConf(), 'utf-8');
+  fs.writeFileSync(HOST_SAVE_KEYS_CONF, saveKeysConf(), 'utf-8');
+  if (fs.existsSync(HOST_CHARON_CONF)) {
+    let charonRaw = fs.readFileSync(HOST_CHARON_CONF, 'utf-8');
+    if (/^\s*#\s*force_eap_only_authentication\s*=/m.test(charonRaw)) {
+      charonRaw = charonRaw.replace(/^(\s*)#\s*(force_eap_only_authentication\s*=.*)$/m, '$1$2');
+    } else if (!/^\s*force_eap_only_authentication\s*=\s*yes/m.test(charonRaw)) {
+      charonRaw = charonRaw.replace(/^(charon\s*\{)/m, '$1\n\tforce_eap_only_authentication = yes');
+    }
+    fs.writeFileSync(HOST_CHARON_CONF, charonRaw, 'utf-8');
+  }
+
+  // 5. systemd units
+  fs.mkdirSync(HOST_SYSTEMD_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-osmo-epdg.service`, vowifiOsmoEpdgUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-charon.service`, vowifiCharonUnit(), 'utf-8');
+  await nsenter('systemctl', ['daemon-reload']);
+
+  // 6. smf.conf — exactly one new ConnectPeer line, back up first
+  let smfConfHadBackup = state.smfConfHadBackup;
+  if (fs.existsSync(HOST_SMF_CONF)) {
+    if (!fs.existsSync(HOST_SMF_CONF_BAK)) {
+      fs.copyFileSync(HOST_SMF_CONF, HOST_SMF_CONF_BAK);
+      smfConfHadBackup = true;
+    }
+    const smfRaw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
+    fs.writeFileSync(HOST_SMF_CONF, upsertSmfAaaPeer(smfRaw, aaaFqdn, s6bLocalIp), 'utf-8');
+    await nsenter('systemctl', ['restart', 'open5gs-smfd']);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  // 7. Verify Gx survived the SMF restart
+  const smfActive = await nsenter('systemctl', ['is-active', 'open5gs-smfd'])
+    .then(r => r.stdout.trim() === 'active').catch(() => false);
+
+  // 8. DNS — ePDG discovery FQDN (epdg.epc.mnc<mnc>.mcc<mcc>.pub.3gppnetwork.org). Real
+  // UEs resolve this to find the ePDG; the SWu-IKEv2 test emulator bypasses it with a
+  // manual -d <ip> flag so this was never exercised by that test. Installs BIND9 itself
+  // if not already present (e.g. IMS isn't enabled on this deployment) — see the "DNS
+  // (BIND9)" page for manual editing beyond what this generates.
+  let dnsConfigured = false;
+  try {
+    const bindInstalled = await nsenter('bash', ['-c', 'command -v named >/dev/null 2>&1 && echo yes || echo no'])
+      .then(r => r.stdout.trim() === 'yes').catch(() => false);
+    if (!bindInstalled) {
+      await nsenter('bash', ['-c', 'DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils 2>&1'], 120000);
+    }
+    fs.mkdirSync(HOST_BIND_ZONES_DIR, { recursive: true });
+    if (!fs.existsSync(`${HOST_BIND_DIR}/named.conf.options`)) {
+      fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.options`, bindNamedOptionsDefault(), 'utf-8');
+    }
+    const { mcc, mnc } = readMccMnc();
+    const pubDomain = pubEpdgDomain(mcc, mnc);
+    const zoneFilePath = `/etc/bind/zones/${pubDomain}.zone`;
+    fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${pubDomain}.zone`, pubEpdgZoneFile(pubDomain, epdgIp, epdgIp), 'utf-8');
+    let namedLocalRaw = fs.existsSync(`${HOST_BIND_DIR}/named.conf.local`)
+      ? fs.readFileSync(`${HOST_BIND_DIR}/named.conf.local`, 'utf-8')
+      : '';
+    namedLocalRaw = upsertNamedZone(namedLocalRaw, pubDomain, zoneFilePath);
+    if (previousPubDomain && previousPubDomain !== pubDomain) {
+      const oldZoneFile = `${HOST_BIND_ZONES_DIR}/${previousPubDomain}.zone`;
+      if (fs.existsSync(oldZoneFile)) fs.unlinkSync(oldZoneFile);
+      namedLocalRaw = removeNamedZone(namedLocalRaw, previousPubDomain);
+    }
+    fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.local`, namedLocalRaw, 'utf-8');
+    await nsenter('systemctl', ['enable', '--now', 'bind9']).catch(() => {});
+    await nsenter('systemctl', ['restart', 'bind9']);
+    dnsConfigured = true;
+  } catch { /* non-fatal — configure otherwise succeeded, logged by caller if desired */ }
+
+  const newState: VowifiState = {
+    ...state, configured: true, configuredAt: new Date().toISOString(),
+    epdgIp, epdgInterfaceMode: interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, smfConfHadBackup,
+  };
+  saveState(newState);
+
+  return { epdgIp, interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, dnsConfigured };
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
@@ -614,149 +791,26 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const state = loadState();
-      if (state.installStatus !== 'complete') {
-        return res.status(409).json({ ok: false, error: 'Run Install first — VoWiFi is not built yet.' });
-      }
       const body = req.body as VowifiConfigureInput;
       const epdgIp = body.epdgIp || DEFAULT_EPDG_IP;
       const s6bLocalIp = body.s6bLocalIp || DEFAULT_S6B_LOCAL_IP;
       const gsupPort = Number(body.gsupPort) || DEFAULT_GSUP_PORT;
       const interfaceMode: 'dummy' | 'existing' = body.interfaceMode === 'existing' ? 'existing' : 'dummy';
 
-      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(epdgIp)) {
-        return res.status(400).json({ ok: false, error: 'Invalid epdgIp' });
-      }
-      if (!/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s6bLocalIp)) {
-        return res.status(400).json({ ok: false, error: 'S6b local IP must be a loopback (127.0.0.0/8) address — SMF cannot route loopback-sourced Diameter traffic to a non-loopback local destination.' });
-      }
-
-      // 1. ePDG local IP. Two modes:
-      //   'dummy'    (default) — create+own a new dummy-epdg interface with epdgIp assigned
-      //              (persisted across reboots, NOT advertised into EIGRP — it only needs to
-      //              be reachable on this host, and EIGRP advertisement was the trigger for a
-      //              real eigrpd crash-loop incident on this host).
-      //   'existing' — the operator already bound epdgIp to a loopback or a real LAN
-      //              interface themselves; skip interface creation entirely and just confirm
-      //              it's actually present on the host before writing config that depends on
-      //              being able to bind to it.
-      if (interfaceMode === 'dummy') {
-        await createDummyInterface(DUMMY_IF_NAME, epdgIp, 24, true);
-      } else {
-        const ipPresent = await nsenter('bash', ['-c', `ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx '${epdgIp}' && echo yes || echo no`])
-          .then(r => r.stdout.trim() === 'yes').catch(() => false);
-        if (!ipPresent) {
-          return res.status(400).json({
-            ok: false,
-            error: `${epdgIp} is not currently assigned to any interface on this host (checked with "ip addr show"). ` +
-              `In "use existing IP" mode you must bind it yourself first — e.g. add it to a LAN interface via ` +
-              `systemd-networkd/netplan, or add it as a loopback alias (ip addr add ${epdgIp}/32 dev lo) — then retry.`,
-          });
-        }
-      }
-
-      // 2. Read real HSS/SMF addresses — never hardcode these.
-      const hssSwxIp = readFreeDiameterListenOn(HOST_HSS_CONF, '127.0.0.8');
-      const smfGtpcIp = readSmfGtpcAddress();
-      const smfIdentity = readFreeDiameterIdentity(HOST_SMF_CONF, 'smf.localdomain');
-      const realm = realmFromIdentity(smfIdentity);
-      const aaaFqdn = `aaa.${realm}`;
-
-      // 3. osmo-epdg config, from the pristine build template
-      if (!fs.existsSync(HOST_OSMO_EPDG_TEMPLATE)) {
-        return res.status(500).json({ ok: false, error: `osmo-epdg config template not found at ${BUILD_WORKDIR}/osmo-epdg/config/sys.config — the build directory may have been removed. Reinstall to regenerate it.` });
-      }
-      const template = fs.readFileSync(HOST_OSMO_EPDG_TEMPLATE, 'utf-8');
-      const patched = patchOsmoEpdgSysConfig(template, { epdgIp, hssSwxIp, smfGtpcIp, s6bLocalIp, gsupPort, aaaFqdn, realm });
-      fs.mkdirSync(path.dirname(HOST_OSMO_EPDG_CONFIG), { recursive: true });
-      fs.writeFileSync(HOST_OSMO_EPDG_CONFIG, patched, 'utf-8');
-      fs.mkdirSync(HOST_OSMO_EPDG_RUNTIME_DIR + '/log', { recursive: true });
-
-      // 4. strongSwan config
-      fs.mkdirSync(HOST_SWANCTL_DIR, { recursive: true });
-      fs.writeFileSync(HOST_SWANCTL_CONF, swanctlConf(epdgIp), 'utf-8');
-      fs.mkdirSync(`${HOST_STRONGSWAN_D}/charon`, { recursive: true });
-      fs.writeFileSync(HOST_EAP_AKA_CONF, eapAkaConf(), 'utf-8');
-      fs.writeFileSync(HOST_SAVE_KEYS_CONF, saveKeysConf(), 'utf-8');
-      if (fs.existsSync(HOST_CHARON_CONF)) {
-        let charonRaw = fs.readFileSync(HOST_CHARON_CONF, 'utf-8');
-        if (/^\s*#\s*force_eap_only_authentication\s*=/m.test(charonRaw)) {
-          charonRaw = charonRaw.replace(/^(\s*)#\s*(force_eap_only_authentication\s*=.*)$/m, '$1$2');
-        } else if (!/^\s*force_eap_only_authentication\s*=\s*yes/m.test(charonRaw)) {
-          charonRaw = charonRaw.replace(/^(charon\s*\{)/m, '$1\n\tforce_eap_only_authentication = yes');
-        }
-        fs.writeFileSync(HOST_CHARON_CONF, charonRaw, 'utf-8');
-      }
-
-      // 5. systemd units
-      fs.mkdirSync(HOST_SYSTEMD_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-osmo-epdg.service`, vowifiOsmoEpdgUnit(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-charon.service`, vowifiCharonUnit(), 'utf-8');
-      await nsenter('systemctl', ['daemon-reload']);
-
-      // 6. smf.conf — exactly one new ConnectPeer line, back up first
-      let smfConfHadBackup = state.smfConfHadBackup;
-      if (fs.existsSync(HOST_SMF_CONF)) {
-        if (!fs.existsSync(HOST_SMF_CONF_BAK)) {
-          fs.copyFileSync(HOST_SMF_CONF, HOST_SMF_CONF_BAK);
-          smfConfHadBackup = true;
-        }
-        const smfRaw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
-        fs.writeFileSync(HOST_SMF_CONF, upsertSmfAaaPeer(smfRaw, aaaFqdn, s6bLocalIp), 'utf-8');
-        await nsenter('systemctl', ['restart', 'open5gs-smfd']);
-        await new Promise(r => setTimeout(r, 3000));
-      }
-
-      // 7. Verify Gx survived the SMF restart
-      const smfActive = await nsenter('systemctl', ['is-active', 'open5gs-smfd'])
-        .then(r => r.stdout.trim() === 'active').catch(() => false);
-      if (!smfActive) {
+      const result = await configureVowifi({ epdgIp, s6bLocalIp, gsupPort, interfaceMode });
+      if (!result.smfActive) {
         logger.error('open5gs-smfd is not active after VoWiFi configure — check smf.conf syntax');
       }
-
-      // 8. DNS — ePDG discovery FQDN (epdg.epc.mnc<mnc>.mcc<mcc>.pub.3gppnetwork.org). Real
-      // UEs resolve this to find the ePDG; the SWu-IKEv2 test emulator bypasses it with a
-      // manual -d <ip> flag so this was never exercised by that test. Installs BIND9 itself
-      // if not already present (e.g. IMS isn't enabled on this deployment) — see the "DNS
-      // (BIND9)" page for manual editing beyond what this generates.
-      let dnsConfigured = false;
-      try {
-        const bindInstalled = await nsenter('bash', ['-c', 'command -v named >/dev/null 2>&1 && echo yes || echo no'])
-          .then(r => r.stdout.trim() === 'yes').catch(() => false);
-        if (!bindInstalled) {
-          await nsenter('bash', ['-c', 'DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils 2>&1'], 120000);
-        }
-        fs.mkdirSync(HOST_BIND_ZONES_DIR, { recursive: true });
-        if (!fs.existsSync(`${HOST_BIND_DIR}/named.conf.options`)) {
-          fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.options`, bindNamedOptionsDefault(), 'utf-8');
-        }
-        const { mcc, mnc } = readMccMnc();
-        const pubDomain = pubEpdgDomain(mcc, mnc);
-        const zoneFilePath = `/etc/bind/zones/${pubDomain}.zone`;
-        fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${pubDomain}.zone`, pubEpdgZoneFile(pubDomain, epdgIp, epdgIp), 'utf-8');
-        let namedLocalRaw = fs.existsSync(`${HOST_BIND_DIR}/named.conf.local`)
-          ? fs.readFileSync(`${HOST_BIND_DIR}/named.conf.local`, 'utf-8')
-          : '';
-        namedLocalRaw = upsertNamedZone(namedLocalRaw, pubDomain, zoneFilePath);
-        fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.local`, namedLocalRaw, 'utf-8');
-        await nsenter('systemctl', ['enable', '--now', 'bind9']).catch(() => {});
-        await nsenter('systemctl', ['restart', 'bind9']);
-        dnsConfigured = true;
-      } catch (err) {
-        logger.error({ err: String(err) }, 'VoWiFi DNS zone setup failed — configure otherwise succeeded');
+      if (!result.dnsConfigured) {
+        logger.error('VoWiFi DNS zone setup failed — configure otherwise succeeded');
       }
 
-      const newState: VowifiState = {
-        ...state, configured: true, configuredAt: new Date().toISOString(),
-        epdgIp, epdgInterfaceMode: interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, smfConfHadBackup,
-      };
-      saveState(newState);
-
-      await auditLogger.log({ action: 'vowifi_configure', user, details: `epdgIp=${epdgIp} interfaceMode=${interfaceMode} gsupPort=${gsupPort} dnsConfigured=${dnsConfigured}`, success: true });
-      res.json({ ok: true, epdgIp, interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, dnsConfigured });
+      await auditLogger.log({ action: 'vowifi_configure', user, details: `epdgIp=${epdgIp} interfaceMode=${interfaceMode} gsupPort=${gsupPort} dnsConfigured=${result.dnsConfigured}`, success: true });
+      res.json({ ok: true, ...result });
     } catch (err) {
       await auditLogger.log({ action: 'vowifi_configure', user, details: String(err), success: false });
-      res.status(500).json({ ok: false, error: String(err) });
+      const status = err instanceof VowifiConfigureError ? err.status : 500;
+      res.status(status).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
   });
 

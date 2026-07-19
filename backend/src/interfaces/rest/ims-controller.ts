@@ -1516,6 +1516,271 @@ INSERT IGNORE INTO version (table_name, table_version) VALUES ('messages','1');`
   await mysqlExec(`FLUSH PRIVILEGES;`);
 }
 
+// ── Configure (extracted for reuse by the PLMN Migration Wizard) ──────────────
+// No internal default-fallbacks here — callers (the manual /configure route below,
+// or the PLMN migration use-case) must pass a fully-populated input. Defaults for
+// the manual-UI path live only in the thin route wrapper.
+export type ImsConfigureFullInput = ImsConfigureInput & { mcc: string; mnc: string };
+
+export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsDomain: string }> {
+  const {
+    pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
+    rtpEngineIp, rtpPortMin, rtpPortMax, dnsIp, mcc, mnc,
+    additionalPlmns = [],
+  } = input;
+
+  const imsDomain = deriveImsDomain(mcc, mnc);
+  const zoneName  = imsDomain;
+  const zoneFile  = `/etc/bind/zones/${zoneName}.zone`;
+
+  // Derive additional IMS domains from additional PLMNs
+  const additionalDomains = (additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) =>
+    deriveImsDomain(p.mcc, p.mnc),
+  );
+
+  // Domains that were configured before this call but aren't in the new list anymore
+  // (e.g. a PLMN was removed, or the primary PLMN itself changed) — their zone file +
+  // named.conf.local stanza must be deleted here, not just left to accumulate.
+  let removedDomains: string[] = [];
+  if (fs.existsSync(HOST_IMS_STATE)) {
+    try {
+      const prevSaved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      const prevAdditionalPlmns: { mcc: string; mnc: string }[] = prevSaved?.config?.additionalPlmns ?? [];
+      const prevDomains = prevAdditionalPlmns.map(p => deriveImsDomain(p.mcc, p.mnc));
+      const prevPrimaryDomain: string | undefined = prevSaved?.imsDomain;
+      if (prevPrimaryDomain) prevDomains.push(prevPrimaryDomain);
+      removedDomains = [...new Set(prevDomains)].filter(d => d !== imsDomain && !additionalDomains.includes(d));
+    } catch { /* corrupt state — nothing to clean up */ }
+  }
+
+  // 1. P-CSCF include config + Diameter XML
+  const epcDomain = deriveEpcDomain(mcc, mnc);
+  const { fqdn: pcrfFqdn, port: pcrfPort } = readPcrfFreeDiameterInfo();
+  fs.mkdirSync(HOST_KAMAILIO_PCSCF_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.cfg`,
+    pcscfIncludeCfg({ pcscfIp, pcscfPort, imsDomain, epcDomain, additionalDomains }), 'utf-8');
+  fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.xml`,
+    pcscfDiameterXml({ pcscfIp, imsDomain, pcrfFqdn, pcrfPort }), 'utf-8');
+
+  // 2. I-CSCF include config + Diameter XML
+  fs.mkdirSync(HOST_KAMAILIO_ICSCF_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.cfg`,
+    icscfIncludeCfg({ icscfIp, icscfPort, imsDomain, additionalDomains }), 'utf-8');
+  fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.xml`,
+    icscfDiameterXml({ icscfIp, imsDomain }), 'utf-8');
+
+  // 3. S-CSCF include config + Diameter XML
+  fs.mkdirSync(HOST_KAMAILIO_SCSCF_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
+    scscfIncludeCfg({ scscfIp, scscfPort, imsDomain, additionalDomains }), 'utf-8');
+  fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.xml`,
+    scscfDiameterXml({ scscfIp, imsDomain }), 'utf-8');
+
+  // 3b. SMSC config — Kamailio SMS center on port 7090
+  const smscIp = pcscfIp; // SMSC runs on same host as P-CSCF
+  fs.mkdirSync(HOST_KAMAILIO_SMSC_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/smsc.cfg`,
+    smscIncludeCfg({ smscIp, imsDomain }), 'utf-8');
+  fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/kamailio_smsc.cfg`,
+    smscMainCfg(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-smsc.service`,
+    smscSystemdUnit(), 'utf-8');
+
+  // 4. RTPengine config — listen-ng must match kamailio_pcscf.cfg's rtpengine_sock
+  fs.mkdirSync('/proc/1/root/etc/rtpengine', { recursive: true });
+  fs.writeFileSync(HOST_RTPENGINE_CONF,
+    `[rtpengine]\ninterface = ${rtpEngineIp}\nlisten-ng = ${rtpEngineIp}:2223\ntos = 184\nport-min = ${rtpPortMin}\nport-max = ${rtpPortMax}\nlog-level = 5\n`,
+    'utf-8');
+
+  // 4b. Main Kamailio routing-script configs (P/I/S-CSCF) + P-CSCF's route/*.cfg
+  // fragments + dispatcher lists. These are the large, proven-working routing
+  // scripts that pcscf.cfg/icscf.cfg/scscf.cfg (written above) get import_file'd
+  // into — deployed from the bundled templates every Configure run, same as
+  // everything else here, so they can't silently go missing on a fresh install
+  // the way they did before this was wired up (2026-07-17 incident: these were
+  // never written by either /install or /configure — only ever placed once, by
+  // hand, on one dev host — so every OTHER host's P/I/S-CSCF units referenced a
+  // main cfg file that never existed).
+  deployImsTemplate('kamailio_pcscf/kamailio_pcscf.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`, { RTPENGINE_IP: rtpEngineIp });
+  deployImsTemplate('kamailio_pcscf/route/mo.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/mo.cfg`);
+  deployImsTemplate('kamailio_pcscf/route/mt.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/mt.cfg`);
+  deployImsTemplate('kamailio_pcscf/route/register.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/register.cfg`);
+  deployImsTemplate('kamailio_pcscf/route/rtp.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/rtp.cfg`, { RTPENGINE_IP: rtpEngineIp });
+  fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/dispatcher.list`, pcscfDispatcherList(icscfIp, icscfPort), 'utf-8');
+  deployImsTemplate('kamailio_icscf/kamailio_icscf.cfg', `${HOST_KAMAILIO_ICSCF_DIR}/kamailio_icscf.cfg`);
+  deployImsTemplate('kamailio_scscf/kamailio_scscf.cfg', `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg`);
+  deployImsTemplate('kamailio_scscf/dispatcher.list', `${HOST_KAMAILIO_SCSCF_DIR}/dispatcher.list`);
+  // Required by modparam("ims_registrar_scscf", "user_data_xsd", ...) — without
+  // it, every SAA's iFC XML fails schema validation and the whole SIP REGISTER
+  // fails with "500 Server error on UAR select next S-CSCF" once no more
+  // candidate S-CSCFs are left to retry (confirmed live, 2026-07-17). Sourced
+  // directly from Kamailio's own ims_registrar_scscf module source — the exact
+  // schema its own C code validates against, not a hand-authored guess.
+  deployImsTemplate('kamailio_scscf/CxDataType_Rel7.xsd', `${HOST_KAMAILIO_SCSCF_DIR}/CxDataType_Rel7.xsd`);
+
+  // 4c. Systemd units for P/I/S-CSCF + all 3 PyHSS services — same gap as 4b:
+  // these generator functions existed but were never actually called anywhere.
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-pcscf.service`, pcscfSystemdUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-icscf.service`, icscfSystemdUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-scscf.service`, scscfSystemdUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-hss.service`, pyhssHssUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-diameter.service`, pyhssDiameterUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-api.service`, pyhssApiUnit(), 'utf-8');
+
+  // 5. daemon-reload — picks up every unit file written in 3b/4c above.
+  await nsenter('systemctl', ['daemon-reload']);
+
+  // 6a. PyHSS config — deployed to /opt/pyhss/config.yaml + iFC XMLs. Services
+  // are (re)started later in step 16, in dependency order, after step 8 below
+  // has actually created the databases they need — restarting them here would
+  // just fail against a nonexistent ims_hss_db on a fresh install.
+  fs.writeFileSync('/proc/1/root/opt/pyhss/config.yaml',
+    pyhssConfigYaml({ imsDomain, mcc, mnc, scscfIp, scscfPort, hssIp: '127.0.1.3', additionalPlmns }), 'utf-8');
+  fs.writeFileSync('/proc/1/root/opt/pyhss/default_ifc.xml', defaultIfcXml(imsDomain), 'utf-8');
+  fs.writeFileSync('/proc/1/root/opt/pyhss/default_sh_user_data.xml', defaultShUserDataXml(), 'utf-8');
+
+  // 8. Initialize MariaDB (all databases)
+  await initializeImsDatabase({ imsDomain, scscfIp, scscfPort });
+
+  // 9. /etc/hosts — FQDN entry for HSS peer (cdp uses getaddrinfo)
+  const hostsPath = '/proc/1/root/etc/hosts';
+  const hssFqdn   = `hss.${imsDomain}`;
+  const hssIp     = '127.0.1.3';
+  let hostsContent = fs.existsSync(hostsPath) ? fs.readFileSync(hostsPath, 'utf-8') : '';
+  const hostsHssLine = `${hssIp}  ${hssFqdn}`;
+  hostsContent = hostsContent.includes(hssFqdn)
+    ? hostsContent.replace(/^[^\n]*hss\.ims\.[^\n]*/m, hostsHssLine)
+    : `${hostsContent.trimEnd()}\n${hostsHssLine}\n`;
+  fs.writeFileSync(hostsPath, hostsContent, 'utf-8');
+
+  // 10. BIND9 zones — primary + one zone per additional PLMN
+  fs.mkdirSync(HOST_BIND_ZONES_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${zoneName}.zone`,
+    bindZoneFile({ imsDomain, dnsIp, hssIp, pcscfIp, icscfIp, scscfIp, pcscfPort, icscfPort, scscfPort }), 'utf-8');
+
+  // listen-on itself is owned by the BIND page now (see bind-controller.ts) — it
+  // manages install/forwarders/listen-on for every module sharing this one BIND9
+  // instance, so nothing here overwrites the whole options{} block anymore. We still
+  // need our own dnsIp actually listened on, so merge it in via the same safe upsert
+  // the BIND page's own UI uses, rather than replacing whatever's already configured.
+  writeListenOn([...readListenOn(), dnsIp]);
+
+  let namedLocalRaw  = fs.existsSync(`${HOST_BIND_DIR}/named.conf.local`)
+    ? fs.readFileSync(`${HOST_BIND_DIR}/named.conf.local`, 'utf-8')
+    : '';
+  namedLocalRaw = upsertNamedZone(namedLocalRaw, zoneName, zoneFile);
+
+  // Additional PLMN zones — same server IPs, different domain names
+  for (const addDomain of additionalDomains) {
+    const addZoneFile = `/etc/bind/zones/${addDomain}.zone`;
+    fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${addDomain}.zone`,
+      bindZoneFile({ imsDomain: addDomain, dnsIp, hssIp, pcscfIp, icscfIp, scscfIp, pcscfPort, icscfPort, scscfPort }), 'utf-8');
+    namedLocalRaw = upsertNamedZone(namedLocalRaw, addDomain, addZoneFile);
+  }
+
+  // Remove zones for PLMNs no longer configured
+  for (const removedDomain of removedDomains) {
+    const removedZoneFile = `${HOST_BIND_ZONES_DIR}/${removedDomain}.zone`;
+    if (fs.existsSync(removedZoneFile)) fs.unlinkSync(removedZoneFile);
+    namedLocalRaw = removeNamedZone(namedLocalRaw, removedDomain);
+  }
+
+  fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.local`, namedLocalRaw, 'utf-8');
+
+  // 11. Update SMF yaml
+  if (fs.existsSync(HOST_SMF_YAML)) {
+    if (!fs.existsSync(HOST_IMS_SMF_BAK)) fs.copyFileSync(HOST_SMF_YAML, HOST_IMS_SMF_BAK);
+    const smfRaw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
+    fs.writeFileSync(HOST_SMF_YAML, updateSmfImsSession(smfRaw, pcscfIp, dnsIp), 'utf-8');
+  }
+
+  // 11b. HSS yaml — sms_over_ims capability for 4G subscribers
+  if (fs.existsSync(HOST_HSS_YAML)) {
+    let hssRaw = fs.readFileSync(HOST_HSS_YAML, 'utf-8');
+    const smscUri = `sip:smsc.${imsDomain}:7090;transport=tcp`;
+    if (!hssRaw.includes('sms_over_ims')) {
+      hssRaw = hssRaw.replace(/^(hss:\s*)$/m, `$1\n  sms_over_ims: "${smscUri}"`);
+    } else {
+      hssRaw = hssRaw.replace(/sms_over_ims:.*/, `sms_over_ims: "${smscUri}"`);
+    }
+    fs.writeFileSync(HOST_HSS_YAML, hssRaw, 'utf-8');
+  }
+
+  // 12. PCRF — add P-CSCF as Diameter peer for Rx interface
+  if (fs.existsSync(HOST_PCRF_FD_CONF)) {
+    const pcrfRaw   = fs.readFileSync(HOST_PCRF_FD_CONF, 'utf-8');
+    const pcscfFqdn = `pcscf.${imsDomain}`;
+    fs.writeFileSync(HOST_PCRF_FD_CONF, upsertPcrfPcscfPeer(pcrfRaw, pcscfFqdn, pcscfIp, 3871), 'utf-8');
+  }
+
+  // 13. ogstun2 — IMS data plane (idempotent)
+  try {
+    await nsenter('bash', ['-c',
+      `ip link show ogstun2 2>/dev/null || ` +
+      `(ip tuntap add name ogstun2 mode tun && ` +
+      `ip addr add 10.46.0.1/24 dev ogstun2 && ` +
+      `ip link set ogstun2 up && ` +
+      `iptables -t nat -C POSTROUTING -s 10.46.0.0/24 ! -o ogstun2 -j MASQUERADE 2>/dev/null || ` +
+      `iptables -t nat -A POSTROUTING -s 10.46.0.0/24 ! -o ogstun2 -j MASQUERADE)`
+    ]).catch(() => {});
+  } catch { /* non-fatal */ }
+
+  // 13b. UPF yaml — add IMS session entry pointing to ogstun2
+  if (fs.existsSync(HOST_UPF_YAML)) {
+    if (!fs.existsSync(HOST_IMS_UPF_BAK)) fs.copyFileSync(HOST_UPF_YAML, HOST_IMS_UPF_BAK);
+    const upfRaw = fs.readFileSync(HOST_UPF_YAML, 'utf-8');
+    fs.writeFileSync(HOST_UPF_YAML, updateUpfImsSession(upfRaw), 'utf-8');
+  }
+
+  // 14. Save state
+  fs.writeFileSync(HOST_IMS_STATE, JSON.stringify({
+    imsDomain,
+    hssBackend: 'pyhss',
+    config: {
+      mcc, mnc, additionalPlmns: additionalPlmns ?? [],
+      pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
+      rtpEngineIp, rtpPortMin, rtpPortMax, dnsIp,
+    },
+  }, null, 2), 'utf-8');
+
+  // 15. Disable the default kamailio.service — it binds all interfaces on port 5060
+  //     and conflicts with kamailio-pcscf if left running.
+  await nsenter('systemctl', ['stop', 'kamailio']).catch(() => {});
+  await nsenter('systemctl', ['disable', 'kamailio']).catch(() => {});
+
+  // 16. Enable + start all services (ordered). The four kamailio-* units parse their
+  // .cfg/.xml config only once at process startup (cdp's Diameter Peer/DefaultRoute
+  // config in particular is never hot-reloaded) — `enable --now` is a no-op on an
+  // already-running unit, so a *re*-Configure would otherwise silently leave a stale
+  // process running against the config this same call just regenerated on disk.
+  // Confirmed live: this caused kamailio-icscf to keep running without a DefaultRoute
+  // entry (cdp's "Empty routing table" error) after a Configure re-run that fixed
+  // icscf.xml — enable+restart for these four instead of enable --now.
+  const kamailioCscfServices = new Set(['kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc']);
+  const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-hss', 'pyhss-api', 'pyhss-diameter',
+                'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
+  for (const svc of svcs) {
+    if (kamailioCscfServices.has(svc)) {
+      await nsenter('systemctl', ['enable', svc]).catch(() => {});
+      await nsenter('systemctl', ['restart', svc]).catch(() => {});
+    } else {
+      await nsenter('systemctl', ['enable', '--now', svc]).catch(() => {});
+    }
+    if (svc === 'redis-server') {
+      await new Promise(r => setTimeout(r, 2000)); // let redis bind before pyhss services
+    }
+  }
+  // Reload bind9 zone after restart — systemctl restart alone can race with zone file writes
+  await nsenter('rndc', ['reload']).catch(() => {});
+
+  // 17. Restart SMF + PCRF + UPF
+  await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
+  await nsenter('systemctl', ['restart', 'open5gs-pcrfd']).catch(() => {});
+  await nsenter('systemctl', ['restart', 'open5gs-upfd']).catch(() => {});
+
+  return { imsDomain };
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 export function createImsRouter(
@@ -1766,253 +2031,10 @@ export function createImsRouter(
       const mcc = bodyMcc || autoMcc;
       const mnc = bodyMnc || autoMnc;
 
-      const imsDomain = deriveImsDomain(mcc, mnc);
-      const zoneName  = imsDomain;
-      const zoneFile  = `/etc/bind/zones/${zoneName}.zone`;
-
-      // Derive additional IMS domains from additional PLMNs
-      const additionalDomains = (additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) =>
-        deriveImsDomain(p.mcc, p.mnc),
-      );
-
-      // Domains that were configured before this call but aren't in the new list anymore
-      // (e.g. a PLMN was removed) — their zone file + named.conf.local stanza must be
-      // deleted here, not just left to accumulate. This previously only ever added/updated
-      // zones, never removed ones for a PLMN the user took out.
-      let removedDomains: string[] = [];
-      if (fs.existsSync(HOST_IMS_STATE)) {
-        try {
-          const prevSaved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
-          const prevAdditionalPlmns: { mcc: string; mnc: string }[] = prevSaved?.config?.additionalPlmns ?? [];
-          const prevDomains = prevAdditionalPlmns.map(p => deriveImsDomain(p.mcc, p.mnc));
-          removedDomains = prevDomains.filter(d => d !== imsDomain && !additionalDomains.includes(d));
-        } catch { /* corrupt state — nothing to clean up */ }
-      }
-
-      // 1. P-CSCF include config + Diameter XML
-      const epcDomain = deriveEpcDomain(mcc, mnc);
-      const { fqdn: pcrfFqdn, port: pcrfPort } = readPcrfFreeDiameterInfo();
-      fs.mkdirSync(HOST_KAMAILIO_PCSCF_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.cfg`,
-        pcscfIncludeCfg({ pcscfIp, pcscfPort, imsDomain, epcDomain, additionalDomains }), 'utf-8');
-      fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.xml`,
-        pcscfDiameterXml({ pcscfIp, imsDomain, pcrfFqdn, pcrfPort }), 'utf-8');
-
-      // 2. I-CSCF include config + Diameter XML
-      fs.mkdirSync(HOST_KAMAILIO_ICSCF_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.cfg`,
-        icscfIncludeCfg({ icscfIp, icscfPort, imsDomain, additionalDomains }), 'utf-8');
-      fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.xml`,
-        icscfDiameterXml({ icscfIp, imsDomain }), 'utf-8');
-
-      // 3. S-CSCF include config + Diameter XML
-      fs.mkdirSync(HOST_KAMAILIO_SCSCF_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
-        scscfIncludeCfg({ scscfIp, scscfPort, imsDomain, additionalDomains }), 'utf-8');
-      fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.xml`,
-        scscfDiameterXml({ scscfIp, imsDomain }), 'utf-8');
-
-      // 3b. SMSC config — Kamailio SMS center on port 7090
-      const smscIp = pcscfIp; // SMSC runs on same host as P-CSCF
-      fs.mkdirSync(HOST_KAMAILIO_SMSC_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/smsc.cfg`,
-        smscIncludeCfg({ smscIp, imsDomain }), 'utf-8');
-      fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/kamailio_smsc.cfg`,
-        smscMainCfg(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-smsc.service`,
-        smscSystemdUnit(), 'utf-8');
-
-      // 4. RTPengine config — listen-ng must match kamailio_pcscf.cfg's rtpengine_sock
-      fs.mkdirSync('/proc/1/root/etc/rtpengine', { recursive: true });
-      fs.writeFileSync(HOST_RTPENGINE_CONF,
-        `[rtpengine]\ninterface = ${rtpEngineIp}\nlisten-ng = ${rtpEngineIp}:2223\ntos = 184\nport-min = ${rtpPortMin}\nport-max = ${rtpPortMax}\nlog-level = 5\n`,
-        'utf-8');
-
-      // 4b. Main Kamailio routing-script configs (P/I/S-CSCF) + P-CSCF's route/*.cfg
-      // fragments + dispatcher lists. These are the large, proven-working routing
-      // scripts that pcscf.cfg/icscf.cfg/scscf.cfg (written above) get import_file'd
-      // into — deployed from the bundled templates every Configure run, same as
-      // everything else here, so they can't silently go missing on a fresh install
-      // the way they did before this was wired up (2026-07-17 incident: these were
-      // never written by either /install or /configure — only ever placed once, by
-      // hand, on one dev host — so every OTHER host's P/I/S-CSCF units referenced a
-      // main cfg file that never existed).
-      deployImsTemplate('kamailio_pcscf/kamailio_pcscf.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`, { RTPENGINE_IP: rtpEngineIp });
-      deployImsTemplate('kamailio_pcscf/route/mo.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/mo.cfg`);
-      deployImsTemplate('kamailio_pcscf/route/mt.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/mt.cfg`);
-      deployImsTemplate('kamailio_pcscf/route/register.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/register.cfg`);
-      deployImsTemplate('kamailio_pcscf/route/rtp.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/rtp.cfg`, { RTPENGINE_IP: rtpEngineIp });
-      fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/dispatcher.list`, pcscfDispatcherList(icscfIp, icscfPort), 'utf-8');
-      deployImsTemplate('kamailio_icscf/kamailio_icscf.cfg', `${HOST_KAMAILIO_ICSCF_DIR}/kamailio_icscf.cfg`);
-      deployImsTemplate('kamailio_scscf/kamailio_scscf.cfg', `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg`);
-      deployImsTemplate('kamailio_scscf/dispatcher.list', `${HOST_KAMAILIO_SCSCF_DIR}/dispatcher.list`);
-      // Required by modparam("ims_registrar_scscf", "user_data_xsd", ...) — without
-      // it, every SAA's iFC XML fails schema validation and the whole SIP REGISTER
-      // fails with "500 Server error on UAR select next S-CSCF" once no more
-      // candidate S-CSCFs are left to retry (confirmed live, 2026-07-17). Sourced
-      // directly from Kamailio's own ims_registrar_scscf module source — the exact
-      // schema its own C code validates against, not a hand-authored guess.
-      deployImsTemplate('kamailio_scscf/CxDataType_Rel7.xsd', `${HOST_KAMAILIO_SCSCF_DIR}/CxDataType_Rel7.xsd`);
-
-      // 4c. Systemd units for P/I/S-CSCF + all 3 PyHSS services — same gap as 4b:
-      // these generator functions existed but were never actually called anywhere.
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-pcscf.service`, pcscfSystemdUnit(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-icscf.service`, icscfSystemdUnit(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-scscf.service`, scscfSystemdUnit(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-hss.service`, pyhssHssUnit(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-diameter.service`, pyhssDiameterUnit(), 'utf-8');
-      fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-api.service`, pyhssApiUnit(), 'utf-8');
-
-      // 5. daemon-reload — picks up every unit file written in 3b/4c above.
-      await nsenter('systemctl', ['daemon-reload']);
-
-      // 6a. PyHSS config — deployed to /opt/pyhss/config.yaml + iFC XMLs. Services
-      // are (re)started later in step 16, in dependency order, after step 8 below
-      // has actually created the databases they need — restarting them here would
-      // just fail against a nonexistent ims_hss_db on a fresh install.
-      fs.writeFileSync('/proc/1/root/opt/pyhss/config.yaml',
-        pyhssConfigYaml({ imsDomain, mcc, mnc, scscfIp, scscfPort, hssIp: '127.0.1.3', additionalPlmns }), 'utf-8');
-      fs.writeFileSync('/proc/1/root/opt/pyhss/default_ifc.xml', defaultIfcXml(imsDomain), 'utf-8');
-      fs.writeFileSync('/proc/1/root/opt/pyhss/default_sh_user_data.xml', defaultShUserDataXml(), 'utf-8');
-
-      // 8. Initialize MariaDB (all databases)
-      await initializeImsDatabase({ imsDomain, scscfIp, scscfPort });
-
-      // 9. /etc/hosts — FQDN entry for HSS peer (cdp uses getaddrinfo)
-      const hostsPath = '/proc/1/root/etc/hosts';
-      const hssFqdn   = `hss.${imsDomain}`;
-      const hssIp     = '127.0.1.3';
-      let hostsContent = fs.existsSync(hostsPath) ? fs.readFileSync(hostsPath, 'utf-8') : '';
-      const hostsHssLine = `${hssIp}  ${hssFqdn}`;
-      hostsContent = hostsContent.includes(hssFqdn)
-        ? hostsContent.replace(/^[^\n]*hss\.ims\.[^\n]*/m, hostsHssLine)
-        : `${hostsContent.trimEnd()}\n${hostsHssLine}\n`;
-      fs.writeFileSync(hostsPath, hostsContent, 'utf-8');
-
-      // 10. BIND9 zones — primary + one zone per additional PLMN
-      fs.mkdirSync(HOST_BIND_ZONES_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${zoneName}.zone`,
-        bindZoneFile({ imsDomain, dnsIp, hssIp, pcscfIp, icscfIp, scscfIp, pcscfPort, icscfPort, scscfPort }), 'utf-8');
-
-      // listen-on itself is owned by the BIND page now (see bind-controller.ts) — it
-      // manages install/forwarders/listen-on for every module sharing this one BIND9
-      // instance, so nothing here overwrites the whole options{} block anymore. We still
-      // need our own dnsIp actually listened on, so merge it in via the same safe upsert
-      // the BIND page's own UI uses, rather than replacing whatever's already configured.
-      writeListenOn([...readListenOn(), dnsIp]);
-
-      let namedLocalRaw  = fs.existsSync(`${HOST_BIND_DIR}/named.conf.local`)
-        ? fs.readFileSync(`${HOST_BIND_DIR}/named.conf.local`, 'utf-8')
-        : '';
-      namedLocalRaw = upsertNamedZone(namedLocalRaw, zoneName, zoneFile);
-
-      // Additional PLMN zones — same server IPs, different domain names
-      for (const addDomain of additionalDomains) {
-        const addZoneFile = `/etc/bind/zones/${addDomain}.zone`;
-        fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${addDomain}.zone`,
-          bindZoneFile({ imsDomain: addDomain, dnsIp, hssIp, pcscfIp, icscfIp, scscfIp, pcscfPort, icscfPort, scscfPort }), 'utf-8');
-        namedLocalRaw = upsertNamedZone(namedLocalRaw, addDomain, addZoneFile);
-      }
-
-      // Remove zones for PLMNs no longer configured
-      for (const removedDomain of removedDomains) {
-        const removedZoneFile = `${HOST_BIND_ZONES_DIR}/${removedDomain}.zone`;
-        if (fs.existsSync(removedZoneFile)) fs.unlinkSync(removedZoneFile);
-        namedLocalRaw = removeNamedZone(namedLocalRaw, removedDomain);
-      }
-
-      fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.local`, namedLocalRaw, 'utf-8');
-
-      // 11. Update SMF yaml
-      if (fs.existsSync(HOST_SMF_YAML)) {
-        if (!fs.existsSync(HOST_IMS_SMF_BAK)) fs.copyFileSync(HOST_SMF_YAML, HOST_IMS_SMF_BAK);
-        const smfRaw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
-        fs.writeFileSync(HOST_SMF_YAML, updateSmfImsSession(smfRaw, pcscfIp, dnsIp), 'utf-8');
-      }
-
-      // 11b. HSS yaml — sms_over_ims capability for 4G subscribers
-      if (fs.existsSync(HOST_HSS_YAML)) {
-        let hssRaw = fs.readFileSync(HOST_HSS_YAML, 'utf-8');
-        const smscUri = `sip:smsc.${imsDomain}:7090;transport=tcp`;
-        if (!hssRaw.includes('sms_over_ims')) {
-          hssRaw = hssRaw.replace(/^(hss:\s*)$/m, `$1\n  sms_over_ims: "${smscUri}"`);
-        } else {
-          hssRaw = hssRaw.replace(/sms_over_ims:.*/, `sms_over_ims: "${smscUri}"`);
-        }
-        fs.writeFileSync(HOST_HSS_YAML, hssRaw, 'utf-8');
-      }
-
-      // 12. PCRF — add P-CSCF as Diameter peer for Rx interface
-      if (fs.existsSync(HOST_PCRF_FD_CONF)) {
-        const pcrfRaw   = fs.readFileSync(HOST_PCRF_FD_CONF, 'utf-8');
-        const pcscfFqdn = `pcscf.${imsDomain}`;
-        fs.writeFileSync(HOST_PCRF_FD_CONF, upsertPcrfPcscfPeer(pcrfRaw, pcscfFqdn, pcscfIp, 3871), 'utf-8');
-      }
-
-      // 13. ogstun2 — IMS data plane (idempotent)
-      try {
-        await nsenter('bash', ['-c',
-          `ip link show ogstun2 2>/dev/null || ` +
-          `(ip tuntap add name ogstun2 mode tun && ` +
-          `ip addr add 10.46.0.1/24 dev ogstun2 && ` +
-          `ip link set ogstun2 up && ` +
-          `iptables -t nat -C POSTROUTING -s 10.46.0.0/24 ! -o ogstun2 -j MASQUERADE 2>/dev/null || ` +
-          `iptables -t nat -A POSTROUTING -s 10.46.0.0/24 ! -o ogstun2 -j MASQUERADE)`
-        ]).catch(() => {});
-      } catch { /* non-fatal */ }
-
-      // 13b. UPF yaml — add IMS session entry pointing to ogstun2
-      if (fs.existsSync(HOST_UPF_YAML)) {
-        if (!fs.existsSync(HOST_IMS_UPF_BAK)) fs.copyFileSync(HOST_UPF_YAML, HOST_IMS_UPF_BAK);
-        const upfRaw = fs.readFileSync(HOST_UPF_YAML, 'utf-8');
-        fs.writeFileSync(HOST_UPF_YAML, updateUpfImsSession(upfRaw), 'utf-8');
-      }
-
-      // 14. Save state
-      fs.writeFileSync(HOST_IMS_STATE, JSON.stringify({
-        imsDomain,
-        hssBackend: 'pyhss',
-        config: {
-          mcc, mnc, additionalPlmns: additionalPlmns ?? [],
-          pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
-          rtpEngineIp, rtpPortMin, rtpPortMax, dnsIp,
-        },
-      }, null, 2), 'utf-8');
-
-      // 15. Disable the default kamailio.service — it binds all interfaces on port 5060
-      //     and conflicts with kamailio-pcscf if left running.
-      await nsenter('systemctl', ['stop', 'kamailio']).catch(() => {});
-      await nsenter('systemctl', ['disable', 'kamailio']).catch(() => {});
-
-      // 16. Enable + start all services (ordered). The four kamailio-* units parse their
-      // .cfg/.xml config only once at process startup (cdp's Diameter Peer/DefaultRoute
-      // config in particular is never hot-reloaded) — `enable --now` is a no-op on an
-      // already-running unit, so a *re*-Configure would otherwise silently leave a stale
-      // process running against the config this same call just regenerated on disk.
-      // Confirmed live: this caused kamailio-icscf to keep running without a DefaultRoute
-      // entry (cdp's "Empty routing table" error) after a Configure re-run that fixed
-      // icscf.xml — enable+restart for these four instead of enable --now.
-      const kamailioCscfServices = new Set(['kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc']);
-      const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-hss', 'pyhss-api', 'pyhss-diameter',
-                    'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
-      for (const svc of svcs) {
-        if (kamailioCscfServices.has(svc)) {
-          await nsenter('systemctl', ['enable', svc]).catch(() => {});
-          await nsenter('systemctl', ['restart', svc]).catch(() => {});
-        } else {
-          await nsenter('systemctl', ['enable', '--now', svc]).catch(() => {});
-        }
-        if (svc === 'redis-server') {
-          await new Promise(r => setTimeout(r, 2000)); // let redis bind before pyhss services
-        }
-      }
-      // Reload bind9 zone after restart — systemctl restart alone can race with zone file writes
-      await nsenter('rndc', ['reload']).catch(() => {});
-
-      // 17. Restart SMF + PCRF + UPF
-      await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
-      await nsenter('systemctl', ['restart', 'open5gs-pcrfd']).catch(() => {});
-      await nsenter('systemctl', ['restart', 'open5gs-upfd']).catch(() => {});
+      const { imsDomain } = await configureIms({
+        pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
+        rtpEngineIp, rtpPortMin, rtpPortMax, dnsIp, mcc, mnc, additionalPlmns,
+      });
 
       await auditLogger.log({
         action: 'ims_configure', user,
