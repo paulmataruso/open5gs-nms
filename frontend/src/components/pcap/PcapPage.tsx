@@ -8,6 +8,22 @@ import {
   pcapApi, HostInterface, NfCaptureDescriptor, DecodePreset, PcapManifest, CaptureScopeMode,
 } from '../../api/pcap';
 import { PacketTableModal } from './PacketTableModal';
+import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
+
+// Which interface actually carries a given kind of traffic is not obvious — Linux
+// delivers ALL local-to-local traffic (including between two NFs each bound to their
+// own dummy-* IP, e.g. AMF's dummy-amf address) via the loopback device, never the
+// dummy interface itself. Confirmed live (2026-07-19): a real SBI/Diameter exchange
+// with the AMF's dummy-amf IP as one endpoint showed up on `lo`, while capturing on
+// `dummy-amf` directly caught only an unrelated EIGRP broadcast. So dummy-*/veth
+// interfaces are excluded entirely from the picker below — there's never a reason to
+// select one; use Loopback instead.
+const IFACE_GROUP_TOOLTIPS: Record<string, string> = {
+  Loopback: "Core NF-to-NF signaling — SBI/HTTP2, Diameter, PFCP, GTP-C — is delivered here even when the NFs involved are bound to a dummy-interface IP (e.g. the AMF or MME's dummy-* address), because Linux routes all local-to-local traffic through loopback regardless of which local IP is involved. Select this to capture core-network signaling between NFs on this host.",
+  TUN: "Decapsulated UE data-plane traffic — the subscriber's own IP packets after GTP-U strips the tunnel header.",
+  Physical: "Traffic that actually crosses the wire to/from a remote host — radio (S1AP/NGAP/GTP-U from a real eNB/gNB), the EIGRP neighbor, or a real phone reaching VoWiFi's ePDG over the internet. Local NF-to-NF traffic will NOT appear here even if the NF is bound to this interface's IP — use Loopback for that.",
+  Other: 'Anything that does not fit the categories above — rarely useful.',
+};
 
 const FUNCTION_TYPES: { id: string; label: string }[] = [
   { id: 'mme', label: 'MME' },
@@ -21,11 +37,11 @@ const FUNCTION_TYPES: { id: string; label: string }[] = [
 ];
 
 function groupInterfaces(interfaces: HostInterface[]): Record<string, HostInterface[]> {
-  const groups: Record<string, HostInterface[]> = { Loopback: [], TUN: [], Dummy: [], Physical: [], Other: [] };
+  const groups: Record<string, HostInterface[]> = { Loopback: [], TUN: [], Physical: [], Other: [] };
   for (const iface of interfaces) {
+    if (iface.name.startsWith('dummy-') || iface.name.startsWith('veth')) continue;
     if (iface.name === 'lo') groups.Loopback.push(iface);
     else if (/^ogstun\d*$/.test(iface.name)) groups.TUN.push(iface);
-    else if (iface.name.startsWith('dummy-') || iface.name.startsWith('veth')) groups.Dummy.push(iface);
     else if (/^(eth|ens|enp|eno)/.test(iface.name)) groups.Physical.push(iface);
     else groups.Other.push(iface);
   }
@@ -209,7 +225,9 @@ export function PcapPage(): JSX.Element {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mt-1">
             {Object.entries(ifaceGroups).filter(([, list]) => list.length > 0).map(([group, list]) => (
               <div key={group} className="border border-nms-border rounded-lg p-2">
-                <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-1">{group}</div>
+                <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-1">
+                  <LabelWithTooltip tooltip={IFACE_GROUP_TOOLTIPS[group]}>{group}</LabelWithTooltip>
+                </div>
                 {list.map(iface => (
                   <label key={iface.name} className="flex items-center gap-2 text-xs py-0.5 cursor-pointer">
                     <input type="checkbox" checked={selectedIfaces.includes(iface.name)} onChange={() => toggleIface(iface.name)} />
