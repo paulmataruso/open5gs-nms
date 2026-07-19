@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Settings, Zap, AlertCircle, FileText, List, Radio } from 'lucide-react';
+import { Settings, Zap, AlertCircle, FileText, List, Radio, Globe } from 'lucide-react';
 import { autoConfigApi, AutoConfigInput, PlmnConfig, configApi } from '../api';
 import { DiffViewer } from '../components/DiffViewer';
 import { PlmnInput } from '../components/config/PlmnInput';
@@ -8,10 +8,11 @@ import { AUTO_CONFIG_TOOLTIPS } from '../data/tooltips';
 import { FemtoConfigTab } from '../components/autoconfig/FemtoConfigTab';
 import { BaicellsAcsTab } from '../components/autoconfig/BaicellsAcsTab';
 import { SercommNRTab } from '../components/autoconfig/SercommNRTab';
+import { PlmnMigrationTab } from '../components/autoconfig/PlmnMigrationTab';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
-type Tab = 'open5gs' | 'femto' | 'baicells' | 'sercomm-nr';
+type Tab = 'open5gs' | 'femto' | 'baicells' | 'sercomm-nr' | 'plmn-migration';
 
 export const AutoConfigPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('open5gs');
@@ -207,10 +208,11 @@ export const AutoConfigPage: React.FC = () => {
   }
 
   const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: 'open5gs',     label: 'Open5GS Auto Config',  icon: <Settings className="w-4 h-4" /> },
-    { id: 'femto',       label: 'Sercomm 4G',            icon: <Radio className="w-4 h-4" /> },
-    { id: 'sercomm-nr',  label: 'Sercomm 5G',            icon: <Radio className="w-4 h-4" /> },
-    { id: 'baicells',    label: 'Baicells Provisioning',  icon: <Radio className="w-4 h-4" /> },
+    { id: 'open5gs',        label: 'Open5GS Auto Config',  icon: <Settings className="w-4 h-4" /> },
+    { id: 'femto',          label: 'Sercomm 4G',            icon: <Radio className="w-4 h-4" /> },
+    { id: 'sercomm-nr',     label: 'Sercomm 5G',            icon: <Radio className="w-4 h-4" /> },
+    { id: 'baicells',       label: 'Baicells Provisioning',  icon: <Radio className="w-4 h-4" /> },
+    { id: 'plmn-migration', label: 'PLMN Migration',        icon: <Globe className="w-4 h-4" /> },
   ];
 
   return (
@@ -516,6 +518,9 @@ export const AutoConfigPage: React.FC = () => {
 
       {/* Tab: Baicells ACS Provisioning */}
       {activeTab === 'baicells' && <BaicellsAcsTab />}
+
+      {/* Tab: PLMN Migration Wizard */}
+      {activeTab === 'plmn-migration' && <PlmnMigrationTab />}
     </div>
   );
 };
