@@ -1,5 +1,6 @@
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
+import { parseIpLinkAddr } from '../../infrastructure/network/ip-link-parser';
 
 export interface TunInterface {
   name: string;
@@ -102,24 +103,12 @@ export class TunManagementUseCase {
       this.ipNet('-o addr show'),
     ]);
 
-    // Parse link — detect UP from flags field, not "state" keyword.
-    // TUN interfaces always show "state DOWN" due to NO-CARRIER even when UP flag is set.
-    const stateMap = new Map<string, 'up' | 'down'>();
-    for (const line of linkR.stdout.split('\n')) {
-      const m = line.match(/^\d+:\s+([^:@\s]+)/);
-      if (!m) continue;
-      const flagsMatch = line.match(/<([^>]+)>/);
-      const flags = flagsMatch ? flagsMatch[1].split(',') : [];
-      stateMap.set(m[1], flags.includes('UP') ? 'up' : 'down');
-    }
-
-    // Parse addr: IPv4 assignments (all interfaces; filtered below by allNames)
-    const addrMap = new Map<string, { ip: string; prefix: number }>();
-    for (const line of addrR.stdout.split('\n')) {
-      const m = line.match(/^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)\/(\d+)/);
-      if (!m) continue;
-      addrMap.set(m[1], { ip: m[2], prefix: parseInt(m[3]) });
-    }
+    // Shared parsing (backend/src/infrastructure/network/ip-link-parser.ts) —
+    // returns every interface unfiltered; this method applies its own
+    // ogstun-only/managed filtering on top below.
+    const parsed = parseIpLinkAddr(linkR.stdout, addrR.stdout);
+    const stateMap = new Map(parsed.map(i => [i.name, i.state]));
+    const addrMap = new Map(parsed.map(i => [i.name, { ip: i.ip, prefix: i.prefix }]));
 
     // NMS-managed: detect from .netdev files written by this NMS
     const managedNames = new Set<string>();

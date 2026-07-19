@@ -8,4 +8,5 @@ export const FEATURES = {
   validation: import.meta.env.VITE_ENABLE_VALIDATION !== 'false',
   vowifi: import.meta.env.VITE_ENABLE_VOWIFI !== 'false',
   dnsMigration: import.meta.env.VITE_ENABLE_DNS_MIGRATION !== 'false',
+  pcap: import.meta.env.VITE_ENABLE_PCAP !== 'false',
 };

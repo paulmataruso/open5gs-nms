@@ -19,6 +19,7 @@ import { TopologyUseCase } from './application/use-cases/topology';
 import { BackupRestoreUseCase } from './application/use-cases/backup-restore';
 import { DnsMigrationUseCase } from './application/use-cases/dns-migration-usecase';
 import { PlmnMigrationUseCase } from './application/use-cases/plmn-migration-usecase';
+import { PcapUseCase } from './application/use-cases/pcap';
 import { RestoreDefaultsUseCase } from './application/use-cases/restore-defaults';
 import { AutoConfigUseCase } from './application/use-cases/auto-config';
 import { LogStreamingUseCase } from './application/use-cases/log-streaming';
@@ -38,6 +39,7 @@ import { createSeppRouter } from './interfaces/rest/sepp-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
 import { createDnsMigrationRouter } from './interfaces/rest/dns-migration-controller';
 import { createPlmnMigrationRouter } from './interfaces/rest/plmn-migration-controller';
+import { createPcapRouter } from './interfaces/rest/pcap-controller';
 import { EsimGeneratorUseCase } from './application/use-cases/esim-generator';
 import { createEsimRouter } from './interfaces/rest/esim-controller';
 import { createFemtoRouter } from './interfaces/rest/femto-controller';
@@ -213,6 +215,7 @@ async function main() {
     auditLogger,
     logger,
   );
+  const pcapUseCase = new PcapUseCase(hostExecutor, configRepo, logger);
   const esimGeneratorUseCase = new EsimGeneratorUseCase(
     config.simlesslyAccessKey,
     config.simlesslySecretKey,
@@ -303,6 +306,7 @@ async function main() {
   app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
   app.use('/api/dns-migration', createDnsMigrationRouter(dnsMigrationUseCase));
   app.use('/api/plmn-migration', createPlmnMigrationRouter(plmnMigrationUseCase));
+  app.use('/api/pcap', createPcapRouter(pcapUseCase, auditLogger, logger));
   app.use('/api/esim', createEsimRouter(esimGeneratorUseCase, auditLogger, logger));
   app.use('/api/femto', createFemtoRouter(logger));
   app.use('/api/femto/nr', createSercommNRRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));

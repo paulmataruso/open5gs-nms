@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, Clock, GitBranch, Zap, MessageSquare, Phone, FlaskConical, Wifi, Globe,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, Clock, GitBranch, Zap, MessageSquare, Phone, FlaskConical, Wifi, Globe, Radar,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
@@ -35,6 +35,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
   ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),
   ...(FEATURES.validation ? [{ id: 'validation', label: 'UE/Core Validation', icon: FlaskConical }] : []),
+  ...(FEATURES.pcap ? [{ id: 'pcap', label: 'Packet Capture', icon: Radar }] : []),
   { id: 'users',   label: 'User Management', icon: UserCog },
 ];
 

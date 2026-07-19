@@ -100,7 +100,11 @@ export type AuditAction =
   | 'plmn_migration_rollback'
   | 'esim_generate'
   | 'sepp_generate_certs'
-  | 'volte_validation_test';
+  | 'volte_validation_test'
+  | 'pcap_start'
+  | 'pcap_stop'
+  | 'pcap_download'
+  | 'pcap_delete';
 
 export interface AuditLogEntry {
   id: string;
