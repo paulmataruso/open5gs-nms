@@ -370,11 +370,26 @@ function patchOsmoEpdgSysConfig(template: string, opts: {
 
 function upsertSmfAaaPeer(raw: string, aaaFqdn: string, s6bLocalIp: string): string {
   const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${s6bLocalIp}"; No_TLS; };`;
-  const escaped = aaaFqdn.replace(/\./g, '\\.');
-  if (raw.includes(`"${aaaFqdn}"`)) {
-    return raw.replace(new RegExp(`ConnectPeer\\s*=\\s*"${escaped}"[^\n]*`, 'g'), peerLine);
-  }
-  return raw.trimEnd() + '\n' + peerLine + '\n';
+  // Unconditionally strip EVERY "aaa.<realm>" ConnectPeer entry first (there
+  // should only ever be one), then add exactly one clean line back — never
+  // just patch-in-place or append-if-absent. A previous version only handled
+  // the "line already exists" and "line entirely absent" cases, silently
+  // leaving a second, stale "aaa.<old-realm>" entry behind whenever the realm
+  // itself changed (e.g. a PLMN migration) between one Configure and the
+  // next. Both entries point at the same local IP (osmo-epdg's own S6b bind
+  // address), and freeDiameter's peer-election logic gets confused by the
+  // ambiguity — confirmed live (2026-07-19): every CER from a correctly
+  // reconfigured osmo-epdg was rejected with ELECTION_LOST /
+  // "save_remote_CE_info: Invalid argument" while a second aaa.* peer
+  // existed, and simply re-running Configure again did NOT self-heal it,
+  // since by then the new entry already existed and the old "already present"
+  // branch never looked at any OTHER aaa.* line.
+  // Only "aaa.epc.*" (the real PLMN-realm peer this function itself manages)
+  // — NOT "aaa.localdomain", the build template's own separate placeholder
+  // peer entry, which is deliberately left alone (see the module-level notes
+  // on osmo-epdg's S6b identity fields for why both exist).
+  const withoutAnyAaaPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"aaa\.epc\.[^"]*"[^\n]*\n?/gm, '');
+  return withoutAnyAaaPeer.trimEnd() + '\n' + peerLine + '\n';
 }
 
 function removeSmfAaaPeer(raw: string, aaaFqdn: string): string {

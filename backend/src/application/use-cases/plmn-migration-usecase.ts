@@ -319,10 +319,22 @@ export class PlmnMigrationUseCase {
       // 2. SMS — has no override; always re-reads mme.yaml, so must run after
       // Phase A/B have already landed the new plmn_id. previousMcc/previousMnc
       // clean up the stale sgsap map entry for the old PLMN.
+      //
+      // configureSms() only restarts open5gs-mmed — it writes fresh
+      // osmo-stp/hlr/msc.cfg to disk but never restarts those daemons
+      // themselves (that's normally a separate manual "Start" click). Found
+      // live (2026-07-19): the same gap on VoWiFi's side left osmo-epdg
+      // running with its stale in-memory identity, presenting the OLD PLMN's
+      // Origin-Host in its S6b CER and failing GTP-C session setup with
+      // ELECTION_LOST — restart explicitly here so Phase D actually takes
+      // effect, not just writes new files that nothing reads until later.
       const smsConfig = readCurrentSmsConfig();
       if (smsConfig) {
         const { mcc, mnc, tac } = await configureSms({ ...smsConfig, previousMcc: oldMcc, previousMnc: oldMnc });
-        details.push(`SMS reconfigured: mcc=${mcc} mnc=${mnc} tac=${tac}`);
+        for (const svc of ['osmo-stp', 'osmo-hlr', 'osmo-msc']) {
+          await this.hostExecutor.restartService(svc).catch(() => {});
+        }
+        details.push(`SMS reconfigured: mcc=${mcc} mnc=${mnc} tac=${tac} (osmo-stp/hlr/msc restarted)`);
       } else {
         details.push('SMS not configured on this host — skipped');
       }
@@ -340,9 +352,27 @@ export class PlmnMigrationUseCase {
             s6bLocalIp: vowifiState.s6bLocalIp,
             gsupPort: vowifiState.gsupPort,
             interfaceMode: vowifiState.epdgInterfaceMode,
-            previousPubDomain: plan.oldPubDomain !== plan.newPubDomain ? plan.oldPubDomain : undefined,
+            // Derived from the PERSISTED old mcc/mnc (migrationState), not
+            // plan.oldPubDomain — computeMigrationPlan() always re-reads
+            // mme.yaml fresh, which by Phase D already has the NEW plmn_id
+            // (written back in Phase A), so a freshly-recomputed plan's own
+            // oldMcc/oldMnc would already equal newMcc/newMnc and silently
+            // skip this cleanup (found live during 2026-07-19 verification —
+            // the stale zone was left behind on the very first test run).
+            previousPubDomain: (oldMcc !== plan.newMcc || oldMnc !== plan.newMnc)
+              ? derivePubEpdgDomain(oldMcc, oldMnc) : undefined,
           });
-          details.push(`VoWiFi reconfigured: aaaFqdn=${result.aaaFqdn} dnsConfigured=${result.dnsConfigured}`);
+          // configureVowifi() writes fresh osmo-epdg.config/swanctl.conf but
+          // never restarts vowifi-osmo-epdg/vowifi-charon themselves (same gap
+          // as SMS above, and the same bug class as the manual /start route's
+          // now-fixed enable-vs-restart issue) — without this, the running
+          // osmo-epdg process keeps presenting the OLD PLMN's S6b identity
+          // (Origin-Host) to SMF, which SMF's freeDiameter peer rejects with
+          // ELECTION_LOST, and the tunnel never gets past GTP-C session setup.
+          for (const svc of ['vowifi-osmo-epdg', 'vowifi-charon']) {
+            await this.hostExecutor.restartService(svc).catch(() => {});
+          }
+          details.push(`VoWiFi reconfigured: aaaFqdn=${result.aaaFqdn} dnsConfigured=${result.dnsConfigured} (vowifi-osmo-epdg/charon restarted)`);
         } catch (err) {
           const msg = err instanceof VowifiConfigureError ? err.message : String(err);
           throw new Error(`VoWiFi reconfigure failed: ${msg}`);

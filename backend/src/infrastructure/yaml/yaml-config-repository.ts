@@ -422,16 +422,27 @@ export class YamlConfigRepository implements IConfigRepository {
     // every key it contains; keys only present on disk are kept as-is.
     // Arrays are NOT merged — the incoming array replaces the on-disk array
     // (so deleting a session pool via the UI actually removes it).
+    //
+    // Real bug (found 2026-07-19 via the PLMN Migration Wizard's Phase C, which
+    // reused this exact path): this used to re-read the current file with a
+    // plain `yaml.load()`, NOT through loadRaw()'s own fixMccMncSdFromRawYaml()
+    // string-preservation step. Any partial-patch save (a caller's `doc` that
+    // doesn't include, say, plmn_support because it's only patching sbi) merges
+    // in whatever plain yaml.load() produced for the untouched fields — and
+    // js-yaml's default (YAML 1.1) schema reads a leading-zero bare scalar like
+    // `070` as OCTAL (070 = 56 decimal), silently corrupting any mcc/mnc/sd
+    // value with a leading zero that a save call doesn't explicitly re-supply.
+    // Confirmed live: amf.yaml's guami/tai/plmn_support mcc/mnc were correctly
+    // "001"/"01" right after one save, then silently became the numbers 1/1
+    // after a second, sbi-only save merged over them. loadRaw() already solves
+    // this exact problem for normal reads — reuse it here instead of
+    // duplicating (and getting wrong) the same parse.
     let mergedDoc: RawYamlDoc = doc;
-    try {
-      const currentContent = await this.hostExecutor.readFile(filePath);
-      const currentParsed = yaml.load(currentContent) as RawYamlDoc;
-      if (currentParsed && typeof currentParsed === 'object') {
-        mergedDoc = this.deepMerge(currentParsed, doc) as RawYamlDoc;
-        this.logger.debug({ service }, 'Deep-merged incoming config over on-disk file');
-      }
-    } catch {
-      // File doesn't exist yet or can't be read — start fresh
+    const currentParsed = await this.loadRaw(service);
+    if (currentParsed && typeof currentParsed === 'object' && Object.keys(currentParsed).length > 0) {
+      mergedDoc = this.deepMerge(currentParsed, doc) as RawYamlDoc;
+      this.logger.debug({ service }, 'Deep-merged incoming config over on-disk file');
+    } else {
       this.logger.debug({ service }, 'No existing file to merge; writing fresh');
     }
 
