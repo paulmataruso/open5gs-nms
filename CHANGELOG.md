@@ -4,6 +4,24 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.20] - 2026-07-20
+
+### Fixed — Enforce Open5GS's 8-framed-route-per-family limit on subscriber sessions
+
+Open5GS caps framed routes at 8 per address family per session
+(`OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN`) — a 9th entry isn't rejected by the
+core NFs, it's silently dropped, so a subscriber could previously be saved
+with more routes than would actually ever take effect. `validation-schemas.ts`
+now caps both `ipv4_framed_routes` and `ipv6_framed_routes` at 8 (covers
+subscriber creation); `subscriber-management.ts`'s `update()` never ran the
+full schema (its `dto` is a `Partial<SubscriberDto>` missing required
+top-level fields, which would fail a full parse), so a dedicated
+`validateFramedRouteLimits()` check was added there too, otherwise the cap
+would only ever apply on create, not on edit. `SubscriberPage.tsx` now shows
+a live "N/8 routes" counter per input that turns red past the limit, and
+disables Save/Update with an inline warning instead of letting the operator
+find out only after a rejected submit.
+
 ## [v2.0-beta_0.19] - 2026-07-19
 
 ### Added — PLMN Migration Wizard
