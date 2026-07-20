@@ -81,6 +81,23 @@ export class SubscriberManagementUseCase {
     }
   }
 
+  // update() doesn't run the full subscriberSchema (dto is a Partial<SubscriberDto>
+  // missing required top-level fields like imsi/security, which would fail a full
+  // parse) — so the schema's max(8)-per-family framed-route cap never applies here.
+  // Enforced directly instead, since a 9th route isn't rejected by Open5GS, it's
+  // silently dropped (OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN).
+  private validateFramedRouteLimits(slices: any[] | undefined): void {
+    for (const sl of slices ?? []) {
+      for (const sess of sl.session ?? []) {
+        const dnn = sess.name ?? '(unnamed)';
+        const v4 = sess.ipv4_framed_routes?.length ?? 0;
+        const v6 = sess.ipv6_framed_routes?.length ?? 0;
+        if (v4 > 8) throw new Error(`Session '${dnn}': Open5GS supports a maximum of 8 IPv4 framed routes per session (got ${v4})`);
+        if (v6 > 8) throw new Error(`Session '${dnn}': Open5GS supports a maximum of 8 IPv6 framed routes per session (got ${v6})`);
+      }
+    }
+  }
+
   // ── Framed Routing: non-blocking overlap/duplicate warnings ────────────────
 
   private async computeFramedRouteWarnings(imsi: string, slices: any[]): Promise<string[]> {
@@ -210,6 +227,8 @@ export class SubscriberManagementUseCase {
         throw new Error(`Subscriber with IMSI ${dto.imsi} already exists`);
       }
     }
+
+    if (dto.slice) this.validateFramedRouteLimits(dto.slice as any);
 
     await this.subscriberRepo.update(imsi, dto);
     await this.syncStaticRoutes(existing.slice as any, dto.slice as any);

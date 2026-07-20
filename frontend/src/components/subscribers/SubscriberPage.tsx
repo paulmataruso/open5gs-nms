@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Upload, Shield, Network, List, ArrowUp, ArrowDown, ChevronDown, Users, ChevronRight, Pencil, Unlink, Smartphone } from 'lucide-react';
+import { clsx } from 'clsx';
 import { EsimGeneratorModal } from './EsimGeneratorModal';
 import { useSubscriberStore, useSuciStore } from '../../stores';
 import { subscriberApi, subscriberGroupsApi } from '../../api';
@@ -1892,6 +1893,15 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
   const [saving, setSaving] = useState(false);
   const save = async () => { setSaving(true); try { await onSave(form); } finally { setSaving(false); } };
 
+  // Open5GS caps framed routes at 8 per address family per session
+  // (OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN) — block Save client-side rather than
+  // letting the operator find out only after the backend rejects it.
+  const framedRouteOverflow = form.slice.some(sl =>
+    sl.session.some(sess =>
+      (sess.ipv4_framed_routes?.length ?? 0) > 8 || (sess.ipv6_framed_routes?.length ?? 0) > 8,
+    ),
+  );
+
   const updateSession = (sliceIdx: number, sessIdx: number, updates: Partial<SubscriberSession>) => {
     const newSlices = [...form.slice];
     newSlices[sliceIdx] = {
@@ -2388,7 +2398,11 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                     </div>
                   </div>
 
-                  {/* Framed Routes (TS 23.501 §5.6.14) — IP subnets routed behind the UE */}
+                  {/* Framed Routes (TS 23.501 §5.6.14) — IP subnets routed behind the UE.
+                      Open5GS caps this at 8 per address family per session
+                      (OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN) — a 9th entry isn't rejected by
+                      the core NFs, it's silently dropped, so the count is surfaced live here
+                      rather than only failing on save. */}
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">Framed Routes IPv4</label>
@@ -2400,6 +2414,10 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                         })}
                         placeholder="10.45.33.0/24, 10.45.34.0/24"
                       />
+                      <p className={clsx('text-xs mt-1', (sess.ipv4_framed_routes?.length ?? 0) > 8 ? 'text-red-400' : 'text-nms-text-dim')}>
+                        {sess.ipv4_framed_routes?.length ?? 0}/8 routes
+                        {(sess.ipv4_framed_routes?.length ?? 0) > 8 ? ' — exceeds Open5GS\'s per-session limit' : ''}
+                      </p>
                     </div>
                     <div>
                       <label className="nms-label">Framed Routes IPv6</label>
@@ -2411,6 +2429,10 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                         })}
                         placeholder="2001:db8:cafe:1::/64"
                       />
+                      <p className={clsx('text-xs mt-1', (sess.ipv6_framed_routes?.length ?? 0) > 8 ? 'text-red-400' : 'text-nms-text-dim')}>
+                        {sess.ipv6_framed_routes?.length ?? 0}/8 routes
+                        {(sess.ipv6_framed_routes?.length ?? 0) > 8 ? ' — exceeds Open5GS\'s per-session limit' : ''}
+                      </p>
                     </div>
                   </div>
 
@@ -2648,8 +2670,13 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
           </div>
         ))}
 
+        {framedRouteOverflow && (
+          <p className="text-xs text-red-400 pt-2">
+            One or more sessions exceed Open5GS's 8-route-per-family framed routing limit — remove routes before saving.
+          </p>
+        )}
         <div className="flex gap-3 pt-3 border-t border-nms-border">
-          <button onClick={save} disabled={saving} className="nms-btn-primary flex items-center gap-2">
+          <button onClick={save} disabled={saving || framedRouteOverflow} className="nms-btn-primary flex items-center gap-2">
             <Save className="w-4 h-4" />
             {isNew ? 'Create' : 'Update'}
           </button>

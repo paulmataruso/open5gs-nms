@@ -225,10 +225,13 @@ export const subscriberSessionSchema = z.object({
     ipv4: ipv4Schema.optional(),   // SMF IPv4 address
     ipv6: z.string().optional(),   // SMF IPv6 address
   }).optional(),
-  ipv4_framed_routes: z.array(cidrSchema).optional(),
+  // Open5GS caps framed routes at 8 per address family per session
+  // (OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN) — a 9th entry is silently dropped
+  // by the core NFs rather than rejected, so this has to be enforced here.
+  ipv4_framed_routes: z.array(cidrSchema).max(8, 'Open5GS supports a maximum of 8 IPv4 framed routes per session').optional(),
   ipv6_framed_routes: z.array(
     z.string().regex(/^[0-9a-fA-F:]+\/\d{1,3}$/, 'Invalid IPv6 CIDR notation'),
-  ).optional(),
+  ).max(8, 'Open5GS supports a maximum of 8 IPv6 framed routes per session').optional(),
   framed_routes_static: z.boolean().optional(),
 });
 
