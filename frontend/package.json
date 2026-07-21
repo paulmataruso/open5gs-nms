@@ -1,7 +1,7 @@
 {
   "name": "open5gs-nms-frontend",
   "private": true,
-  "version": "2.0.0-beta_0.20",
+  "version": "2.0.0-beta_0.21",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {

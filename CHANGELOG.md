@@ -4,6 +4,67 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.21] - 2026-07-21
+
+### Added — SAS: manual-group exact-slot allow-list enforcement
+
+An operator can now create a manual interference-coordination group on the
+SAS Band Assignment page, assign radios to it, and configure exact
+`customSlots` on its band policy — from then on, narrow spectrumInquiry/
+grant requests from member radios are constrained to exactly those slots.
+Enforced at both spectrumInquiry time (non-allowed frequencies are never
+even advertised as available) and grant time (rejected with INTERFERENCE,
+not UNSUPPORTED_SPECTRUM — the latter would deregister the CBSD entirely).
+Deliberately vendor-agnostic: the only trigger is a CBSD's effective group
+being a manually-created group (not a native radio-reported one) with
+`customSlots` configured — confirmed a native group like Sercomm's
+SC_Group/SERCOMM_5G is structurally excluded even if it also has
+`customSlots`, since its own narrow CA requests are expected to land off
+the exact slot boundary. Built and verified against a real Nokia AirScale
+Pico radio, including a full natural reboot cycle with zero manual DB
+intervention needed afterward.
+
+### Fixed — real bugs found via live SAS testing on the dev host
+
+- `assignChannelSlot()`'s Baicells sticky-slot fallback loop stopped
+  advancing once it reached the last slot index, even if that slot was
+  itself already held, silently returning an occupied slot instead of
+  recognizing "no free slot" — a 3rd radio arriving when only 2 of N slots
+  were actually free (traced to the group's band policy having briefly
+  pointed at the wrong band) collided with whichever radio held the last
+  slot, producing two CBSDs authorized on the identical frequency range.
+  Fixed to count real per-slot occupancy and pick a genuinely free slot, or
+  explicitly share the least-occupied one with a logged warning.
+- `spectrumInquiry()`'s out-of-band redirect math — written for Sercomm's
+  fixed 2-entry CA pattern — silently produced zero-width or inverted
+  (low>high) "available channels" for a Nokia AirScale Pico radio, whose SAS
+  client tiles a full-band scan into 15 separate 10MHz entries instead. The
+  radio could never parse a valid channel from that response and never
+  proceeded to a grant request. Fixed by skipping out-of-band entries
+  entirely for Nokia specifically; every other vendor's behavior is
+  unchanged.
+- `sas_manual_groups` stored raw, ephemeral `cbsdId`s — a radio's `cbsdId`
+  regenerates on every re-registration (the same root cause already fixed
+  for `sas_baicells_slots`/`sas_cbsd_policies` via `fccId:serial` keys), so a
+  manual group silently lost track of its members on every radio reboot.
+  Now stores `fccId:serial` internally, translated at the API boundary so
+  the REST contract and frontend are unaffected.
+- `getSlotLayout()` (feeds the SAS dashboard chart) always built its
+  displayed slot grid from a band's own default width, completely ignoring
+  any group's `customSlots` — so the chart never reflected an exact-slot
+  restriction, showing the wrong EARFCNs. Now shows the actual configured
+  `customSlots` for any band with a group that has them.
+- The Band Assignment page's manual-group name field re-sorted the whole
+  list and remounted its own input on every keystroke (the live-edited value
+  doubled as both the sort key and React's list key), dropping focus
+  mid-word — fixed with a stable, never-edited key used purely for
+  ordering/identity. The "Unsaved — click Save to apply these slots" banner
+  also stayed lit permanently regardless of actual save state (it checked
+  the wrong condition); now does a real dirty comparison against what's
+  actually persisted.
+
+---
+
 ## [v2.0-beta_0.20] - 2026-07-20
 
 ### Fixed — Enforce Open5GS's 8-framed-route-per-family limit on subscriber sessions
