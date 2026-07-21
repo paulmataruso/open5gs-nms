@@ -1112,7 +1112,18 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   const [cbsdNotes,     setCbsdNotes]     = useState<Record<string, string>>({});
   const [groupNotes,    setGroupNotes]    = useState<Record<string, string>>({});
   const [groupCustomSlots, setGroupCustomSlots] = useState<Record<string, Array<{low:number;high:number;label?:string}> | undefined>>({});
-  const [manualGroups,  setManualGroups]  = useState<Array<{ _id: string; cbsdIds: string[] }>>([]);
+  // Snapshot of groupCustomSlots as of the last successful load()/save — only ever
+  // written there, never by editing. Used to detect whether the live editing state
+  // actually differs from what's persisted (see the "Unsaved" banner below).
+  const [savedGroupCustomSlots, setSavedGroupCustomSlots] = useState<Record<string, Array<{low:number;high:number;label?:string}> | undefined>>({});
+  // _key is a client-only, never-edited snapshot of _id taken at load/creation time —
+  // used purely for React's list `key` and for sort stability. Without it, both the
+  // row's key and its sort position tracked the live _id text, so every keystroke in
+  // the name field re-sorted the list alphabetically AND forced React to unmount/
+  // remount the row's <input> (new key = new DOM node), which drops focus mid-word —
+  // the exact "jumps around while typing" symptom. All actual save/policy logic still
+  // keys off the live `_id`; only ordering/identity for React is pinned to `_key`.
+  const [manualGroups,  setManualGroups]  = useState<Array<{ _id: string; cbsdIds: string[]; _key: string }>>([]);
   const [saving,        setSaving]        = useState<Record<string, boolean>>({});
   const [expandedMembers, setExpandedMembers] = useState<Set<string>>(new Set());
   const toggleMembers = (groupId: string) => setExpandedMembers(s => {
@@ -1125,9 +1136,10 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
       setGroupPolicies(Object.fromEntries(gp.map((p: any) => [p._id, p.bandId])));
       setGroupNotes(Object.fromEntries(gp.map((p: any) => [p._id, p.notes ?? ''])));
       setGroupCustomSlots(Object.fromEntries(gp.map((p: any) => [p._id, p.customSlots])));
+      setSavedGroupCustomSlots(Object.fromEntries(gp.map((p: any) => [p._id, p.customSlots])));
       setCbsdPolicies(Object.fromEntries(cp.map((p: any) => [p._id, p.bandId])));
       setCbsdNotes(Object.fromEntries(cp.map((p: any) => [p._id, p.notes ?? ''])));
-      setManualGroups(mg);
+      setManualGroups(mg.map((m: any) => ({ ...m, _key: m._id })));
     } catch { /* silent */ }
   }, []);
 
@@ -1158,7 +1170,13 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
     // group whose members were all deleted. These have nothing deriving them
     // from live CBSDs, so without this they're invisible and un-prunable.
     ...Object.keys(groupPolicies),
-  ])].sort();
+  ])].sort((a, b) => {
+    // Sort by each manual group's stable _key (not its live-edited _id) so a group
+    // being renamed doesn't jump position in the list on every keystroke.
+    const ka = manualGroups.find(mg => mg._id === a)?._key ?? a;
+    const kb = manualGroups.find(mg => mg._id === b)?._key ?? b;
+    return ka.localeCompare(kb);
+  });
   const unassigned = groups['__none__']?.filter(c => !manualGroups.some(mg => mg.cbsdIds.includes(c.cbsdId))) ?? [];
 
   const mhz = (hz: number) => (hz / 1e6).toFixed(1);
@@ -1249,7 +1267,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
           </h3>
           <button onClick={() => {
             const id = `group-${Date.now()}`;
-            setManualGroups(g => [...g, { _id: id, cbsdIds: [] }]);
+            setManualGroups(g => [...g, { _id: id, cbsdIds: [], _key: id }]);
             setExpandedMembers(s => new Set([...s, id]));
           }} className="nms-btn-ghost flex items-center gap-1.5 text-xs">
             <Plus className="w-3.5 h-3.5" /> New Group
@@ -1271,8 +1289,9 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
           const currentBandId = groupPolicies[groupId] ?? '';
           const isSaving = saving[groupId];
           const showMembers = expandedMembers.has(groupId);
+          const rowKey = manualEntry?._key ?? groupId;
           return (
-            <div key={groupId} className={clsx('nms-card space-y-3', isManual && 'border-amber-500/40 bg-amber-950/10')}>
+            <div key={rowKey} className={clsx('nms-card space-y-3', isManual && 'border-amber-500/40 bg-amber-950/10')}>
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0 space-y-2">
 
@@ -1420,6 +1439,12 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                   // undefined = auto mode (use maxBandwidthMhz), [] = full band, [...] = custom slots
                   const isFullBand = Array.isArray(customSlots) && customSlots.length === 0;
                   const isCustom   = Array.isArray(customSlots) && customSlots.length > 0;
+                  // Was previously `!isAuto` — true forever once a group has ANY custom
+                  // slots configured, saved or not, since isAuto never flips back to true
+                  // just from saving. Confirmed live: "Unsaved" stayed lit no matter how
+                  // many times Save was clicked. Compare against the last-loaded snapshot
+                  // instead, so it clears once the save actually round-trips.
+                  const isDirty = JSON.stringify(customSlots) !== JSON.stringify(savedGroupCustomSlots[groupId]);
                   const isAuto     = customSlots === undefined;
 
                   // Compute display slots — what will actually appear in spectrumInquiry responses
@@ -1554,7 +1579,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                         </div>
                       )}
 
-                      {!isAuto && (
+                      {isDirty && (
                         <p className="text-xs text-amber-400/80">Unsaved — click Save to apply these slots.</p>
                       )}
                     </div>
