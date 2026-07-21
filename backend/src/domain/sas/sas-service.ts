@@ -49,6 +49,17 @@ export class SasService {
   private configs!:       Collection<SasConfig>;
   private groupPolicies!: Collection<GroupBandPolicy>;
   private cbsdPolicies!:  Collection<CbsdBandPolicy>;
+  // NOTE: despite the field name (kept for API/frontend backward-compat — the
+  // REST contract and UI still speak in live cbsdIds), the array stored here
+  // holds "fccId:serial" keys, not raw cbsdId values. Found live (2026-07-20):
+  // a radio's cbsdId regenerates on every re-registration (confirmed for both
+  // Nokia sectors and, separately, Baicells — see sas_baicells_slots' own
+  // comment for the same root cause), so a manual group that stored raw
+  // cbsdIds silently lost track of its members on every reboot — the exact
+  // same class of bug already fixed for sas_baicells_slots and
+  // sas_cbsd_policies by keying on fccId:serial instead, just never applied
+  // here. setManualGroup()/listManualGroups() do the cbsdId<->fccId:serial
+  // translation at the API boundary so callers never see the difference.
   private manualGroups!:  Collection<{ _id: string; cbsdIds: string[]; updatedAt: Date }>;
   // Sticky per-radio slot assignment — Baicells ("baicells" group) only. See
   // assignChannelSlot() for why this group needs a persistent assignment
@@ -214,13 +225,29 @@ export class SasService {
         return slots[existing.slotIdx];
       }
 
-      const held = new Set(
-        (await this.baicellsSlots.find({ bandId: band.id }).toArray())
-          .filter(a => a.slotIdx < slots.length)
-          .map(a => a.slotIdx),
-      );
-      let slotIdx = 0;
-      while (held.has(slotIdx) && slotIdx < slots.length - 1) slotIdx++;
+      // Bug found live (2026-07-20): the old loop bound `slotIdx < slots.length - 1`
+      // stops advancing once slotIdx reaches the LAST index, even if that last slot
+      // is itself held — it then silently returns that (already-occupied) index
+      // instead of recognizing "no free slot." A 3rd radio arriving when only 2 of
+      // N slots were actually free (e.g. because the group's band policy was
+      // temporarily misconfigured, narrowing the usable slot count) collided with
+      // whichever radio already held the last slot, producing two CBSDs authorized
+      // on the identical frequency range. Counting occupancy per slot instead: pick
+      // the first genuinely free slot, or if none exists, the least-occupied one
+      // (explicit, deterministic sharing) rather than an incidental collision.
+      const assignments = (await this.baicellsSlots.find({ bandId: band.id }).toArray())
+        .filter(a => a.slotIdx < slots.length);
+      const counts = new Array(slots.length).fill(0);
+      for (const a of assignments) counts[a.slotIdx]++;
+
+      let slotIdx = counts.indexOf(0);
+      if (slotIdx === -1) {
+        slotIdx = counts.indexOf(Math.min(...counts));
+        this.logger.warn(
+          { cbsdId, key, bandId: band.id, slotIdx, totalSlots: slots.length, radioCount: assignments.length + 1 },
+          'Baicells slots exhausted for this band — sharing least-occupied slot',
+        );
+      }
 
       const assignment = { _id: key, bandId: band.id, slotIdx, cbsdId, assignedAt: new Date() };
       await this.baicellsSlots.replaceOne({ _id: key }, assignment, { upsert: true });
@@ -228,8 +255,19 @@ export class SasService {
       return slots[slotIdx];
     }
 
-    // Check if the group has custom slots defined
-    const groupPolicy = groupId ? await this.groupPolicies.findOne({ _id: groupId }) : null;
+    // customSlots-based deterministic assignment — per explicit user requirement
+    // (2026-07-21), this only ever activates when the effective group is BOTH
+    // (a) present in sas_manual_groups (an operator actually created it through
+    // the manual-group UI, not just a groupId string a radio happens to report)
+    // AND (b) has a non-empty customSlots array on its policy. Matches the same
+    // rule the narrow-request enforcement in spectrumInquiry()/grant() already
+    // uses. Previously this checked customSlots alone, with no manual-group
+    // requirement — harmless today (no native group currently has customSlots
+    // set) but a latent trap: setting customSlots on a native group's policy
+    // (e.g. for display/documentation) would have silently started constraining
+    // any wide-request radio in that group too.
+    const manualGroup = groupId ? await this.manualGroups.findOne({ _id: groupId }) : null;
+    const groupPolicy = manualGroup ? await this.groupPolicies.findOne({ _id: groupId }) : null;
     if (Array.isArray(groupPolicy?.customSlots)) {
       // customSlots = [] means give the FULL band to every CBSD (no slicing)
       if (groupPolicy.customSlots.length === 0) {
@@ -242,10 +280,10 @@ export class SasService {
       const groupCbsds = allCbsds.filter(c =>
         c.groupingParam?.some(p => p.groupType === 'INTERFERENCE_COORDINATION' && p.groupId === groupId)
       );
-      // Also include CBSDs manually assigned to this group
-      const manualGroup = await this.manualGroups.findOne({ _id: groupId });
-      const manualCbsdIds = new Set(manualGroup?.cbsdIds ?? []);
-      const allGroupCbsds = [...groupCbsds, ...allCbsds.filter(c => manualCbsdIds.has(c.cbsdId) && !groupCbsds.find(g => g.cbsdId === c.cbsdId))];
+      // Also include CBSDs manually assigned to this group — manualGroups.cbsdIds
+      // holds fccId:serial keys (see the field's own comment), not raw cbsdId.
+      const manualKeys = new Set(manualGroup?.cbsdIds ?? []);
+      const allGroupCbsds = [...groupCbsds, ...allCbsds.filter(c => manualKeys.has(`${c.fccId}:${c.cbsdSerialNumber}`) && !groupCbsds.find(g => g.cbsdId === c.cbsdId))];
       const sorted  = [...allGroupCbsds].sort((a, b) =>
         (a.cbsdSerialNumber ?? a.cbsdId).localeCompare(b.cbsdSerialNumber ?? b.cbsdId)
       );
@@ -306,7 +344,7 @@ export class SasService {
   // ─── Resolve effective group ID for a CBSD ─────────────────────────────────
   // Manual group assignments take priority over what the radio sent at registration.
   private async resolveGroupId(cbsd: SasCbsd): Promise<string | undefined> {
-    const manual = await this.manualGroups.findOne({ cbsdIds: cbsd.cbsdId });
+    const manual = await this.manualGroups.findOne({ cbsdIds: `${cbsd.fccId}:${cbsd.cbsdSerialNumber}` });
     if (manual) return manual._id;
     return cbsd.groupingParam?.find(p => p.groupType === 'INTERFERENCE_COORDINATION')?.groupId;
   }
@@ -341,15 +379,36 @@ export class SasService {
   }
 
   // ─── Policy CRUD ──────────────────────────────────────────────────────────────────────
+  // Translates stored fccId:serial keys back to whichever cbsdId currently
+  // holds that serial (if the radio is presently registered) — the REST API/
+  // frontend deal exclusively in cbsdId, never fccId:serial. A member whose
+  // radio isn't currently registered under that fccId:serial is simply
+  // omitted (same as today's behavior when a stored id doesn't resolve).
   async listManualGroups(): Promise<Array<{ _id: string; cbsdIds: string[]; updatedAt: Date }>> {
-    return this.manualGroups.find({}).toArray();
+    const [groups, allCbsds] = await Promise.all([
+      this.manualGroups.find({}).toArray(),
+      this.cbsds.find({}).toArray(),
+    ]);
+    const cbsdIdByKey = new Map(allCbsds.map(c => [`${c.fccId}:${c.cbsdSerialNumber}`, c.cbsdId]));
+    return groups.map(g => ({
+      ...g,
+      cbsdIds: g.cbsdIds.map(key => cbsdIdByKey.get(key)).filter((id): id is string => !!id),
+    }));
   }
 
   async setManualGroup(groupId: string, cbsdIds: string[]): Promise<{ _id: string; cbsdIds: string[]; updatedAt: Date }> {
-    const doc = { _id: groupId, cbsdIds, updatedAt: new Date() };
+    // Translate the incoming live cbsdIds to stable fccId:serial keys before
+    // persisting — see the manualGroups field comment for why. Falls back to
+    // storing the raw cbsdId for one that doesn't currently resolve to a
+    // known CBSD (best-effort rather than silently dropping it).
+    const members = await Promise.all(cbsdIds.map(async id => {
+      const cbsd = await this.cbsds.findOne({ cbsdId: id });
+      return cbsd ? `${cbsd.fccId}:${cbsd.cbsdSerialNumber}` : id;
+    }));
+    const doc = { _id: groupId, cbsdIds: members, updatedAt: new Date() };
     await this.manualGroups.replaceOne({ _id: groupId }, doc, { upsert: true });
-    this.logger.info({ groupId, cbsdIds }, 'Manual group set');
-    return doc;
+    this.logger.info({ groupId, cbsdIds, members }, 'Manual group set');
+    return { ...doc, cbsdIds };
   }
 
   async deleteManualGroup(groupId: string): Promise<boolean> {
@@ -522,6 +581,36 @@ export class SasService {
       //    radio knows exactly which channel it will get.
       const availableChannels: AvailableChannel[] = [];
 
+      // Strict allow-list enforcement, per explicit user requirement
+      // (2026-07-20): resolve this CBSD's exact allow-list of custom slots
+      // once, reused for every inquired entry below, so spectrumInquiry never
+      // advertises a frequency that grant() would then reject (see the
+      // matching enforcement there). Deliberately NOT vendor-gated — scoped
+      // instead to a purely structural condition: the CBSD's effective group
+      // must be a group the operator actually created through the manual-
+      // group UI (present in sas_manual_groups, not just a groupId string a
+      // radio happens to send in its own groupingParam) AND that group must
+      // have customSlots configured. Both are explicit, deliberate operator
+      // actions, so this only ever fires when someone has actually built a
+      // manual group with an exact slot allow-list — never as a blanket
+      // default for a vendor. A native, radio-reported group (e.g. Sercomm's
+      // SC_Group/SERCOMM_5G) is never a manual-group document, so it's
+      // naturally excluded even if it happens to have customSlots too —
+      // important because Sercomm's own narrow CA requests are expected to
+      // land a few hundred kHz off the slot boundary (see the comment below),
+      // which strict allow-list matching would incorrectly reject.
+      let strictAllowedSlots: Array<{ low: number; high: number; label?: string }> | undefined;
+      const effectiveGroup = await this.resolveGroupId(cbsd);
+      if (effectiveGroup) {
+        const manualGroup = await this.manualGroups.findOne({ _id: effectiveGroup });
+        if (manualGroup) {
+          const groupPolicy = await this.groupPolicies.findOne({ _id: effectiveGroup });
+          if (Array.isArray(groupPolicy?.customSlots) && groupPolicy.customSlots.length > 0) {
+            strictAllowedSlots = groupPolicy.customSlots;
+          }
+        }
+      }
+
       // Detect if this is a CA narrow inquiry (multiple entries each <= slotWidth)
       const allEntries = req.inquiredSpectrum ?? [];
       const isNarrowCA = allEntries.length > 1;
@@ -553,7 +642,22 @@ export class SasService {
           // boundaries so the radio gets redirected to valid spectrum rather than
           // echoing back an out-of-band frequency that will fail at grant time.
           const overlaps = fr.lowFrequency < band.highFrequency && fr.highFrequency > band.lowFrequency;
-          if (overlaps) {
+          if (overlaps && strictAllowedSlots) {
+            // A manual group with an exact allow-list configured: only
+            // advertise a channel if this entry actually overlaps one of the
+            // allowed slots — otherwise omit it (same as an out-of-band
+            // entry) so the radio never sees "available" for a frequency
+            // grant() would then reject.
+            const matched = strictAllowedSlots.find(s => fr.lowFrequency < s.high && fr.highFrequency > s.low);
+            if (matched) {
+              availableChannels.push({
+                frequencyRange: { lowFrequency: matched.low, highFrequency: matched.high },
+                channelType: 'GAA' as const,
+                ruleApplied: 'FCC_PART_96',
+                maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
+              });
+            }
+          } else if (overlaps) {
             availableChannels.push({
               frequencyRange: {
                 lowFrequency:  Math.max(fr.lowFrequency,  band.lowFrequency),
@@ -563,6 +667,23 @@ export class SasService {
               ruleApplied: 'FCC_PART_96',
               maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
             });
+          } else if (cbsd.fccId?.startsWith('NOKIAPICOBTS')) {
+            // Nokia only: skip out-of-band entries entirely instead of the
+            // generic index-based redirect below. Confirmed live (2026-07-20):
+            // Nokia's SAS client tiles a full-band scan into 15 separate 10MHz
+            // inquiredSpectrum entries (not a real CA request) — the redirect
+            // math (`band.lowFrequency + entryIndex*slotWidthHz`) assumes a
+            // small, fixed entry count like Sercomm's always-exactly-2-entry CA
+            // pattern, and for entryIndex=12+ it ran straight past the assigned
+            // band and even past the whole 3550-3700MHz CBRS range (as far as
+            // 4150MHz), producing zero-width or inverted (low>high) "available
+            // channels" that the radio couldn't act on — it never proceeded to
+            // a grant request afterward. Nokia's own in-band entries (the ones
+            // that DO overlap its assigned band) already carry everything it
+            // needs to pick a valid frequency, so out-of-band ones are simply
+            // omitted rather than redirected. Strictly scoped to Nokia's FCC ID
+            // prefix — every other vendor keeps the exact original redirect
+            // behavior below, unchanged.
           } else {
             // Inquiry is entirely outside this band — redirect to the correct slot
             // within the assigned band, offset by entry index so CA gets two
@@ -570,7 +691,7 @@ export class SasService {
             const entryIndex = allEntries.indexOf(fr);
             const slotStart  = band.lowFrequency + entryIndex * slotWidthHz;
             const slotEnd    = Math.min(slotStart + slotWidthHz, band.highFrequency);
-            this.logger.info({ cbsdId: req.cbsdId, reqLow: fr.lowFrequency, reqHigh: fr.highFrequency, bandLow: band.lowFrequency, slotStart, slotEnd, entryIndex }, 'Sercomm CA inquiry outside assigned band — redirecting to band slot');
+            this.logger.info({ cbsdId: req.cbsdId, reqLow: fr.lowFrequency, reqHigh: fr.highFrequency, bandLow: band.lowFrequency, slotStart, slotEnd, entryIndex }, 'CA inquiry outside assigned band — redirecting to band slot');
             availableChannels.push({
               frequencyRange: { lowFrequency: slotStart, highFrequency: slotEnd },
               channelType: 'GAA' as const,
@@ -787,9 +908,50 @@ export class SasService {
       let clampedHigh: number;
 
       if (requestedWidthHz <= slotWidthHz * 1.1) {
-        // Narrow request (single CA carrier or specific channel)
-        grantLow    = Math.max(lowFrequency,  matchedBand.lowFrequency);
-        clampedHigh = Math.min(highFrequency, matchedBand.highFrequency);
+        // Narrow request (single CA carrier or specific channel) — normally we
+        // honour the radio's exact requested range (see comment above).
+        // Strict allow-list enforcement, per explicit user requirement
+        // (2026-07-20): constrain to an operator-defined exact allow-list of
+        // slots (the group's customSlots) instead of trusting whatever
+        // frequency the radio asks for. Reject with INTERFERENCE (400)
+        // rather than UNSUPPORTED_SPECTRUM (300, which causes the CBSD to
+        // fully deregister per the comment elsewhere in this file) if the
+        // request doesn't land on one of them — the radio should just retry
+        // a different frequency, not fall off the SAS entirely. Deliberately
+        // NOT vendor-gated — scoped to the same structural condition as the
+        // matching spectrumInquiry-side check: effective group must be a
+        // manually-created group (present in sas_manual_groups) with
+        // customSlots configured, both explicit operator actions. A native,
+        // radio-reported group (Sercomm's SC_Group/SERCOMM_5G) is never a
+        // manual-group document, so it's naturally excluded even if it also
+        // has customSlots — its own narrow CA requests are expected to land
+        // a few hundred kHz off the slot boundary, which strict matching
+        // would incorrectly reject.
+        const effectiveGroup = await this.resolveGroupId(cbsd);
+        const manualGroup    = effectiveGroup ? await this.manualGroups.findOne({ _id: effectiveGroup }) : null;
+        if (manualGroup) {
+          const groupPolicy  = await this.groupPolicies.findOne({ _id: effectiveGroup });
+          const allowedSlots = groupPolicy?.customSlots;
+          if (Array.isArray(allowedSlots) && allowedSlots.length > 0) {
+            const matched = allowedSlots.find(s => lowFrequency < s.high && highFrequency > s.low);
+            if (!matched) {
+              this.logger.warn(
+                { cbsdId: req.cbsdId, groupId: effectiveGroup, lowFrequency, highFrequency, allowedSlots },
+                'Grant request outside manual group\'s allowed custom slots — rejected',
+              );
+              responses.push({ cbsdId: req.cbsdId, response: makeResponse(RC.INTERFERENCE) });
+              continue;
+            }
+            grantLow    = matched.low;
+            clampedHigh = matched.high;
+          } else {
+            grantLow    = Math.max(lowFrequency,  matchedBand.lowFrequency);
+            clampedHigh = Math.min(highFrequency, matchedBand.highFrequency);
+          }
+        } else {
+          grantLow    = Math.max(lowFrequency,  matchedBand.lowFrequency);
+          clampedHigh = Math.min(highFrequency, matchedBand.highFrequency);
+        }
       } else if (isSercomm) {
         // Sercomm CA wide grant: honour the exact requested range spanning both carriers
         // The radio requests a grant covering the full combined CA span (e.g. 3616–3655.8)
@@ -1033,14 +1195,16 @@ export class SasService {
       ? cfg.frequencyBands
       : [{ id: 'legacy', label: 'Default', lowFrequency: cfg.allowedBandLow, highFrequency: cfg.allowedBandHigh, maxBandwidthMhz: cfg.defaultGrantBandwidthMhz ?? 20 } as SasFrequencyBand];
 
-    // Build a map: cbsdId -> effective groupId (manual override first)
+    // Build a map: fccId:serial -> effective groupId (manual override first).
+    // Keyed by fccId:serial, not cbsdId — manualGroups.cbsdIds holds fccId:serial
+    // keys (see the field's own comment), since cbsdId regenerates on reboot.
     const allManualGroups = await this.manualGroups.find({}).toArray();
-    const manualGroupMap = new Map<string, string>(); // cbsdId -> groupId
+    const manualGroupMap = new Map<string, string>(); // fccId:serial -> groupId
     for (const mg of allManualGroups) {
-      for (const cbsdId of mg.cbsdIds) manualGroupMap.set(cbsdId, mg._id);
+      for (const key of mg.cbsdIds) manualGroupMap.set(key, mg._id);
     }
     const effectiveGroupId = (cbsd: SasCbsd) =>
-      manualGroupMap.get(cbsd.cbsdId) ??
+      manualGroupMap.get(`${cbsd.fccId}:${cbsd.cbsdSerialNumber}`) ??
       cbsd.groupingParam?.find(p => p.groupType === 'INTERFERENCE_COORDINATION')?.groupId;
     const allGroupPolicies = await this.groupPolicies.find({}).toArray();
     const bandGroupMap = new Map<string, string[]>(); // bandId -> groupIds[]
@@ -1053,8 +1217,26 @@ export class SasService {
 
     const bandResults = configBands.map(band => {
       const slotW = (band.maxBandwidthMhz ?? 20) * 1_000_000;
-      const slots = this.computeSlots(band, slotW);
       const assignedGroupIds = bandGroupMap.get(band.id) ?? [];
+
+      // If any group assigned to this band has explicit customSlots, show
+      // those instead of the band's default computeSlots() grid — a group
+      // with customSlots isn't actually using the band's native slot width
+      // at all. Confirmed live (2026-07-20): Nokia_Pico's chart kept showing
+      // the band's own native 40MHz-wide slots (EARFCN 55840/56240) even
+      // after customSlots was set to an exact 2×20MHz allow-list (EARFCN
+      // 55740/55940) — this loop never consulted customSlots, only ever
+      // computeSlots(band, band.maxBandwidthMhz). Unions customSlots across
+      // every assigned group that has them (current deployments are 1:1
+      // band:group, but this degrades safely if that ever changes); falls
+      // back to the default grid for any band with no customSlots-bearing
+      // group assigned, unchanged from before.
+      const customSlotGroups = assignedGroupIds
+        .map(gid => allGroupPolicies.find(p => p._id === gid))
+        .filter((p): p is GroupBandPolicy => !!p && Array.isArray(p.customSlots) && p.customSlots.length > 0);
+      const slots = customSlotGroups.length > 0
+        ? customSlotGroups.flatMap(p => p.customSlots!.map(s => ({ low: s.low, high: s.high })))
+        : this.computeSlots(band, slotW);
 
       // Filter active grants to only those belonging to this band's assigned groups
       // and whose frequency overlaps this band.
