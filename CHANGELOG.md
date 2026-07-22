@@ -4,6 +4,49 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.22] - 2026-07-22
+
+### Changed — VoLTE/VoWiFi E2E test calls now hold for 15s instead of ~1s
+
+Both test modules moved straight from "bandwidth confirmed" to "hang up,"
+so a packet capture taken during a test run only ever caught about a
+second of real media — not enough to meaningfully inspect RTP sequence
+continuity, jitter, or sustained codec behavior over time. Added a "Hold
+call" step (15s, configurable via a `CALL_HOLD_MS` constant) between RTP
+verification and hangup in both `volte-validation-controller.ts` and
+`vowifi-validation-controller.ts`.
+
+Used this to independently verify VoWiFi end-to-end at the packet level
+(captured on both `lo` and the tunnel's `veth-swu` interface during a real
+test run): confirmed real IKEv2 negotiation and 388 bidirectional
+ESP-encrypted packets between the emulated UE and osmo-epdg, plus 181
+packets of genuinely decrypted uplink RTP (opus-coded, ~20ms spacing)
+crossing out of the tunnel toward the P-CSCF media relay — proof the
+tunnel carries real voice, not just a live IKE handshake with nothing
+behind it. Also confirmed the IKEv2/ESP traffic never appears on `lo` at
+all — it's entirely contained within the netns↔veth boundary, which is why
+capturing on the tunnel's veth interface specifically was necessary.
+
+### Fixed — Packet Capture: start() falsely reported a dead capture as running
+
+`systemd-run` (no `--wait`, by design — captures are long-running
+background processes) only confirms the transient unit was accepted, not
+that `dumpcap` actually started capturing. Found live while capturing a
+VoWiFi test's dynamically-created veth interface: `dumpcap` exited within
+milliseconds ("no such device") even though a plain `ip link show` moments
+earlier confirmed the interface existed, while `systemd-run` itself still
+reported success — `start()` was unconditionally returning
+`status:'running'` for a capture that had already silently died, only ever
+caught later by `listCaptures()`'s reconciliation, by which point the
+caller had already moved on believing it was live. Now verifies with
+`isServiceActive()` after a brief settle, retries once (the same interface
+succeeded on an immediate retry when reproduced live, consistent with a
+transient race against a freshly-created interface), and surfaces the real
+`journalctl` error immediately if it still fails, instead of a false
+"running" status.
+
+---
+
 ## [v2.0-beta_0.21] - 2026-07-21
 
 ### Added — SAS: manual-group exact-slot allow-list enforcement
