@@ -29,6 +29,12 @@ export const HOST_ROOT = '/proc/1/root';
 const HOST_IMS_STATE  = `${HOST_ROOT}/etc/open5gs/.ims-config.json`;
 const HOST_SCSCF_CFG  = `${HOST_ROOT}/etc/kamailio_scscf/scscf.cfg`;
 const VOLTE_TEST_ROOT = '/tmp/volte-validation';
+// How long to hold the call up (RTP actively flowing) after confirming bidirectional
+// media, before hanging up. Was previously ~0 — the test moved straight from
+// "bandwidth confirmed" to "hang up," so a packet capture taken during the test only
+// ever caught ~1 second of real media. 15s gives a capture enough real audio to
+// meaningfully inspect (RTP sequence continuity, jitter, codec behavior over time).
+const CALL_HOLD_MS = 15000;
 
 export interface ImsState {
   imsDomain: string;
@@ -404,6 +410,12 @@ export async function runVolteE2ETest(onStep?: (step: VolteTestStep) => void): P
     }, {
       detail: () => 'Bandwidth usage confirmed on both legs — RTP is actually flowing, not just signaling',
       logExcerpt: () => combinedDiff(markA, markB),
+    });
+
+    await wrap(`Hold call (${CALL_HOLD_MS / 1000}s)`, async () => {
+      await new Promise(resolve => setTimeout(resolve, CALL_HOLD_MS));
+    }, {
+      detail: () => `Kept the call up for ${CALL_HOLD_MS / 1000}s with RTP actively flowing before hangup`,
     });
 
     markA = markOf(sessionA); markB = markOf(sessionB);

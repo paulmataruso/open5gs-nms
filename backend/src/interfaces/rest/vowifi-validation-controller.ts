@@ -24,6 +24,10 @@ import { SWU_NETNS, startSwuTestTunnel, stopSwuTestTunnel, loadSwuState } from '
 // tunnel vs. direct) still proves signaling + RTP end-to-end.
 
 const VOWIFI_TEST_ROOT = '/tmp/vowifi-validation';
+// How long to hold the call up (RTP actively flowing through the IPsec tunnel) after
+// confirming bidirectional media, before hanging up — see the matching constant/
+// comment in volte-validation-controller.ts for why (was previously ~0).
+const CALL_HOLD_MS = 15000;
 
 async function nsenter(cmd: string, args: string[] = [], timeoutMs = 20000): Promise<{ stdout: string; stderr: string }> {
   const { execFile } = await import('child_process');
@@ -212,6 +216,12 @@ export async function runVowifiE2ETest(
     }, {
       detail: () => 'Bandwidth usage confirmed on both legs — RTP is actually flowing through the ESP-encapsulated tunnel, not just signaling',
       logExcerpt: () => combinedDiff(markT, markL),
+    });
+
+    await wrap(`Hold call (${CALL_HOLD_MS / 1000}s)`, async () => {
+      await new Promise(resolve => setTimeout(resolve, CALL_HOLD_MS));
+    }, {
+      detail: () => `Kept the call up for ${CALL_HOLD_MS / 1000}s with RTP actively flowing through the tunnel before hangup`,
     });
 
     markT = markOf(sessionTunnel); markL = markOf(sessionLocal);
