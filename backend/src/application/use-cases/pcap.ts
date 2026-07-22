@@ -485,7 +485,7 @@ export class PcapUseCase {
     };
     await this.saveManifest(manifest);
 
-    const result = await this.hostExecutor.executeCommand('systemd-run', [
+    const startUnit = () => this.hostExecutor.executeCommand('systemd-run', [
       `--unit=${unitName}`,
       '--collect',
       `--description=NMS packet capture ${id}`,
@@ -493,9 +493,44 @@ export class PcapUseCase {
       'dumpcap',
       ...dumpcapArgs,
     ]);
+
+    const result = await startUnit();
     if (result.exitCode !== 0) {
       manifest.status = 'failed';
       manifest.error = result.stderr || 'systemd-run failed to start dumpcap';
+      await this.saveManifest(manifest);
+      throw new Error(manifest.error);
+    }
+
+    // systemd-run (no --wait, by design — these are long-running background
+    // captures) only confirms the unit was ACCEPTED, not that dumpcap actually
+    // started capturing. Confirmed live (2026-07-21): dumpcap can exit within
+    // milliseconds — e.g. "no such device" for a just-created dynamic interface
+    // (a VoWiFi test's veth pair), even though a plain `ip link show` moments
+    // earlier confirmed the interface existed — while systemd-run itself still
+    // reports success. Without this check, start() unconditionally returned
+    // status:'running' for a capture that had already silently died; the failure
+    // was only ever caught later by listCaptures()'s reconciliation, by which
+    // point the caller had already moved on believing it was live. Give dumpcap
+    // a moment to either settle or fail, then verify — and retry once, since a
+    // freshly-created interface failing this way looks like a genuine transient
+    // race (a same-interface retry moments later succeeded when reproduced live).
+    const settle = () => new Promise(resolve => setTimeout(resolve, 500));
+    await settle();
+    let active = await this.hostExecutor.isServiceActive(unitName);
+    if (!active) {
+      this.logger.warn({ id, unitName, interfaces: input.interfaces }, 'pcap: capture unit exited immediately, retrying once');
+      await this.hostExecutor.executeCommand('systemctl', ['reset-failed', unitName]).catch(() => {});
+      const retry = await startUnit();
+      if (retry.exitCode === 0) {
+        await settle();
+        active = await this.hostExecutor.isServiceActive(unitName);
+      }
+    }
+    if (!active) {
+      const journal = await this.hostExecutor.executeCommand('journalctl', ['-u', unitName, '--no-pager', '-n', '5', '-o', 'cat']);
+      manifest.status = 'failed';
+      manifest.error = journal.stdout.trim() || 'dumpcap exited immediately after starting — check the interface/filter';
       await this.saveManifest(manifest);
       throw new Error(manifest.error);
     }
