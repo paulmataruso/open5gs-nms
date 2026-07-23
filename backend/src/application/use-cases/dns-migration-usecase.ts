@@ -713,9 +713,33 @@ export class DnsMigrationUseCase {
       // live (2026-07-17): a healthy NRF returns HTTP 000 to a plain request but a real
       // 400 (hitting "/", not a registered SBI route, but still a genuine HTTP response)
       // to the same request with --http2-prior-knowledge.
+      // Bug found live (2026-07-23), first misdiagnosed as a timing race: this used
+      // to call executeLocalCommand, which runs curl inside the BACKEND CONTAINER's
+      // own network context. The container's /etc/resolv.conf is Docker's
+      // auto-generated default (nameserver 1.1.1.1 / 8.8.8.8) — it does NOT route
+      // through the host's BIND server, unlike the host's own /etc/resolv.conf
+      // (fixed by ensureSystemResolverUsesBind() elsewhere in this flow, which only
+      // touches /proc/1/root/etc/resolv.conf, i.e. the HOST's file). So the
+      // container could never resolve these custom 3GPP FQDNs at all — confirmed via
+      // `getent hosts` returning empty from inside the container — and curl failed
+      // with "HTTP 000" on every single attempt regardless of retries, which is why
+      // an earlier retry-with-backoff fix here did nothing. The real NFs themselves
+      // resolve fine because they run on the host directly. Using executeCommand
+      // (nsenter into the host's mount/network namespace, same as every other
+      // host-context check in this file, e.g. the `dig` verification in Phase A)
+      // makes curl resolve via the host's correctly-configured resolver instead.
+      // Kept a short 2-attempt retry on top — a genuine, smaller timing race can
+      // still exist for whichever NF restarts last in SERVICE_RESTART_ORDER and
+      // hasn't bound its SBI listener yet by the time this loop reaches it.
       for (const entry of plan.dnsEntries.filter(e => e.zone === '5gc')) {
-        const curl = await this.hostExecutor.executeLocalCommand('curl', ['-s', '--http2-prior-knowledge', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '3', `http://${entry.fqdn}:7777/`]);
-        const code = curl.stdout.trim();
+        let code = '';
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          const curl = await this.hostExecutor.executeCommand('curl', ['-s', '--http2-prior-knowledge', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '3', `http://${entry.fqdn}:7777/`]);
+          code = curl.stdout.trim();
+          if (code !== '' && code !== '000') break;
+          if (attempt < maxAttempts) await new Promise(resolve => setTimeout(resolve, 1500));
+        }
         const reachable = code !== '' && code !== '000';
         details.push(`curl --http2-prior-knowledge http://${entry.fqdn}:7777/ -> HTTP ${code || 'no response'}${reachable ? ' [OK]' : ' [UNREACHABLE]'}`);
       }

@@ -232,6 +232,21 @@ export class PlmnMigrationUseCase {
         details.push('smf.yaml has no info[].tai[].plmn_id block configured — left untouched (nothing to migrate)');
       }
 
+      // Bug found live (2026-07-23): nrf.yaml's own nrf.serving.plmn_id list — the
+      // PLMN(s) NRF will accept NF registrations/discovery for — was never touched
+      // by this wizard at all, on any prior migration. Found stuck on a stale value
+      // (311/435) that matched neither the pre- nor post-migration PLMN, meaning
+      // it had already been silently wrong across at least one earlier migration
+      // before this one. Same replacePlmnId() shape as everywhere else — nrf.serving
+      // is an array of {plmn_id: {mcc, mnc}} entries, identical to amf.plmn_support.
+      const nrfConfig = await this.configRepo.loadNrf();
+      const nrfRaw = nrfConfig.rawYaml as any;
+      if (nrfRaw?.nrf) {
+        nrfRaw.nrf.serving = this.replacePlmnId(nrfRaw.nrf.serving, plan.newMcc, plan.newMnc);
+        await this.configRepo.saveNrf({ rawYaml: nrfRaw } as any);
+        details.push(`Rewrote nrf.yaml: serving plmn_id -> ${plan.newMcc}/${plan.newMnc}`);
+      }
+
       const dnsPlan = await this.dnsMigrationUseCase.computeMigrationPlan();
       const dnsResult = await this.dnsMigrationUseCase.applyPhaseA(dnsPlan);
       details.push(...dnsResult.details);
@@ -418,6 +433,13 @@ export class PlmnMigrationUseCase {
       const amfOk = amfPlmnSupport.length > 0 && amfPlmnSupport.every(p => p.plmn_id.mcc === plan.newMcc && p.plmn_id.mnc === plan.newMnc);
       details.push(`amf.yaml plmn_support: ${amfOk ? 'OK' : 'MISMATCH'}`);
       if (!amfOk) consistent = false;
+
+      // nrf.yaml's own serving plmn_id — not in NrfConfig's typed fields, read via
+      // rawYaml like mme above. Was never checked (or migrated) before this fix.
+      const nrfServing = (allConfigs.nrf as any)?.rawYaml?.nrf?.serving ?? [];
+      const nrfOk = nrfServing.length > 0 && nrfServing.every((s: any) => s?.plmn_id?.mcc === plan.newMcc && s?.plmn_id?.mnc === plan.newMnc);
+      details.push(`nrf.yaml serving plmn_id: ${nrfOk ? 'OK' : 'MISMATCH'}`);
+      if (!nrfOk) consistent = false;
 
       // freeDiameter Identity for the EPC mesh — the real source of truth for
       // mme/hss/pcrf/smf's PLMN, since none of their yaml schemas carry it directly.

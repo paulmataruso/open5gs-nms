@@ -4,6 +4,42 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.23] - 2026-07-23
+
+### Fixed — PLMN Migration Wizard: NRF serving PLMN was never migrated
+
+`nrf.yaml`'s own `nrf.serving.plmn_id` list — the PLMN(s) NRF will accept
+NF registrations/discovery for — was never touched by any prior migration,
+on any past run. Found stuck on a stale value that matched neither the
+pre- nor post-migration PLMN. `applyPhaseA()` now rewrites it via the
+existing `replacePlmnId()` helper (same array shape as `amf.plmn_support`),
+and Phase E verification now checks it (`nrfOk`). Verified live via a real
+Phase A→E apply.
+
+### Fixed — DNS Migration Wizard Phase C: spurious "HTTP 000" SBI reachability failures
+
+The post-restart SBI reachability check (`curl --http2-prior-knowledge` against
+each NF's FQDN) ran via `executeLocalCommand`, which executes inside the
+*backend container's own* network namespace. The container's
+`/etc/resolv.conf` is Docker's auto-generated default (`1.1.1.1`/`8.8.8.8`)
+and never routes through the host's BIND server — unlike the host's own
+resolver, which `ensureSystemResolverUsesBind()` already keeps pointed at
+BIND. The container could not resolve the custom 3GPP PLMN FQDNs at all
+(confirmed via `getent hosts` returning empty from inside the container),
+so the check reported "HTTP 000" unconditionally regardless of whether the
+NF was actually healthy. An initial attempt to fix this assumed a
+post-restart timing race and added a 4-attempt retry with backoff — deployed
+and re-tested live, it still failed 100% of the time, disproving that theory.
+Root cause confirmed by comparing a direct in-container curl (still `000`)
+against the same request run via `nsenter` into the host (`400` — a real
+response) for the identical FQDN. Fixed by switching the check to
+`executeCommand` (nsenter into the host, the same pattern this file already
+uses for `dig` in Phase A), trimming the now-unnecessary retry back down to
+a light 2-attempt margin for genuine NF-startup timing. Verified live by
+running the exact nsenter command the fixed code executes.
+
+---
+
 ## [v2.0-beta_0.22] - 2026-07-22
 
 ### Changed — VoLTE/VoWiFi E2E test calls now hold for 15s instead of ~1s
