@@ -23,6 +23,9 @@ export class SyncPrometheusConfigUseCase {
     private readonly prometheusConfigPath: string,
     private readonly prometheusUrl: string,
     private readonly logger: pino.Logger,
+    // Traffic History's own /metrics endpoint — scraped alongside the NFs so
+    // it survives every regeneration of this file, not just NF metrics.
+    private readonly backendMetricsPort: number,
   ) {}
 
   /**
@@ -56,6 +59,16 @@ export class SyncPrometheusConfigUseCase {
           `          generation: ${['amf', 'smf', 'upf', 'pcf'].includes(label) ? '5g' : '4g'}`,
         ].join('\n');
       });
+
+    const backendJob = [
+      `  - job_name: open5gs-nms-backend`,
+      `    static_configs:`,
+      `      - targets: ['127.0.0.1:${this.backendMetricsPort}']`,
+      `        labels:`,
+      `          nf: nms-backend`,
+      `          generation: traffic-history`,
+    ].join('\n');
+    jobs.push(backendJob);
 
     const scrapeConfigs = jobs.length > 0
       ? `scrape_configs:\n\n${jobs.join('\n\n')}\n`

@@ -4,6 +4,43 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.25] - 2026-07-24
+
+### Added — Traffic History (GTP U-Plane throughput over time, aggregate + per-subscriber)
+
+New **Traffic History** page charting Up/Down Mbps over 24h/7d/30d ranges at
+5m/15m/1h resolution, filterable to a single subscriber by IMSI. Rather than
+building a new time-series store, this reuses the Prometheus + Grafana stack
+already running in this project (`open5gs-prometheus`, 30-day retention,
+already scraping every NF's own metrics endpoint): the backend now exposes
+its own `/metrics` endpoint with raw cumulative counters
+(`open5gs_gtp_{rx,tx}_bytes_total{dnn}` from the UPF tun devices,
+`open5gs_subscriber_{up,down}_bytes_total{imsi}` from a new nftables-based
+per-subscriber accounting module, `subscriber-ip-accounting.ts`), and
+`prometheus.yml` is now regenerated on every backend startup (not only on
+"Apply Config") so upgrading installs pick up the new scrape job
+automatically. The REST API is a thin proxy translating the page's filters
+into a PromQL `query_range` call — Prometheus owns storage, retention, and
+rate computation, not custom code.
+
+### Fixed — UE Validation (4G): srsRAN Docker image was never actually built anywhere
+
+`srsran4g-noavx` is a locally-built-only image (from `srsran4g/Dockerfile` in
+this repo) — the backend only ever attempted a `docker pull` on it, which
+always fails (nothing by that name is published), silently logged as a
+warning, then fell through to `docker run`, which failed too since the image
+had never been built. This surfaced as a fatal `pull access denied` /
+`Unable to find image` error on any host that hadn't manually pre-built the
+image outside the app. Fixed: the backend now checks whether the image
+exists locally and builds it from the (now correctly volume-mounted)
+`srsran4g/Dockerfile` if not, failing fast with a clear error if the build
+itself fails. Measured a real first-time build at ~22 minutes on a cold
+Docker layer cache, so both the backend's build timeout and the frontend's
+session status-poll cutoff (previously 10 minutes, would go stale mid-build)
+were extended well past that.
+
+---
+
 ## [v2.0-beta_0.24] - 2026-07-24
 
 ### Added — Subscribers: bulk delete, and a single merged Bulk Subscriber Tools card

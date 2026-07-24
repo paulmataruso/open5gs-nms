@@ -11,6 +11,7 @@ import { MongoSubscriberRepository } from './infrastructure/mongodb/mongo-subscr
 import { FileAuditLogger } from './infrastructure/logging/file-audit-logger';
 import { WssBroadcaster } from './infrastructure/websocket/wss-broadcaster';
 import { LoadConfigUseCase } from './application/use-cases/load-config';
+import { ConfigMapper } from './application/use-cases/config-mapper';
 import { ValidateConfigUseCase } from './application/use-cases/validate-config';
 import { ApplyConfigUseCase } from './application/use-cases/apply-config';
 import { ServiceMonitorUseCase } from './application/use-cases/service-monitor';
@@ -50,6 +51,7 @@ import { createAuditRouter } from './interfaces/rest/audit-controller';
 import { createTunRouter } from './interfaces/rest/tun-controller';
 import { TunManagementUseCase } from './application/use-cases/tun-management';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
+import { GtpBandwidthMonitor } from './application/use-cases/interface-status/gtp-bandwidth';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
@@ -78,6 +80,9 @@ import { SasService } from './domain/sas/sas-service';
 import { createSasProtocolRouter, createSasAdminRouter } from './interfaces/rest/sas-controller';
 import { createSercommNRRouter } from './interfaces/rest/sercomm-nr-controller';
 import { createSubscriberGroupsRouter } from './interfaces/rest/subscriber-groups-controller';
+import { SubscriberIpAccounting } from './application/use-cases/traffic-history/subscriber-ip-accounting';
+import { createTrafficMetricsRegistry } from './application/use-cases/traffic-history/prometheus-metrics';
+import { createTrafficHistoryRouter } from './interfaces/rest/traffic-history-controller';
 
 async function main() {
   // Load configuration
@@ -114,6 +119,15 @@ async function main() {
   // Connect to MongoDB
   await subscriberRepo.connect();
   logger.info('MongoDB connected');
+
+  // ── Traffic History ──
+  // Per-subscriber nftables byte counters + a Prometheus exporter — storage,
+  // retention, and rate computation are all owned by the Prometheus instance
+  // already running in this stack (see prometheus-metrics.ts header comment).
+  const subscriberIpAccounting = new SubscriberIpAccounting(hostExecutor, subscriberRepo, logger);
+  subscriberIpAccounting.start();
+  const trafficMetricsGtpMonitor = new GtpBandwidthMonitor(hostExecutor, configRepo, logger);
+  const trafficMetricsRegistry = createTrafficMetricsRegistry(trafficMetricsGtpMonitor, subscriberIpAccounting);
 
   // ── SAS service ──
   // Create a child logger tagged with module:'sas' so the log stream can filter SAS-only messages
@@ -159,7 +173,24 @@ async function main() {
     config.prometheusConfigPath,
     config.prometheusUrl,
     logger,
+    config.port,
   );
+
+  // Regenerate prometheus.yml on every startup, not just on "Apply Config".
+  // Migration note: an existing install upgrading straight from a version
+  // that predates Traffic History would otherwise keep whatever
+  // prometheus.yml an earlier "Apply Config" run last wrote — missing the
+  // open5gs-nms-backend scrape job added below — until the user happened to
+  // click Apply Config again. Traffic History would silently show no data
+  // until then. Syncing here removes that gap entirely.
+  try {
+    const currentConfigs = ConfigMapper.toAllDto(await configRepo.loadAll());
+    const promSyncResult = await syncPrometheusUseCase.execute(currentConfigs);
+    logger.info({ result: promSyncResult }, 'Prometheus config synced on startup');
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'Prometheus config sync on startup failed (non-fatal)');
+  }
+
   const applyConfigUseCase = new ApplyConfigUseCase(
     configRepo,
     hostExecutor,
@@ -289,6 +320,20 @@ async function main() {
     });
   });
 
+  // Traffic History Prometheus exporter (public, unauthenticated — scraped
+  // directly by the host-networked Prometheus container, same trust model as
+  // each NF's own :9090/metrics endpoint). Deliberately outside /api so it's
+  // never caught by the auth middleware below.
+  app.get('/metrics', async (_req, res) => {
+    try {
+      res.set('Content-Type', trafficMetricsRegistry.contentType);
+      res.send(await trafficMetricsRegistry.metrics());
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Failed to render /metrics');
+      res.status(500).send('');
+    }
+  });
+
   // Auth routes (public — login endpoint must be reachable before auth)
   app.use('/api/auth', createAuthRouter(authLoginUseCase, authLogoutUseCase, logger, authMiddleware));
 
@@ -332,6 +377,7 @@ async function main() {
   app.use('/api/validation/vowifi', createVowifiValidationRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
+  app.use('/api/traffic-history', createTrafficHistoryRouter(config.prometheusUrl, subscriberRepo, logger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
   // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below
@@ -417,6 +463,7 @@ async function main() {
     sasService.stopGrantKeeper();
     sasService.stopSummaryLogger();
     logStreamHandler.cleanup();
+    subscriberIpAccounting.stop();
     await subscriberRepo.disconnect();
     httpServer.close();
     sasProxyServer.close();

@@ -22,6 +22,7 @@ import { VoWiFiPage } from './pages/VoWiFiPage';
 import { BindPage } from './pages/BindPage';
 import { ValidationPage } from './pages/ValidationPage';
 import { PcapPage } from './components/pcap/PcapPage';
+import { TrafficHistoryPage } from './pages/TrafficHistoryPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { FEATURES } from './config/features';
@@ -68,6 +69,8 @@ function App(): JSX.Element {
         return <SuciManagementPage />;
       case 'metrics':
         return <MetricsPage />;
+      case 'traffic-history':
+        return <TrafficHistoryPage />;
       case 'sas':
         return <SASPage />;
       case 'time-server':

@@ -62,12 +62,29 @@ export class GtpBandwidthMonitor {
     return this.latest;
   }
 
-  private async getDnnDevices(): Promise<Array<{ dnn: string; dev: string }>> {
+  /** Public: reused by the Prometheus traffic-history exporter for device discovery. */
+  async getDnnDevices(): Promise<Array<{ dnn: string; dev: string }>> {
     const upf = await this.configRepo.loadUpf();
     const sessions: any[] = (upf as any).rawYaml?.upf?.session ?? [];
     return sessions
       .filter((s: any) => s?.dev)
       .map((s: any) => ({ dnn: s.dnn ?? s.dev, dev: s.dev as string }));
+  }
+
+  /**
+   * Public, stateless: current cumulative rx/tx byte counters per DNN tun
+   * device, independent of this monitor's own 2s rate-sampling loop. Used by
+   * the Prometheus exporter, which wants the raw absolute counter at scrape
+   * time (Prometheus computes rates itself via `rate()`/`increase()`).
+   */
+  async getRawCounters(): Promise<Array<{ dnn: string; dev: string; rxBytes: number; txBytes: number }>> {
+    const devices = await this.getDnnDevices();
+    const results: Array<{ dnn: string; dev: string; rxBytes: number; txBytes: number }> = [];
+    for (const { dnn, dev } of devices) {
+      const c = await this.readCounter(dev);
+      if (c) results.push({ dnn, dev, rxBytes: c.rx, txBytes: c.tx });
+    }
+    return results;
   }
 
   private async readCounter(dev: string): Promise<{ rx: number; tx: number } | null> {

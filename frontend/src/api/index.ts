@@ -425,3 +425,31 @@ export const sercommNRApi = {
   sasRestart: (id: string): Promise<{ success: boolean; message: string }> =>
     api.post(`/femto/nr/devices/${encodeURIComponent(id)}/sas-restart`).then(r => r.data),
 };
+
+export interface TrafficHistoryPoint {
+  ts: string;
+  dnn?: string;
+  imsi?: string;
+  upMbps: number;
+  downMbps: number;
+}
+
+export interface TrafficHistorySubscriber {
+  imsi: string;
+  nickname?: string;
+}
+
+export const trafficHistoryApi = {
+  query: (params: {
+    scope: 'aggregate' | 'subscriber';
+    resolution: '5m' | '15m' | '1h';
+    imsi?: string;
+    dnn?: string;
+    from?: string;
+    to?: string;
+  }): Promise<{ points: TrafficHistoryPoint[] }> =>
+    api.get('/traffic-history', { params }).then(r => r.data),
+
+  listSubscribersWithHistory: (): Promise<{ subscribers: TrafficHistorySubscriber[] }> =>
+    api.get('/traffic-history/subscribers').then(r => r.data),
+};

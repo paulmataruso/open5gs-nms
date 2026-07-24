@@ -60,3 +60,10 @@ scrape_configs:
         labels:
           nf: pcrf
           generation: 4g
+
+  - job_name: open5gs-nms-backend
+    static_configs:
+      - targets: ['127.0.0.1:3001']
+        labels:
+          nf: nms-backend
+          generation: traffic-history

@@ -53,6 +53,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/ue-validation:/tmp/ue-validation
       - ./monitoring:/app/monitoring
+      # UE Validation's 4G srsRAN image is built locally (no public image
+      # exists) — this is the build context validation-controller.ts uses.
+      - ./srsran4g:/app/srsran4g:ro
       - ./genieacs/logs:/var/log/genieacs:ro
       - ./nginx/certs:/etc/nginx/certs:ro
       - ./logs/nginx:/var/log/nginx-sas:ro

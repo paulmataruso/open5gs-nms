@@ -20,7 +20,15 @@ const execFileAsync = promisify(execFile);
 
 const VALIDATION_DIR = '/tmp/ue-validation';
 const UERANSIM_IMAGE = 'free5gc/ueransim:latest';
+// Unlike UERANSIM_IMAGE, this is NOT a published image — it's built locally
+// from the Dockerfile at SRSRAN_BUILD_CONTEXT (mounted into this container
+// read-only; see docker-compose.yml's backend `./srsran4g:/app/srsran4g:ro`
+// volume). `docker pull` on this name will always fail (nothing to pull —
+// confirmed via a real bug report where that failure was silently swallowed
+// as a WARN, then `docker run` failed too because the image was never built
+// anywhere). Build-if-missing below replaces the old pull attempt entirely.
 const SRSRAN_IMAGE = 'srsran4g-noavx:latest';
+const SRSRAN_BUILD_CONTEXT = '/app/srsran4g';
 const GNB_BASE = '127.0.3';
 const ENB_BASE = '127.0.4';
 const OPEN5GS_DIR = '/etc/open5gs';
@@ -324,6 +332,27 @@ async function dockerLogs(name: string): Promise<string> {
 
 async function dockerPull(image: string): Promise<void> {
   await execFileAsync('docker', ['pull', image], { timeout: 300_000 });
+}
+
+async function dockerImageExists(image: string): Promise<boolean> {
+  try {
+    await execFileAsync('docker', ['image', 'inspect', image], { timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// First build compiles srsRAN from source inside the image — confirmed live
+// at ~22 minutes on an 8-core host with a cold Docker layer cache, so this
+// needs real headroom above that, not just "a few minutes". Matches this
+// project's other genuinely-slow-first-run timeouts (see nginx.conf's
+// dedicated 1800s install/uninstall regex, FRR source-build).
+async function dockerBuild(tag: string, contextDir: string): Promise<void> {
+  await execFileAsync('docker', ['build', '-t', tag, contextDir], {
+    timeout: 1_800_000,
+    maxBuffer: 50 * 1024 * 1024,
+  });
 }
 
 // ─── Config inference ──────────────────────────────────────────────────────
@@ -1443,9 +1472,17 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           catch (e) { step(session, `WARN: image pull failed (${e}), will try docker run anyway`, logger); }
         }
         if (enable4G) {
-          step(session, `Pulling srsRAN image ${SRSRAN_IMAGE}...`, logger);
-          try { await dockerPull(SRSRAN_IMAGE); step(session, 'srsRAN image ready', logger); }
-          catch (e) { step(session, `WARN: image pull failed (${e}), will try docker run anyway`, logger); }
+          if (await dockerImageExists(SRSRAN_IMAGE)) {
+            step(session, `srsRAN image ${SRSRAN_IMAGE} already built locally`, logger);
+          } else {
+            step(session, `srsRAN image not found locally — building from ${SRSRAN_BUILD_CONTEXT}/Dockerfile (first run only — compiles from source, can take 20+ minutes)...`, logger);
+            try {
+              await dockerBuild(SRSRAN_IMAGE, SRSRAN_BUILD_CONTEXT);
+              step(session, 'srsRAN image built successfully', logger);
+            } catch (e) {
+              throw new Error(`Failed to build srsRAN image (${SRSRAN_IMAGE}) from ${SRSRAN_BUILD_CONTEXT}: ${e}`);
+            }
+          }
         }
 
         // ── Step 8: Start containers ──

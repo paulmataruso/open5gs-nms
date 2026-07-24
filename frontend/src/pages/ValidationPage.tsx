@@ -716,7 +716,12 @@ export function ValidationPage() {
       }
     }, 1000);
     pollRefs.current[sessionId] = timer;
-    setTimeout(() => { clearInterval(timer); delete pollRefs.current[sessionId]; }, 600_000);
+    // Safety-net cutoff, not the normal stop condition (that's the terminal-status
+    // check above) — must comfortably exceed the slowest legitimate first-run
+    // path: the 4G srsRAN image build compiles from source on first use and
+    // measured ~22 minutes on a cold Docker layer cache (see validation-controller.ts's
+    // dockerBuild()). 10 minutes here was cutting off real, still-succeeding builds.
+    setTimeout(() => { clearInterval(timer); delete pollRefs.current[sessionId]; }, 2_700_000);
   }, []);
 
   // On mount: load inferred config + rehydrate any in-progress sessions from the backend

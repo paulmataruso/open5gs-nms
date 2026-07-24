@@ -17,7 +17,13 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
   infrastructure,interfaces}`).
 - **Frontend**: React + TypeScript + Vite + Tailwind, served via a separate container,
   proxied through nginx.
-- **MongoDB**: subscriber data, SAS grant data.
+- **MongoDB**: subscriber data, SAS grant data (`open5gs` database only — no
+  second metrics database; see Traffic History below).
+- **Prometheus + Grafana**: already-deployed monitoring stack
+  (`open5gs-prometheus`/`open5gs-grafana`, `network_mode: host`, 30-day
+  retention). Scrapes each Open5GS NF's own `:9090/metrics` (config synced by
+  `sync-prometheus-config.ts`) plus the NMS backend's own `:3001/metrics` —
+  Traffic History (below) is a consumer of this existing TSDB, not a new one.
 - **GenieACS**: TR-069 CWMP server for radio provisioning (port 7547 CWMP, 7557 NBI).
 - **nginx**: reverses everything, terminates TLS for a couple of radio-facing vhosts,
   `network_mode: host`.
@@ -118,6 +124,32 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     the external system. If you add a third "sync subscribers to X" feature, copy this
     reconciliation pattern, don't skip it.
 
+11. **Per-subscriber traffic accounting owns its own nftables table.**
+    `subscriber-ip-accounting.ts` is the first real nftables rule-management
+    code in this codebase (as opposed to `auto-config.ts`'s pre-existing
+    `iptables` NAT rules) — it installs one counter rule pair (up/down) per
+    subscriber UE IP in a dedicated `inet open5gs_nms_acct` table/`acct_fwd`
+    chain, matching by UE IP only (no interface matching needed — UE pool IPs
+    are unique on this host). If you add another nftables-based feature,
+    give it its own table rather than sharing this one, and remember: if a
+    UE IP gets reassigned to a different subscriber, the old rule pair must
+    be deleted and recreated (not just relabeled) so the counter resets to
+    zero instead of the new owner inheriting the old owner's byte count.
+
+12. **Traffic History reuses the existing Prometheus, it doesn't store its
+    own history.** `prometheus-metrics.ts` exposes raw cumulative counters
+    (`open5gs_gtp_{rx,tx}_bytes_total{dnn}`, `open5gs_subscriber_{up,down}
+    _bytes_total{imsi}`) via a `/metrics` endpoint that `sync-prometheus-config.ts`
+    scrapes alongside every NF — deliberately NOT a separate MongoDB
+    time-series store (an earlier version of this feature used one; it was
+    replaced once we realized Prometheus was already deployed and already
+    doing this job). `traffic-history-controller.ts` is a thin proxy that
+    turns the frontend's filter params into a PromQL `query_range` call and
+    lets Prometheus's own `rate()` compute Mbps — don't reintroduce
+    rate/delta math on our side. Retention is whatever Prometheus's own
+    `--storage.tsdb.retention.time` is set to (shared with NF metrics), not
+    independently configurable per feature.
+
 ## Feature inventory (as of v2.0-beta_0.13, 2026-07-17)
 
 | Feature | Status | Key backend files | Key frontend files |
@@ -138,6 +170,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | UE Validation (UERANSIM 5G + srsRAN 4G) | stable | `validation-controller.ts` | `ValidationPage.tsx` |
 | CBRS SAS server | stable | `sas-service.ts`, `sas-controller.ts` | `SASPage.tsx` |
 | GenieACS radio provisioning | stable | `genieacs-controller.ts` | `AutoConfigPage.tsx`, `FemtoConfigTab.tsx` |
+| Traffic History (aggregate + per-subscriber) | stable | `subscriber-ip-accounting.ts`, `prometheus-metrics.ts`, `traffic-history-controller.ts` | `TrafficHistoryPage.tsx` |
 
 Full detail on any of these: `docs/features.md`.
 
