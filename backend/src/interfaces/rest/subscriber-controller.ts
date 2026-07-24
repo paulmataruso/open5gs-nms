@@ -236,10 +236,10 @@ export function createSubscriberRouter(
 
   router.post('/bulk-add-apn', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    const { sessions, overwrite = false, sst = 1, sd } = req.body as { sessions: any[]; overwrite?: boolean; sst?: number; sd?: string };
+    const { sessions, overwrite = false, sst = 1, sd, imsis } = req.body as { sessions: any[]; overwrite?: boolean; sst?: number; sd?: string; imsis?: string[] };
     if (!sessions?.length) return res.status(400).json({ error: 'sessions array is required' });
     try {
-      const result = await subscriberUC.bulkAddApn(sessions, !!overwrite, Number(sst), sd, user);
+      const result = await subscriberUC.bulkAddApn(sessions, !!overwrite, Number(sst), sd, user, imsis);
       res.json({ success: true, data: result });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Bulk APN add failed';
@@ -249,10 +249,10 @@ export function createSubscriberRouter(
 
   router.post('/auto-assign-msisdn', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    const { startingNumber, overwrite = false } = req.body as { startingNumber: string; overwrite?: boolean };
+    const { startingNumber, overwrite = false, imsis } = req.body as { startingNumber: string; overwrite?: boolean; imsis?: string[] };
     if (!startingNumber) return res.status(400).json({ error: 'startingNumber is required' });
     try {
-      const result = await subscriberUC.autoAssignMsisdn(startingNumber, overwrite, user);
+      const result = await subscriberUC.autoAssignMsisdn(startingNumber, overwrite, user, imsis);
       res.json({ success: true, data: result });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to auto-assign MSISDNs';
@@ -272,9 +272,9 @@ export function createSubscriberRouter(
 
   router.post('/auto-assign-ips', requireAdmin, async (req: Request, res: Response) => {
     try {
-      logger.info('Auto-assigning IPs to all subscribers');
-      const { startIp, endIp, overwrite, imsStartIp, imsEndIp, imsOverwrite } = req.body ?? {};
-      const result = await autoAssignIPsUC.execute({ startIp, endIp, overwrite: !!overwrite, imsStartIp, imsEndIp, imsOverwrite: !!imsOverwrite });
+      const { startIp, endIp, overwrite, imsStartIp, imsEndIp, imsOverwrite, imsis } = req.body ?? {};
+      logger.info({ scope: imsis?.length ? `selected(${imsis.length})` : 'all' }, 'Auto-assigning IPs');
+      const result = await autoAssignIPsUC.execute({ startIp, endIp, overwrite: !!overwrite, imsStartIp, imsEndIp, imsOverwrite: !!imsOverwrite, imsis });
       res.json({ success: true, data: result });
     } catch (err) {
       logger.error({ err }, 'Failed to auto-assign IPs');

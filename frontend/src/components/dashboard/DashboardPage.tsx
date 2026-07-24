@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
@@ -120,6 +120,9 @@ export function DashboardPage(): JSX.Element {
   const [sasRfStatus, setSasRfStatus] = useState<{ rfOn: number; rfOff: number; unknown: number } | null>(null);
   const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
   const [activeUes, setActiveUes] = useState<number | null>(null);
+  const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
+  const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
+  const [gtpBandwidth, setGtpBandwidth] = useState<{ upMbps: number; downMbps: number } | null>(null);
 
   useEffect(() => {
     fetchStatuses();
@@ -159,6 +162,27 @@ export function DashboardPage(): JSX.Element {
       const count = (s?.activeUEs4G?.length ?? 0) + (s?.activeUEs5G?.length ?? 0);
       setActiveUes(count);
     }).catch(() => {});
+    // Primary PLMN — shown separately for AMF (5G) and MME (4G) since the two
+    // are configured independently (kept in sync by the PLMN Migration Wizard,
+    // but worth surfacing both in case they ever drift). Every entry in
+    // AllConfigsDto is the raw YAML including its own top-level wrapper key
+    // (ConfigMapper.toAllDto returns `{ amf: rawYaml, mme: rawYaml, ... }`
+    // where rawYaml itself still has its own "amf:"/"mme:" key) — so the
+    // real path is cfg.amf.amf.guami, not cfg.amf.guami.
+    configApi.getAll().then(cfg => {
+      const amfPlmnId = (cfg as any)?.amf?.amf?.guami?.[0]?.plmn_id;
+      const mmePlmnId = (cfg as any)?.mme?.mme?.gummei?.[0]?.plmn_id;
+      if (amfPlmnId?.mcc && amfPlmnId?.mnc) setAmfPlmn({ mcc: String(amfPlmnId.mcc), mnc: String(amfPlmnId.mnc) });
+      if (mmePlmnId?.mcc && mmePlmnId?.mnc) setMmePlmn({ mcc: String(mmePlmnId.mcc), mnc: String(mmePlmnId.mnc) });
+    }).catch(() => {});
+    // GTP U-Plane bandwidth — backend samples this continuously in the
+    // background, so poll it on a short interval to keep the card live.
+    const fetchGtpBandwidth = () => {
+      interfaceApi.getGtpBandwidth().then(b => setGtpBandwidth({ upMbps: b.upMbps, downMbps: b.downMbps })).catch(() => {});
+    };
+    fetchGtpBandwidth();
+    const gtpInterval = setInterval(fetchGtpBandwidth, 3000);
+    return () => clearInterval(gtpInterval);
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
@@ -276,9 +300,9 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Radio RF status card */}
-        <div className="nms-card animate-fade-in">
-          <div className="flex items-start justify-between">
+        {/* Radio RF status card — split top/bottom: CBRS radio count over the core's primary PLMN */}
+        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+          <div className="flex items-start justify-between p-4">
             <div>
               <p className="text-xs text-nms-text-dim uppercase tracking-wider">CBRS Radios</p>
               <p className="text-2xl font-semibold font-display mt-1">{sasStats?.registeredCbsds ?? '—'}</p>
@@ -294,6 +318,32 @@ export function DashboardPage(): JSX.Element {
             </div>
             <div className="p-2.5 rounded-lg bg-blue-500/10">
               <Radio className="w-5 h-5 text-blue-400" />
+            </div>
+          </div>
+          <div className="divide-y divide-nms-border">
+            <div className="flex items-start justify-between p-4">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">AMF PLMN</p>
+                <p className="text-2xl font-semibold font-display font-mono mt-1 text-emerald-400">
+                  {amfPlmn ? `${amfPlmn.mcc}/${amfPlmn.mnc}` : '—'}
+                </p>
+                <p className="text-xs text-nms-text-dim mt-1">MCC / MNC — 5G core</p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-emerald-500/10">
+                <Globe className="w-5 h-5 text-emerald-400" />
+              </div>
+            </div>
+            <div className="flex items-start justify-between p-4">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">MME PLMN</p>
+                <p className="text-2xl font-semibold font-display font-mono mt-1 text-nms-accent">
+                  {mmePlmn ? `${mmePlmn.mcc}/${mmePlmn.mnc}` : '—'}
+                </p>
+                <p className="text-xs text-nms-text-dim mt-1">MCC / MNC — 4G core</p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                <Globe className="w-5 h-5 text-nms-accent" />
+              </div>
             </div>
           </div>
         </div>
@@ -322,9 +372,32 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Time Server card */}
-        <div className="nms-card animate-fade-in">
-          <div className="flex items-start justify-between">
+        {/* GTP U-Plane bandwidth + Time Server — split top/bottom to keep the grid at 2 rows */}
+        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+          <div className="flex items-start justify-between p-4">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">GTP U-Plane Traffic</p>
+              <div className="flex items-baseline gap-4 mt-1">
+                <span>
+                  <span className="text-2xl font-semibold font-display text-cyan-400">
+                    {gtpBandwidth ? gtpBandwidth.upMbps.toFixed(1) : '—'}
+                  </span>
+                  <span className="text-xs text-nms-text-dim ml-1">↑ Mbps</span>
+                </span>
+                <span>
+                  <span className="text-2xl font-semibold font-display text-nms-accent">
+                    {gtpBandwidth ? gtpBandwidth.downMbps.toFixed(1) : '—'}
+                  </span>
+                  <span className="text-xs text-nms-text-dim ml-1">↓ Mbps</span>
+                </span>
+              </div>
+              <p className="text-xs text-nms-text-dim mt-1">UE payload only — excludes signaling</p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-cyan-500/10">
+              <Activity className="w-5 h-5 text-cyan-400" />
+            </div>
+          </div>
+          <div className="flex items-start justify-between p-4">
             <div>
               <p className="text-xs text-nms-text-dim uppercase tracking-wider">Time Server</p>
               <div className="flex items-center gap-2 mt-1">

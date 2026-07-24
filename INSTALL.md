@@ -119,13 +119,18 @@ sudo systemctl status mongod
 
 > **MongoDB AVX Workaround**
 >
-> Starting with MongoDB 5.0, AVX CPU support is required. If your machine does not have AVX, you have two options:
+> Starting with MongoDB 5.0, AVX CPU support is required. Many older/virtualized hosts (some hypervisors don't pass AVX through to guests) don't have it — check with `grep avx /proc/cpuinfo` (no output = no AVX). If your machine does not have AVX, you have two options:
 >
-> - **Recommended:** Use the included Docker Compose file. In the root of this repo is a `mongo_docker/` folder — run `docker compose -f docker-compose-basic.yaml up -d`, then skip to the [Install Open5GS](#3-install-open5gs) section. To enable direct document editing via Mongo Express, use `docker-compose-mongoexp.yaml` instead, which exposes Mongo Express at `http://<host-ip>:8081/`.
+> - **Recommended:** Run MongoDB in Docker instead of installing it on the host. In the root of this repo (**not** inside `backend/` or `frontend/`) is a `mongo_docker/` folder with its own Compose files — from there run:
+>   ```bash
+>   cd mongo_docker
+>   docker compose -f docker-compose-basic.yaml up -d
+>   ```
+>   (Use `docker-compose-mongoexp.yaml` instead of the default file if you also want Mongo Express, a direct document-editing UI, exposed at `http://<host-ip>:8081/`.)
 >
-> - **Alternative:** Find and install an older version of MongoDB that does not require AVX (you will also need a compatible version of `libssl`).
+>   Because MongoDB is no longer installed on the host, **`apt install open5gs` will hang** waiting on its own MongoDB dependency check — the packaged `.deb` expects a local `mongod`. You must build Open5GS from source instead: skip straight to [Building Open5GS from Source](#building-open5gs-from-source) below (do **not** run the `apt install -y open5gs` step). That section's `meson setup` command already passes `--sysconfdir=/etc`, which is what makes Open5GS install its YAML configs to `/etc/open5gs` instead of `/usr/etc/open5gs` (meson's default when `sysconfdir` isn't set explicitly) — this NMS assumes `/etc/open5gs` everywhere, so don't drop that flag.
 >
-> **Note:** If you use MongoDB in Docker, you will need to build Open5GS from source. This is because `apt` hangs on the MongoDB install step. As a workaround, you can install any version of MongoDB on the host and then disable the service — this satisfies the dependency check and allows `apt` to install Open5GS without errors.
+> - **Alternative:** Find and install an older version of MongoDB that does not require AVX (you will also need a compatible version of `libssl`). This lets you keep using the packaged `apt install open5gs` path with no source build needed.
 
 ### 4. Install Open5GS
 

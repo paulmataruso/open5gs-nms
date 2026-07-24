@@ -4,6 +4,67 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.24] - 2026-07-24
+
+### Added — Subscribers: bulk delete, and a single merged Bulk Subscriber Tools card
+
+Selecting subscribers now shows a "Delete selected" action alongside the
+existing group actions, with a confirmation prompt and a per-subscriber
+success/failure summary. Separately, Auto-Assign IPs, Auto-Assign MSISDN, and
+Bulk Add APN — previously three separate dialogs — are now one "Bulk
+Subscriber Tools" card with a section per tool (each independently
+enable-able) and a shared scope control: run against all subscribers, or
+against a specific selection via a self-contained searchable picker
+(independent of the main table's row checkboxes, though seeded from them).
+
+### Fixed — Auto-Assign IPs/MSISDN: gaps between existing blocks silently collided instead of being filled
+
+Both tools used a bare incrementing counter that only skipped a subscriber
+who already had a value — it never checked whether the *candidate* value was
+already held by someone else. If, say, the first 5 and last 5 of 20
+subscribers already had sequential IPs/MSISDNs assigned from a prior run, a
+fresh run over the middle 10 would silently reuse the first 5's values,
+producing duplicate IP/MSISDN assignments. Both now build the full set of
+already-in-use values across all subscribers (not just the ones in scope)
+and skip over them while walking the range, correctly filling gaps instead of
+colliding with existing assignments.
+
+### Added — Dashboard: GTP U-Plane bandwidth card, Primary PLMN card
+
+New live Up/Down Mbps card sampling the UPF's per-DNN tun device byte
+counters (`ogstun`/`ogstun2`, discovered from `upf.yaml` rather than
+hardcoded) every 2s in the background — these interfaces carry nothing but
+decapsulated UE payload, so this is genuinely "GTP traffic only," with zero
+risk of counting S1AP/NGAP/PFCP/Diameter signaling that happens to share a
+physical NIC. Also added an AMF/MME Primary PLMN display (split into its own
+two-row section) — was previously showing dashes only because
+`ConfigMapper.toAllDto()` returns the raw YAML for every service including
+its own top-level wrapper key (`{amf: {amf: {...}}}`, not `{amf: {...}}`),
+which the dashboard's original lookup path didn't account for.
+
+### Documented — SAS page: Sercomm 5G NR SAS endpoint (port 8899)
+
+Added a third endpoint card to the SAS Dashboard tab specifically for
+Sercomm 5G NR gNBs (`http://<host>:8899/sas`) — this radio family sends
+Host-less HTTP/1.1 SAS requests that nginx rejects before routing, so it
+needs the dedicated plain-HTTP proxy the backend already runs on port 8899,
+not the general 8888 endpoint or the 8443 HTTPS one (which is for other
+radios that behave correctly over TLS, e.g. Sercomm 4G femto/FreedomFi).
+
+### Documented — INSTALL.md: build-from-source path for the MongoDB AVX workaround
+
+Hosts without AVX CPU support (common on some virtualized/older hardware)
+can't run MongoDB 5.0+ on the host and need `mongo_docker/`'s Dockerized
+MongoDB instead — but that means `apt install open5gs` hangs on its own
+MongoDB dependency check, which wasn't previously connected to the existing
+"build from source" instructions. Clarified that this path requires building
+Open5GS from source instead of `apt install`, and confirmed via Open5GS's own
+`meson.build` that the existing `--sysconfdir=/etc` flag (already present in
+the from-source instructions) is correct and necessary for YAML configs to
+land in `/etc/open5gs` rather than meson's `/usr/etc/open5gs` default.
+
+---
+
 ## [v2.0-beta_0.23] - 2026-07-23
 
 ### Fixed — PLMN Migration Wizard: NRF serving PLMN was never migrated

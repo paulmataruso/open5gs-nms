@@ -116,7 +116,7 @@ export class AutoAssignIPsUseCase {
     return info;
   }
 
-  async execute(overrides?: { startIp?: string; endIp?: string; overwrite?: boolean; imsStartIp?: string; imsEndIp?: string; imsOverwrite?: boolean }): Promise<AutoAssignIPsResult> {
+  async execute(overrides?: { startIp?: string; endIp?: string; overwrite?: boolean; imsStartIp?: string; imsEndIp?: string; imsOverwrite?: boolean; imsis?: string[] }): Promise<AutoAssignIPsResult> {
     try {
       const IMS_APNS = ['ims', 'IMS'];
 
@@ -142,17 +142,55 @@ export class AutoAssignIPsUseCase {
       const gatewayIPNum = gatewayIP ? this.ipToNumber(gatewayIP) : null;
       this.logger.info({ baseIp, netmask, startIp, endIp, gatewayIP, overwrite }, 'Parsed IP pool');
 
-      // Step 3: Get all subscribers
-      const allSubscribers = await this.subscriberRepo.findAllFull();
-      this.logger.info({ count: allSubscribers.length }, 'Found subscribers');
+      // Step 3: Get subscribers in scope — either every subscriber, or only the
+      // caller-selected subset (so a bulk run never touches UEs the operator
+      // deliberately left out of the selection).
+      const allSubscribersFull = await this.subscriberRepo.findAllFull();
+      const allSubscribers = overrides?.imsis?.length
+        ? allSubscribersFull.filter(s => overrides.imsis!.includes(s.imsi))
+        : allSubscribersFull;
+      this.logger.info({ count: allSubscribers.length, scope: overrides?.imsis?.length ? `selected(${overrides.imsis.length})` : 'all' }, 'Found subscribers');
 
       // Step 4: Assign internet session IPs
       let assigned = 0;
       let skipped = 0;
       let failed = 0;
       const errors: string[] = [];
-      let currentIp = this.ipToNumber(startIp);
       const endIpNum = this.ipToNumber(endIp);
+
+      // Gap-fill: a naive incrementing counter that only skips subscribers who
+      // already have SOME IP silently reuses low addresses once it reaches
+      // subscribers without one — if e.g. the first 5 and last 5 of 20
+      // subscribers already hold sequential IPs from a prior run, a bare
+      // counter starting at startIp collides head-on with the first 5's
+      // addresses when it gets to the middle 10. Instead, build the set of
+      // every IP already held by ANY subscriber (not just those in scope) and
+      // walk the pool skipping occupied addresses, so gaps between existing
+      // blocks are correctly detected and filled rather than collided with.
+      // A subscriber's own current IP is excluded from "occupied" only when
+      // it's in scope AND about to be overwritten — its slot is being freed.
+      const scopedImsiSet = overrides?.imsis?.length ? new Set(overrides.imsis) : null;
+      const occupied = new Set<number>();
+      for (const s of allSubscribersFull) {
+        const sess = s.slice?.flatMap(sl => sl.session ?? []).find(x => !IMS_APNS.includes(x.name));
+        const ip = sess?.ue?.ipv4;
+        if (!ip) continue;
+        const willBeReassigned = overwrite && (scopedImsiSet ? scopedImsiSet.has(s.imsi) : true);
+        if (willBeReassigned) continue;
+        occupied.add(this.ipToNumber(ip));
+      }
+
+      let cursor = this.ipToNumber(startIp);
+      const nextFreeIp = (): number | null => {
+        while (cursor <= endIpNum) {
+          if ((gatewayIPNum !== null && cursor === gatewayIPNum) || occupied.has(cursor)) {
+            cursor++;
+            continue;
+          }
+          return cursor;
+        }
+        return null;
+      };
 
       for (const subscriber of allSubscribers) {
         try {
@@ -175,26 +213,16 @@ export class AutoAssignIPsUseCase {
             continue;
           }
 
-          if (currentIp > endIpNum) {
+          const ipNum = nextFreeIp();
+          if (ipNum === null) {
             errors.push(`IP pool exhausted after ${assigned} assignments`);
             failed++;
             break;
           }
+          occupied.add(ipNum);
+          cursor = ipNum + 1;
 
-          // Skip gateway IP
-          if (gatewayIPNum !== null && currentIp === gatewayIPNum) {
-            this.logger.info({ skippedIP: this.numberToIp(currentIp) }, 'Skipping gateway IP');
-            currentIp++;
-            if (currentIp > endIpNum) {
-              errors.push(`IP pool exhausted after ${assigned} assignments`);
-              failed++;
-              break;
-            }
-          }
-
-          const assignedIp = this.numberToIp(currentIp);
-          currentIp++;
-
+          const assignedIp = this.numberToIp(ipNum);
           await this.subscriberRepo.assignIPv4ByApn(subscriber.imsi, nonImsSession.name, assignedIp);
           assigned++;
 
@@ -205,11 +233,30 @@ export class AutoAssignIPsUseCase {
         }
       }
 
-      // Step 5: Optionally assign IMS session IPs
+      // Step 5: Optionally assign IMS session IPs — same gap-fill approach, its
+      // own independent occupied set since it's a separate pool/subnet.
       if (overrides?.imsStartIp && overrides?.imsEndIp) {
         const imsOverwrite = overrides.imsOverwrite ?? false;
-        let imsCurrentIp = this.ipToNumber(overrides.imsStartIp);
         const imsEndIpNum = this.ipToNumber(overrides.imsEndIp);
+
+        const imsOccupied = new Set<number>();
+        for (const s of allSubscribersFull) {
+          const sess = s.slice?.flatMap(sl => sl.session ?? []).find(x => IMS_APNS.includes(x.name));
+          const ip = sess?.ue?.ipv4;
+          if (!ip) continue;
+          const willBeReassigned = imsOverwrite && (scopedImsiSet ? scopedImsiSet.has(s.imsi) : true);
+          if (willBeReassigned) continue;
+          imsOccupied.add(this.ipToNumber(ip));
+        }
+
+        let imsCursor = this.ipToNumber(overrides.imsStartIp);
+        const nextFreeImsIp = (): number | null => {
+          while (imsCursor <= imsEndIpNum) {
+            if (imsOccupied.has(imsCursor)) { imsCursor++; continue; }
+            return imsCursor;
+          }
+          return null;
+        };
 
         for (const subscriber of allSubscribers) {
           try {
@@ -222,15 +269,16 @@ export class AutoAssignIPsUseCase {
               continue;
             }
 
-            if (imsCurrentIp > imsEndIpNum) {
+            const imsIpNum = nextFreeImsIp();
+            if (imsIpNum === null) {
               errors.push(`IMS IP pool exhausted after ${assigned} IMS assignments`);
               failed++;
               break;
             }
+            imsOccupied.add(imsIpNum);
+            imsCursor = imsIpNum + 1;
 
-            const imsIp = this.numberToIp(imsCurrentIp);
-            imsCurrentIp++;
-
+            const imsIp = this.numberToIp(imsIpNum);
             await this.subscriberRepo.assignIPv4ByApn(subscriber.imsi, imsSession.name, imsIp);
             assigned++;
 

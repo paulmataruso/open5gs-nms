@@ -121,18 +121,18 @@ export const subscriberApi = {
     api.delete(`/subscribers/${imsi}`).then((r) => r.data),
   getAutoAssignIPsPool: () =>
     api.get<{ success: boolean; data: { ipPool: string; startIp: string; endIp: string; gatewayIp: string | null; totalSubscribers: number; withIp: number; withoutIp: number; imsApn?: string; imsPool?: string; imsStartIp?: string; imsEndIp?: string; imsGatewayIp?: string | null; imsWithIp?: number; imsWithoutIp?: number } }>('/subscribers/auto-assign-ips/pool').then((r) => r.data),
-  autoAssignIPs: (opts?: { startIp?: string; endIp?: string; overwrite?: boolean; imsStartIp?: string; imsEndIp?: string; imsOverwrite?: boolean }) =>
+  autoAssignIPs: (opts?: { startIp?: string; endIp?: string; overwrite?: boolean; imsStartIp?: string; imsEndIp?: string; imsOverwrite?: boolean; imsis?: string[] }) =>
     api.post<{ success: boolean; data: { assigned: number; skipped: number; failed: number; ipPool: string; errors?: string[] } }>('/subscribers/auto-assign-ips', opts ?? {}).then((r) => r.data),
-  autoAssignMsisdn: (startingNumber: string, overwrite: boolean) =>
-    api.post<{ success: boolean; data: { assigned: number; skipped: number } }>('/subscribers/auto-assign-msisdn', { startingNumber, overwrite }).then((r) => r.data),
+  autoAssignMsisdn: (startingNumber: string, overwrite: boolean, imsis?: string[]) =>
+    api.post<{ success: boolean; data: { assigned: number; skipped: number } }>('/subscribers/auto-assign-msisdn', { startingNumber, overwrite, imsis }).then((r) => r.data),
   getIPAssignments: () =>
     api.get<{ success: boolean; data: Array<{ imsi: string; ipv4: string }> }>('/subscribers/ip-assignments').then((r) => r.data),
   exportCSV: (format: 'csv' | 'tsv' = 'csv') =>
     `${API_URL}/api/subscribers/export?format=${format}`,
   importCSV: (csv: string, mode: 'skip' | 'overwrite' = 'skip') =>
     api.post<{ success: boolean; imported: number; skipped: number; overwritten: number; errors: string[] }>('/subscribers/import', { csv, mode }).then((r) => r.data),
-  bulkAddApn: (sessions: any[], overwrite: boolean, sst: number, sd?: string) =>
-    api.post<{ success: boolean; data: { updated: number; skipped: number; errors: string[] } }>('/subscribers/bulk-add-apn', { sessions, overwrite, sst, sd: sd || undefined }).then((r) => r.data),
+  bulkAddApn: (sessions: any[], overwrite: boolean, sst: number, sd?: string, imsis?: string[]) =>
+    api.post<{ success: boolean; data: { updated: number; skipped: number; errors: string[] } }>('/subscribers/bulk-add-apn', { sessions, overwrite, sst, sd: sd || undefined, imsis }).then((r) => r.data),
 };
 
 // ── Subscriber Groups ──
@@ -173,6 +173,8 @@ export const healthApi = {
 // ── Interface Status ──
 export const interfaceApi = {
   getStatus: () => api.get<InterfaceStatus>('/interface-status').then((r) => r.data),
+  getGtpBandwidth: () =>
+    api.get<{ upMbps: number; downMbps: number; perDnn: Array<{ dnn: string; dev: string; upMbps: number; downMbps: number }>; sampledAt: number }>('/interface-status/gtp-bandwidth').then((r) => r.data),
 };
 
 // ── Backup & Restore ──

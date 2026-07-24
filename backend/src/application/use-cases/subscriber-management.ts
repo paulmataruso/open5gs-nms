@@ -269,26 +269,50 @@ export class SubscriberManagementUseCase {
     startingNumber: string,
     overwrite: boolean,
     user: string,
+    imsis?: string[],
   ): Promise<{ assigned: number; skipped: number }> {
     if (!/^\d+$/.test(startingNumber)) throw new Error('Starting number must be numeric digits only.');
     const allSubs = await this.subscriberRepo.findAllFull();
+    const scopedSet = imsis?.length ? new Set(imsis) : null;
+    const scopedSubs = scopedSet ? allSubs.filter(s => scopedSet.has(s.imsi)) : allSubs;
+
+    // Gap-fill: a bare incrementing counter that only skips subscribers who
+    // already have SOME number collides head-on with existing assignments once
+    // it reaches subscribers without one — e.g. if the first 5 and last 5 of 20
+    // subscribers already hold sequential MSISDNs from a prior run, a counter
+    // starting fresh at startingNumber would hand the middle 10 numbers already
+    // held by the first 5. Build the set of every MSISDN already held by ANY
+    // subscriber (not just those in scope) and skip occupied numbers while
+    // marching the counter, so gaps between existing blocks are correctly
+    // filled instead of collided with. A subscriber's own number is excluded
+    // from "occupied" only when it's in scope AND about to be overwritten.
+    const occupied = new Set<string>();
+    for (const s of allSubs) {
+      const willBeReassigned = overwrite && (scopedSet ? scopedSet.has(s.imsi) : true);
+      if (willBeReassigned) continue;
+      for (const m of s.msisdn ?? []) occupied.add(m);
+    }
+
     let counter = BigInt(startingNumber);
     let assigned = 0;
     let skipped = 0;
-    for (const sub of allSubs) {
+    for (const sub of scopedSubs) {
       if (!overwrite && sub.msisdn && sub.msisdn.length > 0) {
         skipped++;
         continue;
       }
-      await this.subscriberRepo.update(sub.imsi, { msisdn: [counter.toString()] });
+      while (occupied.has(counter.toString())) counter++;
+      const newNumber = counter.toString();
+      occupied.add(newNumber);
+      await this.subscriberRepo.update(sub.imsi, { msisdn: [newNumber] });
       counter++;
       assigned++;
     }
-    this.logger.info({ assigned, skipped, startingNumber }, 'MSISDN auto-assign complete');
+    this.logger.info({ assigned, skipped, startingNumber, scope: imsis?.length ? `selected(${imsis.length})` : 'all' }, 'MSISDN auto-assign complete');
     await this.auditLogger.log({
       action: 'subscriber_msisdn_assign',
       user,
-      details: `assigned=${assigned} skipped=${skipped} start=${startingNumber} overwrite=${overwrite}`,
+      details: `assigned=${assigned} skipped=${skipped} start=${startingNumber} overwrite=${overwrite} scope=${imsis?.length ? `selected(${imsis.length})` : 'all'}`,
       success: true,
     });
     return { assigned, skipped };
@@ -318,13 +342,15 @@ export class SubscriberManagementUseCase {
     sst: number,
     sd: string | undefined,
     user: string,
+    imsis?: string[],
   ): Promise<{ updated: number; skipped: number; errors: string[] }> {
     const allSubs = await this.subscriberRepo.findAllFull();
+    const scopedSubs = imsis?.length ? allSubs.filter(s => imsis.includes(s.imsi)) : allSubs;
     let updated = 0;
     let skipped = 0;
     const errors: string[] = [];
 
-    for (const sub of allSubs) {
+    for (const sub of scopedSubs) {
       try {
         const slices: any[] = (sub as any).slice ?? [];
         if (!slices.length) continue;
@@ -370,11 +396,11 @@ export class SubscriberManagementUseCase {
       }
     }
 
-    this.logger.info({ updated, skipped, errors: errors.length }, 'Bulk APN add complete');
+    this.logger.info({ updated, skipped, errors: errors.length, scope: imsis?.length ? `selected(${imsis.length})` : 'all' }, 'Bulk APN add complete');
     await this.auditLogger.log({
       action: 'subscriber_bulk_add_apn',
       user,
-      target: `${sessions.map((s: any) => s.name).join(',')} — ${updated} subscribers`,
+      target: `${sessions.map((s: any) => s.name).join(',')} — ${updated} subscribers (scope=${imsis?.length ? `selected(${imsis.length})` : 'all'})`,
       success: true,
     });
 

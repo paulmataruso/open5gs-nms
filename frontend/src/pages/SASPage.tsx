@@ -2268,7 +2268,7 @@ export function SASPage() {
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-semibold text-nms-text mb-2 flex items-center gap-2">
                   <Lock className={clsx('w-3.5 h-3.5', cert?.exists ? 'text-green-400' : 'text-amber-400')} />
-                  HTTPS SAS Endpoint — for radios that require TLS (Sercomm, FreedomFi)
+                  HTTPS SAS Endpoint — for radios that require TLS (Sercomm 4G femto, FreedomFi)
                   {cert?.exists
                     ? <span className="text-green-400 text-xs font-normal">✓ Certificate ready</span>
                     : <span className="text-amber-400 text-xs font-normal">⚠ Certificate not yet generated</span>}
@@ -2312,6 +2312,30 @@ export function SASPage() {
                 <p>3. Upload <span className="font-mono">sas.crt</span> and set the SAS URL to <span className="font-mono text-green-400">https://{window.location.hostname}:8443/sas/v1.2</span></p>
               </div>
             )}
+          </div>
+
+          {/* Sercomm 5G NR SAS proxy — Host-less HTTP/1.1 workaround, port 8899 */}
+          <div className="nms-card bg-purple-500/5 border-purple-500/20">
+            <p className="text-xs font-semibold text-nms-text mb-2 flex items-center gap-2">
+              <Radio className="w-3.5 h-3.5 text-purple-400" />
+              Sercomm 5G NR SAS Endpoint (SCE5164-B48 gNB)
+            </p>
+            <p className="font-mono text-sm text-purple-400 select-all bg-nms-bg border border-nms-border rounded px-3 py-2">
+              http://{window.location.hostname}:8899/sas
+            </p>
+            <p className="text-xs text-nms-text-dim mt-1.5">
+              Sercomm's 5G NR gNB (<span className="font-mono">X_00C002_gNB</span>, product SCE5164-B48) sends its SAS
+              requests as HTTP/1.1 with no <span className="font-mono">Host</span> header —
+              nginx rejects that outright before it ever reaches a location block, and the
+              plain 8888 endpoint or the 8443 HTTPS endpoint above will both fail for this
+              radio specifically. Port 8899 is a separate, dedicated proxy the backend runs
+              with a relaxed HTTP parser just to accept this malformed request and forward
+              it to the same SAS handler everything else uses. Set this exact URL (plain
+              HTTP, no TLS, path <span className="font-mono">/sas</span> — not{' '}
+              <span className="font-mono">/sas/v1.2</span>) as the SAS server URL on the
+              radio's Auto Config / Sercomm NR page, or push it directly via{' '}
+              <span className="font-mono">Device.Services.SAS.configuration.serverURL</span>.
+            </p>
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import pino from 'pino';
 import { GetInterfaceStatus } from '../../application/use-cases/interface-status/get-interface-status';
+import { GtpBandwidthMonitor } from '../../application/use-cases/interface-status/gtp-bandwidth';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { ActiveSessionsUseCase } from '../../application/use-cases/active-sessions';
@@ -13,6 +14,8 @@ export const createInterfaceRouter = (
 ): Router => {
   const router = Router();
   const getInterfaceStatus = new GetInterfaceStatus(hostExecutor, logger, activeSessionsUseCase, configRepo);
+  const gtpBandwidthMonitor = new GtpBandwidthMonitor(hostExecutor, configRepo, logger);
+  gtpBandwidthMonitor.start();
 
   router.get('/', async (_req, res) => {
     try {
@@ -22,6 +25,10 @@ export const createInterfaceRouter = (
       logger.error({ error }, 'Failed to get interface status');
       res.status(500).json({ error: 'Failed to get interface status' });
     }
+  });
+
+  router.get('/gtp-bandwidth', (_req, res) => {
+    res.json(gtpBandwidthMonitor.getLatest());
   });
 
   return router;
