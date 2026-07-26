@@ -139,7 +139,7 @@ ${extraAliases}
 #!subst "/PCRF_REALM/${p.epcDomain}/g"
 #!define DB_URL "mysql://pcscf:heslo@127.0.0.1/pcscf"
 #!define SQLOPS_DBURL "pcscf=>mysql://pcscf:heslo@127.0.0.1/pcscf"
-##!define WITH_RX
+#!define WITH_RX
 ##!define WITH_N5
 #!define WITH_NAT
 #!define FORCE_RTPRELAY
@@ -203,6 +203,22 @@ ${extraAliases}
 // ── Diameter XML templates ────────────────────────────────────────────────────
 
 function pcscfDiameterXml(p: { pcscfIp: string; imsDomain: string; pcrfFqdn: string; pcrfPort: number }): string {
+  // Deliberately NO <Peer FQDN="${p.pcrfFqdn}" .../> element here — PCRF's own
+  // pcrf.conf already has an active `ConnectPeer` pointing at us (added by
+  // upsertPcrfPcscfPeer() below), so both sides would otherwise try to
+  // actively connect to each other simultaneously. cdp's connection-collision
+  // handling for that scenario is broken in practice: confirmed live,
+  // 2026-07-26, this produced an endless connect/disconnect flap ("Peer ...
+  // has no attached send pipe", "Bad file descriptor" spamming every few
+  // seconds) that starved real INVITE processing entirely (not even 100
+  // Trying got sent). Making P-CSCF accept-only (AcceptUnknownPeers="1" +
+  // <Acceptor> below, no outbound <Peer>) — PCRF is the only side that
+  // actively connects — fixed it: confirmed stable with zero flap/errors
+  // for 80+ seconds straight after this change. <DefaultRoute> alone (no
+  // matching <Peer>) is still required and sufficient for cdp to route our
+  // own outbound Rx_AAR messages back over that same accepted connection —
+  // do not add the <Peer> line back without re-testing this collision
+  // scenario first. See memory: ims-ue-to-ue-calling-investigation.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE DiameterPeer SYSTEM "DiameterPeer.dtd">
 <DiameterPeer
@@ -221,7 +237,6 @@ function pcscfDiameterXml(p: { pcscfIp: string; imsDomain: string; pcrfFqdn: str
   <Auth id="16777236" vendor="10415"/>
   <Auth id="16777236" vendor="0"/>
   <SupportedVendor vendor="10415"/>
-  <Peer FQDN="${p.pcrfFqdn}" port="${p.pcrfPort}"/>
   <DefaultRoute FQDN="${p.pcrfFqdn}" metric="10"/>
 </DiameterPeer>
 `;
@@ -305,9 +320,9 @@ After=network.target mariadb.service named.service rtpengine-daemon.service kama
 
 [Service]
 Type=simple
-RuntimeDirectory=kamailio
+RuntimeDirectory=kamailio_pcscf
 RuntimeDirectoryMode=0755
-ExecStartPre=/bin/mkdir -p /run/kamailio
+ExecStartPre=/bin/mkdir -p /run/kamailio_pcscf
 ExecStart=/usr/sbin/kamailio -f /etc/kamailio_pcscf/kamailio_pcscf.cfg -m 32 -M 1024 -DD -E -e
 Restart=on-failure
 RestartSec=5
@@ -325,9 +340,9 @@ Wants=pyhss-diameter.service
 
 [Service]
 Type=simple
-RuntimeDirectory=kamailio
+RuntimeDirectory=kamailio_icscf
 RuntimeDirectoryMode=0755
-ExecStartPre=/bin/mkdir -p /run/kamailio
+ExecStartPre=/bin/mkdir -p /run/kamailio_icscf
 ExecStart=/usr/sbin/kamailio -f /etc/kamailio_icscf/kamailio_icscf.cfg -DD -E -e
 Restart=on-failure
 RestartSec=5
@@ -345,9 +360,9 @@ Wants=pyhss-diameter.service
 
 [Service]
 Type=simple
-RuntimeDirectory=kamailio
+RuntimeDirectory=kamailio_scscf
 RuntimeDirectoryMode=0755
-ExecStartPre=/bin/mkdir -p /run/kamailio
+ExecStartPre=/bin/mkdir -p /run/kamailio_scscf
 ExecStart=/usr/sbin/kamailio -f /etc/kamailio_scscf/kamailio_scscf.cfg -DD -E -e
 Restart=on-failure
 RestartSec=5
@@ -1138,10 +1153,18 @@ function removeUpfImsSession(raw: string): string {
 
 function upsertPcrfPcscfPeer(raw: string, pcscfFqdn: string, pcscfIp: string, pcscfPort: number): string {
   const peerLine = `ConnectPeer = "${pcscfFqdn}" { ConnectTo = "${pcscfIp}"; Port = ${pcscfPort}; No_TLS; };`;
-  if (raw.includes(pcscfFqdn)) {
-    return raw.replace(new RegExp(`ConnectPeer\\s*=\\s*"${pcscfFqdn.replace(/\./g, '\\.')}"[^\n]*`, 'g'), peerLine);
-  }
-  return raw.trimEnd() + '\n' + peerLine + '\n';
+  // Strip every existing "pcscf.ims.*" ConnectPeer line first, regardless of
+  // MCC/MNC, then add back only the current one. Previously this only ever
+  // upserted the CURRENT fqdn's line, so re-running Configure with a different
+  // PLMN (or the PLMN Migration Wizard) left old entries piling up forever —
+  // confirmed live, 2026-07-26: four stale entries from earlier PLMNs actively
+  // interfered with the real Rx connection (PCRF's own freeDiameter stack
+  // misrouted the real P-CSCF's CEA to a stale peer's state machine, causing a
+  // genuine connect/disconnect flap that starved real call/INVITE processing
+  // entirely). Same underlying class of bug as the known stale-neighbor-list
+  // issue the PLMN Migration Wizard leaves in FRR config — see task #186.
+  const cleaned = raw.replace(/^ConnectPeer\s*=\s*"pcscf\.ims\.[^\n]*\n?/gm, '');
+  return cleaned.trimEnd() + '\n' + peerLine + '\n';
 }
 
 // ── Config file manifest ──────────────────────────────────────────────────────
@@ -1857,6 +1880,28 @@ export function createImsRouter(
         redis:            svcActive(redisRes),
       };
 
+      // Registered UE count (live S-CSCF registrar) + active IPsec SA count —
+      // both read directly from the running system, not from any DB, so they
+      // reflect what's actually happening right now: a provisioned subscriber
+      // isn't necessarily registered, and IPsec SAs get wiped by any P-CSCF
+      // restart until the phone re-registers — see memory:
+      // ims-ue-to-ue-calling-investigation.
+      let registeredUes = 0;
+      let ipsecSaCount = 0;
+      const [ulStatusRes, xfrmRes] = await Promise.allSettled([
+        services.scscf
+          ? nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.status'])
+          : Promise.reject(new Error('scscf not running')),
+        nsenter('ip', ['xfrm', 'state']),
+      ]);
+      if (ulStatusRes.status === 'fulfilled') {
+        const m = ulStatusRes.value.stdout.match(/Records:\s*(\d+)/);
+        if (m) registeredUes = parseInt(m[1], 10);
+      }
+      if (xfrmRes.status === 'fulfilled') {
+        ipsecSaCount = (xfrmRes.value.stdout.match(/^src /gm) ?? []).length;
+      }
+
       const smfImsConfigured = fs.existsSync(HOST_SMF_YAML) &&
         /dnn:\s*ims/.test(fs.readFileSync(HOST_SMF_YAML, 'utf-8'));
 
@@ -1885,6 +1930,8 @@ export function createImsRouter(
         services,
         imsSubscribers,
         open5gsSubscribers,
+        registeredUes,
+        ipsecSaCount,
         smfImsConfigured,
         dnsConfigured,
         imsEnabled,

@@ -74,6 +74,7 @@ import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controll
 import { createBindRouter } from './interfaces/rest/bind-controller';
 import { createValidationRouter } from './interfaces/rest/validation-controller';
 import { createVolteValidationRouter } from './interfaces/rest/volte-validation-controller';
+import { ImsTestNumberManager, createImsTestNumberRouter } from './interfaces/rest/ims-test-number-controller';
 import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validation-controller';
 import * as http from 'http';
 import { SasService } from './domain/sas/sas-service';
@@ -374,6 +375,9 @@ async function main() {
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/bind', createBindRouter(logger, auditLogger));
   app.use('/api/validation/volte', createVolteValidationRouter(logger, auditLogger));
+  const imsTestNumberManager = new ImsTestNumberManager(logger);
+  app.use('/api/validation/ims-test-numbers', createImsTestNumberRouter(imsTestNumberManager, auditLogger));
+  await imsTestNumberManager.reconcile().catch((err) => logger.warn({ err: String(err) }, 'ims-test-number: reconcile failed at startup'));
   app.use('/api/validation/vowifi', createVowifiValidationRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
@@ -464,6 +468,7 @@ async function main() {
     sasService.stopSummaryLogger();
     logStreamHandler.cleanup();
     subscriberIpAccounting.stop();
+    await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
     httpServer.close();
     sasProxyServer.close();

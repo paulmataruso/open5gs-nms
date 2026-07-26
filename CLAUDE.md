@@ -150,7 +150,27 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     `--storage.tsdb.retention.time` is set to (shared with NF metrics), not
     independently configurable per feature.
 
-## Feature inventory (as of v2.0-beta_0.13, 2026-07-17)
+13. **Real VoLTE calling needs the P-CSCF↔PCRF Rx interface for dedicated QCI=1
+    bearers — this is now built and active, not optional.** Real phones (unlike the
+    IMS Test Number bot) won't ring for a UE-to-UE call unless the network actually
+    creates a dedicated GBR voice bearer (QCI=1) via Gx, which requires P-CSCF to
+    speak Diameter Rx to PCRF (`ims_qos`/`cdp`/`cdp_avp` Kamailio modules, gated by
+    `#!define WITH_RX` in `pcscfIncludeCfg()`'s generated `pcscf.cfg` — confirmed
+    live 2026-07-26 this was fully built in a prior session but left disabled by one
+    commented-out line). `pcscfDiameterXml()` deliberately has NO `<Peer>` element for
+    PCRF (accept-only — P-CSCF and PCRF both trying to actively connect to each other
+    causes a real, confirmed connect/disconnect flap that starves all INVITE
+    processing). `upsertPcrfPcscfPeer()` cleans up stale `ConnectPeer` entries from
+    old PLMNs on every Configure run — don't remove that cleanup, stale entries
+    genuinely interfere with the real connection (confirmed via PCRF's own
+    freeDiameter logs misrouting CEAs to a stale peer's state machine). See memory:
+    ims-ue-to-ue-calling-investigation for the full debugging arc, including a
+    real-radio hardware limitation (a specific eNB model rejecting QCI=1 outright,
+    S1AP cause 37 `not-supported-QCI-value`) that looks identical to a software bug
+    at first — don't assume every "call won't ring" report is fixable in this
+    codebase; check the eNB's own S1AP response first.
+
+## Feature inventory (as of v2.0-beta_0.26, 2026-07-26)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -158,7 +178,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | SEPP (N32 roaming) | stable | `sepp-controller.ts`, `sepp-config.ts` | `SeppEditor.tsx` |
 | Framed Routing | stable | `subscriber-management.ts`, `ip-utils.ts` | `SubscriberPage.tsx` |
 | DNS/FQDN Migration Wizard | stable, actively used | `dns-migration-usecase.ts`, `dns-migration-controller.ts`, `bind-controller.ts` | `DnsMigrationPage.tsx`, `BindPage.tsx` |
-| IMS / VoLTE (PyHSS-based) | alpha | `ims-controller.ts` | `IMSPage.tsx` |
+| IMS / VoLTE (PyHSS-based) | beta — confirmed working end-to-end with real iPhone hardware on PLMN 001-01 (2026-07-26), incl. real UE-to-UE calling with dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface | `ims-controller.ts` | `IMSPage.tsx` |
 | SMS (SGs path, osmo-\*) | stable | `sms-controller.ts` | `SMSPage.tsx` |
 | VoWiFi (ePDG) | alpha, experimental | `vowifi-controller.ts`, `vowifi-build.ts` | `VoWiFiPage.tsx` |
 | eSIM generation (Simlessly API) | stable | `esim-generator.ts`, `esim-controller.ts` | `EsimGeneratorModal.tsx` |

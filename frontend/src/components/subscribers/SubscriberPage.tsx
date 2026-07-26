@@ -564,7 +564,7 @@ function BulkToolsDialog({
 
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{
-    apn?: { updated: number; skipped: number; errors: string[] };
+    apn?: { updated: number; skipped: number; errors: string[]; skippedReasons: string[] };
     ips?: { assigned: number; skipped: number; failed: number };
     msisdn?: { assigned: number; skipped: number };
   } | null>(null);
@@ -737,6 +737,11 @@ function BulkToolsDialog({
                         <input className="nms-input font-mono" value={sd} onChange={e => setSd(e.target.value)} placeholder="e.g. 000001" maxLength={6} />
                       </div>
                     </div>
+                    <p className="text-xs text-nms-text-dim -mt-1.5">
+                      If a subscriber already has a slice with this SST/SD, the session is added to it;
+                      otherwise a new slice with this SST/SD is created. Most subscribers only have the
+                      default slice (usually SST 1, no SD) — leave SD blank to target that one.
+                    </p>
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input type="checkbox" checked={apnOverwrite} onChange={e => setApnOverwrite(e.target.checked)} className="w-4 h-4 accent-nms-accent" />
                       <span className="text-sm text-nms-text">Overwrite APN if it already exists in subscriber</span>
@@ -851,6 +856,16 @@ function BulkToolsDialog({
                   <div className="space-y-1.5 text-sm">
                     <div className="flex justify-between"><span className="text-nms-text-dim">Updated</span><span className="font-mono text-green-400">{result.apn.updated}</span></div>
                     <div className="flex justify-between"><span className="text-nms-text-dim">Skipped</span><span className="font-mono text-nms-text-dim">{result.apn.skipped}</span></div>
+                    {result.apn.skippedReasons?.length > 0 && (
+                      <div className="mt-2 space-y-0.5">
+                        {result.apn.skippedReasons.slice(0, 5).map((r, i) => (
+                          <p key={i} className="text-xs text-amber-400">{r}</p>
+                        ))}
+                        {result.apn.skippedReasons.length > 5 && (
+                          <p className="text-xs text-nms-text-dim">+ {result.apn.skippedReasons.length - 5} more</p>
+                        )}
+                      </div>
+                    )}
                     {result.apn.errors.length > 0 && <p className="text-xs text-nms-red mt-2">{result.apn.errors.slice(0, 3).join('\n')}</p>}
                   </div>
                 </div>

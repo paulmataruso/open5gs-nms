@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   Play, Square, RefreshCw, Wifi, Radio, ChevronDown, ChevronUp,
-  CheckCircle, XCircle, Loader, AlertTriangle, Network, Signal, Trash2, Download, PhoneCall,
+  CheckCircle, XCircle, Loader, AlertTriangle, Network, Signal, Trash2, Download, PhoneCall, Plus, Phone, PhoneOff,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
@@ -13,6 +13,10 @@ import {
 import { swuEmulatorApi, SwuEmulatorStatus } from '../api/swuEmulator';
 import { getVolteStatus, runVolteTest, VolteValidationStatus, VolteTestStep } from '../api/volteValidation';
 import { getVowifiStatus, runVowifiTest, VowifiValidationStatus, VowifiTestStep } from '../api/vowifiValidation';
+import {
+  listImsTestNumbers, createImsTestNumber, stopImsTestNumber, placeImsTestCall, hangupImsTestCall,
+  ImsTestNumberInfo,
+} from '../api/imsTestNumbers';
 
 // ─── UE state badge ──────────────────────────────────────────────────────────
 
@@ -404,6 +408,232 @@ function VolteTestCard() {
         {result && !result.success && result.error && (
           <div className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2 font-mono whitespace-pre-wrap">
             {result.error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── IMS test numbers card ───────────────────────────────────────────────────
+// On-demand, dialable test numbers — a real SIP UAS (not a simulator) that
+// registers a PyHSS test subscriber and auto-answers/echoes any call, so the
+// user can place a real test call from a real phone against the real IMS
+// core. User picks the MSISDN, or leaves it blank to auto-generate one.
+// See memory: ims-echo-test-bot, ims-real-iphone-call-flow.
+
+const OUTBOUND_STATE_STYLE: Record<string, string> = {
+  dialing: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
+  ringing: 'text-amber-400 border-amber-500/30 bg-amber-500/10',
+  answered: 'text-green-400 border-green-500/30 bg-green-500/10',
+  failed: 'text-red-400 border-red-500/30 bg-red-500/10',
+  ended: 'text-nms-text-dim border-nms-border bg-nms-surface',
+};
+
+function TestNumberRow({ n, onStop, stopping, onRefresh }: {
+  n: ImsTestNumberInfo;
+  onStop: (msisdn: string) => void;
+  stopping: boolean;
+  onRefresh: () => void;
+}) {
+  const [targetInput, setTargetInput] = useState('');
+  const [calling, setCalling] = useState(false);
+  const [hangingUp, setHangingUp] = useState(false);
+  const call = n.outboundCall;
+  const callActive = !!call && call.state !== 'ended' && call.state !== 'failed';
+
+  const doCall = async () => {
+    const trimmed = targetInput.trim();
+    if (!/^\d{3,15}$/.test(trimmed)) {
+      toast.error('Target number must be 3-15 digits');
+      return;
+    }
+    setCalling(true);
+    try {
+      await placeImsTestCall(n.msisdn, trimmed);
+      toast.success(`Calling ${trimmed}...`);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Failed to place call: ' + String(err.message ?? err));
+    } finally {
+      setCalling(false);
+    }
+  };
+
+  const doHangup = async () => {
+    setHangingUp(true);
+    try {
+      await hangupImsTestCall(n.msisdn);
+      onRefresh();
+    } catch (err: any) {
+      toast.error('Failed to hang up: ' + String(err.message ?? err));
+    } finally {
+      setHangingUp(false);
+    }
+  };
+
+  return (
+    <div className="px-3 py-2 text-xs space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Phone className="w-3.5 h-3.5 text-green-400 shrink-0" />
+          <span className="font-mono text-nms-text text-sm">{n.msisdn}</span>
+          <span className="text-nms-text-dim">IMSI {n.imsi}</span>
+          <span className="text-nms-text-dim">{n.callsHandled} call{n.callsHandled === 1 ? '' : 's'} answered</span>
+        </div>
+        <button
+          onClick={() => onStop(n.msisdn)}
+          disabled={stopping}
+          className="flex items-center gap-1 text-red-400 hover:text-red-300 border border-red-500/30 rounded px-2 py-1 disabled:opacity-40"
+        >
+          {stopping ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />} Stop
+        </button>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap pl-6">
+        {callActive ? (
+          <>
+            <span className={clsx('flex items-center gap-1.5 px-2 py-1 rounded-full border font-mono', OUTBOUND_STATE_STYLE[call!.state])}>
+              {call!.state === 'dialing' || call!.state === 'ringing' ? <Loader className="w-3 h-3 animate-spin" /> : <PhoneCall className="w-3 h-3" />}
+              {call!.state} — {call!.targetNumber}
+            </span>
+            <button
+              onClick={doHangup}
+              disabled={hangingUp}
+              className="flex items-center gap-1 text-red-400 hover:text-red-300 border border-red-500/30 rounded px-2 py-1 disabled:opacity-40"
+            >
+              {hangingUp ? <RefreshCw className="w-3 h-3 animate-spin" /> : <PhoneOff className="w-3 h-3" />} Hang Up
+            </button>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              value={targetInput}
+              onChange={(e) => setTargetInput(e.target.value.replace(/[^\d]/g, ''))}
+              placeholder="Number to dial (e.g. your real phone's MSISDN)"
+              className="bg-nms-bg border border-nms-border rounded px-2 py-1 text-xs text-nms-text font-mono w-64 focus:border-nms-accent/60 focus:outline-none"
+              maxLength={15}
+            />
+            <button
+              onClick={doCall}
+              disabled={calling}
+              className="nms-btn-ghost flex items-center gap-1.5 text-xs disabled:opacity-40"
+            >
+              {calling ? <RefreshCw className="w-3 h-3 animate-spin" /> : <PhoneCall className="w-3 h-3" />} Call
+            </button>
+            {call?.state === 'failed' && (
+              <span className="text-red-400/80 font-mono">last attempt failed: {call.failReason}</span>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ImsTestNumbersCard() {
+  const [numbers, setNumbers] = useState<ImsTestNumberInfo[]>([]);
+  const [msisdnInput, setMsisdnInput] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [stoppingMsisdn, setStoppingMsisdn] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try { setNumbers(await listImsTestNumbers()); } catch { /* backend not reachable */ }
+  }, []);
+
+  const hasActiveCall = numbers.some((n) => n.outboundCall && n.outboundCall.state !== 'ended' && n.outboundCall.state !== 'failed');
+
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, hasActiveCall ? 2000 : 10000);
+    return () => clearInterval(interval);
+  }, [load, hasActiveCall]);
+
+  const doCreate = async () => {
+    const trimmed = msisdnInput.trim();
+    if (trimmed && !/^\d{6,15}$/.test(trimmed)) {
+      toast.error('MSISDN must be 6-15 digits');
+      return;
+    }
+    setCreating(true);
+    try {
+      const info = await createImsTestNumber(trimmed || undefined);
+      toast.success(`Test number ${info.msisdn} is live — dial it now`);
+      setMsisdnInput('');
+      await load();
+    } catch (err: any) {
+      toast.error('Failed to create test number: ' + String(err.message ?? err));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const doStop = async (msisdn: string) => {
+    setStoppingMsisdn(msisdn);
+    try {
+      await stopImsTestNumber(msisdn);
+      toast.success(`Stopped test number ${msisdn}`);
+      await load();
+    } catch (err: any) {
+      toast.error('Failed to stop test number: ' + String(err.message ?? err));
+    } finally {
+      setStoppingMsisdn(null);
+    }
+  };
+
+  return (
+    <div className="border rounded-lg overflow-hidden border-nms-border bg-nms-surface">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-nms-border/50">
+        <div className="flex items-center gap-2">
+          <Phone className="w-4 h-4 text-nms-accent" />
+          <span className="font-semibold text-nms-text">IMS Test Numbers</span>
+          <span className="text-[10px] text-nms-text-dim bg-nms-surface border border-nms-border px-1.5 py-0.5 rounded">IMS / SIP</span>
+        </div>
+        {numbers.length > 0 && (
+          <span className="text-xs text-nms-text-dim">{numbers.length} active</span>
+        )}
+      </div>
+
+      <div className="px-4 py-4 space-y-4">
+        <p className="text-xs text-nms-text-dim leading-relaxed">
+          Registers a real, dialable test number against the real IMS core (P-CSCF/S-CSCF/PyHSS) — no global
+          auth mode change, no effect on any other subscriber's own registration. Dial it from a real phone;
+          it auto-answers and echoes your voice back. Pick your own MSISDN, or leave it blank to auto-generate one.
+        </p>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="text"
+            value={msisdnInput}
+            onChange={(e) => setMsisdnInput(e.target.value.replace(/[^\d]/g, ''))}
+            placeholder="MSISDN (optional — auto-generated if blank)"
+            className="bg-nms-bg border border-nms-border rounded px-3 py-1.5 text-sm text-nms-text font-mono w-64 focus:border-nms-accent/60 focus:outline-none"
+            maxLength={15}
+          />
+          <button
+            onClick={doCreate}
+            disabled={creating}
+            className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40"
+          >
+            {creating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            {creating ? 'Creating...' : 'Create Test Number'}
+          </button>
+        </div>
+
+        {numbers.length > 0 && (
+          <div className="pt-2 border-t border-nms-border">
+            <div className="bg-nms-bg rounded border border-nms-border divide-y divide-nms-border/50">
+              {numbers.map((n) => (
+                <TestNumberRow
+                  key={n.msisdn}
+                  n={n}
+                  onStop={doStop}
+                  stopping={stoppingMsisdn === n.msisdn}
+                  onRefresh={load}
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -881,6 +1111,8 @@ export function ValidationPage() {
       <SwuEmulatorCard />
 
       <VolteTestCard />
+
+      <ImsTestNumbersCard />
 
       <VowifiTestCard />
 

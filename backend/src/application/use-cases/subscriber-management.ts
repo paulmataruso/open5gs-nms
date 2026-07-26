@@ -343,17 +343,22 @@ export class SubscriberManagementUseCase {
     sd: string | undefined,
     user: string,
     imsis?: string[],
-  ): Promise<{ updated: number; skipped: number; errors: string[] }> {
+  ): Promise<{ updated: number; skipped: number; errors: string[]; skippedReasons: string[] }> {
     const allSubs = await this.subscriberRepo.findAllFull();
     const scopedSubs = imsis?.length ? allSubs.filter(s => imsis.includes(s.imsi)) : allSubs;
     let updated = 0;
     let skipped = 0;
     const errors: string[] = [];
+    // SST/SD are a request for that slice to exist, not just a filter — if no
+    // slice on a subscriber matches, one is created with the given SST/SD
+    // and the requested session(s) rather than silently skipping. Skipping
+    // now only happens when a matching slice exists but every requested
+    // session is already present and "Overwrite" is off.
+    const skippedReasons: string[] = [];
 
     for (const sub of scopedSubs) {
       try {
         const slices: any[] = (sub as any).slice ?? [];
-        if (!slices.length) continue;
 
         // Find the target slice by SST and optionally SD
         const targetIdx = slices.findIndex((sl: any) => {
@@ -362,32 +367,44 @@ export class SubscriberManagementUseCase {
           return true;
         });
 
-        if (targetIdx < 0) { skipped++; continue; }
+        let newSlices: any[];
 
-        const targetSlice = slices[targetIdx];
-        const existingSessions: any[] = targetSlice.session ?? [];
-        let updatedSessions = [...existingSessions];
-        let changed = false;
+        if (targetIdx < 0) {
+          // No matching slice — create one.
+          const newSlice: any = { sst, session: [...sessions] };
+          if (sd !== undefined && sd !== '') newSlice.sd = sd;
+          if (slices.length === 0) newSlice.default_indicator = true;
+          newSlices = [...slices, newSlice];
+        } else {
+          const targetSlice = slices[targetIdx];
+          const existingSessions: any[] = targetSlice.session ?? [];
+          let updatedSessions = [...existingSessions];
+          let changed = false;
 
-        for (const sess of sessions) {
-          const existingIdx = existingSessions.findIndex(
-            (s: any) => s.name === sess.name,
-          );
-          if (existingIdx >= 0) {
-            if (!overwrite) continue;
-            updatedSessions[existingIdx] = sess;
-            changed = true;
-          } else {
-            updatedSessions = [...updatedSessions, sess];
-            changed = true;
+          for (const sess of sessions) {
+            const existingIdx = existingSessions.findIndex(
+              (s: any) => s.name === sess.name,
+            );
+            if (existingIdx >= 0) {
+              if (!overwrite) continue;
+              updatedSessions[existingIdx] = sess;
+              changed = true;
+            } else {
+              updatedSessions = [...updatedSessions, sess];
+              changed = true;
+            }
           }
+
+          if (!changed) {
+            skipped++;
+            skippedReasons.push(`${sub.imsi}: session(s) already present and "Overwrite" is off`);
+            continue;
+          }
+
+          newSlices = slices.map((sl: any, i: number) =>
+            i === targetIdx ? { ...sl, session: updatedSessions } : sl,
+          );
         }
-
-        if (!changed) { skipped++; continue; }
-
-        const newSlices = slices.map((sl: any, i: number) =>
-          i === targetIdx ? { ...sl, session: updatedSessions } : sl,
-        );
 
         await this.subscriberRepo.update(sub.imsi, { slice: newSlices } as any);
         updated++;
@@ -404,6 +421,6 @@ export class SubscriberManagementUseCase {
       success: true,
     });
 
-    return { updated, skipped, errors };
+    return { updated, skipped, errors, skippedReasons };
   }
 }

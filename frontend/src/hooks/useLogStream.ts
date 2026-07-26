@@ -15,7 +15,7 @@ export interface LogEntry {
 }
 
 interface UseLogStreamOptions {
-  source: 'open5gs' | 'docker' | 'genieacs' | 'frr';
+  source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims';
   services: string[];
   maxLines: number;
   autoScroll: boolean;

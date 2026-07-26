@@ -78,7 +78,7 @@ export async function ensureLinphoneInstalled(): Promise<void> {
 // block within the real PLMN so they can never collide with a genuine
 // subscriber and are unambiguous in logs/DBs as test-only.
 
-function randomTestImsi(mcc: string, mnc: string, idx: number): string {
+export function randomTestImsi(mcc: string, mnc: string, idx: number): string {
   const plmn = mcc + mnc.padStart(3, '0');
   const suffix = '900' + crypto.randomInt(0, 100000).toString().padStart(5, '0');
   return (plmn + suffix).slice(0, 15).padEnd(15, String(idx));
@@ -421,9 +421,18 @@ export async function runVolteE2ETest(onStep?: (step: VolteTestStep) => void): P
     markA = markOf(sessionA); markB = markOf(sessionB);
     await wrap('Hang up cleanly', async () => {
       sessionA!.send('terminate');
-      await sessionA!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000);
+      // Verify BOTH legs report the call ended — checking only the sender's own
+      // local state isn't proof the BYE actually reached and was processed by the
+      // far end. Confirmed the hard way while building the real-phone echo bot
+      // (see memory: ims-echo-test-bot): a call can look torn down from the
+      // initiator's own side while the far end never received/processed a BYE at
+      // all — the only real proof is that the *other* party also confirms it.
+      await Promise.all([
+        sessionA!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000),
+        sessionB!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000),
+      ]);
     }, {
-      detail: () => 'BYE sent from A, call released cleanly',
+      detail: () => 'BYE sent from A, both legs confirm the call ended cleanly',
       logExcerpt: () => combinedDiff(markA, markB),
     });
 

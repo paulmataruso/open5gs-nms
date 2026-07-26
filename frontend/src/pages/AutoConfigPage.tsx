@@ -19,6 +19,10 @@ export const AutoConfigPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [config, setConfig] = useState<AutoConfigInput>({
+    applyPlmn: true,
+    applyInterfaces: true,
+    applyPfcp: true,
+    applySessionPools: true,
     plmn4g: [{ mcc: '', mnc: '', mme_gid: 2, mme_code: 1, tac: 1 }],
     plmn5g: [{ mcc: '', mnc: '', tac: 1 }],
     s1mmeIP: '',
@@ -77,6 +81,10 @@ export const AutoConfigPage: React.FC = () => {
         });
 
         setConfig({
+          applyPlmn: true,
+          applyInterfaces: true,
+          applyPfcp: true,
+          applySessionPools: true,
           plmn4g: plmn4g.length > 0 ? plmn4g : [{ mcc: '999', mnc: '70', mme_gid: 2, mme_code: 1, tac: 1 }],
           plmn5g: plmn5g.length > 0 ? plmn5g : [{ mcc: '999', mnc: '70', tac: 1 }],
           s1mmeIP:  mmeConfig?.s1ap?.server?.[0]?.address || '',
@@ -131,6 +139,10 @@ export const AutoConfigPage: React.FC = () => {
         console.error('Failed to load current configs:', err);
         toast.error('Failed to load current configuration values');
         setConfig({
+          applyPlmn: true,
+          applyInterfaces: true,
+          applyPfcp: true,
+          applySessionPools: true,
           plmn4g: [{ mcc: '999', mnc: '70', mme_gid: 2, mme_code: 1, tac: 1 }],
           plmn5g: [{ mcc: '999', mnc: '70', tac: 1 }],
           s1mmeIP: '', s1mmeDev: '', sgwuGtpIP: '', amfNgapIP: '', amfNgapDev: '', upfGtpIP: '',
@@ -152,12 +164,20 @@ export const AutoConfigPage: React.FC = () => {
   }, []);
 
   const handleApply = async () => {
-    if (config.plmn4g.length === 0 || !config.plmn4g.every(p => p.mcc && p.mnc)) { toast.error('4G PLMN is required'); return; }
-    if (config.plmn5g.length === 0 || !config.plmn5g.every(p => p.mcc && p.mnc)) { toast.error('5G PLMN is required'); return; }
-    if (!config.s1mmeIP && !config.s1mmeDev) { toast.error('S1-MME: provide an IP address or interface name'); return; }
-    if (!config.amfNgapIP && !config.amfNgapDev) { toast.error('NGAP: provide an IP address or interface name'); return; }
-    if (!config.sgwuGtpIP || !config.upfGtpIP) { toast.error('SGW-U GTP-U and UPF GTP-U IP addresses are required'); return; }
-    if (!confirm('⚡ This will automatically configure Open5GS and restart all services.\n\nA backup will be created automatically.\n\nContinue?')) return;
+    if (!config.applyPlmn && !config.applyInterfaces && !config.applyPfcp && !config.applySessionPools && !config.configureNAT) {
+      toast.error('Nothing is selected to apply — check at least one card');
+      return;
+    }
+    if (config.applyPlmn) {
+      if (config.plmn4g.length === 0 || !config.plmn4g.every(p => p.mcc && p.mnc)) { toast.error('4G PLMN is required'); return; }
+      if (config.plmn5g.length === 0 || !config.plmn5g.every(p => p.mcc && p.mnc)) { toast.error('5G PLMN is required'); return; }
+    }
+    if (config.applyInterfaces) {
+      if (!config.s1mmeIP && !config.s1mmeDev) { toast.error('S1-MME: provide an IP address or interface name'); return; }
+      if (!config.amfNgapIP && !config.amfNgapDev) { toast.error('NGAP: provide an IP address or interface name'); return; }
+      if (!config.sgwuGtpIP || !config.upfGtpIP) { toast.error('SGW-U GTP-U and UPF GTP-U IP addresses are required'); return; }
+    }
+    if (!confirm('⚡ This will automatically configure Open5GS and restart the affected services.\n\nA backup will be created automatically.\n\nContinue?')) return;
     setLoading(true);
     try {
       const result = await autoConfigApi.apply(config);
@@ -176,16 +196,25 @@ export const AutoConfigPage: React.FC = () => {
     setLoading(true);
     try {
       const changes: string[] = [];
-      config.plmn4g.forEach((plmn, i) => changes.push(`✓ MME PLMN ${i + 1}: ${plmn.mcc}/${plmn.mnc}, GID: ${plmn.mme_gid}, Code: ${plmn.mme_code}, TAC: ${plmn.tac}`));
-      changes.push(`✓ MME: S1-MME (${config.s1mmeIP})`);
-      changes.push(`✓ SGW-U: GTP-U (${config.sgwuGtpIP})`);
-      config.plmn5g.forEach((plmn, i) => changes.push(`✓ AMF PLMN ${i + 1}: ${plmn.mcc}/${plmn.mnc}, TAC: ${plmn.tac}`));
-      changes.push(`✓ AMF: NGAP (${config.amfNgapIP})`);
-      changes.push(`✓ UPF: GTP-U (${config.upfGtpIP})`);
-      if (config.smfPfcpIP) changes.push(`✓ SMF: PFCP server (${config.smfPfcpIP})`);
-      if (config.localUpfPfcpIP) changes.push(`✓ Local UPF: PFCP server (${config.localUpfPfcpIP})`);
-      changes.push(`✓ UPF: IPv4 Pool (${config.sessionPoolIPv4Subnet} via ${config.sessionPoolIPv4Gateway})`);
-      changes.push(`✓ UPF: IPv6 Pool (${config.sessionPoolIPv6Subnet} via ${config.sessionPoolIPv6Gateway})`);
+      if (config.applyPlmn) {
+        config.plmn4g.forEach((plmn, i) => changes.push(`✓ MME PLMN ${i + 1}: ${plmn.mcc}/${plmn.mnc}, GID: ${plmn.mme_gid}, Code: ${plmn.mme_code}, TAC: ${plmn.tac}`));
+        config.plmn5g.forEach((plmn, i) => changes.push(`✓ AMF PLMN ${i + 1}: ${plmn.mcc}/${plmn.mnc}, TAC: ${plmn.tac}`));
+      }
+      if (config.applyInterfaces) {
+        changes.push(`✓ MME: S1-MME (${config.s1mmeIP || config.s1mmeDev})`);
+        changes.push(`✓ SGW-U: GTP-U (${config.sgwuGtpIP})`);
+        changes.push(`✓ AMF: NGAP (${config.amfNgapIP || config.amfNgapDev})`);
+        changes.push(`✓ UPF: GTP-U (${config.upfGtpIP})`);
+      }
+      if (config.applyPfcp) {
+        if (config.smfPfcpIP) changes.push(`✓ SMF: PFCP server (${config.smfPfcpIP})`);
+        if (config.localUpfPfcpIP) changes.push(`✓ Local UPF: PFCP server (${config.localUpfPfcpIP})`);
+      }
+      if (config.applySessionPools) {
+        changes.push(`✓ UPF: IPv4 Pool (${config.sessionPoolIPv4Subnet} via ${config.sessionPoolIPv4Gateway})`);
+        changes.push(`✓ UPF: IPv6 Pool (${config.sessionPoolIPv6Subnet} via ${config.sessionPoolIPv6Gateway})`);
+      }
+      if (changes.length === 0) changes.push('(nothing selected — check at least one card above)');
       setPreviewData(changes);
       const result = await autoConfigApi.preview(config);
       if (result.success) setPreviewDiffs(result.diffs);
@@ -251,23 +280,43 @@ export const AutoConfigPage: React.FC = () => {
         <>
           {/* Network Identity */}
           <div className="nms-card mb-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Settings className="w-5 h-5 text-nms-accent" />
-              <h2 className="text-lg font-semibold font-display text-nms-text">📡 Network Identity</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Settings className="w-5 h-5 text-nms-accent" />
+                <h2 className="text-lg font-semibold font-display text-nms-text">📡 Network Identity</h2>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={config.applyPlmn ?? true} onChange={(e) => setConfig({ ...config, applyPlmn: e.target.checked })} className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
+                <span className="text-sm text-nms-text-dim">Apply this step</span>
+              </label>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <fieldset disabled={!(config.applyPlmn ?? true)} className={clsx('grid grid-cols-1 md:grid-cols-2 gap-6', !(config.applyPlmn ?? true) && 'opacity-50')}>
               <PlmnInput label="4G PLMN (EPC / MME)" plmns={config.plmn4g} onChange={(plmns) => setConfig({ ...config, plmn4g: plmns })} showAdvanced={true} mode="4g" />
               <PlmnInput label="5G PLMN (5GC / AMF)" plmns={config.plmn5g} onChange={(plmns) => setConfig({ ...config, plmn5g: plmns })} showAdvanced={true} mode="5g" />
-            </div>
+            </fieldset>
           </div>
 
           {/* Network Interfaces */}
           <div className="nms-card mb-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Settings className="w-5 h-5 text-nms-accent" />
-              <h2 className="text-lg font-semibold font-display text-nms-text">🌐 Network Interfaces</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Settings className="w-5 h-5 text-nms-accent" />
+                <h2 className="text-lg font-semibold font-display text-nms-text">🌐 Network Interfaces</h2>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={config.applyInterfaces ?? true} onChange={(e) => setConfig({ ...config, applyInterfaces: e.target.checked })} className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
+                <span className="text-sm text-nms-text-dim">Apply this step</span>
+              </label>
             </div>
-            <div className="space-y-6">
+            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 flex items-start gap-3 mb-4">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <p className="text-xs text-nms-text-dim">
+                All four IPs below are the addresses your real radios (eNodeBs/gNodeBs) connect to over
+                S1AP/NGAP and GTP-U — they must be real, routable addresses on this host that are actually
+                reachable from your RAN, not loopback or NAT-only addresses.
+              </p>
+            </div>
+            <fieldset disabled={!(config.applyInterfaces ?? true)} className={clsx('space-y-6', !(config.applyInterfaces ?? true) && 'opacity-50')}>
               <div>
                 <h3 className="text-sm font-semibold text-nms-text mb-3">4G Network (EPC)</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -304,15 +353,22 @@ export const AutoConfigPage: React.FC = () => {
                   </div>
                 </div>
               </div>
-            </div>
+            </fieldset>
           </div>
 
           {/* UPF PFCP Addressing */}
           <div className="nms-card mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <Settings className="w-5 h-5 text-nms-accent" />
-              <h2 className="text-lg font-semibold font-display text-nms-text">🔗 UPF PFCP Addressing</h2>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Settings className="w-5 h-5 text-nms-accent" />
+                <h2 className="text-lg font-semibold font-display text-nms-text">🔗 UPF PFCP Addressing</h2>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={config.applyPfcp ?? true} onChange={(e) => setConfig({ ...config, applyPfcp: e.target.checked })} className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
+                <span className="text-sm text-nms-text-dim">Apply this step</span>
+              </label>
             </div>
+            <fieldset disabled={!(config.applyPfcp ?? true)} className={clsx(!(config.applyPfcp ?? true) && 'opacity-50')}>
 
             {/* Local UPF Only checkbox */}
             <label className="flex items-start gap-3 cursor-pointer p-3 rounded-lg border border-nms-border hover:bg-nms-surface-2 transition-colors mb-4">
@@ -389,15 +445,22 @@ export const AutoConfigPage: React.FC = () => {
                 )}
               </>
             )}
+            </fieldset>
           </div>
 
           {/* UE IP Address Pool */}
           <div className="nms-card mb-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Settings className="w-5 h-5 text-nms-accent" />
-              <h2 className="text-lg font-semibold font-display text-nms-text">📶 UE IP Address Pool (UPF Session Pool)</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Settings className="w-5 h-5 text-nms-accent" />
+                <h2 className="text-lg font-semibold font-display text-nms-text">📶 UE IP Address Pool (UPF Session Pool)</h2>
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={config.applySessionPools ?? true} onChange={(e) => setConfig({ ...config, applySessionPools: e.target.checked })} className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
+                <span className="text-sm text-nms-text-dim">Apply this step</span>
+              </label>
             </div>
-            <div className="space-y-6">
+            <fieldset disabled={!(config.applySessionPools ?? true)} className={clsx('space-y-6', !(config.applySessionPools ?? true) && 'opacity-50')}>
               <div>
                 <h3 className="text-sm font-semibold text-nms-text mb-3">IPv4 Pool</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -417,6 +480,16 @@ export const AutoConfigPage: React.FC = () => {
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.session_pool_ipv6_subnet}>Subnet (CIDR)</LabelWithTooltip></label>
                     <input type="text" placeholder="2001:db8:cafe::/48" value={config.sessionPoolIPv6Subnet} onChange={(e) => setConfig({ ...config, sessionPoolIPv6Subnet: e.target.value })} className="nms-input font-mono" />
+                    {(() => {
+                      const prefixLen = parseInt((config.sessionPoolIPv6Subnet || '').split('/')[1] || '', 10);
+                      return Number.isFinite(prefixLen) && prefixLen >= 63 ? (
+                        <p className="text-xs text-amber-400 mt-1">
+                          /{prefixLen} is too narrow — Open5GS delegates per-session /64 prefixes out of this
+                          block, so a /64 (or narrower) here has no room to delegate from and silently yields
+                          zero usable addresses. Use /48 or similar.
+                        </p>
+                      ) : null;
+                    })()}
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.session_pool_ipv6_gateway}>Gateway</LabelWithTooltip></label>
@@ -424,7 +497,7 @@ export const AutoConfigPage: React.FC = () => {
                   </div>
                 </div>
               </div>
-            </div>
+            </fieldset>
           </div>
 
           {/* NAT */}
@@ -448,7 +521,7 @@ export const AutoConfigPage: React.FC = () => {
                 <div className="bg-nms-surface-2 border border-nms-border rounded-md p-4">
                   <h3 className="text-sm font-semibold text-nms-text mb-2">Commands that will be executed:</h3>
                   <pre className="text-xs font-mono text-nms-text-dim overflow-x-auto">
-                    {`sysctl -w net.ipv4.ip_forward=1\nsysctl -w net.ipv6.conf.all.forwarding=1\niptables -t nat -A POSTROUTING -s ${config.sessionPoolIPv4Subnet} ! -o ${config.natInterface || 'ogstun'} -j MASQUERADE\nip6tables -t nat -A POSTROUTING -s ${config.sessionPoolIPv6Subnet} ! -o ${config.natInterface || 'ogstun'} -j MASQUERADE\niptables -I INPUT -i ${config.natInterface || 'ogstun'} -j ACCEPT`}
+                    {`sysctl -w net.ipv4.ip_forward=1\nsysctl -w net.ipv6.conf.all.forwarding=1\nsysctl -w net.ipv6.conf.default.forwarding=1\niptables -t nat -A POSTROUTING -s ${config.sessionPoolIPv4Subnet} ! -o ${config.natInterface || 'ogstun'} -j MASQUERADE\nip6tables -t nat -A POSTROUTING -s ${config.sessionPoolIPv6Subnet} ! -o ${config.natInterface || 'ogstun'} -j MASQUERADE\niptables -I INPUT -i ${config.natInterface || 'ogstun'} -j ACCEPT\nip6tables -I INPUT -i ${config.natInterface || 'ogstun'} -j ACCEPT`}
                   </pre>
                 </div>
               </>

@@ -132,7 +132,7 @@ export const subscriberApi = {
   importCSV: (csv: string, mode: 'skip' | 'overwrite' = 'skip') =>
     api.post<{ success: boolean; imported: number; skipped: number; overwritten: number; errors: string[] }>('/subscribers/import', { csv, mode }).then((r) => r.data),
   bulkAddApn: (sessions: any[], overwrite: boolean, sst: number, sd?: string, imsis?: string[]) =>
-    api.post<{ success: boolean; data: { updated: number; skipped: number; errors: string[] } }>('/subscribers/bulk-add-apn', { sessions, overwrite, sst, sd: sd || undefined, imsis }).then((r) => r.data),
+    api.post<{ success: boolean; data: { updated: number; skipped: number; errors: string[]; skippedReasons: string[] } }>('/subscribers/bulk-add-apn', { sessions, overwrite, sst, sd: sd || undefined, imsis }).then((r) => r.data),
 };
 
 // ── Subscriber Groups ──
@@ -233,6 +233,12 @@ export interface SessionPool {
 }
 
 export interface AutoConfigInput {
+  // Per-card apply toggles — each defaults to true when omitted.
+  applyPlmn?: boolean;
+  applyInterfaces?: boolean;
+  applyPfcp?: boolean;
+  applySessionPools?: boolean;
+
   plmn4g: PlmnConfig[];
   plmn5g: PlmnConfig[];
   s1mmeIP?: string;

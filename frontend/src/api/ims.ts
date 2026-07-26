@@ -14,6 +14,8 @@ export interface ImsStatus {
   };
   imsSubscribers: number;
   open5gsSubscribers: number;
+  registeredUes: number;
+  ipsecSaCount: number;
   smfImsConfigured: boolean;
   dnsConfigured: boolean;
   imsEnabled: boolean;

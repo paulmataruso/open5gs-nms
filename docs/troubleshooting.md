@@ -17,7 +17,8 @@ Common issues and solutions for Open5GS NMS deployment and operation.
 9. [DNS / BIND9 Issues](#dns--bind9-issues)
 10. [Performance Issues](#performance-issues)
 11. [Database Issues](#database-issues)
-12. [Getting More Help](#getting-more-help)
+12. [SMF/UPF Session Counter Corruption](#smfupf-session-counter-corruption)
+13. [Getting More Help](#getting-more-help)
 
 ---
 
@@ -1099,6 +1100,79 @@ time sudo systemctl restart open5gs-nrfd
 # Check service logs for startup issues
 journalctl -u open5gs-nrfd -n 50
 ```
+
+---
+
+## SMF/UPF Session Counter Corruption
+
+### `pfcp_sessions_active` / SMF Sessions Show a Negative Number in Grafana
+
+**Symptom:**
+- Grafana (or a raw scrape of `smfd`'s own `:9090/metrics`) shows `pfcp_sessions_active`
+  and/or `fivegs_smffunction_sm_sessionnbr` as a **negative** number, even though real
+  UEs are attached and passing traffic.
+- Often shows up alongside a separate, more disruptive symptom: new attaches start
+  failing with `"All IP addresses in all subnets are occupied"` from `smfd`/`upfd` logs
+  even though the configured UE IP pool is nearly empty — the same underlying
+  corruption also wrecks the UE IP pool allocation bitmap, not just the metric.
+- Typically follows a period of **rapid, repeated failed attach / session-establish /
+  teardown cycles** — e.g. a UE or test tool retrying an attach in a tight loop while
+  something else (misconfigured PLMN, missing IPv6 subnet, DNS resolution failure)
+  makes every attempt fail and retry quickly.
+
+**Verify it live** (check the real numbers, don't trust the Grafana panel alone):
+```bash
+# SMF's own metrics (adjust address if not using the default loopback scheme)
+curl -s http://127.0.0.4:9090/metrics | grep -E 'pfcp_sessions_active|sm_sessionnbr'
+
+# Compare against UPF's own count — UPF's gauge is typically NOT corrupted,
+# so it's the reliable "ground truth" to compare against:
+curl -s http://127.0.0.7:9090/metrics | grep 'upf_sessionnbr'
+```
+If SMF's number is negative while UPF's is a plausible small positive number, this is
+the bug, not a real session-count problem.
+
+**Root cause:**
+This is an **upstream Open5GS bug**, not something in this NMS. Confirmed by tracing
+the exact installed version's source (`open5gs-smfd --version`, then
+`git clone https://github.com/open5gs/open5gs`, checkout the matching commit):
+- `pfcp_sessions_active` is incremented in exactly one place —
+  `smf_sess_add_by_psi()` (`src/smf/context.c`) — the shared internal session
+  allocator called from every session-creation path (GTPv1, GTPv2/S5-S8, 5G
+  SM-context, 5G PDU-session).
+- It's decremented in exactly one place — `smf_sess_remove()` — but that function is
+  reachable from **5 different call sites** (normal teardown, collision handling in
+  `smf_sess_add_by_gtp2_message` when a new CreateSessionRequest collides with an
+  existing PDN connection per 3GPP TS 29.274 §7.2.1, error-cleanup in 4 other
+  `smf_sess_add_by_*` wrappers, and `smf_sess_remove_all`) — with **no clamping to
+  zero and no reconciliation against real session state** anywhere.
+- Under normal conditions the inc/dec pairs stay balanced. Under rapid repeated
+  attach/retry/teardown cycles, the SMF's own session FSM appears to hit a path where
+  a removal fires without (or more times than) a matching increment, desyncing the
+  gauge from the true session count. This project could not pin the exact single
+  racing line with certainty from static source reading alone — confirming it would
+  require live packet-level tracing under a reproduction.
+- A matching historical report exists upstream:
+  [open5gs/open5gs#1725 — "SMF Number Of Sessions Not Updating After UEs Have Been Deleted"](https://github.com/open5gs/open5gs/issues/1725),
+  same subsystem (SMF's own session gauge desyncing from real state), closed by
+  maintainers with no fix or root-cause writeup. This is a known-fragile area of
+  Open5GS's own metrics/session-lifecycle code across multiple versions, not a
+  one-off.
+
+**Fix / recovery** (confirmed working — resets in-memory state to the correct value):
+```bash
+# Must restart both together — restarting only one leaves the other holding
+# stale PFCP session state for the peer that just restarted.
+sudo systemctl restart open5gs-smfd open5gs-upfd
+```
+After the restart, re-check the metrics endpoint to confirm the counter is back to a
+correct, non-negative value and that new attaches succeed again.
+
+**Not yet implemented:** a self-healing watcher (poll the metric via the existing
+Prometheus scrape, auto-restart `smfd`+`upfd` on negative, following the same pattern
+as BIND9's self-healing) was scoped but deliberately deferred — documented here for
+now rather than built, so a future session can pick it up if this recurs often enough
+to justify the automation.
 
 ---
 

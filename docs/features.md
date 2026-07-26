@@ -746,9 +746,10 @@ Complete logging of all system actions.
 
 ## IMS / VoLTE
 
-*(Alpha — not production-ready)* Full IMS core integration for voice-over-LTE and SMS-over-IP.
-
-> ⚠️ **This module is in early alpha testing.** Server-side IMS signaling has been verified with a third-party SIP client, but end-to-end VoLTE on real phones is not confirmed working, and will likely require manual configuration beyond what this page automates (device/carrier-specific IMS provisioning, auth scheme adjustments, etc.). Do not rely on this for a production voice deployment.
+*(Beta)* Full IMS core integration for voice-over-LTE and SMS-over-IP. **Confirmed
+working end-to-end with real, unmodified iPhone hardware on PLMN 001-01 (2026-07-26)**,
+including real-to-real calls between two registered iPhones with proper dedicated
+voice bearers, not just calls to/from the built-in test-number bot or a softphone.
 
 ### Components
 
@@ -757,19 +758,38 @@ Complete logging of all system actions.
 - **BIND9** — DNS server for the IMS domain zone (`ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org`)
 - **RTPEngine** — media relay
 - **MariaDB** — backing database for PyHSS and the S/I-CSCF
+- **PCRF Rx interface** — P-CSCF speaks Diameter Rx to the real open5gs PCRF (`ims_qos`/`cdp`/`cdp_avp` Kamailio modules) so a real call actually gets a dedicated QCI=1 (Conversational Voice/GBR) EPS bearer via Gx — this is what makes a real phone's own VoLTE stack agree to ring, not just complete SIP signaling
 
 ### Workflow
 
-1. **Install** — one-click install of Kamailio, MariaDB, BIND9, RTPEngine, Redis, and PyHSS
-2. **Configure** — wires the P-CSCF address into SMF's PCO and per-session DNS, writes Cx (I/S-CSCF↔PyHSS) and Rx (P-CSCF↔PCRF) Diameter peer XML, generates the IMS DNS zone
+1. **Install** — one-click install of Kamailio (incl. its IMS/Diameter modules), MariaDB, BIND9, RTPEngine, Redis, and PyHSS
+2. **Configure** — wires the P-CSCF address into SMF's PCO and per-session DNS, writes Cx (I/S-CSCF↔PyHSS) and Rx (P-CSCF↔PCRF) Diameter peer XML, generates the IMS DNS zone. Re-running Configure at any point is safe and picks up every fix shipped for this module — it's a full rewrite of every IMS config file, not incremental, and always restarts the affected services
 3. **Sync Subscribers** — pushes IMPI/IMPU identities for existing subscribers into PyHSS's `ims_hss_db` (via its REST API)
 4. **Enable/Disable, Start/Stop/Restart** — full lifecycle control from the UI
 
 ### Current Status
 
-Server-side signaling is verified: all Diameter connections establish, the IMS APN and P-CSCF PCO delivery work, and a full SIP REGISTER→INVITE call flow has been confirmed with the third-party SIP client Linphone (using Early-IMS auth, since Linphone can't complete an AKA challenge without SIM hardware). **Real-phone VoLTE is not confirmed working** — see the limitation below and the alpha warning above.
+Confirmed working end-to-end on real hardware: real SIP REGISTER (full AKA, not just
+Early-IMS/softphone auth), real INVITE→180 Ringing→200 OK call setup, and — critically
+— a real dedicated QCI=1 voice bearer actually gets created via the Rx/Gx chain for
+each call, matching what a real commercial VoLTE network does. Verified both
+directions (either phone calling the other) and both call directions against the
+built-in [IMS Test Number bot](#ue-validation) (a real SIP UAS for on-demand testing
+without needing two physical phones).
 
-**Known limitation:** Android's telephony framework suppresses VoLTE/SIP REGISTER entirely on test PLMNs (MCC 999) — the phone connects to the IMS APN and gets an IP, but the framework never lets it send SIP traffic. This is a device/carrier-policy limitation, not a server-side issue. A phone with a carrier profile that enables VoLTE for your test PLMN, or a third-party SIP client, will work.
+**Real-radio caveat, not a software limitation:** whether a real UE-to-UE call
+actually rings depends on the serving eNB supporting a dedicated QCI=1 bearer —
+confirmed live that one specific eNB model rejected it outright (S1AP cause
+`not-supported-QCI-value`), while switching to a different radio on the same core
+succeeded immediately. If a UE-to-UE call won't ring, check the eNB's own S1AP
+`E-RABSetupResponse` before suspecting a core-network config issue.
+
+**Known limitation, Android specifically:** Android's telephony framework has
+historically suppressed VoLTE/SIP REGISTER entirely on non-carrier-provisioned test
+PLMNs — the phone connects to the IMS APN and gets an IP, but the framework never lets
+it send SIP traffic. This is a device/carrier-policy limitation, not confirmed to be
+resolved, and hasn't been re-verified against the fixes above. iPhone is confirmed
+working; Android real-phone VoLTE calling is unverified.
 
 ---
 
@@ -847,7 +867,7 @@ Open5GS NMS provides a complete management solution for Open5GS deployments with
 - ✅ Comprehensive subscriber management, including per-session Framed Routing
 - ✅ Powerful automation tools
 - ✅ Production-ready safety features
-- ✅ Voice (IMS/VoLTE, VoWiFi — both alpha) and SMS (SGs) modules, all optional
+- ✅ Voice (IMS/VoLTE — confirmed on real iPhone hardware; VoWiFi — alpha) and SMS (SGs) modules, all optional
 - ✅ End-to-end validation via simulated test UEs, no physical radio required
 
 For detailed usage instructions, see **[INSTALL.md](../INSTALL.md)** and other documentation.

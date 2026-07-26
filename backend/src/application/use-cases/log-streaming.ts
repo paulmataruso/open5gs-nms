@@ -171,6 +171,40 @@ export class LogStreamingUseCase {
     return `${this.logBasePath}/${service}.log`;
   }
 
+  // IMS components (Kamailio P/I/S-CSCF + SMSC, PyHSS, MariaDB) log to the host's
+  // systemd journal only — no discrete file like the core-17 NFs — so recent
+  // logs come from `journalctl -u <unit>` instead of `tail` on a log path.
+  async getRecentJournalLogs(unit: string, limit: number = 100): Promise<LogEntry[]> {
+    try {
+      const result = await this.hostExecutor.executeCommand('journalctl', [
+        '-u', unit, '-n', String(limit), '--no-pager', '-o', 'short-iso',
+      ]);
+      if (result.exitCode !== 0) return [];
+      return result.stdout
+        .split('\n')
+        .filter(line => line.trim())
+        .map(line => this.parseJournalLine(line, unit))
+        .filter((l): l is LogEntry => l !== null);
+    } catch (err) {
+      this.logger.warn({ unit, err: String(err) }, 'Failed to fetch journal logs for unit');
+      return [];
+    }
+  }
+
+  // `-o short-iso` format: "2026-07-26T01:30:41-04:00 hostname comm[pid]: message"
+  parseJournalLine(line: string, service: string): LogEntry | null {
+    if (!line.trim()) return null;
+    const m = line.match(/^(\S+)\s+\S+\s+\S+:\s?(.*)$/s);
+    if (!m) return { timestamp: new Date().toISOString(), service, message: line };
+    const [, ts, message] = m;
+    const parsed = new Date(ts);
+    return {
+      timestamp: isNaN(parsed.getTime()) ? new Date().toISOString() : parsed.toISOString(),
+      service,
+      message,
+    };
+  }
+
   async getRecentLogsFromPath(logPath: string, serviceLabel: string, limit: number = 100): Promise<LogEntry[]> {
     try {
       const content = await readFile(logPath, 'utf8').catch(() => '');

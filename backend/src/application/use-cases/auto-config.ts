@@ -20,6 +20,15 @@ export interface SessionPool {
 }
 
 export interface AutoConfigInput {
+  // Per-card apply toggles — each defaults to true (applied) when omitted, so
+  // existing callers that don't set these keep today's "apply everything"
+  // behavior. NAT already had its own toggle (configureNAT); these extend the
+  // same idea to the other cards on the page.
+  applyPlmn?: boolean;          // 📡 Network Identity
+  applyInterfaces?: boolean;    // 🌐 Network Interfaces
+  applyPfcp?: boolean;          // 🔗 UPF PFCP Addressing
+  applySessionPools?: boolean;  // 📶 UE IP Address Pool
+
   plmn4g: PlmnConfig[];
   plmn5g: PlmnConfig[];
   // 4G S1AP — either IP or interface name, not both
@@ -75,6 +84,7 @@ export interface AutoConfigPreviewResult {
   diffs: Record<string, string>; // service name -> diff string
 }
 
+
 // ── Helper: build a deduplicated PFCP server list ──────────────────────────
 // Merges existing servers with a new address, ensuring no duplicate IPs.
 // When newAddress is a loopback and replaceAll is true, wipes the list first.
@@ -113,33 +123,42 @@ export class AutoConfigUseCase {
       const yaml = await import('yaml');
       const diff = await import('diff');
 
+      const applyPlmn = input.applyPlmn ?? true;
+      const applyInterfaces = input.applyInterfaces ?? true;
+      const applySessionPools = input.applySessionPools ?? true;
+
       // MME diff
-      if (configs.mme) {
+      if (configs.mme && (applyPlmn || applyInterfaces)) {
         const original = configs.mme.rawYaml as any;
         const modified = JSON.parse(JSON.stringify(original)); // Deep clone
 
         // Apply MME changes to rawYaml structure
         if (!modified.mme) modified.mme = {};
-        if (!modified.mme.s1ap) modified.mme.s1ap = {};
-        // Use dev: if provided, otherwise address:
-        if (input.s1mmeDev) {
-          modified.mme.s1ap.server = [{ dev: input.s1mmeDev }];
-        } else if (input.s1mmeIP) {
-          modified.mme.s1ap.server = [{ address: input.s1mmeIP }];
+
+        if (applyInterfaces) {
+          if (!modified.mme.s1ap) modified.mme.s1ap = {};
+          // Use dev: if provided, otherwise address:
+          if (input.s1mmeDev) {
+            modified.mme.s1ap.server = [{ dev: input.s1mmeDev }];
+          } else if (input.s1mmeIP) {
+            modified.mme.s1ap.server = [{ address: input.s1mmeIP }];
+          }
         }
 
-        // Update GUMMEI with multiple PLMNs
-        modified.mme.gummei = input.plmn4g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          mme_gid: plmn.mme_gid ?? 2,
-          mme_code: plmn.mme_code ?? 1,
-        }));
+        if (applyPlmn) {
+          // Update GUMMEI with multiple PLMNs
+          modified.mme.gummei = input.plmn4g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            mme_gid: plmn.mme_gid ?? 2,
+            mme_code: plmn.mme_code ?? 1,
+          }));
 
-        // Update TAI with multiple PLMNs
-        modified.mme.tai = input.plmn4g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          tac: plmn.tac ?? 1,
-        }));
+          // Update TAI with multiple PLMNs
+          modified.mme.tai = input.plmn4g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            tac: plmn.tac ?? 1,
+          }));
+        }
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -148,7 +167,7 @@ export class AutoConfigUseCase {
       }
 
       // SGW-U diff
-      if (configs.sgwu) {
+      if (configs.sgwu && applyInterfaces) {
         const original = configs.sgwu.rawYaml as any;
         const modified = JSON.parse(JSON.stringify(original));
 
@@ -163,39 +182,44 @@ export class AutoConfigUseCase {
       }
 
       // AMF diff
-      if (configs.amf) {
+      if (configs.amf && (applyPlmn || applyInterfaces)) {
         const original = configs.amf.rawYaml as any;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.amf) modified.amf = {};
-        if (!modified.amf.ngap) modified.amf.ngap = {};
-        // Use dev: if provided, otherwise address:
-        if (input.amfNgapDev) {
-          modified.amf.ngap.server = [{ dev: input.amfNgapDev }];
-        } else if (input.amfNgapIP) {
-          modified.amf.ngap.server = [{ address: input.amfNgapIP }];
+
+        if (applyInterfaces) {
+          if (!modified.amf.ngap) modified.amf.ngap = {};
+          // Use dev: if provided, otherwise address:
+          if (input.amfNgapDev) {
+            modified.amf.ngap.server = [{ dev: input.amfNgapDev }];
+          } else if (input.amfNgapIP) {
+            modified.amf.ngap.server = [{ address: input.amfNgapIP }];
+          }
         }
 
-        // Update GUAMI with multiple PLMNs
-        modified.amf.guami = input.plmn5g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          amf_id: {
-            region: 2,
-            set: 1,
-          },
-        }));
+        if (applyPlmn) {
+          // Update GUAMI with multiple PLMNs
+          modified.amf.guami = input.plmn5g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            amf_id: {
+              region: 2,
+              set: 1,
+            },
+          }));
 
-        // Update TAI with multiple PLMNs
-        modified.amf.tai = input.plmn5g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          tac: plmn.tac ?? 1,
-        }));
+          // Update TAI with multiple PLMNs
+          modified.amf.tai = input.plmn5g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            tac: plmn.tac ?? 1,
+          }));
 
-        // Update plmn_support with multiple PLMNs
-        modified.amf.plmn_support = input.plmn5g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          s_nssai: [{ sst: 1 }],
-        }));
+          // Update plmn_support with multiple PLMNs
+          modified.amf.plmn_support = input.plmn5g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            s_nssai: [{ sst: 1 }],
+          }));
+        }
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -204,26 +228,31 @@ export class AutoConfigUseCase {
       }
 
       // UPF diff
-      if (configs.upf) {
+      if (configs.upf && (applyInterfaces || applySessionPools)) {
         const original = configs.upf.rawYaml as any;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.upf) modified.upf = {};
-        if (!modified.upf.gtpu) modified.upf.gtpu = {};
-        modified.upf.gtpu.server = [{ address: input.upfGtpIP }];
 
-        // Update Session pools — support dnn and dev fields
-        const pools = input.sessionPools?.length ? input.sessionPools : [
-          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-        ].filter(p => p.subnet);
-        modified.upf.session = pools.map(p => {
-          const entry: any = { subnet: p.subnet };
-          if (p.gateway) entry.gateway = p.gateway;
-          if (p.dnn)     entry.dnn     = p.dnn;
-          if (p.dev)     entry.dev     = p.dev;
-          return entry;
-        });
+        if (applyInterfaces) {
+          if (!modified.upf.gtpu) modified.upf.gtpu = {};
+          modified.upf.gtpu.server = [{ address: input.upfGtpIP }];
+        }
+
+        if (applySessionPools) {
+          // Update Session pools — support dnn and dev fields
+          const pools = input.sessionPools?.length ? input.sessionPools : [
+            { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+            { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+          ].filter(p => p.subnet);
+          modified.upf.session = pools.map(p => {
+            const entry: any = { subnet: p.subnet };
+            if (p.gateway) entry.gateway = p.gateway;
+            if (p.dnn)     entry.dnn     = p.dnn;
+            if (p.dev)     entry.dev     = p.dev;
+            return entry;
+          });
+        }
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -232,12 +261,12 @@ export class AutoConfigUseCase {
       }
 
       // SMF diff
-      if (configs.smf) {
+      if (configs.smf && applySessionPools) {
         const original = configs.smf.rawYaml as any;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.smf) modified.smf = {};
-        
+
         // Update Session pools — support dnn and dev fields
         const smfPools = input.sessionPools?.length ? input.sessionPools : [
           { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
@@ -302,33 +331,42 @@ export class AutoConfigUseCase {
       const configs = await this.configRepo.loadAll();
 
       // Step 3: Apply auto-configuration changes by modifying rawYaml
+      const applyPlmn = input.applyPlmn ?? true;
+      const applyInterfaces = input.applyInterfaces ?? true;
+      const applyPfcp = input.applyPfcp ?? true;
+      const applySessionPools = input.applySessionPools ?? true;
 
       // Update MME (4G) with multiple PLMNs
-      if (configs.mme) {
+      if (configs.mme && (applyPlmn || applyInterfaces)) {
         this.logger.info({ plmnCount: input.plmn4g.length }, 'Updating MME configuration');
         const raw = configs.mme.rawYaml as any;
-        
+
         if (!raw.mme) raw.mme = {};
-        if (!raw.mme.s1ap) raw.mme.s1ap = {};
-        // Use dev: if provided, otherwise address:
-        if (input.s1mmeDev) {
-          raw.mme.s1ap.server = [{ dev: input.s1mmeDev }];
-        } else if (input.s1mmeIP) {
-          raw.mme.s1ap.server = [{ address: input.s1mmeIP }];
+
+        if (applyInterfaces) {
+          if (!raw.mme.s1ap) raw.mme.s1ap = {};
+          // Use dev: if provided, otherwise address:
+          if (input.s1mmeDev) {
+            raw.mme.s1ap.server = [{ dev: input.s1mmeDev }];
+          } else if (input.s1mmeIP) {
+            raw.mme.s1ap.server = [{ address: input.s1mmeIP }];
+          }
         }
 
-        // Update GUMMEI with multiple PLMNs
-        raw.mme.gummei = input.plmn4g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          mme_gid: plmn.mme_gid ?? 2,
-          mme_code: plmn.mme_code ?? 1,
-        }));
+        if (applyPlmn) {
+          // Update GUMMEI with multiple PLMNs
+          raw.mme.gummei = input.plmn4g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            mme_gid: plmn.mme_gid ?? 2,
+            mme_code: plmn.mme_code ?? 1,
+          }));
 
-        // Update TAI with multiple PLMNs
-        raw.mme.tai = input.plmn4g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          tac: plmn.tac ?? 1,
-        }));
+          // Update TAI with multiple PLMNs
+          raw.mme.tai = input.plmn4g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            tac: plmn.tac ?? 1,
+          }));
+        }
 
         configs.mme.rawYaml = raw;
         await this.configRepo.saveMme(configs.mme);
@@ -336,10 +374,10 @@ export class AutoConfigUseCase {
       }
 
       // Update SGW-U (4G User Plane)
-      if (configs.sgwu) {
+      if (configs.sgwu && applyInterfaces) {
         this.logger.info('Updating SGW-U configuration');
         const raw = configs.sgwu.rawYaml as any;
-        
+
         if (!raw.sgwu) raw.sgwu = {};
         if (!raw.sgwu.gtpu) raw.sgwu.gtpu = {};
         raw.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
@@ -350,7 +388,7 @@ export class AutoConfigUseCase {
       }
 
       // Update SGW-C PFCP (4G control plane for SGW-U)
-      if (configs.sgwc) {
+      if (configs.sgwc && applyPfcp) {
         this.logger.info('Updating SGW-C PFCP configuration');
         const raw = configs.sgwc.rawYaml as any;
         if (!raw.sgwc) raw.sgwc = {};
@@ -385,7 +423,7 @@ export class AutoConfigUseCase {
       }
 
       // Update local SGW-U PFCP server address
-      if (configs.sgwu) {
+      if (configs.sgwu && applyPfcp) {
         const raw = configs.sgwu.rawYaml as any;
         if (!raw.sgwu) raw.sgwu = {};
         if (!raw.sgwu.pfcp) raw.sgwu.pfcp = {};
@@ -397,42 +435,48 @@ export class AutoConfigUseCase {
         }
         configs.sgwu.rawYaml = raw;
         await this.configRepo.saveSgwu(configs.sgwu);
+        if (!updatedFiles.includes('sgwu.yaml')) updatedFiles.push('sgwu.yaml');
       }
 
       // Update AMF (5G) with multiple PLMNs
-      if (configs.amf) {
+      if (configs.amf && (applyPlmn || applyInterfaces)) {
         this.logger.info({ plmnCount: input.plmn5g.length }, 'Updating AMF configuration');
         const raw = configs.amf.rawYaml as any;
-        
+
         if (!raw.amf) raw.amf = {};
-        if (!raw.amf.ngap) raw.amf.ngap = {};
-        // Use dev: if provided, otherwise address:
-        if (input.amfNgapDev) {
-          raw.amf.ngap.server = [{ dev: input.amfNgapDev }];
-        } else if (input.amfNgapIP) {
-          raw.amf.ngap.server = [{ address: input.amfNgapIP }];
+
+        if (applyInterfaces) {
+          if (!raw.amf.ngap) raw.amf.ngap = {};
+          // Use dev: if provided, otherwise address:
+          if (input.amfNgapDev) {
+            raw.amf.ngap.server = [{ dev: input.amfNgapDev }];
+          } else if (input.amfNgapIP) {
+            raw.amf.ngap.server = [{ address: input.amfNgapIP }];
+          }
         }
 
-        // Update GUAMI with multiple PLMNs
-        raw.amf.guami = input.plmn5g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          amf_id: {
-            region: 2,
-            set: 1,
-          },
-        }));
+        if (applyPlmn) {
+          // Update GUAMI with multiple PLMNs
+          raw.amf.guami = input.plmn5g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            amf_id: {
+              region: 2,
+              set: 1,
+            },
+          }));
 
-        // Update TAI with multiple PLMNs
-        raw.amf.tai = input.plmn5g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          tac: plmn.tac ?? 1,
-        }));
+          // Update TAI with multiple PLMNs
+          raw.amf.tai = input.plmn5g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            tac: plmn.tac ?? 1,
+          }));
 
-        // Update plmn_support with multiple PLMNs
-        raw.amf.plmn_support = input.plmn5g.map(plmn => ({
-          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-          s_nssai: [{ sst: 1 }],
-        }));
+          // Update plmn_support with multiple PLMNs
+          raw.amf.plmn_support = input.plmn5g.map(plmn => ({
+            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+            s_nssai: [{ sst: 1 }],
+          }));
+        }
 
         configs.amf.rawYaml = raw;
         await this.configRepo.saveAmf(configs.amf);
@@ -440,39 +484,46 @@ export class AutoConfigUseCase {
       }
 
       // Update UPF (5G User Plane)
-      if (configs.upf) {
+      if (configs.upf && (applyInterfaces || applyPfcp || applySessionPools)) {
         this.logger.info('Updating UPF configuration');
         const raw = configs.upf.rawYaml as any;
-        
-        if (!raw.upf) raw.upf = {};
-        if (!raw.upf.gtpu) raw.upf.gtpu = {};
-        raw.upf.gtpu.server = [{ address: input.upfGtpIP }];
 
-        // Update PFCP server address
-        // If localUpfOnly, use default loopback — no manual IP needed
-        const upfPfcpAddr = input.localUpfOnly ? '127.0.0.7' : input.localUpfPfcpIP;
-        if (upfPfcpAddr) {
-          if (!raw.upf.pfcp) raw.upf.pfcp = {};
-          raw.upf.pfcp.server = mergePfcpServers(
-            raw.upf.pfcp.server || [],
-            upfPfcpAddr,
-            true,  // UPF only ever has one PFCP server address
-          );
-          this.logger.info({ upfPfcpAddr, localUpfOnly: input.localUpfOnly }, 'Set UPF PFCP address');
+        if (!raw.upf) raw.upf = {};
+
+        if (applyInterfaces) {
+          if (!raw.upf.gtpu) raw.upf.gtpu = {};
+          raw.upf.gtpu.server = [{ address: input.upfGtpIP }];
         }
 
-        // Update Session pools — support multiple entries with dnn and dev
-        const execPools = input.sessionPools?.length ? input.sessionPools : [
-          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-        ].filter((p: any) => p.subnet);
-        raw.upf.session = execPools.map(p => {
-          const entry: any = { subnet: p.subnet };
-          if (p.gateway) entry.gateway = p.gateway;
-          if (p.dnn)     entry.dnn     = p.dnn;
-          if (p.dev)     entry.dev     = p.dev;
-          return entry;
-        });
+        if (applyPfcp) {
+          // Update PFCP server address
+          // If localUpfOnly, use default loopback — no manual IP needed
+          const upfPfcpAddr = input.localUpfOnly ? '127.0.0.7' : input.localUpfPfcpIP;
+          if (upfPfcpAddr) {
+            if (!raw.upf.pfcp) raw.upf.pfcp = {};
+            raw.upf.pfcp.server = mergePfcpServers(
+              raw.upf.pfcp.server || [],
+              upfPfcpAddr,
+              true,  // UPF only ever has one PFCP server address
+            );
+            this.logger.info({ upfPfcpAddr, localUpfOnly: input.localUpfOnly }, 'Set UPF PFCP address');
+          }
+        }
+
+        if (applySessionPools) {
+          // Update Session pools — support multiple entries with dnn and dev
+          const execPools = input.sessionPools?.length ? input.sessionPools : [
+            { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+            { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+          ].filter((p: any) => p.subnet);
+          raw.upf.session = execPools.map(p => {
+            const entry: any = { subnet: p.subnet };
+            if (p.gateway) entry.gateway = p.gateway;
+            if (p.dnn)     entry.dnn     = p.dnn;
+            if (p.dev)     entry.dev     = p.dev;
+            return entry;
+          });
+        }
 
         configs.upf.rawYaml = raw;
         await this.configRepo.saveUpf(configs.upf);
@@ -480,64 +531,72 @@ export class AutoConfigUseCase {
       }
 
       // Update SMF (Session Management)
-      if (configs.smf) {
+      if (configs.smf && (applyPfcp || applySessionPools)) {
         this.logger.info('Updating SMF configuration');
         const raw = configs.smf.rawYaml as any;
-        
+
         if (!raw.smf) raw.smf = {};
 
-        // Update PFCP server and client addresses
-        // If localUpfOnly, use default loopbacks — SMF on 127.0.0.4, UPF on 127.0.0.7
-        const smfPfcpAddr   = input.localUpfOnly ? '127.0.0.4' : input.smfPfcpIP;
-        const localUpfAddr  = input.localUpfOnly ? '127.0.0.7' : input.localUpfPfcpIP;
+        if (applyPfcp) {
+          // Update PFCP server and client addresses
+          // If localUpfOnly, use default loopbacks — SMF on 127.0.0.4, UPF on 127.0.0.7
+          const smfPfcpAddr   = input.localUpfOnly ? '127.0.0.4' : input.smfPfcpIP;
+          const localUpfAddr  = input.localUpfOnly ? '127.0.0.7' : input.localUpfPfcpIP;
 
-        if (smfPfcpAddr) {
-          if (!raw.smf.pfcp) raw.smf.pfcp = {};
-          // replaceAll=true when local-only: wipes any existing duplicates and sets exactly one loopback entry
-          raw.smf.pfcp.server = mergePfcpServers(
-            raw.smf.pfcp.server || [],
-            smfPfcpAddr,
-            input.localUpfOnly === true,  // replace entire list when local-only
-          );
-          this.logger.info({ smfPfcpAddr, localUpfOnly: input.localUpfOnly, servers: raw.smf.pfcp.server }, 'Set SMF PFCP server address');
-        }
-
-        if (localUpfAddr) {
-          if (!raw.smf.pfcp) raw.smf.pfcp = {};
-          if (!raw.smf.pfcp.client) raw.smf.pfcp.client = {};
-          if (input.localUpfOnly) {
-            // Loopback only — single local UPF entry, remove any remote UPFs
-            raw.smf.pfcp.client.upf = [{ address: localUpfAddr }];
-          } else {
-            // Keep existing remote UPFs, update local entry
-            const existingUpfs: Array<{address: string}> = raw.smf.pfcp.client.upf || [];
-            const remoteUpfs = existingUpfs.filter(u => !u.address.startsWith('127.') && u.address !== localUpfAddr);
-            raw.smf.pfcp.client.upf = [{ address: localUpfAddr }, ...remoteUpfs];
+          if (smfPfcpAddr) {
+            if (!raw.smf.pfcp) raw.smf.pfcp = {};
+            // replaceAll=true when local-only: wipes any existing duplicates and sets exactly one loopback entry
+            raw.smf.pfcp.server = mergePfcpServers(
+              raw.smf.pfcp.server || [],
+              smfPfcpAddr,
+              input.localUpfOnly === true,  // replace entire list when local-only
+            );
+            this.logger.info({ smfPfcpAddr, localUpfOnly: input.localUpfOnly, servers: raw.smf.pfcp.server }, 'Set SMF PFCP server address');
           }
-          this.logger.info({ localUpfAddr, localUpfOnly: input.localUpfOnly }, 'Updated SMF UPF client list');
+
+          if (localUpfAddr) {
+            if (!raw.smf.pfcp) raw.smf.pfcp = {};
+            if (!raw.smf.pfcp.client) raw.smf.pfcp.client = {};
+            if (input.localUpfOnly) {
+              // Loopback only — single local UPF entry, remove any remote UPFs
+              raw.smf.pfcp.client.upf = [{ address: localUpfAddr }];
+            } else {
+              // Keep existing remote UPFs, update local entry
+              const existingUpfs: Array<{address: string}> = raw.smf.pfcp.client.upf || [];
+              const remoteUpfs = existingUpfs.filter(u => !u.address.startsWith('127.') && u.address !== localUpfAddr);
+              raw.smf.pfcp.client.upf = [{ address: localUpfAddr }, ...remoteUpfs];
+            }
+            this.logger.info({ localUpfAddr, localUpfOnly: input.localUpfOnly }, 'Updated SMF UPF client list');
+          }
         }
-        
-        // Build session pools — DNN-specific pools first, then default (no-DNN) pools
-        const execSmfPools = input.sessionPools?.length ? input.sessionPools : [
-          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-        ].filter((p: any) => p.subnet);
-        const smfNewPools = execSmfPools.map((p: any) => {
-          const entry: any = { subnet: p.subnet };
-          if (p.gateway) entry.gateway = p.gateway;
-          if (p.dnn)     entry.dnn     = p.dnn;
-          if (p.dev)     entry.dev     = p.dev;
-          return entry;
-        });
-        raw.smf.session = [
-          ...smfNewPools.filter((p: any) => p.dnn),
-          ...smfNewPools.filter((p: any) => !p.dnn),
-        ];
+
+        if (applySessionPools) {
+          // Build session pools — DNN-specific pools first, then default (no-DNN) pools
+          const execSmfPools = input.sessionPools?.length ? input.sessionPools : [
+            { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+            { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+          ].filter((p: any) => p.subnet);
+          const smfNewPools = execSmfPools.map((p: any) => {
+            const entry: any = { subnet: p.subnet };
+            if (p.gateway) entry.gateway = p.gateway;
+            if (p.dnn)     entry.dnn     = p.dnn;
+            if (p.dev)     entry.dev     = p.dev;
+            return entry;
+          });
+          raw.smf.session = [
+            ...smfNewPools.filter((p: any) => p.dnn),
+            ...smfNewPools.filter((p: any) => !p.dnn),
+          ];
+        }
 
         configs.smf.rawYaml = raw;
         await this.configRepo.saveSmf(configs.smf);
         updatedFiles.push('smf.yaml');
       }
+
+      // Dedup — a file can be pushed from more than one section above
+      // (e.g. sgwu.yaml from both the Interfaces and PFCP sections).
+      const dedupedFiles = [...new Set(updatedFiles)];
 
       // Step 4: Configure NAT if requested
       if (input.configureNAT) {
@@ -551,39 +610,66 @@ export class AutoConfigUseCase {
             '# Open5GS UE internet access — written by NMS auto-config',
             'net.ipv4.ip_forward=1',
             'net.ipv6.conf.all.forwarding=1',
+            'net.ipv6.conf.default.forwarding=1',
           ].join('\n') + '\n';
 
-          await this.hostExecutor.writeFile('/etc/sysctl.d/99-open5gs-nat.conf', sysctlContent);
+          // /etc/sysctl.d/ isn't bind-mounted into this container (unlike
+          // /etc/open5gs) — writeFile needs the /proc/1/root host-path
+          // prefix. executeCommand doesn't (nsenter already puts it in the
+          // host's own mount namespace, where the plain path is correct).
+          await this.hostExecutor.writeFile('/proc/1/root/etc/sysctl.d/99-open5gs-nat.conf', sysctlContent);
           await this.hostExecutor.executeCommand('sysctl', ['-p', '/etc/sysctl.d/99-open5gs-nat.conf']);
           this.logger.info('Enabled IP forwarding (persistent via /etc/sysctl.d/99-open5gs-nat.conf)');
 
           // ── iptables rules ─────────────────────────────────────────────────
+          // Sourced from the same session pool subnets shown in the "UE IP
+          // Address Pool" card above, so NAT always matches whatever pool is
+          // actually configured rather than a separate, possibly-stale value.
           const ipv4Subnet = input.sessionPools?.[0]?.subnet || input.sessionPoolIPv4Subnet || '10.45.0.0/16';
           const ipv6Subnet = input.sessionPools?.[1]?.subnet || input.sessionPoolIPv6Subnet || '2001:db8:cafe::/48';
 
+          // Each rule is added idempotently (-C check before -A/-I add) so
+          // re-running Apply Config with NAT enabled doesn't pile up
+          // duplicate MASQUERADE/ACCEPT rules every time.
+          const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string) => {
+            const check = await this.hostExecutor.executeCommand(bin, checkArgs);
+            if (check.exitCode !== 0) {
+              await this.hostExecutor.executeCommand(bin, addArgs);
+              this.logger.info({ label }, 'Added firewall rule');
+            }
+          };
+
           // IPv4 MASQUERADE
-          await this.hostExecutor.executeCommand('iptables', [
-            '-t', 'nat', '-A', 'POSTROUTING',
-            '-s', ipv4Subnet,
-            '!', '-o', natInterface,
-            '-j', 'MASQUERADE',
-          ]);
-          this.logger.info({ subnet: ipv4Subnet }, 'Configured IPv4 NAT');
+          await ensureRule(
+            'iptables',
+            ['-t', 'nat', '-C', 'POSTROUTING', '-s', ipv4Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
+            ['-t', 'nat', '-A', 'POSTROUTING', '-s', ipv4Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
+            'IPv4 NAT',
+          );
 
           // IPv6 MASQUERADE
-          await this.hostExecutor.executeCommand('ip6tables', [
-            '-t', 'nat', '-A', 'POSTROUTING',
-            '-s', ipv6Subnet,
-            '!', '-o', natInterface,
-            '-j', 'MASQUERADE',
-          ]);
-          this.logger.info({ subnet: ipv6Subnet }, 'Configured IPv6 NAT');
+          await ensureRule(
+            'ip6tables',
+            ['-t', 'nat', '-C', 'POSTROUTING', '-s', ipv6Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
+            ['-t', 'nat', '-A', 'POSTROUTING', '-s', ipv6Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
+            'IPv6 NAT',
+          );
 
-          // Allow inbound from tunnel interface
-          await this.hostExecutor.executeCommand('iptables', [
-            '-I', 'INPUT', '-i', natInterface, '-j', 'ACCEPT',
-          ]);
-          this.logger.info({ interface: natInterface }, 'Allowed traffic from tunnel interface');
+          // Allow inbound from tunnel interface (both address families)
+          await ensureRule(
+            'iptables',
+            ['-C', 'INPUT', '-i', natInterface, '-j', 'ACCEPT'],
+            ['-I', 'INPUT', '-i', natInterface, '-j', 'ACCEPT'],
+            'IPv4 tunnel INPUT accept',
+          );
+          await ensureRule(
+            'ip6tables',
+            ['-C', 'INPUT', '-i', natInterface, '-j', 'ACCEPT'],
+            ['-I', 'INPUT', '-i', natInterface, '-j', 'ACCEPT'],
+            'IPv6 tunnel INPUT accept',
+          );
+
+          this.logger.info({ ipv4Subnet, ipv6Subnet, natInterface }, 'Configured NAT (IPv4 + IPv6)');
 
           // ── Persist iptables rules across reboots ─────────────────────────
           // Requires iptables-persistent / netfilter-persistent (installed as prerequisite)
@@ -596,17 +682,22 @@ export class AutoConfigUseCase {
         }
       }
 
-      // Step 5: Restart services
-      this.logger.info('Restarting Open5GS services');
-      const servicesToRestart = [
-        'open5gs-mmed',
-        'open5gs-sgwcd',
-        'open5gs-sgwud',
-        'open5gs-amfd',
-        'open5gs-upfd',
-        'open5gs-smfd',
-      ];
+      // Step 5: Restart services — only ones whose config file was actually
+      // touched, so unchecking a card doesn't force an unrelated NF restart
+      // (e.g. NAT-only changes need zero NF restarts at all).
+      const FILE_TO_SERVICE: Record<string, string> = {
+        'mme.yaml': 'open5gs-mmed',
+        'sgwc.yaml': 'open5gs-sgwcd',
+        'sgwu.yaml': 'open5gs-sgwud',
+        'amf.yaml': 'open5gs-amfd',
+        'upf.yaml': 'open5gs-upfd',
+        'smf.yaml': 'open5gs-smfd',
+      };
+      const servicesToRestart = dedupedFiles
+        .map(f => FILE_TO_SERVICE[f])
+        .filter((s): s is string => Boolean(s));
 
+      this.logger.info({ servicesToRestart }, 'Restarting Open5GS services');
       for (const service of servicesToRestart) {
         try {
           await this.hostExecutor.executeCommand('systemctl', ['restart', service]);
@@ -626,13 +717,15 @@ export class AutoConfigUseCase {
         success: true,
       });
 
-      this.logger.info({ backupDir, updatedFiles }, 'Auto-configuration completed successfully');
+      this.logger.info({ backupDir, updatedFiles: dedupedFiles }, 'Auto-configuration completed successfully');
 
       return {
         success: true,
-        message: 'Auto-configuration applied successfully. Services restarted.',
+        message: servicesToRestart.length > 0
+          ? `Auto-configuration applied successfully. Restarted: ${servicesToRestart.join(', ')}.`
+          : 'Auto-configuration applied successfully. No NF restart was needed for the selected steps.',
         backupCreated: backupDir,
-        updatedFiles,
+        updatedFiles: dedupedFiles,
       };
 
     } catch (error) {
@@ -654,4 +747,5 @@ export class AutoConfigUseCase {
       };
     }
   }
+
 }

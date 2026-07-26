@@ -104,7 +104,11 @@ export type AuditAction =
   | 'pcap_start'
   | 'pcap_stop'
   | 'pcap_download'
-  | 'pcap_delete';
+  | 'pcap_delete'
+  | 'ims_test_number_create'
+  | 'ims_test_number_stop'
+  | 'ims_test_number_call'
+  | 'ims_test_number_hangup';
 
 export interface AuditLogEntry {
   id: string;

@@ -1,19 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
+import { imsApi, type ImsStatus } from '../../api/ims';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
-
-function formatBytes(bytes: number | null): string {
-  if (bytes === null || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
-}
 
 type SasBand = {
   bandLow: number; bandHigh: number; label: string;
@@ -88,21 +81,14 @@ function StatCard({
 
 function ServiceMiniCard({ status }: { status: ServiceStatus }): JSX.Element {
   return (
-    <div className="flex items-center justify-between py-2.5 px-3 rounded-md bg-nms-bg/50">
-      <div className="flex items-center gap-3">
+    <div className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-nms-bg/50 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
         <div className={status.active ? 'status-dot-active' : 'status-dot-inactive'} />
-        <div>
-          <span className="text-sm font-medium">{status.name.toUpperCase()}</span>
-          <span className="text-xs text-nms-text-dim ml-2">{status.unitName}</span>
-        </div>
+        <span className="text-xs font-medium truncate">{status.name.toUpperCase()}</span>
       </div>
-      <div className="flex items-center gap-4 text-xs text-nms-text-dim">
-        {status.pid && <span>PID {status.pid}</span>}
-        {status.memoryBytes && <span>{formatBytes(status.memoryBytes)}</span>}
-        <span className={status.active ? 'text-nms-green' : 'text-nms-red'}>
-          {status.state}
-        </span>
-      </div>
+      <span className={`text-xs shrink-0 ${status.active ? 'text-nms-green' : 'text-nms-red'}`}>
+        {status.state}
+      </span>
     </div>
   );
 }
@@ -120,6 +106,7 @@ export function DashboardPage(): JSX.Element {
   const [sasRfStatus, setSasRfStatus] = useState<{ rfOn: number; rfOff: number; unknown: number } | null>(null);
   const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
   const [activeUes, setActiveUes] = useState<number | null>(null);
+  const [imsStatus, setImsStatus] = useState<ImsStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [gtpBandwidth, setGtpBandwidth] = useState<{ upMbps: number; downMbps: number } | null>(null);
@@ -162,6 +149,8 @@ export function DashboardPage(): JSX.Element {
       const count = (s?.activeUEs4G?.length ?? 0) + (s?.activeUEs5G?.length ?? 0);
       setActiveUes(count);
     }).catch(() => {});
+    // IMS status — service health, live S-CSCF registrar count, active IPsec SAs
+    imsApi.getStatus().then(setImsStatus).catch(() => {});
     // Primary PLMN — shown separately for AMF (5G) and MME (4G) since the two
     // are configured independently (kept in sync by the PLMN Migration Wizard,
     // but worth surfacing both in case they ever drift). Every entry in
@@ -300,30 +289,35 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Radio RF status card — split top/bottom: CBRS radio count over the core's primary PLMN */}
-        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
-          <div className="flex items-start justify-between p-4">
-            <div>
-              <p className="text-xs text-nms-text-dim uppercase tracking-wider">CBRS Radios</p>
-              <p className="text-2xl font-semibold font-display mt-1">{sasStats?.registeredCbsds ?? '—'}</p>
-              <div className="flex flex-wrap gap-x-2 mt-1 text-xs">
-                {sasRfStatus ? (
-                  <>
-                    {sasRfStatus.rfOn   > 0 && <span className="text-cyan-400">{sasRfStatus.rfOn} RF on</span>}
-                    {sasRfStatus.rfOff  > 0 && <span className="text-red-400">{sasRfStatus.rfOff} RF off</span>}
-                    {sasRfStatus.unknown > 0 && <span className="text-nms-text-dim">{sasRfStatus.unknown} unknown</span>}
-                  </>
-                ) : <span className="text-nms-text-dim">Loading…</span>}
+        {/* CBRS Radios + Primary PLMN group — one grid slot, CBRS on top and the
+            combined PLMN card stacked below it (same pattern as the GTP/Time group). */}
+        <div className="grid grid-rows-2 gap-4">
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">CBRS Radios</p>
+                <p className="text-2xl font-semibold font-display mt-1">{sasStats?.registeredCbsds ?? '—'}</p>
+                <div className="flex flex-wrap gap-x-2 mt-1 text-xs">
+                  {sasRfStatus ? (
+                    <>
+                      {sasRfStatus.rfOn   > 0 && <span className="text-cyan-400">{sasRfStatus.rfOn} RF on</span>}
+                      {sasRfStatus.rfOff  > 0 && <span className="text-red-400">{sasRfStatus.rfOff} RF off</span>}
+                      {sasRfStatus.unknown > 0 && <span className="text-nms-text-dim">{sasRfStatus.unknown} unknown</span>}
+                    </>
+                  ) : <span className="text-nms-text-dim">Loading…</span>}
+                </div>
+              </div>
+              <div className="p-2.5 rounded-lg bg-blue-500/10">
+                <Radio className="w-5 h-5 text-blue-400" />
               </div>
             </div>
-            <div className="p-2.5 rounded-lg bg-blue-500/10">
-              <Radio className="w-5 h-5 text-blue-400" />
-            </div>
           </div>
-          <div className="divide-y divide-nms-border">
+
+          {/* Primary PLMN card — split top/bottom: 5G (AMF) over 4G (MME) */}
+          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
             <div className="flex items-start justify-between p-4">
               <div>
-                <p className="text-xs text-nms-text-dim uppercase tracking-wider">AMF PLMN</p>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">5G Primary PLMN</p>
                 <p className="text-2xl font-semibold font-display font-mono mt-1 text-emerald-400">
                   {amfPlmn ? `${amfPlmn.mcc}/${amfPlmn.mnc}` : '—'}
                 </p>
@@ -335,7 +329,7 @@ export function DashboardPage(): JSX.Element {
             </div>
             <div className="flex items-start justify-between p-4">
               <div>
-                <p className="text-xs text-nms-text-dim uppercase tracking-wider">MME PLMN</p>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">4G Primary PLMN</p>
                 <p className="text-2xl font-semibold font-display font-mono mt-1 text-nms-accent">
                   {mmePlmn ? `${mmePlmn.mcc}/${mmePlmn.mnc}` : '—'}
                 </p>
@@ -348,78 +342,103 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Active / Total UEs card — split top/bottom: currently-active vs. all known subscribers */}
-        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
-          <div className="flex items-start justify-between p-4">
-            <div>
-              <p className="text-xs text-nms-text-dim uppercase tracking-wider">Active UEs</p>
-              <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}</p>
-              <p className="text-xs text-nms-text-dim mt-1">Currently connected</p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-nms-accent/10">
-              <Users className="w-5 h-5 text-nms-accent" />
+        {/* UEs (combined active/total) + IMS Status group — one grid slot, same
+            stacked pattern as CBRS/PLMN and GTP/Time below. Previously Active UEs
+            and Total UEs were two halves of one split card; combined into a single
+            compact card to free the second slot for IMS status. */}
+        <div className="grid grid-rows-2 gap-4">
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">UEs</p>
+                <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}/{subscriberTotal ?? '—'}</p>
+                <p className="text-xs text-nms-text-dim mt-1">Active / total subscribers</p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                <Users className="w-5 h-5 text-nms-accent" />
+              </div>
             </div>
           </div>
-          <div className="flex items-start justify-between p-4">
-            <div>
-              <p className="text-xs text-nms-text-dim uppercase tracking-wider">Total UEs</p>
-              <p className="text-2xl font-semibold font-display mt-1">{subscriberTotal ?? '—'}</p>
-              <p className="text-xs text-nms-text-dim mt-1">All subscribers, incl. idle</p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-nms-text-dim/10">
-              <Users className="w-5 h-5 text-nms-text-dim" />
+
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">IMS Status</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={`w-2.5 h-2.5 rounded-full inline-block ${
+                    !imsStatus ? 'bg-nms-text-dim/40' :
+                    imsStatus.imsEnabled ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
+                  }`} />
+                  <p className="text-2xl font-semibold font-display">
+                    {!imsStatus ? '…' : imsStatus.imsEnabled ? 'Active' : imsStatus.installed ? 'Stopped' : 'Not Installed'}
+                  </p>
+                </div>
+                <p className="text-xs text-nms-text-dim mt-1">
+                  <span className="text-nms-accent">{imsStatus?.registeredUes ?? 0} registered</span>
+                  <span className="ml-2">{imsStatus?.ipsecSaCount ?? 0} IPsec SAs</span>
+                </p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                <PhoneCall className="w-5 h-5 text-nms-accent" />
+              </div>
             </div>
           </div>
         </div>
 
-        {/* GTP U-Plane bandwidth + Time Server — split top/bottom to keep the grid at 2 rows */}
-        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
-          <div className="flex items-start justify-between p-4">
-            <div>
-              <p className="text-xs text-nms-text-dim uppercase tracking-wider">GTP U-Plane Traffic</p>
-              <div className="flex items-baseline gap-4 mt-1">
-                <span>
-                  <span className="text-2xl font-semibold font-display text-cyan-400">
-                    {gtpBandwidth ? gtpBandwidth.upMbps.toFixed(1) : '—'}
+        {/* GTP U-Plane Traffic + Time Server group — same single grid slot as the
+            old combined card, now 2 separate bordered cards stacked inside it. */}
+        <div className="grid grid-rows-2 gap-4">
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">GTP U-Plane Traffic</p>
+                <div className="flex items-baseline gap-4 mt-1">
+                  <span>
+                    <span className="text-2xl font-semibold font-display text-cyan-400">
+                      {gtpBandwidth ? gtpBandwidth.upMbps.toFixed(1) : '—'}
+                    </span>
+                    <span className="text-xs text-nms-text-dim ml-1">↑ Mbps</span>
                   </span>
-                  <span className="text-xs text-nms-text-dim ml-1">↑ Mbps</span>
-                </span>
-                <span>
-                  <span className="text-2xl font-semibold font-display text-nms-accent">
-                    {gtpBandwidth ? gtpBandwidth.downMbps.toFixed(1) : '—'}
+                  <span>
+                    <span className="text-2xl font-semibold font-display text-nms-accent">
+                      {gtpBandwidth ? gtpBandwidth.downMbps.toFixed(1) : '—'}
+                    </span>
+                    <span className="text-xs text-nms-text-dim ml-1">↓ Mbps</span>
                   </span>
-                  <span className="text-xs text-nms-text-dim ml-1">↓ Mbps</span>
-                </span>
+                </div>
+                <p className="text-xs text-nms-text-dim mt-1">UE payload only — excludes signaling</p>
               </div>
-              <p className="text-xs text-nms-text-dim mt-1">UE payload only — excludes signaling</p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-cyan-500/10">
-              <Activity className="w-5 h-5 text-cyan-400" />
+              <div className="p-2.5 rounded-lg bg-cyan-500/10">
+                <Activity className="w-5 h-5 text-cyan-400" />
+              </div>
             </div>
           </div>
-          <div className="flex items-start justify-between p-4">
-            <div>
-              <p className="text-xs text-nms-text-dim uppercase tracking-wider">Time Server</p>
-              <div className="flex items-center gap-2 mt-1">
-                <span className={`w-2.5 h-2.5 rounded-full inline-block ${
-                  !chronyStatus ? 'bg-nms-text-dim/40' :
-                  chronyStatus.active ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
-                }`} />
-                <p className="text-2xl font-semibold font-display">
-                  {!chronyStatus ? '…' : chronyStatus.active ? 'Active' : chronyStatus.installed ? 'Stopped' : 'Not Installed'}
-                </p>
+
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">Time Server</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={`w-2.5 h-2.5 rounded-full inline-block ${
+                    !chronyStatus ? 'bg-nms-text-dim/40' :
+                    chronyStatus.active ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
+                  }`} />
+                  <p className="text-2xl font-semibold font-display">
+                    {!chronyStatus ? '…' : chronyStatus.active ? 'Active' : chronyStatus.installed ? 'Stopped' : 'Not Installed'}
+                  </p>
+                </div>
+                {chronyStatus?.refSource && (
+                  <p className="text-xs text-nms-text-dim mt-1 font-mono truncate">
+                    {chronyStatus.refSource}{chronyStatus.sysTimeOffset ? ` · ${chronyStatus.sysTimeOffset}` : ''}
+                  </p>
+                )}
+                {!chronyStatus?.installed && (
+                  <p className="text-xs text-amber-400 mt-1">Click to install chrony</p>
+                )}
               </div>
-              {chronyStatus?.refSource && (
-                <p className="text-xs text-nms-text-dim mt-1 font-mono truncate">
-                  {chronyStatus.refSource}{chronyStatus.sysTimeOffset ? ` · ${chronyStatus.sysTimeOffset}` : ''}
-                </p>
-              )}
-              {!chronyStatus?.installed && (
-                <p className="text-xs text-amber-400 mt-1">Click to install chrony</p>
-              )}
-            </div>
-            <div className="p-2.5 rounded-lg bg-nms-accent/10">
-              <Clock className="w-5 h-5 text-nms-accent" />
+              <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                <Clock className="w-5 h-5 text-nms-accent" />
+              </div>
             </div>
           </div>
         </div>
@@ -436,11 +455,11 @@ export function DashboardPage(): JSX.Element {
             <span className="text-xs text-nms-text-dim">{activeCount} active</span>
           </div>
         </div>
-        <div className="space-y-1">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-1.5">
           {statuses.length > 0 ? (
             statuses.map((s) => <ServiceMiniCard key={s.name} status={s} />)
           ) : (
-            <div className="text-center py-8 text-nms-text-dim text-sm">
+            <div className="col-span-full text-center py-8 text-nms-text-dim text-sm">
               Loading service statuses...
             </div>
           )}

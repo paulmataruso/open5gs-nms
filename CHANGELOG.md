@@ -4,6 +4,63 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.26] - 2026-07-26
+
+### Fixed — Real UE-to-UE VoLTE calling now works end-to-end (confirmed on real iPhone hardware, PLMN 001-01)
+
+Two real registered iPhones can now call each other directly and the call
+actually rings and connects — this previously only worked calling to/from the
+IMS Test Number bot ([[ims-echo-test-bot]]), never between two real phones.
+Root cause was multi-layered; all of the following were found and fixed:
+
+- **RFC 3312 precondition deadlock**: two real phones calling each other never
+  completed the RFC 3312 precondition handshake (neither side ever sent the
+  confirming in-dialog `UPDATE`), so the call stuck forever at `183 Session
+  Progress` and the caller eventually gave up and cancelled. Fixed by
+  stripping `a=des:qos`/`a=curr:qos` SDP lines for genuine UE-to-UE calls only
+  (the IMS Test Number bot's own precondition handling is untouched).
+- **RFC 4028 session-timer header mismatch**: the callee's `183` demanded
+  `Require: 100rel,timer`, but real iPhones never declare `timer` support in
+  their own `PRACK` — fixed by stripping `timer` from `Require` on the same
+  UE-to-UE-only path.
+- **The actual root cause: no P-CSCF↔PCRF Rx interface, so no dedicated QCI=1
+  (GBR voice) bearer was ever created for a call.** Real iOS's own
+  "precondition" logic is tied to an actual dedicated bearer coming up, not
+  just SDP attributes — the two fixes above only ever moved the failure point
+  later. The full Rx interface (`ims_qos`/`cdp`/`cdp_avp` Kamailio modules,
+  PCRF-side wiring, Diameter peer XML) had already been built in an earlier
+  session but was left fully disabled behind one commented-out
+  `##!define WITH_RX` line — activated it, and the whole
+  offer→Rx-AAR→Gx-RAR→dedicated-bearer chain now works.
+- **A Diameter connection-collision bug**, found only after activating Rx:
+  both P-CSCF and PCRF were configured to actively connect to each other
+  simultaneously, and Kamailio's `cdp` module's collision handling for that
+  case is broken in practice — produced an endless connect/disconnect flap
+  that silently blocked all call signaling. Fixed by making P-CSCF
+  accept-only for the PCRF peer (removed its own outbound `<Peer>` element).
+- **Stale PLMN entries in PCRF's `pcrf.conf`** (left behind by earlier PLMN
+  changes, same underlying bug class as the known FRR stale-neighbor-list
+  issue) were confirmed to actively interfere with the real Rx connection.
+  `upsertPcrfPcscfPeer()` now cleans up every old entry on each Configure run.
+
+No separate migration is needed for existing installs — `configureIms()` is a
+full-rewrite of every IMS config file on every "Configure" click (fresh
+install or re-run), and already unconditionally restarts both
+`kamailio-pcscf` and `open5gs-pcrfd`, so re-running Configure on the IMS page
+picks up every fix above automatically.
+
+**Known real limitation, not a software bug**: dedicated QCI=1 bearer setup
+was confirmed rejected outright by a specific real eNB model (S1AP cause
+`not-supported-QCI-value`) — confirmed by cross-testing the same call against
+a different radio, which succeeded. If a UE-to-UE call still won't ring after
+all of the above, check the serving eNB's own S1AP `E-RABSetupResponse`
+before suspecting a core-network bug.
+
+See memory: `ims-ue-to-ue-calling-investigation` for the full debugging
+record.
+
+---
+
 ## [v2.0-beta_0.25] - 2026-07-24
 
 ### Added — Traffic History (GTP U-Plane throughput over time, aggregate + per-subscriber)

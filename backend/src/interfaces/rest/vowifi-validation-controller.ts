@@ -227,9 +227,16 @@ export async function runVowifiE2ETest(
     markT = markOf(sessionTunnel); markL = markOf(sessionLocal);
     await wrap('Hang up cleanly', async () => {
       sessionTunnel!.send('terminate');
-      await sessionTunnel!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000);
+      // Verify BOTH legs report the call ended, not just the sender's own local
+      // state — see memory: ims-echo-test-bot for why this matters (a call can
+      // look torn down from the initiator's side while the far end never actually
+      // received/processed the BYE at all).
+      await Promise.all([
+        sessionTunnel!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000),
+        sessionLocal!.waitFor(/LinphoneCallEnd|LinphoneCallReleased/, 10000),
+      ]);
     }, {
-      detail: () => 'BYE sent from tunnel UE, call released cleanly',
+      detail: () => 'BYE sent from tunnel UE, both legs confirm the call ended cleanly',
       logExcerpt: () => combinedDiff(markT, markL),
     });
 
