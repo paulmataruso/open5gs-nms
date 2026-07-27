@@ -767,6 +767,33 @@ voice bearers, not just calls to/from the built-in test-number bot or a softphon
 3. **Sync Subscribers** — pushes IMPI/IMPU identities for existing subscribers into PyHSS's `ims_hss_db` (via its REST API)
 4. **Enable/Disable, Start/Stop/Restart** — full lifecycle control from the UI
 
+### Known upstream bugs found and fixed
+
+Three real bugs were found in upstream PyHSS itself (not this project's own
+code) during live testing, all of which produced symptoms that looked like
+either intermittent network flakiness or a client-side phone bug:
+
+- **Cx UAA/LIA crash on a missing identity AVP.** If a request was missing
+  its expected identity AVP, an uncaught exception inside the exception
+  handler itself (a variable referenced before it was ever assigned) crashed
+  the response mid-build, producing a Diameter answer with neither a
+  Result-Code nor an Experimental-Result-Code — indistinguishable from a
+  "genuinely intermittent" HSS failure.
+- **Subscriber SIP identity corrupted to `sip:<msisdn>@None`.** The iFC
+  template used a transient, deregister-cleared database field to build a
+  subscriber's *permanent* identity domain; a deregister/re-register race
+  could bake the literal text "None" into that identity, which then got
+  cached by S-CSCF until the next re-register. This looked exactly like a
+  client-side phone bug (previously worked around by toggling Airplane
+  Mode) — it wasn't.
+
+All three are patched automatically as part of the one-click **Install**
+step (idempotent — safe to re-run against an already-patched or a freshly
+cloned PyHSS, and self-verifying rather than silently no-op-ing if upstream
+PyHSS ever changes shape enough to break the patch). Existing deployments
+just need to click Install again to pick these up; no separate migration
+step exists or is needed.
+
 ### Current Status
 
 Confirmed working end-to-end on real hardware: real SIP REGISTER (full AKA, not just
