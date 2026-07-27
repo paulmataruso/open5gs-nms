@@ -2149,6 +2149,53 @@ export function createImsRouter(
       write('✅ PyHSS diameter.py patched.\n');
     }
 
+    // Patch PyHSS's default_ifc.xml: its <PrivateID>/<Identity> elements built
+    // the subscriber's permanent SIP identity domain from `scscf_realm` — a
+    // *transient* Diameter-routing field on the ims_subscriber row that
+    // `database.py`'s Update_Serving_CSCF() explicitly sets to NULL on every
+    // deregister. If a re-register's Server-Assignment-Answer got built while
+    // that field was momentarily None (a real race between a deregister SAR
+    // and the following register SAR), Jinja2 rendered the literal string
+    // "None" straight into the subscriber's identity — e.g.
+    // `sip:15550000004@None` — which S-CSCF then cached as that subscriber's
+    // Implicit Registration Set until the next full re-register. On the wire
+    // this looked like a client-side SIP corruption bug; confirmed live
+    // 2026-07-27 it's actually this PyHSS template's fault. Fix: derive the
+    // domain from `mnc`/`mcc` (always freshly set immediately before every
+    // render in Answer_16777216_301, never touched by the dereg-clearing
+    // bug) instead of the volatile `scscf_realm`.
+    write('\n=== Patching PyHSS default_ifc.xml (identity-domain corruption guard) ===\n');
+    const ifcPatchExitCode = await spawnStream(
+      'python3 - <<\'PYEOF\'\n' +
+      'path = "/opt/pyhss/default_ifc.xml"\n' +
+      'with open(path) as f:\n' +
+      '    src = f.read()\n' +
+      'needle = "{{ iFC_vars.scscf_realm }}"\n' +
+      'replacement = "ims.mnc{{ iFC_vars.mnc }}.mcc{{ iFC_vars.mcc }}.3gppnetwork.org"\n' +
+      'count = src.count(needle)\n' +
+      'if count == 0:\n' +
+      '    if replacement in src:\n' +
+      '        print("already patched — skipping")\n' +
+      '    else:\n' +
+      '        print("ERROR: expected \'{{ iFC_vars.scscf_realm }}\' not found in default_ifc.xml — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '        raise SystemExit(1)\n' +
+      'else:\n' +
+      '    src = src.replace(needle, replacement)\n' +
+      '    with open(path, "w") as f:\n' +
+      '        f.write(src)\n' +
+      '    print("patched " + str(count) + " occurrence(s)")\n' +
+      'PYEOF\n' +
+      'python3 -c "import xml.dom.minidom, jinja2; t = jinja2.Environment(loader=jinja2.FileSystemLoader(\'/opt/pyhss\')).get_template(\'default_ifc.xml\'); xml.dom.minidom.parseString(t.render(iFC_vars={\'imsi\':\'1\',\'msisdn\':\'1\',\'mnc\':\'001\',\'mcc\':\'001\',\'scscf_realm\':None}))"\n'
+    );
+    if (ifcPatchExitCode !== 0) {
+      write('\n⚠️ WARNING: default_ifc.xml identity-domain patch FAILED (see errors above). ' +
+        'Subscribers may intermittently register with a corrupted "None" SIP domain after a ' +
+        're-register race — fix the underlying issue and re-run Install, the patch is ' +
+        'idempotent and will retry automatically.\n');
+    } else {
+      write('✅ PyHSS default_ifc.xml patched.\n');
+    }
+
     await auditLogger.log({ action: 'ims_install', user, details: 'packages + pyhss', success: true });
     write('\n✅ IMS installation complete. Run Configure next.\n');
     res.end();

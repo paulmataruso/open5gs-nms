@@ -4,6 +4,34 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.28] - 2026-07-27
+
+### Fixed — PyHSS could corrupt a subscriber's SIP identity to "None" (mistaken for a phone bug)
+
+A recurring call failure previously attributed to the phone itself (a raw
+INVITE/REGISTER showing `sip:<msisdn>@None` as the caller's own identity,
+"fixed" by toggling Airplane Mode) was fully root-caused: it was never a
+phone bug. PyHSS's own `/opt/pyhss/default_ifc.xml` (a third-party template,
+not part of this repo) built every subscriber's `<PrivateID>` and two of the
+three `<PublicIdentity>` elements from `scscf_realm` — a *transient*
+Diameter-routing DB column that `database.py`'s `Update_Serving_CSCF()`
+explicitly nulls out on every deregister. A race between a deregister SAR
+and the following register SAR could bake the literal string `"None"`
+straight into the subscriber's Implicit Registration Set (Jinja2 renders a
+raw Python `None` as the text "None"), which S-CSCF then cached until the
+next full re-register — exactly matching the "genuinely intermittent"
+symptom.
+
+Fixed by deriving the domain from `mnc`/`mcc` (set fresh on every render,
+never touched by the deregister-clearing bug) instead of `scscf_realm`,
+matching the same domain-construction pattern already used elsewhere in
+PyHSS. Verified via a direct Jinja2 render with `scscf_realm=None` explicitly
+passed. Baked into `POST /api/ims/install` (idempotent, self-verifying —
+actually renders the template and parses the resulting XML before declaring
+success) alongside the two PyHSS Cx UAA/LIA crash-guard fixes from
+`v2.0-beta_0.27`, so existing deployments just need to re-run Install. See
+memory: `ims-pyhss-none-domain-corruption`.
+
 ## [v2.0-beta_0.27] - 2026-07-26
 
 ### Fixed — PyHSS Cx UAA/LIA crashes on a missing identity AVP (mimicked "intermittent" failures)

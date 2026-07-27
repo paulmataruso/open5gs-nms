@@ -170,7 +170,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     at first — don't assume every "call won't ring" report is fixable in this
     codebase; check the eNB's own S1AP response first.
 
-## Feature inventory (as of v2.0-beta_0.27, 2026-07-26)
+## Feature inventory (as of v2.0-beta_0.28, 2026-07-27)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -246,6 +246,19 @@ Full detail on any of these: `docs/features.md`.
   idempotent, exit-code-checked patch style as the `cdp.so` process-slot
   patch above it) — runs on every Install, so existing deployments just need
   to re-run Install to pick it up. See memory: `ims-pyhss-uaa-lia-crash-guard`.
+- **PyHSS's `default_ifc.xml` could corrupt a subscriber's SIP identity to
+  `sip:<msisdn>@None`** (`/opt/pyhss/default_ifc.xml`, a third-party file, not
+  part of this repo): its `<PrivateID>`/`<Identity>` elements built the
+  domain from `scscf_realm`, a DB column `database.py`'s
+  `Update_Serving_CSCF()` explicitly nulls on every deregister — a
+  deregister/re-register race could bake the literal string `"None"` into
+  the subscriber's Implicit Registration Set, cached by S-CSCF until the
+  next re-register. Looked exactly like a client-side phone bug (previously
+  "fixed" by toggling Airplane Mode) — it wasn't. Fixed by deriving the
+  domain from `mnc`/`mcc` instead (always fresh, never touched by the
+  dereg-clearing bug). Fixed live (2026-07-27) and baked into
+  `POST /api/ims/install` the same way as the two bugs above. See memory:
+  `ims-pyhss-none-domain-corruption`.
 
 ## User / workflow conventions
 
