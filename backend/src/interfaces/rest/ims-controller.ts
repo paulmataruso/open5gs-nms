@@ -2065,6 +2065,90 @@ export function createImsRouter(
     await spawnStream('mkdir -p /etc/pyhss');
     write('✅ PyHSS installed.\n');
 
+    // Patch PyHSS's Answer_16777216_300() (Cx UAA) and Answer_16777216_302()
+    // (Cx LIA): both have the same bug shape — a missing username-bearing AVP
+    // (AVP 1 for UAA, AVP 601 for LIA) raises IndexError inside the try block
+    // before the id variable (imsi / username) is ever assigned; the except
+    // handler then references that same variable for a Redis metric label,
+    // raising a SECOND, uncaught UnboundLocalError from inside the handler
+    // itself — which crashes the function before either the success AVP or
+    // the proper 5001 Experimental-Result AVP is ever written. On the wire
+    // this looks exactly like a "genuinely intermittent" UAA/LIA with
+    // neither Result-Code nor Experimental-Result-Code present (302 case
+    // confirmed live 2026-07-26; 300 has the identical shape, found by
+    // inspection while scoping the 302 fix).
+    // Idempotent (line-anchored, not offset-based) so it's safe to re-run
+    // against an already-patched file, and fails loudly instead of silently
+    // if upstream PyHSS changes either function's shape enough to break the
+    // anchors.
+    write('\n=== Patching PyHSS diameter.py (UAA/LIA crash-guard) ===\n');
+    const pyhssPatchExitCode = await spawnStream(
+      'python3 - <<\'PYEOF\'\n' +
+      'import sys\n' +
+      'path = "/opt/pyhss/lib/diameter.py"\n' +
+      'with open(path) as f:\n' +
+      '    lines = f.readlines()\n' +
+      'changed = False\n' +
+      '# "Checking if username present" is reused by Answer_16777216_300/301/302 —\n' +
+      '# always scope the search strictly to the one function body being patched.\n' +
+      'def patch_func(func_name, var_name):\n' +
+      '    global changed\n' +
+      '    func_start = None\n' +
+      '    for i, line in enumerate(lines):\n' +
+      '        if line.strip().startswith("def " + func_name + "("):\n' +
+      '            func_start = i\n' +
+      '            break\n' +
+      '    if func_start is None:\n' +
+      '        print("ERROR: " + func_name + "() not found — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '        sys.exit(1)\n' +
+      '    func_end = len(lines)\n' +
+      '    for i in range(func_start + 1, len(lines)):\n' +
+      '        if lines[i].strip().startswith("def "):\n' +
+      '            func_end = i\n' +
+      '            break\n' +
+      '    anchor_idx = None\n' +
+      '    for i in range(func_start, func_end):\n' +
+      '        if "Checking if username present" in lines[i]:\n' +
+      '            anchor_idx = i\n' +
+      '            break\n' +
+      '    if anchor_idx is None:\n' +
+      '        print("ERROR: anchor line (\'Checking if username present\') not found inside " + func_name + "() — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '        sys.exit(1)\n' +
+      '    try_idx = anchor_idx - 1\n' +
+      '    if lines[try_idx].strip() != "try:":\n' +
+      '        print("ERROR: expected try: line not found above anchor in " + func_name + "() — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '        sys.exit(1)\n' +
+      '    if try_idx == 0 or (var_name + " = None") not in lines[try_idx - 1]:\n' +
+      '        indent = lines[try_idx][:len(lines[try_idx]) - len(lines[try_idx].lstrip())]\n' +
+      '        lines.insert(try_idx, indent + var_name + " = None\\n")\n' +
+      '        changed = True\n' +
+      '        func_end += 1\n' +
+      '    needle = "str(" + var_name + "[0:6])"\n' +
+      '    guard = "if " + var_name + " else"\n' +
+      '    for i in range(func_start, func_end):\n' +
+      '        if needle in lines[i] and guard not in lines[i]:\n' +
+      '            lines[i] = lines[i].replace(needle, "(" + needle + " if " + var_name + " else \'unknown\')")\n' +
+      '            changed = True\n' +
+      'patch_func("Answer_16777216_300", "imsi")\n' +
+      'patch_func("Answer_16777216_302", "username")\n' +
+      'if changed:\n' +
+      '    with open(path, "w") as f:\n' +
+      '        f.writelines(lines)\n' +
+      '    print("patched")\n' +
+      'else:\n' +
+      '    print("already patched — skipping")\n' +
+      'PYEOF\n' +
+      'python3 -m py_compile /opt/pyhss/lib/diameter.py\n'
+    );
+    if (pyhssPatchExitCode !== 0) {
+      write('\n⚠️ WARNING: diameter.py UAA/LIA crash-guard patch FAILED (see errors above). ' +
+        'PyHSS may crash-loop or return malformed Cx UAA/LIA responses when a request is ' +
+        'missing a username-bearing AVP — fix the underlying issue and re-run Install, the ' +
+        'patch is idempotent and will retry automatically.\n');
+    } else {
+      write('✅ PyHSS diameter.py patched.\n');
+    }
+
     await auditLogger.log({ action: 'ims_install', user, details: 'packages + pyhss', success: true });
     write('\n✅ IMS installation complete. Run Configure next.\n');
     res.end();

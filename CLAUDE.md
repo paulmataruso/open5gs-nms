@@ -170,7 +170,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     at first — don't assume every "call won't ring" report is fixable in this
     codebase; check the eNB's own S1AP response first.
 
-## Feature inventory (as of v2.0-beta_0.26, 2026-07-26)
+## Feature inventory (as of v2.0-beta_0.27, 2026-07-26)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -233,6 +233,19 @@ Full detail on any of these: `docs/features.md`.
 - **jest wasn't actually installed** despite being in `backend/package.json`'s
   devDependencies — `npm test` was silently broken. If tests won't run, check
   `node_modules/.bin/jest` actually exists; `npm install` fixes it.
+- **PyHSS's own `Answer_16777216_300`/`_302` (Cx UAA/LIA) could crash on a
+  missing AVP** (`/opt/pyhss/lib/diameter.py`, a third-party file, not part of
+  this repo): if the expected identity AVP was absent, an `IndexError` inside
+  the `try` block left the id variable (`imsi`/`username`) unassigned, and the
+  `except` handler's own Redis-metric label then referenced that same
+  unassigned variable, raising a second, uncaught `UnboundLocalError` — the
+  function died before writing either the success AVP or the proper
+  `5001 Experimental-Result-Code`, which looked exactly like a "genuinely
+  intermittent" Cx failure with no result code at all. Fixed live (2026-07-26)
+  and baked into `POST /api/ims/install` in `ims-controller.ts` (same
+  idempotent, exit-code-checked patch style as the `cdp.so` process-slot
+  patch above it) — runs on every Install, so existing deployments just need
+  to re-run Install to pick it up. See memory: `ims-pyhss-uaa-lia-crash-guard`.
 
 ## User / workflow conventions
 

@@ -4,6 +4,35 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.27] - 2026-07-26
+
+### Fixed — PyHSS Cx UAA/LIA crashes on a missing identity AVP (mimicked "intermittent" failures)
+
+While investigating a real-world call failure, found that PyHSS's own
+`/opt/pyhss/lib/diameter.py` (a third-party file installed under `/opt/pyhss`,
+not part of this repo) could silently crash mid-response in two Cx answer
+builders:
+
+- `Answer_16777216_302()` (Location-Info-Answer): a missing AVP 601
+  (Public-Identity) in the request raised an `IndexError` before `username`
+  was ever assigned; the `except` handler then referenced that same
+  unassigned `username` for a Redis metric label, raising a second, uncaught
+  `UnboundLocalError` from inside the handler itself. The function died
+  before writing either the success AVP or the proper `5001`
+  Experimental-Result-Code AVP — on the wire this looked exactly like a
+  "genuinely intermittent" LIA with no result code present at all.
+- `Answer_16777216_300()` (User-Authorization-Answer — the *first* Cx message
+  in registration): the identical bug shape, with `imsi` instead of
+  `username`, triggered by a missing AVP 1 (User-Name).
+
+Both fixed by initializing the id variable to `None` before the `try` block
+and guarding the metric-label expression against `None`. The fix is now baked
+into `POST /api/ims/install` in `ims-controller.ts` (same idempotent,
+exit-code-checked patch style already used for the `cdp.so` process-slot
+patch) — it re-applies on every Install run, so any existing deployment picks
+up the fix just by re-running Install, no separate migration needed. See
+memory: `ims-pyhss-uaa-lia-crash-guard`.
+
 ## [v2.0-beta_0.26] - 2026-07-26
 
 ### Fixed — Real UE-to-UE VoLTE calling now works end-to-end (confirmed on real iPhone hardware, PLMN 001-01)
