@@ -4,6 +4,134 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.29] - 2026-07-28
+
+### Added — PSTN Gateway module (v1, **beta**)
+
+New optional add-on module wiring **Asterisk** into Kamailio S-CSCF's
+existing BGCF/MGCF-style PSTN dispatcher as a gateway, following the same
+Install/Configure/lifecycle pattern as every other optional module (IMS,
+SMS, VoWiFi). Covers the **internal** use case only: any dialed number that
+isn't a currently-registered subscriber routes to Asterisk, which looks it
+up in a new extension→subscriber mapping table and originates a fresh call
+back into the core to the mapped subscriber — a real end-to-end test of the
+exact signaling/media path a live SIP trunk would use, without one.
+
+**This is beta and has no public SIP trunk connectivity.** There is no
+provider integration (Twilio, Telnyx, or similar) and no inbound DID
+handling in this release — calling an extension only reaches another
+subscriber on this same core. The PSTN Gateway page now shows a permanent
+"Beta" badge and warning banner reflecting this; the nav sidebar already
+tagged it BETA. `ENABLE_PSTN_MODULE` defaults to **disabled** (unlike every
+other module, which defaults enabled) — this is the first module where a
+bug or misconfiguration could eventually cause real-world billing on a
+linked trunk account once one exists, so it's opt-in even in beta.
+
+Getting real audio working end-to-end surfaced a genuinely deep architecture
+gap and several real bugs, all fixed:
+
+- **rtpengine only ever saw half of each of Asterisk's two split dialogs.**
+  A direct real-UE-to-UE call is one shared SIP dialog/Call-ID all the way
+  through P-CSCF, so the existing offer/answer handling in
+  `kamailio_pcscf/route/rtp.cfg` already gave rtpengine both halves it
+  needs. Asterisk is a real B2BUA — every PSTN Gateway call is actually two
+  separate dialogs with different Call-IDs (caller↔Asterisk,
+  Asterisk↔callee), and each one independently needs its own complete
+  offer+answer pair. Two previously-abandoned code paths were restored (with
+  the specific issues that got them abandoned understood and avoided this
+  time) to give both dialogs what they need — confirmed via packet capture
+  and direct RTP-payload decode (bit-parsed real AMR-WB frames from the wire
+  and decoded them with a real decoder) that this was the actual remaining
+  gap, not a codec/timing/delivery issue.
+- **Asterisk's own `bridge_native_rtp` technology** was silently breaking
+  one leg's audio during live bridging — fixed with
+  `bridge technology suspend native_rtp`, reapplied on every Asterisk
+  (re)start.
+- **I-CSCF had zero in-dialog request handling** — hard-rejected any
+  PRACK/UPDATE/in-dialog BYE routed back through it with a 406, which only
+  affected Asterisk-originated legs (real UE-to-UE calls never transit
+  I-CSCF). Fixed with `has_totag()` + `loose_route()` + `t_relay()`.
+- **Asterisk was advertising its raw loopback address** (127.0.1.4) in its
+  own SDP instead of a UE-reachable one — fixed via `external_media_address`
+  + `rtp_symmetric` on its PJSIP transport.
+- Real-phone testing (Pixel 7 + iPhone) found and fixed 3 S-CSCF routing
+  bugs: real dialers never prefix extensions with "+", `enum_query()`
+  hard-errors on non-E.164 input instead of failing gracefully, and the
+  Request-URI domain needed normalizing before subscriber/iFC matching for
+  calls Asterisk originates back into the core.
+
+See memory `pstn-rtpengine-b2bua-dual-dialog-fix` for the full technical
+writeup.
+
+### Fixed — IMS Install could silently fail on a fresh Ubuntu 22.04 host
+
+Found from a user's actual fresh-install log on a real (non-dev) Ubuntu
+22.04 host — none of these had ever surfaced on this project's own 24.04 dev
+host:
+
+- **`rtpengine` isn't in Ubuntu 22.04's official repos** (only from 23.04
+  onward) — `apt-get install` failed with `E: Unable to locate package
+  rtpengine`, and because it lived in the same install command as
+  `dpkg-dev`/`mariadb-server`/etc., apt's refusal to install *anything* from
+  a command line containing one unlocatable package silently took every
+  other package down with it too (explaining an unrelated-looking
+  `dpkg-source: not found` later in the same log). Fixed: rtpengine now
+  installs as its own isolated step, falling back to the
+  `ppa:davidlublink/rtpengine` PPA (package name `ngcp-rtpengine`) on
+  Ubuntu versions that lack the official package, with a compat symlink so
+  every other Install/Configure/Start/Stop/Restart/Status/Uninstall route's
+  existing `rtpengine-daemon` service name keeps working unchanged.
+- **`gpg --dearmor` failed on a second Install attempt** — refused to
+  overwrite the already-existing keyring file without an interactive
+  prompt, which can't be answered over this streamed, non-tty process
+  (`cannot open '/dev/tty'`). Fixed with `--yes`.
+- **`pip3 install --break-system-packages` broke on older pip** (the flag is
+  PEP 668-specific, only understood by pip ≥ 23.0.1) and the step reported
+  success unconditionally regardless of the actual outcome. Fixed: tries
+  with the flag first, falls back without it only if that specific flag is
+  what's unrecognized, and now only reports success when it actually
+  succeeded.
+- **Two PyHSS patch scripts (`diameter.py`, `default_ifc.xml`) were missing
+  `set -e`**, so a real patch failure (e.g. upstream PyHSS's source no
+  longer matching the expected anchor text) got silently masked by a
+  trailing, unrelated validation command that succeeded regardless — the
+  install log could show the real `ERROR: ... not found` line immediately
+  followed by a false `✅ ... patched.`. Fixed by matching the already-correct
+  `set -e` pattern the `cdp.so` patch script used.
+
+See memory `ims-install-script-ubuntu2204-fixes` for the full writeup.
+
+### Added — Dashboard: Asterisk + P/I/S-CSCF service status
+
+The Network Functions section on the main Dashboard now shows live
+service-status tiles for Asterisk and all three IMS Kamailio components
+(P-CSCF, I-CSCF, S-CSCF), matching the same status pattern used for the
+core 17 NFs.
+
+### Upgrading an existing IMS or PSTN Gateway deployment
+
+This release's Kamailio-side fixes (the rtpengine dual-dialog fix, the
+I-CSCF in-dialog handling fix) live in config **templates**, which only get
+redeployed to the host when you click **Configure** — there is no
+background/automatic config push in this project. If you already have IMS
+installed and configured from a previous version:
+
+1. On the **IMS** page, click **Configure** again (redeploys
+   `kamailio_pcscf/route/rtp.cfg` and `kamailio_icscf/kamailio_icscf.cfg`,
+   and restarts the four Kamailio services — brief, real signaling
+   disruption to anything currently registered/in-call).
+2. If you also have the **PSTN Gateway** module installed, click
+   **Configure** (or **Restart**) on that page too, so Asterisk regenerates
+   its PJSIP config with the media-address fix and re-applies the
+   `native_rtp` bridge suspension (a per-process runtime setting that does
+   not survive an Asterisk restart on its own).
+
+A fresh Install on a new host already picks up everything automatically —
+this step is only needed for upgrading a deployment that was configured
+before this release.
+
+---
+
 ## [v2.0-beta_0.28] - 2026-07-27
 
 ### Fixed — PyHSS could corrupt a subscriber's SIP identity to "None" (mistaken for a phone bug)

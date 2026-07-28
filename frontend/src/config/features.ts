@@ -1,7 +1,10 @@
 // UI module toggles — controlled via .env (ENABLE_SMS_MODULE / ENABLE_IMS_MODULE /
 // ENABLE_VALIDATION_MODULE), baked in at build time like the other VITE_* vars
 // in this app (see frontend/Dockerfile). Requires a frontend rebuild to take effect.
-// Defaults to enabled unless explicitly set to 'false'.
+// Defaults to enabled unless explicitly set to 'false' — EXCEPT `pstn`, which
+// defaults to *disabled* (opt-in via ENABLE_PSTN_MODULE=true): it's the first
+// module where a bug/misconfiguration can cause real-world billing on a linked
+// SIP trunk account, not just a broken lab feature.
 export const FEATURES = {
   sms: import.meta.env.VITE_ENABLE_SMS !== 'false',
   ims: import.meta.env.VITE_ENABLE_IMS !== 'false',
@@ -9,4 +12,5 @@ export const FEATURES = {
   vowifi: import.meta.env.VITE_ENABLE_VOWIFI !== 'false',
   dnsMigration: import.meta.env.VITE_ENABLE_DNS_MIGRATION !== 'false',
   pcap: import.meta.env.VITE_ENABLE_PCAP !== 'false',
+  pstn: import.meta.env.VITE_ENABLE_PSTN === 'true',
 };

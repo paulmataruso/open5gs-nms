@@ -170,7 +170,27 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     at first — don't assume every "call won't ring" report is fixable in this
     codebase; check the eNB's own S1AP response first.
 
-## Feature inventory (as of v2.0-beta_0.28, 2026-07-27)
+14. **A real B2BUA (Asterisk) splits one call into two dialogs — rtpengine needs
+    both halves of each one.** A direct real-UE-to-UE call is one shared SIP
+    dialog/Call-ID all the way through P-CSCF, so rtpengine correlates the
+    existing "mo request" (caller's offer) + "mt reply" (callee's answer)
+    handling in `kamailio_pcscf/route/rtp.cfg` into a single complete relay
+    automatically. The PSTN Gateway's Asterisk is a real B2BUA — every call
+    through it is actually **two separate dialogs** with different Call-IDs
+    (caller↔Asterisk, Asterisk↔callee), and each one independently needs its
+    own complete offer+answer pair processed by rtpengine, or it has a relay
+    allocated with nowhere to forward either phone's audio. If you're adding
+    another B2BUA-style module (another gateway, an IVR, anything that
+    re-originates rather than proxies), budget for this same requirement —
+    it will not "just work" the way direct UE-to-UE calls do. See memory
+    `pstn-rtpengine-b2bua-dual-dialog-fix` for the full arc, including two
+    dead ends that looked plausible first (a Kamailio "null send_sock"
+    CRITICAL error, and an Asterisk `bridge_native_rtp` bug) that were real
+    but NOT the actual remaining cause once fixed — verified via a direct
+    bit-level RTP payload decode (real AMR-WB frames extracted from a packet
+    capture and decoded with a real decoder) before finally finding this.
+
+## Feature inventory (as of v2.0-beta_0.29, 2026-07-28)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -180,6 +200,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | DNS/FQDN Migration Wizard | stable, actively used | `dns-migration-usecase.ts`, `dns-migration-controller.ts`, `bind-controller.ts` | `DnsMigrationPage.tsx`, `BindPage.tsx` |
 | IMS / VoLTE (PyHSS-based) | beta — confirmed working end-to-end with real iPhone hardware on PLMN 001-01 (2026-07-26), incl. real UE-to-UE calling with dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface | `ims-controller.ts` | `IMSPage.tsx` |
 | SMS (SGs path, osmo-\*) | stable | `sms-controller.ts` | `SMSPage.tsx` |
+| PSTN Gateway (Asterisk, internal-only) | **beta — no public SIP trunk yet**, confirmed working end-to-end on real hardware (iPhone↔iPhone, iPhone↔Android extension calling, full-duplex audio); `ENABLE_PSTN_MODULE` defaults **disabled** (opt-in) | `pstn-controller.ts` | `PstnGatewayPage.tsx` |
 | VoWiFi (ePDG) | alpha, experimental | `vowifi-controller.ts`, `vowifi-build.ts` | `VoWiFiPage.tsx` |
 | eSIM generation (Simlessly API) | stable | `esim-generator.ts`, `esim-controller.ts` | `EsimGeneratorModal.tsx` |
 | Subscriber Groups | stable | `subscriber-groups-controller.ts` | `SubscriberPage.tsx` (grouping UI) |

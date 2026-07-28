@@ -18,6 +18,7 @@ import { TimeServerPage } from './pages/TimeServerPage';
 import { FRRPage } from './pages/FRRPage';
 import { SMSPage } from './pages/SMSPage';
 import { IMSPage } from './pages/IMSPage';
+import { PstnGatewayPage } from './pages/PstnGatewayPage';
 import { VoWiFiPage } from './pages/VoWiFiPage';
 import { BindPage } from './pages/BindPage';
 import { ValidationPage } from './pages/ValidationPage';
@@ -83,6 +84,8 @@ function App(): JSX.Element {
         return FEATURES.sms ? <SMSPage /> : <DashboardPage />;
       case 'ims':
         return FEATURES.ims ? <IMSPage /> : <DashboardPage />;
+      case 'pstn':
+        return FEATURES.pstn ? <PstnGatewayPage /> : <DashboardPage />;
       case 'vowifi':
         return FEATURES.vowifi ? <VoWiFiPage /> : <DashboardPage />;
       case 'validation':

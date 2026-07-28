@@ -4,6 +4,7 @@ import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
 import { imsApi, type ImsStatus } from '../../api/ims';
+import { pstnApi, type PstnStatus } from '../../api/pstn';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -93,6 +94,26 @@ function ServiceMiniCard({ status }: { status: ServiceStatus }): JSX.Element {
   );
 }
 
+// IMS (P/I/S-CSCF) and PSTN Gateway (Asterisk) aren't part of the core-17
+// ServiceName union (they're optional add-on modules, gated separately —
+// see CLAUDE.md point 3), so they can't be fed through ServiceMiniCard's
+// ServiceStatus prop without an awkward cast. This is a lighter twin fed
+// straight from imsApi/pstnApi's own /status responses, which already
+// compute exactly the booleans needed (ims-controller.ts, pstn-controller.ts).
+function AddonServiceMiniCard({ name, active, loading }: { name: string; active: boolean; loading: boolean }): JSX.Element {
+  return (
+    <div className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-nms-bg/50 min-w-0">
+      <div className="flex items-center gap-2 min-w-0">
+        <div className={loading ? 'status-dot-inactive opacity-40' : active ? 'status-dot-active' : 'status-dot-inactive'} />
+        <span className="text-xs font-medium truncate">{name}</span>
+      </div>
+      <span className={`text-xs shrink-0 ${loading ? 'text-nms-text-dim' : active ? 'text-nms-green' : 'text-nms-red'}`}>
+        {loading ? '…' : active ? 'active' : 'inactive'}
+      </span>
+    </div>
+  );
+}
+
 export function DashboardPage(): JSX.Element {
   const statuses = useServiceStore((s) => s.statuses) || [];
   const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
@@ -107,6 +128,7 @@ export function DashboardPage(): JSX.Element {
   const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
   const [activeUes, setActiveUes] = useState<number | null>(null);
   const [imsStatus, setImsStatus] = useState<ImsStatus | null>(null);
+  const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [gtpBandwidth, setGtpBandwidth] = useState<{ upMbps: number; downMbps: number } | null>(null);
@@ -151,6 +173,9 @@ export function DashboardPage(): JSX.Element {
     }).catch(() => {});
     // IMS status — service health, live S-CSCF registrar count, active IPsec SAs
     imsApi.getStatus().then(setImsStatus).catch(() => {});
+    // PSTN Gateway status — just need services.asterisk for the Network
+    // Functions grid below (P/I/S-CSCF come from imsStatus.services above).
+    pstnApi.getStatus().then(setPstnStatus).catch(() => {});
     // Primary PLMN — shown separately for AMF (5G) and MME (4G) since the two
     // are configured independently (kept in sync by the PLMN Migration Wizard,
     // but worth surfacing both in case they ever drift). Every entry in
@@ -463,6 +488,10 @@ export function DashboardPage(): JSX.Element {
               Loading service statuses...
             </div>
           )}
+          <AddonServiceMiniCard name="P-CSCF" active={!!imsStatus?.services?.pcscf} loading={!imsStatus} />
+          <AddonServiceMiniCard name="I-CSCF" active={!!imsStatus?.services?.icscf} loading={!imsStatus} />
+          <AddonServiceMiniCard name="S-CSCF" active={!!imsStatus?.services?.scscf} loading={!imsStatus} />
+          <AddonServiceMiniCard name="ASTERISK" active={!!pstnStatus?.services?.asterisk} loading={!pstnStatus} />
         </div>
       </div>
 

@@ -820,6 +820,98 @@ working; Android real-phone VoLTE calling is unverified.
 
 ---
 
+## PSTN Gateway
+
+> **Beta.** This module has **no public SIP trunk connectivity** — no provider
+> integration (Twilio, Telnyx, or similar) and no inbound DID handling exist yet.
+> It only wires an **internal** extension→subscriber test path through Asterisk. A
+> real trunk-provider integration is a separate, not-yet-built phase. The nav
+> sidebar and the module's own page both carry a permanent "Beta" badge, and
+> `ENABLE_PSTN_MODULE` defaults to **disabled** (opt-in) — unlike every other
+> optional module in this project, which defaults enabled — since this is the
+> first module where a bug or misconfiguration could eventually cause real-world
+> billing on a linked trunk account once one exists.
+
+### What It Does
+
+Kamailio's S-CSCF already ships with BGCF/MGCF-style PSTN breakout routing (a
+`dispatcher` group that catches any dialed number that isn't a currently-registered
+subscriber) — inherited from the classic Kamailio IMS reference config this
+project's templates were built from, but never previously populated or exercised.
+This module wires **Asterisk** into that dispatcher as the gateway:
+
+1. A subscriber dials an extension (any digit string, any length — real dialers
+   don't prefix a "+" for in-network numbers, so this doesn't use E.164 matching).
+2. S-CSCF checks its own registrar first; since nothing is registered under that
+   exact extension, it routes to the PSTN dispatcher instead.
+3. The dispatcher forwards the INVITE to Asterisk over its trunk transport.
+4. Asterisk looks up the extension in a new extension→subscriber mapping table
+   and originates a fresh INVITE back into the core to the mapped subscriber's
+   real identity — the same Cx-LIR + S-CSCF termination flow that delivers every
+   other call.
+5. The mapped subscriber's phone rings, with real AMR-WB/EVS↔G.711 transcoding
+   through Asterisk on the way — the exact same signaling/media path a live SIP
+   trunk would use, just without one connected yet.
+
+### Components
+
+- **Backend**: `pstn-controller.ts` — Install/Configure/Start/Stop/Restart/
+  Enable/Disable/Uninstall lifecycle, mirroring the SMS/VoWiFi module pattern.
+  Extension→subscriber mappings live in their own MongoDB collection, decoupled
+  from the core `Subscriber` entity.
+- **Frontend**: `PstnGatewayPage.tsx` — Overview/architecture explainer, service
+  status, extension management, install/configure controls.
+- **Asterisk**: the actual media/signaling gateway — PJSIP trunk to
+  Kamailio, AMR-WB/AMR-NB/G.711 codec support (confirmed built into Ubuntu's
+  stock `asterisk-modules` package, no third-party patch needed), a dedicated
+  PJSIP transport advertising a real, UE-reachable media address
+  (`external_media_address`) instead of its own loopback bind address.
+
+### Real bugs found and fixed getting this working end-to-end
+
+- **rtpengine only ever saw half of each of Asterisk's two split dialogs.** A
+  direct real-UE-to-UE call is one shared SIP dialog/Call-ID all the way through
+  P-CSCF, so rtpengine naturally gets both the offer and answer it needs from the
+  existing routing logic. Asterisk is a real B2BUA — every PSTN Gateway call is
+  actually **two separate dialogs** with different Call-IDs (caller↔Asterisk,
+  Asterisk↔callee), and each one independently needs its own complete offer+
+  answer pair processed by rtpengine to build a working relay. This was the
+  deepest, last-found layer of a long one-way/no-audio investigation — confirmed
+  via packet capture and a direct bit-level RTP payload decode (real AMR-WB
+  frames extracted from the wire and decoded with a real decoder) that every
+  other layer (signaling, codec negotiation, delivery timing) was already
+  correct.
+- **Asterisk's own `bridge_native_rtp` technology** silently broke one leg's
+  audio during live bridging (a same-codec frame-forwarding optimization,
+  unrelated to `direct_media`) — fixed with `bridge technology suspend
+  native_rtp`, re-applied on every Asterisk (re)start since it's a per-process
+  runtime toggle, not a persistent config setting.
+- **I-CSCF had zero in-dialog request handling** — any PRACK/UPDATE/in-dialog BYE
+  routed back through it (which only happens for Asterisk-originated legs; real
+  UE-to-UE calls never transit I-CSCF at all) got hard-rejected with a 406. Fixed
+  with `has_totag()` + `loose_route()` + `t_relay()`.
+- **Asterisk advertised its raw loopback address** in its own SDP instead of a
+  UE-reachable one — fixed via `external_media_address` + `rtp_symmetric` on its
+  PJSIP transport.
+- Real-phone testing (Pixel 7 + iPhone) found 3 S-CSCF routing bugs: real
+  dialers never prefix extensions with "+" (fixed by checking the registrar
+  directly instead of E.164 pattern-matching), `enum_query()` hard-errors on
+  non-E.164 input instead of failing gracefully (fixed by only attempting ENUM
+  for genuinely E.164-looking numbers), and the Request-URI's domain needed
+  normalizing to the core's own IMS domain before subscriber/iFC matching, for
+  calls Asterisk originates back into the core.
+
+### Current Status
+
+Beta — confirmed working end-to-end on real hardware (iPhone↔iPhone,
+iPhone↔Android extension-to-extension calling with full-duplex audio). No public
+SIP trunk provider integration and no inbound DID handling — see the beta warning
+above. Explicit non-goals for this phase: no emergency-calling routing, no
+multi-operator IMS-to-IMS interconnect peering (I-CSCF's separate `PEERING`
+logic), no TDM/ISUP/PRI hardware gateway.
+
+---
+
 ## VoWiFi (ePDG)
 
 *(Alpha — highly experimental, not production-ready)* Voice/data over Wi-Fi via an evolved Packet Data Gateway (ePDG), for handsets on an untrusted (Wi-Fi) access network.

@@ -1191,6 +1191,7 @@ for the exact routes.
 | `/api/frr`, `/api/frr/source-build` | FRR routing config, migration wizard, source-build/patch | `frr-controller.ts`, `frr-source-build-controller.ts` |
 | `/api/sms` | SMS over SGs (osmo-msc/osmo-hlr) install/config | `sms-controller.ts` |
 | `/api/ims` | IMS/VoLTE (PyHSS, Kamailio) install/config | `ims-controller.ts` |
+| `/api/pstn` | **Beta**, internal-only — PSTN Gateway (Asterisk) install/config + extension→subscriber mapping. No public SIP trunk connectivity. Defaults disabled (`ENABLE_PSTN_MODULE=false`) | `pstn-controller.ts` |
 | `/api/vowifi` | VoWiFi/ePDG (osmo-epdg, strongSwan) install/config | `vowifi-controller.ts` |
 | `/api/swu-emulator` | SWu (IKEv2/EAP-AKA) emulator for VoWiFi testing | `swu-emulator-controller.ts` |
 | `/api/validation` | UE Validation (UERANSIM/srsRAN load/session testing) | `validation-controller.ts` |

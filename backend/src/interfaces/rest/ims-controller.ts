@@ -1979,7 +1979,11 @@ export function createImsRouter(
     write('=== Adding Kamailio 5.8 APT repo ===\n');
     await spawnStream(
       'set -e\n' +
-      'curl -fsSL http://deb.kamailio.org/kamailiodebkey.gpg | gpg --dearmor -o /usr/share/keyrings/kamailio.gpg\n' +
+      // --yes: gpg refuses to overwrite an existing keyring file without an
+      // interactive confirmation, which fails hard with "cannot open '/dev/tty'"
+      // on a re-run (no tty attached to this streamed nsenter/bash process) -
+      // confirmed live 2026-07-28 on a second Install attempt.
+      'curl -fsSL http://deb.kamailio.org/kamailiodebkey.gpg | gpg --yes --dearmor -o /usr/share/keyrings/kamailio.gpg\n' +
       'CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")\n' +
       'cat > /etc/apt/sources.list.d/kamailio.list <<EOF\n' +
       'deb [arch=amd64 signed-by=/usr/share/keyrings/kamailio.gpg] http://deb.kamailio.org/kamailio58 ${CODENAME} main\n' +
@@ -1989,6 +1993,55 @@ export function createImsRouter(
       'echo "✅ Kamailio 5.8 repo added."'
     );
 
+    // Install rtpengine as its own, isolated step. Confirmed live 2026-07-28 on
+    // a fresh Ubuntu 22.04 (jammy) host: the plain "rtpengine" metapackage only
+    // exists in Ubuntu's own universe repo from 23.04 onward (this project's dev
+    // host is 24.04, where it "just works", which is why this was never caught
+    // before) - on 22.04 it fails with "E: Unable to locate package rtpengine".
+    // Worse, because this used to live in the SAME big apt-get install line as
+    // dpkg-dev/mariadb-server/etc., apt-get's default behavior of refusing to
+    // install ANY package in a command line if even ONE is unlocatable meant a
+    // single missing package name silently took every other package down with
+    // it (confirmed: the same log showed "dpkg-source: not found" right after,
+    // even though dpkg-dev was right there in the list — apt-get never even
+    // attempted it). Isolating this install means a bad/missing package here
+    // can no longer cascade into failing everything else.
+    write('\n=== Installing rtpengine ===\n');
+    const rtpengineExitCode = await spawnStream(
+      'set -e\n' +
+      'CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")\n' +
+      'apt-get update -q\n' +
+      'if apt-cache show rtpengine >/dev/null 2>&1; then\n' +
+      '  echo "rtpengine available directly (Ubuntu $CODENAME) — installing."\n' +
+      '  DEBIAN_FRONTEND=noninteractive apt-get install -y rtpengine\n' +
+      'else\n' +
+      '  echo "rtpengine not in the default repos on Ubuntu $CODENAME (only in universe from 23.04+) — adding davidlublink/rtpengine PPA."\n' +
+      // add-apt-repository itself is idempotent (won't duplicate an
+      // already-added line) — no separate marker file needed. Ensure the
+      // command exists first; it's not guaranteed present on a minimal image.
+      '  DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common\n' +
+      '  add-apt-repository -y ppa:davidlublink/rtpengine\n' +
+      '  apt-get update -q\n' +
+      '  DEBIAN_FRONTEND=noninteractive apt-get install -y ngcp-rtpengine\n' +
+      // Documented gotcha for this specific PPA build: its shipped unit's
+      // AmbientCapabilities line can prevent the daemon from starting cleanly.
+      // Idempotent (sed no-ops if already commented or the line is absent).
+      '  sed -i "s/^AmbientCapabilities=/#AmbientCapabilities=/" /lib/systemd/system/ngcp-rtpengine-daemon.service 2>/dev/null || true\n' +
+      // The PPA package's real unit is ngcp-rtpengine-daemon.service, but every
+      // other Install/Configure/Start/Stop/Restart/Status/Uninstall route in this
+      // file refers to the plain rtpengine-daemon.service name (matching what
+      // Ubuntu's own native package provides on 24.04+) - a compat symlink means
+      // none of those call sites need to know which install path was taken.
+      '  ln -sf /lib/systemd/system/ngcp-rtpengine-daemon.service /etc/systemd/system/rtpengine-daemon.service\n' +
+      '  systemctl daemon-reload\n' +
+      'fi\n' +
+      'echo "✅ rtpengine installed."'
+    );
+    if (rtpengineExitCode !== 0) {
+      write('\n⚠️ WARNING: rtpengine install FAILED (see errors above) — the RTP media relay ' +
+        'is required for any call to have audio. Fix the underlying issue and re-run Install.\n');
+    }
+
     write('\n=== Installing IMS packages ===\n');
     // presence/sctp/json modules are all required by the bundled main-cfg
     // templates (kamailio_pcscf.cfg loads sctp+json, kamailio_scscf.cfg loads
@@ -1996,11 +2049,15 @@ export function createImsRouter(
     // corresponding kamailio-*.service crash-loop on "could not find module".
     const basePkgs = 'kamailio kamailio-ims-modules kamailio-mysql-modules kamailio-tls-modules kamailio-extra-modules kamailio-utils-modules ' +
       'kamailio-presence-modules kamailio-sctp-modules kamailio-json-modules ' +
-      'rtpengine mariadb-server bind9 bind9utils mariadb-client dnsutils git dpkg-dev libxml2-dev';
+      'mariadb-server bind9 bind9utils mariadb-client dnsutils git dpkg-dev libxml2-dev';
     const pyhssPkgs = ' redis-server python3-pip python3-venv python3-dev';
-    await spawnStream(
+    const basePkgsExitCode = await spawnStream(
       `DEBIAN_FRONTEND=noninteractive apt-get install -y ${basePkgs}${pyhssPkgs} 2>&1`
     );
+    if (basePkgsExitCode !== 0) {
+      write('\n⚠️ WARNING: one or more IMS packages failed to install (see errors above) — ' +
+        'check which package apt could not locate/install and fix before re-running Install.\n');
+    }
 
     // Patch cdp.so: the stock Kamailio 5.x cdp_mod.c registers one fewer process slot
     // than it actually forks, causing the CDP timer to fail with "Process limit exceeded"
@@ -2060,10 +2117,33 @@ export function createImsRouter(
     } else {
       write('PyHSS already cloned — skipping clone.\n');
     }
-    await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y libmariadb-dev pkg-config 2>&1');
-    await spawnStream('pip3 install --break-system-packages -r /opt/pyhss/requirements.txt 2>&1');
+    const basePyhssDepsExitCode = await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y libmariadb-dev pkg-config 2>&1');
+    // --break-system-packages (PEP 668) is only understood by pip >= 23.0.1 -
+    // older pip3 (as shipped on some fresh hosts) rejects it outright with
+    // "no such option: --break-system-packages" and the whole install never
+    // runs, which used to be silently ignored here (no exit code captured,
+    // unconditional "✅ PyHSS installed." printed regardless). Confirmed live
+    // 2026-07-28. Try with the flag first; only fall back to without it if
+    // the flag itself is what's unrecognized, not on any other failure (a
+    // real requirements.txt/network failure should still surface as failed).
+    const pipExitCode = await spawnStream(
+      'set -o pipefail\n' +
+      'OUT=$(pip3 install --break-system-packages -r /opt/pyhss/requirements.txt 2>&1); RC=$?\n' +
+      'echo "$OUT"\n' +
+      'if [ $RC -ne 0 ] && echo "$OUT" | grep -q "no such option.*break-system-packages"; then\n' +
+      '  echo "pip3 does not support --break-system-packages (older pip) — retrying without it."\n' +
+      '  pip3 install -r /opt/pyhss/requirements.txt\n' +
+      'else\n' +
+      '  exit $RC\n' +
+      'fi'
+    );
     await spawnStream('mkdir -p /etc/pyhss');
-    write('✅ PyHSS installed.\n');
+    if (basePyhssDepsExitCode !== 0 || pipExitCode !== 0) {
+      write('\n⚠️ WARNING: PyHSS Python dependency install FAILED (see errors above) — ' +
+        'PyHSS will not start correctly. Fix the underlying issue and re-run Install.\n');
+    } else {
+      write('✅ PyHSS installed.\n');
+    }
 
     // Patch PyHSS's Answer_16777216_300() (Cx UAA) and Answer_16777216_302()
     // (Cx LIA): both have the same bug shape — a missing username-bearing AVP
@@ -2083,6 +2163,14 @@ export function createImsRouter(
     // anchors.
     write('\n=== Patching PyHSS diameter.py (UAA/LIA crash-guard) ===\n');
     const pyhssPatchExitCode = await spawnStream(
+      // set -e: without this, the heredoc's sys.exit(1) on a real patch
+      // failure didn't abort the script - the trailing py_compile call ran
+      // regardless and (succeeding on the unpatched-but-still-valid file)
+      // became the reported exit code, silently masking the real failure.
+      // Confirmed live 2026-07-28 via the sibling default_ifc.xml patch below
+      // hitting exactly this. This patch happened to already be up to date
+      // when found, but the same masking bug was latent here too.
+      'set -e\n' +
       'python3 - <<\'PYEOF\'\n' +
       'import sys\n' +
       'path = "/opt/pyhss/lib/diameter.py"\n' +
@@ -2166,6 +2254,15 @@ export function createImsRouter(
     // bug) instead of the volatile `scscf_realm`.
     write('\n=== Patching PyHSS default_ifc.xml (identity-domain corruption guard) ===\n');
     const ifcPatchExitCode = await spawnStream(
+      // set -e: without this, the heredoc's SystemExit(1) on a real patch
+      // failure (e.g. "expected '{{ iFC_vars.scscf_realm }}' not found")
+      // didn't abort the script - the trailing render/parse validation
+      // command ran regardless and, since a raw "None" value still renders
+      // as syntactically valid XML text, it succeeded anyway and its exit
+      // code became the reported result. Confirmed live 2026-07-28: a real
+      // Install run printed both the ERROR line AND "✅ ... patched." for
+      // this exact step.
+      'set -e\n' +
       'python3 - <<\'PYEOF\'\n' +
       'path = "/opt/pyhss/default_ifc.xml"\n' +
       'with open(path) as f:\n' +
