@@ -844,10 +844,16 @@ function formatExpiry(seconds: number | null): string {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-function shortAor(uris: string[]): string {
-  // Prefer a tel: alias if present (most human-readable), else the first sip: one.
-  const tel = uris.find(u => u.startsWith('tel:'));
-  return (tel ?? uris[0] ?? '').replace(/^(tel:|sip:)/, '');
+// Prefer a tel: alias as the primary/most human-readable identity, else the
+// first sip: one — returns the chosen raw URI plus every other alias, so
+// callers can display "primary, then the rest underneath" without
+// re-deriving which one was picked.
+function splitPrimaryAlias(uris: string[]): { primary: string; others: string[] } {
+  const primaryRaw = uris.find(u => u.startsWith('tel:')) ?? uris[0] ?? '';
+  return {
+    primary: primaryRaw.replace(/^(tel:|sip:)/, ''),
+    others: uris.filter(u => u !== primaryRaw),
+  };
 }
 
 function LiveStatusTab() {
@@ -960,12 +966,17 @@ function LiveStatusTab() {
                 {users.map((u, i) => (
                   <tr key={u.callId ?? i} className="border-t border-nms-border">
                     <td className="px-3 py-2">
-                      <div className="font-mono text-nms-text">{shortAor(u.publicIdentities)}</div>
-                      {u.publicIdentities.length > 1 && (
-                        <div className="text-[10px] text-nms-text-dim mt-0.5">
-                          +{u.publicIdentities.length - 1} more alias{u.publicIdentities.length > 2 ? 'es' : ''}
-                        </div>
-                      )}
+                      {(() => {
+                        const { primary, others } = splitPrimaryAlias(u.publicIdentities);
+                        return (
+                          <>
+                            <div className="font-mono text-nms-text">{primary}</div>
+                            {others.map(id => (
+                              <div key={id} className="font-mono text-[10px] text-nms-text-dim mt-0.5">{id}</div>
+                            ))}
+                          </>
+                        );
+                      })()}
                     </td>
                     <td className="px-3 py-2 text-nms-text-dim">{u.userAgent ?? '—'}</td>
                     <td className="px-3 py-2 font-mono text-nms-text-dim truncate max-w-[280px]" title={u.contact ?? ''}>
