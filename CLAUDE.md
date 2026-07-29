@@ -198,9 +198,9 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | SEPP (N32 roaming) | stable | `sepp-controller.ts`, `sepp-config.ts` | `SeppEditor.tsx` |
 | Framed Routing | stable | `subscriber-management.ts`, `ip-utils.ts` | `SubscriberPage.tsx` |
 | DNS/FQDN Migration Wizard | stable, actively used | `dns-migration-usecase.ts`, `dns-migration-controller.ts`, `bind-controller.ts` | `DnsMigrationPage.tsx`, `BindPage.tsx` |
-| IMS / VoLTE (PyHSS-based) | beta — confirmed working end-to-end with real iPhone hardware on PLMN 001-01 (2026-07-26), incl. real UE-to-UE calling with dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface | `ims-controller.ts` | `IMSPage.tsx` |
+| IMS / VoLTE (PyHSS-based) | beta — real UE-to-UE calling with full audio confirmed working end-to-end over **direct IMS** on real iPhone hardware, PLMN 001-01 (2026-07-26), incl. dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface. **iPhone-only** — Android as callee (both direct IMS and via PSTN Gateway) currently fails; root cause not yet found (2026-07-29) | `ims-controller.ts` | `IMSPage.tsx` |
 | SMS (SGs path, osmo-\*) | stable | `sms-controller.ts` | `SMSPage.tsx` |
-| PSTN Gateway (Asterisk, internal-only) | **beta — no public SIP trunk yet**, confirmed working end-to-end on real hardware (iPhone↔iPhone, iPhone↔Android extension calling, full-duplex audio); `ENABLE_PSTN_MODULE` defaults **disabled** (opt-in) | `pstn-controller.ts` | `PstnGatewayPage.tsx` |
+| PSTN Gateway (Asterisk, internal-only) | **beta — no public SIP trunk yet**; signaling confirmed working end-to-end (iPhone↔iPhone via extensions), but **audio via Asterisk is not currently confirmed working** — a same-day 2026-07-28 "full-duplex audio" claim did not reproduce in same-day live testing, treat as an open regression until re-verified with a fresh capture; `ENABLE_PSTN_MODULE` defaults **disabled** (opt-in) | `pstn-controller.ts` | `PstnGatewayPage.tsx` |
 | VoWiFi (ePDG) | alpha, experimental | `vowifi-controller.ts`, `vowifi-build.ts` | `VoWiFiPage.tsx` |
 | eSIM generation (Simlessly API) | stable | `esim-generator.ts`, `esim-controller.ts` | `EsimGeneratorModal.tsx` |
 | Subscriber Groups | stable | `subscriber-groups-controller.ts` | `SubscriberPage.tsx` (grouping UI) |
@@ -217,12 +217,14 @@ Full detail on any of these: `docs/features.md`.
 
 ## Reference facts
 
-- **PLMN**: MCC 999, MNC 070 (`5gc.mnc070.mcc999.3gppnetwork.org`,
-  `epc.mnc070.mcc999.3gppnetwork.org` — the two zones the DNS Migration Wizard manages).
+- **PLMN**: MCC 001, MNC 01 (`5gc.mnc001.mcc001.3gppnetwork.org`,
+  `epc.mnc001.mcc001.3gppnetwork.org` — the two zones the DNS Migration Wizard
+  manages; migrated off the original 999-070 test PLMN, confirmed live 2026-07-29 —
+  older docs/memory referencing 999/070 are stale).
 - **Radio IPs** (verify before trusting — deployments change):
   - `10.0.2.100–102` — Baicells eNB(s), B48, 4G/LTE
   - `10.0.2.214` — Nokia AirScale Pico BTS, B66, 4G/LTE
-  - `172.16.0.222` — Sercomm SCE5164-B48 gNB, B48, 5G NR
+  - `172.16.0.117` — Sercomm SCE5164-B48 gNB, B48, 5G NR
   - EIGRP neighbor for the RAN-facing routes: `192.168.253.1` on `ens20`.
 - **SAS bands**: Baicells B48 CBRS (group `baicells`, 3550–3700 MHz, 20 MHz slots),
   Sercomm B48 CBRS (group `SC_Group`, 3616–3655 MHz). Sercomm FCC IDs start `P27-`.

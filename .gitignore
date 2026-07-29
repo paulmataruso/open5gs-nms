@@ -68,6 +68,7 @@ nginx/certs/*.pem
 
 # Internal documentation (keep local)
 GIT_PUSH_COMMANDS.md
+PROJECT_STATE.md
 
 # Local archive folder
 docs/archive/

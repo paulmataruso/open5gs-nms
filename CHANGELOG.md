@@ -4,6 +4,63 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.30] - 2026-07-29
+
+### Fixed — Android VoLTE as callee: real UE-to-UE calling now works iPhone↔Android, both directions confirmed with audio
+
+Root cause found and fixed: Android's own SIP/SDP validator (confirmed on a
+real Pixel 7, Samsung/Shannon modem) was rejecting any INVITE offering ICE
+candidates (`a=candidate`/`ice-ufrag`/`ice-pwd`) with a bare `400 Bad
+Request` — independent of whether ICE itself was ever going to be used.
+This is not a 3GPP VoLTE convention (real cellular IMS doesn't use ICE at
+all); this project's rtpengine offer/answer flags forced it unconditionally
+for every call, inherited byte-for-byte from the `docker_open5gs` reference
+implementation this module was built from, and had simply never been tested
+against a real Android device before.
+
+**Fix**: for real UE-to-UE calls only (the IMS Test Number bot is
+untouched), `kamailio_pcscf/route/rtp.cfg` now swaps `ICE=force` to
+`ICE=remove` on both the offer and the answer flags. Confirmed live on real
+hardware: iPhone↔Android now rings and connects with full audio in both
+directions.
+
+Two smaller, related fixes landed in the same file as part of this
+investigation (found via a byte-for-byte diff against `docker_open5gs`):
+a dropped `$sdp(c:ip) != RTPENGINE_IP` guard was restored, and the
+Asterisk-B2BUA-offer branch is now correctly scoped to only fire for actual
+Asterisk calls (previously fired on every direct-IMS call too). Neither of
+these alone fixed the Android issue, but both are real correctness fixes
+worth keeping.
+
+**Two new, separate, still-open issues found while verifying this fix** —
+not regressions from this change, but real bugs surfaced by testing all four
+call directions live:
+- Android→iPhone calls still don't complete: they stick at `183 Session
+  Progress` and get cancelled after ~11s. Root cause: a P-CSCF socket
+  bug in the PRACK in-dialog relay path (`udp_send(): ... Invalid argument`,
+  `ipsec_forward(): Error filling in contact data`) — unrelated to ICE,
+  `rtp.cfg` has no PRACK routing logic. Not yet fixed.
+- PSTN Gateway (Asterisk) calls still have no audio. Traced precisely this
+  time via live RTP relay tracing: Asterisk's *first* dialog leg
+  (caller↔Asterisk) relays real audio correctly; the *second* leg
+  (Asterisk↔callee) is stuck in a self-referential loop inside rtpengine
+  and never reaches either endpoint. The guard-restoration fix above did
+  not resolve this — it needs its own investigation.
+
+See `PROJECT_STATE.md`'s Known Issues §1/§2 for the full live-call traces
+and technical detail behind all of the above.
+
+### Verified — a fresh Install/Configure reproduces this exact setup
+
+Explicitly confirmed end-to-end, not just asserted: rebuilt the backend
+container from the fixed source, then called the real `/api/ims/configure`
+and `/api/pstn/configure` endpoints (the same ones the UI calls) against
+the already-running deployment. Diffed every regenerated Kamailio config
+file against the fixed templates — byte-for-byte identical. All IMS/PSTN
+services confirmed healthy afterward. A new install, or an existing
+deployment clicking Configure again, now deploys this exact fix
+automatically.
+
 ## [v2.0-beta_0.29] - 2026-07-28
 
 ### Status — IMS UE-to-UE calling
