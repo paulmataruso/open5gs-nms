@@ -4,7 +4,7 @@ import {
   CheckCircle, XCircle, RefreshCw,
   RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown,
   Play, Square, Globe, Shield, Database, Terminal, Trash2, Plus, X,
-  AlertTriangle, Pencil,
+  AlertTriangle, AlertCircle, Pencil,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -900,6 +900,27 @@ export function IMSPage() {
     }
   };
 
+  // Re-runs Configure with whatever config is already saved (same pattern
+  // as the "Configuration out of date" banner's CTA) — resubmits the last
+  // known-good settings so a stale deployment picks up template fixes
+  // without the operator needing to re-enter anything.
+  const handleReconfigureStale = async () => {
+    // The banner that calls this is only ever shown when configStale is
+    // true, which the backend only sets when hasSavedConfig is also true —
+    // so currentConfig is guaranteed populated here in practice.
+    if (!status?.currentConfig) return;
+    setActing(true);
+    try {
+      await imsApi.configure(status.currentConfig as ImsConfigureInput);
+      toast.success('IMS configured and services started.');
+      await load(true);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error ?? String(err));
+    } finally {
+      setActing(false);
+    }
+  };
+
   const handleRemove = async () => {
     setShowRemoveConfirm(false);
     setRemoving(true);
@@ -1005,20 +1026,43 @@ export function IMSPage() {
         </div>
       </div>
 
-      {/* Alpha warning — IMS is not production-ready */}
+      {/* Beta warning — IMS is not production-ready */}
       <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-500/40 bg-amber-500/5">
         <AlertTriangle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
         <div>
-          <p className="text-sm font-semibold text-amber-300">Alpha — not production-ready</p>
+          <p className="text-sm font-semibold text-amber-300">Beta</p>
           <p className="text-xs text-nms-text-dim mt-0.5">
-            The goal is a 100% automated deployment — today, expect to do manual configuration beyond what this
-            wizard automates. This module is in early alpha testing. Server-side IMS signaling has been verified
-            with a third-party SIP client, but end-to-end VoLTE on real phones is not confirmed working and will
-            likely require manual device/carrier-specific IMS provisioning, auth scheme adjustments, etc. Do not
+            Real UE-to-UE VoLTE calling is confirmed working end-to-end on real iPhone hardware
+            (both directions, with audio) — dedicated QCI=1 voice bearers, the works. Android VoLTE
+            support is still in progress and does not work yet. Manual configuration beyond what
+            this wizard automates may still be needed for other device/carrier combinations. Do not
             rely on this for a production voice deployment.
           </p>
         </div>
       </div>
+
+      {s?.configStale && (
+        <div className="flex items-start justify-between gap-3 p-4 rounded-lg border border-blue-500/30 bg-blue-500/10">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-4 h-4 text-blue-400 mt-0.5 shrink-0" />
+            <p className="text-xs text-blue-200 leading-relaxed">
+              <span className="font-semibold text-blue-400">Configuration out of date.</span>{' '}
+              This deployment was last configured by
+              {s.configuredWithVersion ? ` v${s.configuredWithVersion}` : ' an older version'},
+              but this server is running v{s.appVersion}. Click Configure to redeploy with any fixes
+              shipped since then — this briefly disrupts registered UEs/active calls while the four
+              Kamailio services restart.
+            </p>
+          </div>
+          <button
+            onClick={handleReconfigureStale}
+            disabled={acting}
+            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
+          >
+            Configure
+          </button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-nms-border">

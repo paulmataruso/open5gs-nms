@@ -8,6 +8,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { readListenOn, writeListenOn } from './bind-controller';
+import { getAppVersion } from '../../infrastructure/system/app-version';
 
 const execFileAsync = promisify(execFile);
 
@@ -1776,6 +1777,13 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   fs.writeFileSync(HOST_IMS_STATE, JSON.stringify({
     imsDomain,
     hssBackend: 'pyhss',
+    // Recorded so /status can tell an operator their live deployment was
+    // configured by an older build than the one now running (e.g. after a
+    // git pull + backend rebuild) and prompt them to re-run Configure to
+    // pick up template fixes — rather than silently leaving a stale config
+    // in place, or auto-restarting live Kamailio/rtpengine/Asterisk on
+    // every upgrade without the operator choosing when. See app-version.ts.
+    configuredWithVersion: getAppVersion(),
     config: {
       mcc, mnc, additionalPlmns: additionalPlmns ?? [],
       pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
@@ -1858,13 +1866,20 @@ export function createImsRouter(
       const hasSavedConfig = fs.existsSync(HOST_IMS_STATE);
       let currentConfig: ImsConfigureInput | undefined;
       let imsDomain: string | undefined;
+      let configuredWithVersion: string | undefined;
       if (hasSavedConfig) {
         try {
           const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
           currentConfig = saved.config;
           imsDomain = saved.imsDomain;
+          configuredWithVersion = saved.configuredWithVersion;
         } catch { /* corrupt */ }
       }
+      // Deployments configured before this field existed have no
+      // configuredWithVersion at all — treat that the same as "stale",
+      // since we genuinely don't know what template they're running.
+      const appVersion = getAppVersion();
+      const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
 
       const services = {
         pcscf:            svcActive(pcscfRes),
@@ -1938,6 +1953,9 @@ export function createImsRouter(
         hasSavedConfig,
         imsDomain,
         currentConfig,
+        appVersion,
+        configuredWithVersion,
+        configStale,
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'ims status error');

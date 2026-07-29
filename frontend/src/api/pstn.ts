@@ -12,6 +12,9 @@ export interface PstnStatus {
   pstnEnabled: boolean;
   currentConfig?: { asteriskIp: string };
   extensionCount: number;
+  appVersion: string;
+  configuredWithVersion?: string;
+  configStale: boolean;
 }
 
 export interface PstnExtension {

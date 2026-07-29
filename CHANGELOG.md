@@ -4,6 +4,38 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.31] - 2026-07-29
+
+### Added — IMS and PSTN Gateway now detect a stale config after an upgrade
+
+If you `git pull` a newer version onto a host where IMS and/or PSTN Gateway
+were already configured, the running services keep using whatever config
+was deployed by the *old* version until someone clicks Configure again —
+this has always been true (config generation is a full rewrite on Configure,
+not an incremental patch, so template fixes only land when Configure
+actually runs), but there was previously no way to tell from the UI that
+this had happened.
+
+Both modules' Configure step now records the app version that generated the
+live config. The IMS and PSTN Gateway pages compare that against the
+version the backend is currently running and show a dismissible-by-fixing
+banner — "Configuration out of date... click Configure to redeploy" — when
+they differ, including for deployments configured before this feature
+existed (no recorded version at all is treated as stale, since there's no
+way to know what template they're actually running).
+
+**Deliberately not automatic.** Configure restarts live Kamailio/Asterisk
+services, which disrupts anything currently registered or on a call — doing
+that silently on every backend upgrade, with no operator control over
+*when*, was judged worse than a clearly-labeled banner the operator acts on
+at a time of their choosing.
+
+Verified end-to-end against the actual pre-existing deployment on this host
+(configured by v2.0-beta_0.30, before this field existed): `/status`
+correctly reported `configStale: true` for both modules, and clicking
+Configure (via the real API endpoints, not a simulation) flipped it back to
+`false` with all services confirmed healthy afterward.
+
 ## [v2.0-beta_0.30] - 2026-07-29
 
 ### Fixed — Android VoLTE as callee: real UE-to-UE calling now works iPhone↔Android, both directions confirmed with audio

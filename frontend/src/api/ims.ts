@@ -22,6 +22,9 @@ export interface ImsStatus {
   hasSavedConfig: boolean;
   imsDomain?: string;
   currentConfig?: ImsConfigureInput;
+  appVersion: string;
+  configuredWithVersion?: string;
+  configStale: boolean;
 }
 
 export interface ImsConfigureInput {

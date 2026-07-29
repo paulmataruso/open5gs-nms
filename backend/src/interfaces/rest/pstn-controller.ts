@@ -7,6 +7,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
+import { getAppVersion } from '../../infrastructure/system/app-version';
 
 // ── PSTN Gateway (Asterisk) ─────────────────────────────────────────────────
 //
@@ -54,6 +55,11 @@ const ASTERISK_PORT = 5060;
 
 interface PstnState {
   asteriskIp: string;
+  // See app-version.ts / ims-controller.ts's identical field — lets /status
+  // tell an operator their live deployment predates a template fix (e.g.
+  // after a git pull + backend rebuild) instead of silently leaving a stale
+  // config in place or auto-restarting Asterisk on every upgrade.
+  configuredWithVersion?: string;
 }
 
 function readPstnState(): PstnState | null {
@@ -334,6 +340,12 @@ export function createPstnRouter(
 
       const extensions = await withExtensions(mongoUri, col => col.find({}).toArray()).catch(() => []);
 
+      // See ims-controller.ts's identical check — no recorded version at
+      // all (pre-dates this field) counts as stale too, since we don't
+      // know what template that deployment is actually running.
+      const appVersion = getAppVersion();
+      const configStale = !!state && state.configuredWithVersion !== appVersion;
+
       res.json({
         success: true,
         installed,
@@ -345,6 +357,9 @@ export function createPstnRouter(
         pstnEnabled: dispatcherWired,
         currentConfig: state ?? { asteriskIp: DEFAULT_ASTERISK_IP },
         extensionCount: extensions.length,
+        appVersion,
+        configuredWithVersion: state?.configuredWithVersion,
+        configStale,
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'pstn status error');
@@ -433,7 +448,7 @@ export function createPstnRouter(
       await ensureNativeRtpBridgeSuspended();
       await writeDispatcherEntry(asteriskIp);
 
-      writePstnState({ asteriskIp });
+      writePstnState({ asteriskIp, configuredWithVersion: getAppVersion() });
 
       await auditLogger.log({ action: 'pstn_configure', user, details: `asteriskIp=${asteriskIp}`, success: true });
       res.json({ success: true, message: 'Asterisk configured and wired into S-CSCF\'s dispatcher.', asteriskIp });
