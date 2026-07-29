@@ -6,6 +6,12 @@ All notable changes to open5gs-nms are documented here.
 
 ## [v2.0-beta_0.29] - 2026-07-28
 
+### Status — IMS UE-to-UE calling
+
+Confirmed working: real UE-to-UE VoLTE calling over the local IMS core,
+**iPhone-to-iPhone only**, on PLMN 001-01. **Android VoLTE support is still
+in progress** — not yet working as of this release.
+
 ### Added — PSTN Gateway module (v1, **beta**)
 
 New optional add-on module wiring **Asterisk** into Kamailio S-CSCF's

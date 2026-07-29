@@ -21,7 +21,7 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **Safe Configuration** - Automatic backups, validation, and rollback on failure
 - **5G Privacy (SUCI)** - Home network key management for subscription concealment
 - **Authentication** - Session-based login protecting all pages and API endpoints
-- **Voice & SMS** - Optional IMS/VoLTE core (alpha, not production-ready) and SGs-based SMS, both provisioned and managed from the UI
+- **Voice & SMS** - Optional IMS/VoLTE core (beta — real iPhone-to-iPhone calling confirmed working) and SGs-based SMS, both provisioned and managed from the UI
 - **L3 Routing (FRR)** - Guided L2→L3 migration, EIGRP/OSPF/BGP support, and a from-source FRR reinstall path
 - **End-to-End Testing** - Simulated 4G/5G test UEs (UE Validation) to verify attach/PDU/paging without a physical radio
 
@@ -258,16 +258,16 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Syslog Forwarding](docs/screenshots/syslog-forwarding-modal.png)
 
-### IMS / VoLTE *(Alpha — Not Production-Ready)*
+### IMS / VoLTE *(Beta)*
 
-> ⚠️ **This module is in early alpha testing.** Server-side IMS signaling has been verified with a third-party SIP client, but end-to-end VoLTE on real phones is not confirmed working, and will likely require manual configuration beyond what this page automates (device/carrier-specific IMS provisioning, auth scheme adjustments, etc.). Do not rely on this for a production voice deployment.
+> ⚠️ **This module is in beta.** Real UE-to-UE VoLTE calling is confirmed working end-to-end on real iPhone hardware (PLMN 001-01) — dedicated QCI=1 voice bearers, RTP audio, the works. Android VoLTE support is still in progress and does not work yet. Manual configuration beyond what this page automates may still be needed for other device/carrier combinations.
 
 - **Full IMS core integration** — P-CSCF/I-CSCF/S-CSCF (Kamailio 5.8.8, built with IMS/TLS/MySQL/extra modules), PyHSS Diameter HSS, BIND9 DNS, RTPEngine, MariaDB
 - **One-click install** of every IMS component, including PyHSS ([nickvsnetworking/pyhss](https://github.com/nickvsnetworking/pyhss)), cloned and set up automatically — no separate manual install required
 - **Guided configuration** — wires the P-CSCF address into SMF's PCO and per-session DNS, writes the Cx/Rx Diameter peer XML, and generates the IMS DNS zone automatically
 - **Subscriber sync** — pushes IMPI/IMPU identities for your existing subscribers into PyHSS's HSS database
-- **Server-side signaling verified** — all Diameter connections established, IMS APN and P-CSCF delivery confirmed working end-to-end with a third-party SIP client (Linphone) over Early-IMS auth
-- **Known limitation** — Android's telephony framework suppresses VoLTE/SIP REGISTER on test PLMNs (MCC 999); this is a device/carrier-policy limitation, not a server-side issue
+- **Real-phone VoLTE confirmed** — two real, registered iPhones calling each other rings and connects with full audio, including a real P-CSCF↔PCRF Rx interface for dedicated QCI=1 bearers, on PLMN 001-01
+- **Known limitation** — Android VoLTE support is still in progress and not yet confirmed working
 
 ![IMS Configuration](docs/screenshots/ims-config.png)
 
