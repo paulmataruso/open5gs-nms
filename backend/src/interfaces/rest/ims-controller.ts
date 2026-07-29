@@ -9,6 +9,7 @@ import { ISubscriberRepository } from '../../domain/interfaces/subscriber-reposi
 import { requireAdmin } from './middleware/auth-middleware';
 import { readListenOn, writeListenOn } from './bind-controller';
 import { getAppVersion } from '../../infrastructure/system/app-version';
+import { parseKamcmdOutput } from '../../infrastructure/system/kamcmd-parser';
 
 const execFileAsync = promisify(execFile);
 
@@ -52,6 +53,110 @@ function deployImsTemplate(templateRelPath: string, destPath: string, substituti
   }
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, content, 'utf-8');
+}
+
+export interface IpsecSaInfo {
+  src: string;
+  dst: string;
+  spi: string;
+  authAlg: string;
+  encAlg: string;
+  lastUsed: string | null;
+  bytes: number;
+  packets: number;
+}
+
+// Parses `ip -s xfrm state` (real, verified output format — see
+// PROJECT_STATE.md's Data Conflicts entry on IPsec encryption; `encAlg`
+// coming back as "ecb(cipher_null)" is expected/correct, not a bug — this
+// project's P-CSCF IPsec SAs are integrity-only (hmac auth, no real
+// encryption), by design of the ipsec-3gpp profile used here). One block
+// per SA, blocks separated by a non-indented "src <ip> dst <ip>" line.
+function parseIpsecSaText(raw: string): IpsecSaInfo[] {
+  const blocks = raw.split(/\n(?=src )/).map(b => b.trim()).filter(Boolean);
+  return blocks.map(block => {
+    const srcDst = block.match(/^src (\S+) dst (\S+)/);
+    const spi = block.match(/spi (0x[0-9a-fA-F]+)/);
+    const authAlg = block.match(/auth[a-z-]*\s+(\S+\([^)]*\)|\S+)/);
+    const encAlg = block.match(/\benc (\S+\([^)]*\)|\S+)/);
+    const lastUsed = block.match(/lastused ([\d-]+ [\d:]+)/);
+    const counters = block.match(/(\d+)\(bytes\),\s*(\d+)\(packets\)/);
+    return {
+      src: srcDst?.[1] ?? '',
+      dst: srcDst?.[2] ?? '',
+      spi: spi?.[1] ?? '',
+      authAlg: authAlg?.[1] ?? '',
+      encAlg: encAlg?.[1] ?? '',
+      lastUsed: lastUsed?.[1] ?? null,
+      bytes: counters ? parseInt(counters[1], 10) : 0,
+      packets: counters ? parseInt(counters[2], 10) : 0,
+    };
+  });
+}
+
+export interface RegisteredUserInfo {
+  // Every public identity (tel:/sip: form, MSISDN alias, etc) sharing this
+  // one Contact — PyHSS's Implicit Registration Set gives each real device
+  // 3 IMPU aliases in this deployment (confirmed live: 9 raw IMPU records
+  // for 3 physical phones), so grouping by Contact/Call-ID is what actually
+  // makes this readable as "who's registered" rather than triple-counting
+  // every device.
+  publicIdentities: string[];
+  state: string;
+  impi: string;
+  contact: string | null;
+  expiresSeconds: number | null;
+  callId: string | null;
+  userAgent: string | null;
+  received: string | null;
+}
+
+// Parses the text file `kamcmd ulscscf.snapshot <file>` writes — S-CSCF's
+// usrloc is db_mode=0/in-memory only (see Coding Standards / multiple
+// Decision Log entries), so this live dump is the only way to see current
+// registrations at all, there's nothing to query in scscf's own MariaDB
+// tables. Groups by Call-ID (falling back to Contact URI if Call-ID is
+// somehow absent) so one real registered device shows as one row with all
+// its IMPU aliases listed together, instead of one row per alias.
+function parseRegisteredUsersSnapshot(raw: string): RegisteredUserInfo[] {
+  const records = raw.split(/\.\.\.IMPU Record\(/).slice(1);
+  const byRegistration = new Map<string, RegisteredUserInfo>();
+  let unkeyedCounter = 0;
+  for (const rec of records) {
+    const publicIdentity = rec.match(/public_identity\s*:\s*'([^']*)'/)?.[1] ?? '';
+    const state = rec.match(/\bstate:\s*'([^']*)'/)?.[1] ?? '';
+    const impi = rec.match(/IMPI for subscription:\s*\[([^\]]*)\]/)?.[1] ?? '';
+    const contactBlocks = rec.split(/~~~Contact\(/).slice(1);
+    if (contactBlocks.length === 0) {
+      // Genuinely no contact (e.g. a barred/unregistered IMPU still present
+      // in the dump) — has no natural grouping key, keep as its own row.
+      byRegistration.set(`unkeyed-${unkeyedCounter++}`, {
+        publicIdentities: [publicIdentity], state, impi,
+        contact: null, expiresSeconds: null, callId: null, userAgent: null, received: null,
+      });
+      continue;
+    }
+    for (const cb of contactBlocks) {
+      const contactUri = cb.match(/\n\s*Contact\s*:\s*'([^']*)'/)?.[1] ?? null;
+      const expires = cb.match(/Expires\s*:\s*(\d+)/)?.[1];
+      const callId = cb.match(/Call-ID\s*:\s*'([^']*)'/)?.[1] ?? null;
+      const userAgent = cb.match(/User-Agent:\s*'([^']*)'/)?.[1] ?? null;
+      const received = cb.match(/\breceived\s*:\s*'([^']*)'/)?.[1] || null;
+      const key = callId ?? contactUri ?? `unkeyed-${unkeyedCounter++}`;
+      const existing = byRegistration.get(key);
+      if (existing) {
+        if (!existing.publicIdentities.includes(publicIdentity)) existing.publicIdentities.push(publicIdentity);
+      } else {
+        byRegistration.set(key, {
+          publicIdentities: [publicIdentity], state, impi,
+          contact: contactUri,
+          expiresSeconds: expires ? parseInt(expires, 10) : null,
+          callId, userAgent, received,
+        });
+      }
+    }
+  }
+  return Array.from(byRegistration.values());
 }
 
 export interface ImsConfigureInput {
@@ -1959,6 +2064,58 @@ export function createImsRouter(
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'ims status error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // GET /api/ims/live — real-time IPsec SA / registration / active-call
+  // view for the IMS page's "Live Status" tab. Every field here is read
+  // directly off the running system (no DB) — S-CSCF's own registrar is
+  // db_mode=0/in-memory only, so `kamcmd ulscscf.snapshot` is the only way
+  // to see current registrations at all, and IPsec SA byte/packet counters
+  // are the same live signal used throughout this project's own VoLTE
+  // debugging history to tell "registered" from "actually exchanging
+  // traffic." Three independent nsenter calls — one slow/failed source
+  // (e.g. S-CSCF not running) shouldn't blank out the other two, so each
+  // is caught and defaulted separately rather than failing the whole
+  // request.
+  router.get('/live', async (_req: Request, res: Response) => {
+    try {
+      const [ipsecRes, snapshotRes, dlgRes] = await Promise.allSettled([
+        nsenter('ip', ['-s', 'xfrm', 'state']),
+        (async () => {
+          const snapFile = `/tmp/kamailio-scscf-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+          await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.snapshot', snapFile]);
+          const hostSnapFile = `/proc/1/root${snapFile}`;
+          const content = fs.existsSync(hostSnapFile) ? fs.readFileSync(hostSnapFile, 'utf-8') : '';
+          await nsenter('rm', ['-f', snapFile]).catch(() => {});
+          return content;
+        })(),
+        nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'dlg2.list']),
+      ]);
+
+      const ipsecSas = ipsecRes.status === 'fulfilled' ? parseIpsecSaText(ipsecRes.value.stdout) : [];
+      const registeredUsers = snapshotRes.status === 'fulfilled' ? parseRegisteredUsersSnapshot(snapshotRes.value) : [];
+      let activeDialogs: Record<string, unknown> = {};
+      if (dlgRes.status === 'fulfilled') {
+        try { activeDialogs = (parseKamcmdOutput(dlgRes.value.stdout).Dialogs as Record<string, unknown>) ?? {}; }
+        catch { /* leave empty on unexpected shape rather than 500 the whole endpoint */ }
+      }
+
+      res.json({
+        success: true,
+        ipsecSas,
+        registeredUsers,
+        activeDialogCount: Object.keys(activeDialogs).length,
+        activeDialogs,
+        errors: {
+          ipsec: ipsecRes.status === 'rejected' ? String(ipsecRes.reason) : null,
+          registrations: snapshotRes.status === 'rejected' ? String(snapshotRes.reason) : null,
+          dialogs: dlgRes.status === 'rejected' ? String(dlgRes.reason) : null,
+        },
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'ims live status error');
       res.status(500).json({ success: false, error: String(err) });
     }
   });

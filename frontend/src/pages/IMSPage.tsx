@@ -4,12 +4,12 @@ import {
   CheckCircle, XCircle, RefreshCw,
   RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown,
   Play, Square, Globe, Shield, Database, Terminal, Trash2, Plus, X,
-  AlertTriangle, AlertCircle, Pencil,
+  AlertTriangle, AlertCircle, Pencil, Phone, Radio,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { imsApi, ImsConfigureInput } from '../api/ims';
-import type { ImsStatus, ValidationCheck, ImsConfigFile } from '../api/ims';
+import type { ImsStatus, ValidationCheck, ImsConfigFile, ImsLiveStatus } from '../api/ims';
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
@@ -826,6 +826,247 @@ function ConfigEditorTab() {
   );
 }
 
+// ── Live Status tab ──────────────────────────────────────────────────────────
+// Everything here is read directly off the running system on every load —
+// S-CSCF's own registrar is db_mode=0/in-memory only (see PROJECT_STATE.md's
+// Coding Standards), so `kamcmd ulscscf.snapshot` is the only way to see
+// current registrations at all, not a DB query. IPsec SA byte/packet
+// counters are the same live signal this project's own VoLTE debugging has
+// relied on throughout its history to tell "registered" from "actually
+// exchanging traffic" — a phone can show as registered with 0 bytes moved
+// if its P-CSCF association went stale after a restart.
+
+function formatExpiry(seconds: number | null): string {
+  if (seconds === null) return '—';
+  if (seconds <= 0) return 'expired';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function shortAor(uris: string[]): string {
+  // Prefer a tel: alias if present (most human-readable), else the first sip: one.
+  const tel = uris.find(u => u.startsWith('tel:'));
+  return (tel ?? uris[0] ?? '').replace(/^(tel:|sip:)/, '');
+}
+
+function LiveStatusTab() {
+  const [live, setLive] = useState<ImsLiveStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const d = await imsApi.getLive();
+      setLive(d);
+    } catch (err: any) {
+      toast.error('Failed to load live status: ' + String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const id = setInterval(() => load(true), 5000);
+    return () => clearInterval(id);
+  }, [autoRefresh, load]);
+
+  if (loading && !live) {
+    return (
+      <div className="flex items-center justify-center py-16 text-nms-text-dim text-sm">
+        <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading live status…
+      </div>
+    );
+  }
+
+  const users = live?.registeredUsers ?? [];
+  const sas = live?.ipsecSas ?? [];
+  const dialogCount = live?.activeDialogCount ?? 0;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-nms-text-dim">
+          Read directly from S-CSCF's live registrar, the host's IPsec SA table, and active dialogs —
+          not cached, not from a database.
+        </p>
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-nms-text-dim cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={e => setAutoRefresh(e.target.checked)}
+              className="accent-nms-accent"
+            />
+            Auto-refresh (5s)
+          </label>
+          <button onClick={() => load()} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className={clsx('w-3 h-3', loading && 'animate-spin')} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {/* Stat row */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="rounded-xl border border-nms-border bg-nms-surface p-4">
+          <div className="flex items-center gap-2 text-nms-text-dim text-xs font-medium uppercase tracking-wide">
+            <Users className="w-3.5 h-3.5" /> Registered
+          </div>
+          <p className="text-2xl font-semibold font-display mt-1">{users.length}</p>
+        </div>
+        <div className="rounded-xl border border-nms-border bg-nms-surface p-4">
+          <div className="flex items-center gap-2 text-nms-text-dim text-xs font-medium uppercase tracking-wide">
+            <Shield className="w-3.5 h-3.5" /> IPsec SAs
+          </div>
+          <p className="text-2xl font-semibold font-display mt-1">{sas.length}</p>
+        </div>
+        <div className="rounded-xl border border-nms-border bg-nms-surface p-4">
+          <div className="flex items-center gap-2 text-nms-text-dim text-xs font-medium uppercase tracking-wide">
+            <Phone className="w-3.5 h-3.5" /> Active Calls
+          </div>
+          <p className="text-2xl font-semibold font-display mt-1">{dialogCount}</p>
+        </div>
+      </div>
+
+      {/* Registered Users */}
+      <div>
+        <h3 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-2">
+          <Users className="w-4 h-4 text-nms-text-dim" /> Registered Users
+        </h3>
+        {live?.errors.registrations && (
+          <p className="text-xs text-red-400 mb-2">Couldn't read S-CSCF registrar: {live.errors.registrations}</p>
+        )}
+        {users.length === 0 ? (
+          <p className="text-xs text-nms-text-dim border border-nms-border rounded-lg px-3 py-4 text-center">
+            No registered users right now.
+          </p>
+        ) : (
+          <div className="border border-nms-border rounded-lg overflow-hidden overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-nms-surface-2 text-nms-text-dim">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">Identity</th>
+                  <th className="text-left px-3 py-2 font-medium">Device</th>
+                  <th className="text-left px-3 py-2 font-medium">Contact</th>
+                  <th className="text-left px-3 py-2 font-medium">Expires</th>
+                  <th className="text-left px-3 py-2 font-medium">Call-ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u, i) => (
+                  <tr key={u.callId ?? i} className="border-t border-nms-border">
+                    <td className="px-3 py-2">
+                      <div className="font-mono text-nms-text">{shortAor(u.publicIdentities)}</div>
+                      {u.publicIdentities.length > 1 && (
+                        <div className="text-[10px] text-nms-text-dim mt-0.5">
+                          +{u.publicIdentities.length - 1} more alias{u.publicIdentities.length > 2 ? 'es' : ''}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-nms-text-dim">{u.userAgent ?? '—'}</td>
+                    <td className="px-3 py-2 font-mono text-nms-text-dim truncate max-w-[280px]" title={u.contact ?? ''}>
+                      {u.contact ?? '—'}
+                    </td>
+                    <td className="px-3 py-2 text-nms-text-dim">{formatExpiry(u.expiresSeconds)}</td>
+                    <td className="px-3 py-2 font-mono text-nms-text-dim truncate max-w-[160px]" title={u.callId ?? ''}>
+                      {u.callId ?? '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* IPsec Security Associations */}
+      <div>
+        <h3 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-2">
+          <Shield className="w-4 h-4 text-nms-text-dim" /> IPsec Security Associations
+        </h3>
+        {live?.errors.ipsec && (
+          <p className="text-xs text-red-400 mb-2">Couldn't read IPsec state: {live.errors.ipsec}</p>
+        )}
+        {sas.length === 0 ? (
+          <p className="text-xs text-nms-text-dim border border-nms-border rounded-lg px-3 py-4 text-center">
+            No IPsec SAs right now.
+          </p>
+        ) : (
+          <div className="border border-nms-border rounded-lg overflow-hidden overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-nms-surface-2 text-nms-text-dim">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">Direction</th>
+                  <th className="text-left px-3 py-2 font-medium">SPI</th>
+                  <th className="text-left px-3 py-2 font-medium">Auth</th>
+                  <th className="text-left px-3 py-2 font-medium">Enc</th>
+                  <th className="text-right px-3 py-2 font-medium">Traffic</th>
+                  <th className="text-left px-3 py-2 font-medium">Last used</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sas.map((sa, i) => (
+                  <tr key={i} className="border-t border-nms-border">
+                    <td className="px-3 py-2 font-mono text-nms-text-dim">
+                      {sa.src} <span className="text-nms-text-dim">→</span> {sa.dst}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-nms-text-dim">{sa.spi}</td>
+                    <td className="px-3 py-2 text-nms-text-dim">{sa.authAlg || '—'}</td>
+                    <td className="px-3 py-2 text-nms-text-dim">
+                      {sa.encAlg}
+                      {sa.encAlg.includes('cipher_null') && (
+                        <span className="ml-1.5 text-[10px] text-nms-text-dim/70" title="Integrity-only IPsec — no payload encryption, by design of the ipsec-3gpp profile used here">
+                          (integrity-only)
+                        </span>
+                      )}
+                    </td>
+                    <td className={clsx('px-3 py-2 text-right font-mono', sa.packets === 0 ? 'text-amber-400' : 'text-nms-text')}>
+                      {sa.bytes.toLocaleString()}B / {sa.packets.toLocaleString()}pkt
+                    </td>
+                    <td className="px-3 py-2 text-nms-text-dim">{sa.lastUsed ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Active Calls */}
+      <div>
+        <h3 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-2">
+          <Phone className="w-4 h-4 text-nms-text-dim" /> Active Calls
+        </h3>
+        {live?.errors.dialogs && (
+          <p className="text-xs text-red-400 mb-2">Couldn't read active dialogs: {live.errors.dialogs}</p>
+        )}
+        {dialogCount === 0 ? (
+          <p className="text-xs text-nms-text-dim border border-nms-border rounded-lg px-3 py-4 text-center">
+            No active calls right now.
+          </p>
+        ) : (
+          <div className="border border-nms-border rounded-lg p-3 space-y-3">
+            {Object.entries(live!.activeDialogs).map(([key, dlg]) => (
+              <div key={key} className="rounded-lg bg-nms-surface-2 p-3">
+                <div className="flex items-center gap-2 text-xs font-mono text-nms-text mb-1.5">
+                  <Radio className="w-3.5 h-3.5 text-green-400 shrink-0" /> {key}
+                </div>
+                <pre className="text-[10px] text-nms-text-dim whitespace-pre-wrap break-all font-mono">
+                  {JSON.stringify(dlg, null, 2)}
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export function IMSPage() {
@@ -838,7 +1079,7 @@ export function IMSPage() {
   const [removeLog,         setRemoveLog]         = useState('');
   const [removing,          setRemoving]          = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [activeTab,  setActiveTab]  = useState<'overview' | 'configs'>('overview');
+  const [activeTab,  setActiveTab]  = useState<'overview' | 'live' | 'configs'>('overview');
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -1066,7 +1307,7 @@ export function IMSPage() {
 
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-nms-border">
-        {(['overview', 'configs'] as const).map(tab => (
+        {(['overview', 'live', 'configs'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -1077,7 +1318,7 @@ export function IMSPage() {
                 : 'border-transparent text-nms-text-dim hover:text-nms-text',
             )}
           >
-            {tab === 'overview' ? 'Overview' : 'Config Files'}
+            {tab === 'overview' ? 'Overview' : tab === 'live' ? 'Live Status' : 'Config Files'}
           </button>
         ))}
       </div>
@@ -1246,6 +1487,8 @@ export function IMSPage() {
           {s && s.installed && <DnsRecordsCard />}
           {s && s.installed && <ValidationCard />}
         </>
+      ) : activeTab === 'live' ? (
+        <LiveStatusTab />
       ) : (
         <ConfigEditorTab />
       )}

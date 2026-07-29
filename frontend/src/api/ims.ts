@@ -54,8 +54,39 @@ export interface ImsConfigFile {
   exists: boolean;
 }
 
+export interface IpsecSaInfo {
+  src: string;
+  dst: string;
+  spi: string;
+  authAlg: string;
+  encAlg: string;
+  lastUsed: string | null;
+  bytes: number;
+  packets: number;
+}
+
+export interface RegisteredUserInfo {
+  publicIdentities: string[];
+  state: string;
+  impi: string;
+  contact: string | null;
+  expiresSeconds: number | null;
+  callId: string | null;
+  userAgent: string | null;
+  received: string | null;
+}
+
+export interface ImsLiveStatus {
+  ipsecSas: IpsecSaInfo[];
+  registeredUsers: RegisteredUserInfo[];
+  activeDialogCount: number;
+  activeDialogs: Record<string, unknown>;
+  errors: { ipsec: string | null; registrations: string | null; dialogs: string | null };
+}
+
 export const imsApi = {
   getStatus:       async (): Promise<ImsStatus>         => { const { data } = await api.get('/status');            return data; },
+  getLive:         async (): Promise<ImsLiveStatus>     => { const { data } = await api.get('/live');              return data; },
   configure:       async (input: ImsConfigureInput)     => { const { data } = await api.post('/configure', input); return data; },
   syncSubscribers: async ()                             => { const { data } = await api.post('/sync-subscribers'); return data; },
   getDnsRecords:   async ()                             => { const { data } = await api.get('/dns-records');       return data; },

@@ -4,6 +4,32 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.32] - 2026-07-29
+
+### Added — IMS page: Live Status tab (IPsec SAs, registered users, active calls)
+
+A new "Live Status" tab on the IMS/VoLTE page, reading directly off the
+running system on every load (auto-refreshes every 5s, toggleable) — no
+database involved for any of it:
+
+- **Registered users**: dumped from S-CSCF's own live registrar via `kamcmd
+  ulscscf.snapshot` (its usrloc is `db_mode=0`/in-memory only, so this is
+  the only way to see current registrations at all). Groups by Call-ID so
+  one real device shows as one row with all its IMPU aliases together
+  (PyHSS's Implicit Registration Set gives each device 3 aliases in this
+  deployment — confirmed live, 9 raw records for 3 physical phones — showing
+  those as 9 separate rows would have been actively misleading).
+- **IPsec Security Associations**: parsed from `ip -s xfrm state`, including
+  live byte/packet counters per SA — the same signal this project's own
+  VoLTE debugging has relied on throughout its history to tell "registered"
+  from "actually exchanging traffic." A 0-packet SA is highlighted.
+- **Active calls**: from `kamcmd dlg2.list` (S-CSCF's active dialogs).
+
+Backend adds a small generic parser (`infrastructure/system/kamcmd-parser.ts`)
+for kamcmd's semi-structured `Key: Value` / `Key: { ... }` text output,
+reusable by any future feature that needs to query kamcmd rather than
+hand-writing a regex per command.
+
 ## [v2.0-beta_0.31] - 2026-07-29
 
 ### Added — IMS and PSTN Gateway now detect a stale config after an upgrade
