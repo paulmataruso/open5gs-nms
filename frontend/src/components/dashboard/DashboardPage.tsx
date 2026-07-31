@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall, Phone } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
-import { imsApi, type ImsStatus } from '../../api/ims';
+import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
@@ -128,6 +128,7 @@ export function DashboardPage(): JSX.Element {
   const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
   const [activeUes, setActiveUes] = useState<number | null>(null);
   const [imsStatus, setImsStatus] = useState<ImsStatus | null>(null);
+  const [imsCallStats, setImsCallStats] = useState<ImsCallStats | null>(null);
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
@@ -196,7 +197,15 @@ export function DashboardPage(): JSX.Element {
     };
     fetchGtpBandwidth();
     const gtpInterval = setInterval(fetchGtpBandwidth, 3000);
-    return () => clearInterval(gtpInterval);
+    // IMS call stats — backend samples this continuously in the background
+    // (active calls + durable cumulative total), poll it the same way as GTP
+    // bandwidth so the IMS Status card stays live without a full page refresh.
+    const fetchImsCallStats = () => {
+      imsApi.getCallStats().then(setImsCallStats).catch(() => {});
+    };
+    fetchImsCallStats();
+    const callStatsInterval = setInterval(fetchImsCallStats, 5000);
+    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); };
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
@@ -385,8 +394,14 @@ export function DashboardPage(): JSX.Element {
             </div>
           </div>
 
-          <div className="nms-card animate-fade-in">
-            <div className="flex items-start justify-between">
+          {/* IMS Status card — split: service/registrar health on top, call
+              volume (live + durable cumulative) on bottom. The bottom half
+              is fed by the backend's ImsCallStatsMonitor background sampler
+              (call-stats-monitor.ts), not computed here — S-CSCF's own
+              cumulative dialog stat resets on every kamailio-scscf restart,
+              so "total calls placed" has to be persisted server-side. */}
+          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+            <div className="flex items-start justify-between p-4">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">IMS Status</p>
                 <div className="flex items-center gap-2 mt-1">
@@ -405,6 +420,21 @@ export function DashboardPage(): JSX.Element {
               </div>
               <div className="p-2.5 rounded-lg bg-nms-accent/10">
                 <PhoneCall className="w-5 h-5 text-nms-accent" />
+              </div>
+            </div>
+            <div className="flex items-start justify-between p-4">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">Call Volume</p>
+                <p className="text-2xl font-semibold font-display mt-1">
+                  {imsCallStats?.activeCalls ?? '—'}
+                </p>
+                <p className="text-xs text-nms-text-dim mt-1">
+                  active
+                  <span className="ml-2 text-nms-accent">{imsCallStats?.totalCallsPlaced ?? 0} placed total</span>
+                </p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                <Phone className="w-5 h-5 text-nms-accent" />
               </div>
             </div>
           </div>

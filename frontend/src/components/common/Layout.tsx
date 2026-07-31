@@ -32,7 +32,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'time-server', label: 'Time Server',   icon: Clock     },
   { id: 'frr', label: 'L3 Routing', icon: GitBranch },
   { id: 'bind', label: 'DNS (BIND9)', icon: Globe },
-  ...(FEATURES.sms ? [{ id: 'sms', label: 'SMS', icon: MessageSquare }] : []),
+  ...(FEATURES.sms ? [{ id: 'sms', label: FEATURES.mms ? 'SMS/MMS' : 'SMS', icon: MessageSquare }] : []),
   ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
   ...(FEATURES.pstn ? [{ id: 'pstn', label: 'PSTN Gateway', icon: PhoneCall, beta: true }] : []),
   ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),

@@ -6,6 +6,7 @@ export interface PstnStatus {
   installed: boolean;
   services: { asterisk: boolean; 'kamailio-scscf': boolean };
   codecAmrLoaded: boolean;
+  imsInstalled: boolean;
   imsConfigured: boolean;
   hasSavedConfig: boolean;
   dispatcherWired: boolean;

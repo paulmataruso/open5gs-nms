@@ -25,6 +25,7 @@ export interface ImsStatus {
   appVersion: string;
   configuredWithVersion?: string;
   configStale: boolean;
+  smsDeliveryMode: 'sgs' | 'ims';
 }
 
 export interface ImsConfigureInput {
@@ -84,9 +85,16 @@ export interface ImsLiveStatus {
   errors: { ipsec: string | null; registrations: string | null; dialogs: string | null };
 }
 
+export interface ImsCallStats {
+  activeCalls: number;
+  totalCallsPlaced: number;
+  sampledAt: number;
+}
+
 export const imsApi = {
   getStatus:       async (): Promise<ImsStatus>         => { const { data } = await api.get('/status');            return data; },
   getLive:         async (): Promise<ImsLiveStatus>     => { const { data } = await api.get('/live');              return data; },
+  getCallStats:    async (): Promise<ImsCallStats>      => { const { data } = await api.get('/call-stats');       return data; },
   configure:       async (input: ImsConfigureInput)     => { const { data } = await api.post('/configure', input); return data; },
   syncSubscribers: async ()                             => { const { data } = await api.post('/sync-subscribers'); return data; },
   getDnsRecords:   async ()                             => { const { data } = await api.get('/dns-records');       return data; },
@@ -94,6 +102,7 @@ export const imsApi = {
   enable:          async ()                             => { const { data } = await api.post('/enable');            return data; },
   disable:         async ()                             => { const { data } = await api.post('/disable');           return data; },
   restart:         async ()                             => { const { data } = await api.post('/restart');           return data; },
+  setSmsDeliveryMode: async (mode: 'sgs' | 'ims')       => { const { data } = await api.post('/sms-delivery-mode', { mode }); return data; },
   install:         () => fetch('/api/ims/install', {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },

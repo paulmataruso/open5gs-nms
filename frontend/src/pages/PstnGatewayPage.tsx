@@ -531,13 +531,19 @@ export function PstnGatewayPage() {
               </h2>
               <p className="text-xs text-nms-text-dim mt-1">
                 Installs <span className="font-mono">asterisk asterisk-modules</span> on the host via apt,
-                disables the deprecated chan_sip module, and verifies AMR-WB codec support.
+                disables the deprecated chan_sip module, and verifies AMR-WB codec support. Requires IMS to
+                already be installed — PSTN Gateway is built entirely on top of IMS's Kamailio signaling chain.
               </p>
             </div>
-            <button onClick={handleInstall} disabled={acting} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
+            <button onClick={handleInstall} disabled={acting || !status?.imsInstalled} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
               <Terminal className="w-4 h-4" /> {acting ? 'Installing…' : 'Install Asterisk'}
             </button>
           </div>
+          {!status?.imsInstalled && (
+            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+              IMS is not installed yet — install IMS on the IMS page first.
+            </p>
+          )}
           {streamLog && <LogTerminal lines={streamLog} />}
         </div>
       )}

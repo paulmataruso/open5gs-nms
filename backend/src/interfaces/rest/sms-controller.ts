@@ -70,6 +70,36 @@ print(drain().decode(errors='replace'))
 s.close()
 `;
 
+// Registers/updates one SMPP ESME on the live osmo-msc VTY, then persists it
+// to disk with the VTY's own `write` command — applies instantly with no
+// osmo-msc restart (confirmed live: adding/removing an esme this way takes
+// effect immediately, no SMS-service interruption), and `write` writes the
+// running-config back to the same file osmo-msc was launched with, so a
+// future restart (of osmo-msc itself, or the host) doesn't lose it. argv-only,
+// same injection-safe pattern as VTY_SEND_SMS_SCRIPT above.
+const VTY_UPSERT_ESME_SCRIPT = `
+import socket, sys, time
+host, port, name, password = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+s = socket.create_connection((host, port), timeout=5)
+s.settimeout(2)
+def drain():
+    out = b''
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk: break
+            out += chunk
+    except socket.timeout:
+        pass
+    return out
+drain()
+for cmd in ['enable', 'configure terminal', 'smpp', 'esme ' + name, 'password ' + password, 'dcs-transparent', 'end', 'write']:
+    s.sendall((cmd + '\\r\\n').encode())
+    time.sleep(0.3)
+print(drain().decode(errors='replace'))
+s.close()
+`;
+
 // ─── Config templates ──────────────────────────────────────────────────────────
 
 function osmostpCfg(): string {
@@ -110,6 +140,18 @@ function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: stri
   // Note: osmo-msc v1.9.0 does not accept 'mncc-internal' under 'msc' — omit that line,
   // but 'assign-tmsi' alone under 'msc' is accepted fine (TMSI allocation for identity
   // privacy on the SGs link — was dropped along with the rejected mncc-internal line).
+  //
+  // Deliberately never writes an `smpp`/`esme` block to this file: osmo-msc's
+  // own VTY `write` command strips the `password` line from any esme it
+  // saves, and — confirmed the hard way, live, causing a real osmo-msc
+  // crash-loop — re-adding a `password` line to the static config file makes
+  // osmo-msc FATAL-error on startup ("Failed to parse the config file"). The
+  // esme/password pair can only ever be set interactively over the VTY (see
+  // upsertSmppEsme() below), never persisted to disk. This is a deliberate
+  // upstream behavior (avoids a live secret sitting in a plaintext config
+  // dump), not a gap to route around — any module needing SMPP (e.g. MMS)
+  // must re-apply its ESME live after every osmo-msc process start, not rely
+  // on it surviving in this file.
   const epcDomain = `epc.mnc${mnc.padStart(3, '0')}.mcc${mcc}.3gppnetwork.org`;
   return `log stderr
  logging filter all 1
@@ -330,7 +372,6 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
   // Write Osmocom config files
   fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
   fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-stp.cfg`, osmostpCfg(), 'utf-8');
-  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-hlr.cfg`, osmohlrCfg(hlrBindIp), 'utf-8');
   fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-msc.cfg`, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp), 'utf-8');
 
   // Update MME sgsap section — preserve any other PLMN's existing map
@@ -352,6 +393,149 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
   await nsenter('systemctl', ['restart', 'open5gs-mmed']);
 
   return { mcc, mnc, tac };
+}
+
+// Registers (or updates) one SMPP ESME on osmo-msc — this is the "SGs
+// delivery path" primitive: any module that needs to submit MT messages
+// (incl. binary/UDH WAP Push) through osmo-msc's SMSC calls this to get
+// itself authenticated, rather than editing osmo-msc.cfg directly. Requires
+// SMS (SGs) to already be configured (osmo-msc.cfg must exist).
+function requireEsmeName(name: string): void {
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) {
+    throw new Error('esme name must be 1-32 characters, alphanumeric/underscore/hyphen only');
+  }
+}
+
+// Reads the osmo-msc VTY bind address out of the live osmo-msc.cfg. Throws if
+// SMS (SGs) hasn't been configured yet — every SMPP primitive in this file
+// requires that to already exist.
+function getMscVtyHost(): string {
+  const mscCfgPath = `${HOST_OSMOCOM_DIR}/osmo-msc.cfg`;
+  if (!fs.existsSync(mscCfgPath)) {
+    throw new Error('osmo-msc.cfg not found — configure SMS (SGs) before enabling SMPP');
+  }
+  const raw = fs.readFileSync(mscCfgPath, 'utf-8');
+  return raw.match(/line vty[\s\S]*?\n\s*bind\s+(\S+)/)?.[1] ?? '127.0.0.1';
+}
+
+export async function upsertSmppEsme(name: string, password: string): Promise<{ success: boolean; output: string }> {
+  requireEsmeName(name);
+  // Max 8: SMPP 3.4's bind PDU password field is capped at 8 characters by
+  // the protocol spec itself — osmo-msc's VTY will accept a longer string
+  // with no complaint (it isn't SMPP-PDU-encoded at that point), but any real
+  // SMPP client's bind attempt then fails at the wire level ("Data length is
+  // invalid"), confirmed live. Enforce the real limit here instead of only
+  // discovering it later via a mysteriously-never-connecting ESME.
+  if (!/^[A-Za-z0-9_-]{4,8}$/.test(password)) {
+    throw new Error('esme password must be 4-8 characters (SMPP 3.4 bind PDU limit), alphanumeric/underscore/hyphen only');
+  }
+  const vtyHost = getMscVtyHost();
+
+  const { stdout, stderr } = await nsenter(
+    'python3',
+    ['-c', VTY_UPSERT_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name, password],
+    10000,
+  );
+  const output = (stdout + stderr).trim();
+  const success = !/% ?Unknown command|%Command incomplete|Connection refused|Traceback/i.test(output);
+
+  // Deliberately does NOT persist this to osmo-msc.cfg — see osmomscCfg()'s
+  // header comment. This VTY apply is live-only: it takes effect instantly
+  // with no restart, but does not survive a future osmo-msc restart for any
+  // reason (manual, host reboot, etc). The caller is responsible for calling
+  // this again after any osmo-msc restart it becomes aware of.
+  return { success, output };
+}
+
+const VTY_CHECK_ESME_SCRIPT = `
+import socket, sys, time
+host, port, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+s = socket.create_connection((host, port), timeout=5)
+s.settimeout(2)
+def drain():
+    out = b''
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk: break
+            out += chunk
+    except socket.timeout:
+        pass
+    return out
+drain()
+s.sendall(b'enable\\r\\n')
+time.sleep(0.3)
+drain()
+s.sendall(b'show running-config\\r\\n')
+time.sleep(0.3)
+out = drain().decode(errors='replace')
+lines = [l.strip() for l in out.splitlines()]
+print('ESME_FOUND' if ('esme ' + name) in lines else 'ESME_MISSING')
+s.close()
+`;
+
+// Checks whether an ESME is CURRENTLY bound-capable on the live osmo-msc VTY
+// (i.e. survived since it was last applied via upsertSmppEsme()). Needed
+// because the password never persists across an osmo-msc restart (see
+// upsertSmppEsme()'s comment) — any module relying on SMPP should poll this
+// and re-call upsertSmppEsme() if it comes back false, rather than assuming
+// a one-time Configure-time apply is enough forever.
+export async function isSmppEsmeActive(name: string): Promise<boolean> {
+  requireEsmeName(name);
+  let vtyHost: string;
+  try {
+    vtyHost = getMscVtyHost();
+  } catch {
+    return false;
+  }
+  try {
+    const { stdout } = await nsenter(
+      'python3',
+      ['-c', VTY_CHECK_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name],
+      10000,
+    );
+    return stdout.includes('ESME_FOUND');
+  } catch {
+    return false;
+  }
+}
+
+const VTY_REMOVE_ESME_SCRIPT = `
+import socket, sys, time
+host, port, name = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+s = socket.create_connection((host, port), timeout=5)
+s.settimeout(2)
+def drain():
+    out = b''
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk: break
+            out += chunk
+    except socket.timeout:
+        pass
+    return out
+drain()
+for cmd in ['enable', 'configure terminal', 'smpp', 'no esme ' + name, 'end', 'write']:
+    s.sendall((cmd + '\\r\\n').encode())
+    time.sleep(0.3)
+print(drain().decode(errors='replace'))
+s.close()
+`;
+
+// Removes an ESME from osmo-msc, live, no restart — the uninstall-time
+// counterpart to upsertSmppEsme().
+export async function removeSmppEsme(name: string): Promise<{ success: boolean; output: string }> {
+  requireEsmeName(name);
+  const vtyHost = getMscVtyHost();
+  const { stdout, stderr } = await nsenter(
+    'python3',
+    ['-c', VTY_REMOVE_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name],
+    10000,
+  );
+  const output = (stdout + stderr).trim();
+  const success = !/% ?Unknown command|%Command incomplete|Connection refused|Traceback/i.test(output);
+  return { success, output };
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────────

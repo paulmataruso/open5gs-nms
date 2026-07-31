@@ -118,7 +118,14 @@ export type AuditAction =
   | 'ims_test_number_create'
   | 'ims_test_number_stop'
   | 'ims_test_number_call'
-  | 'ims_test_number_hangup';
+  | 'ims_test_number_hangup'
+  | 'mms_install'
+  | 'mms_uninstall'
+  | 'mms_configure'
+  | 'mms_start'
+  | 'mms_stop'
+  | 'mms_restart'
+  | 'mms_sync_subscribers';
 
 export interface AuditLogEntry {
   id: string;

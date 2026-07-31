@@ -2,12 +2,18 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   MessageSquare, CheckCircle, XCircle, AlertCircle, RefreshCw,
   Terminal, RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown, Send, Trash2,
+  Image, ExternalLink, Link2, Smartphone, Download,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import Editor from '@monaco-editor/react';
 import { smsApi, SmsConfigureInput } from '../api/sms';
 import type { SmsStatus, SmsConfigFile } from '../api/sms';
+import { mmsApi } from '../api/mms';
+import type { MmsStatus } from '../api/mms';
+import { imsApi } from '../api/ims';
+import type { ImsStatus } from '../api/ims';
+import { FEATURES } from '../config/features';
 
 function LogTerminal({ lines }: { lines: string }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -277,7 +283,479 @@ function SmsConfigEditor() {
   );
 }
 
+// VectorCore's own admin API has zero auth of its own (confirmed live) — the
+// backend proxies its JSON endpoints read-only at /api/mms/admin/*. Its
+// embedded web UI is a full SPA though, and reverse-proxying a third-party
+// SPA under an nginx subpath is its own can of worms (asset/router paths
+// baked in absolute at build time) — same reasoning this project already
+// applies to Grafana/Prometheus (MetricsPage.tsx links directly to
+// http://<host>:<port> rather than proxying them), so this does the same:
+// direct link to the host's own port, not a proxied path.
+const VC_ADMIN_PORT = 8090; // matches mms-controller.ts's API_PORT
+
+function VectorCoreAdminLinks() {
+  const links: Array<{ label: string; href: string; desc: string }> = [
+    { label: 'Admin Web UI (VectorCore\'s own)', href: `http://${window.location.hostname}:${VC_ADMIN_PORT}/`, desc: 'Full embedded SPA — messages, peers, VASPs, SMPP upstreams, adaptation classes' },
+    { label: 'Messages API', href: '/api/mms/admin/api/v1/messages', desc: 'GET /api/v1/messages' },
+    { label: 'SMPP Upstreams API', href: '/api/mms/admin/api/v1/smpp/upstreams', desc: 'GET /api/v1/smpp/upstreams' },
+    { label: 'Health', href: '/api/mms/admin/healthz', desc: 'GET /healthz' },
+    { label: 'Metrics (Prometheus)', href: '/api/mms/admin/metrics', desc: 'GET /metrics' },
+  ];
+  return (
+    <div className="nms-card">
+      <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+        <Link2 className="w-4 h-4 text-nms-accent" /> VectorCore MMSC — Direct Links
+      </h2>
+      <p className="text-xs text-nms-text-dim mb-4">
+        VectorCore MMSC has its own real admin UI and JSON API — this page doesn't reimplement them, it links straight out.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {links.map(l => (
+          <a key={l.href} href={l.href} target="_blank" rel="noopener noreferrer"
+            className="flex items-start justify-between gap-2 px-3 py-2 rounded-lg border border-nms-border bg-nms-bg/50 hover:border-nms-accent/40 transition-colors group">
+            <div>
+              <p className="text-sm font-medium text-nms-text group-hover:text-nms-accent transition-colors">{l.label}</p>
+              <p className="text-xs text-nms-text-dim font-mono mt-0.5">{l.desc}</p>
+            </div>
+            <ExternalLink className="w-3.5 h-3.5 text-nms-text-dim shrink-0 mt-0.5" />
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Shared between both tabs, rendered directly under each tab's own header —
+// same position on the page either way (matches the Spectrum Access System
+// page's layout: header with title+actions first, tabs directly below it).
+function ModuleTabBar({ pageTab, setPageTab }: { pageTab: 'sms' | 'mms'; setPageTab: (t: 'sms' | 'mms') => void }) {
+  return (
+    <div className="flex border-b border-nms-border">
+      {([
+        { id: 'sms' as const, label: 'SMS (SGs)', Icon: MessageSquare },
+        { id: 'mms' as const, label: 'MMS',        Icon: Image },
+      ]).map(({ id, label, Icon }) => (
+        <button key={id} onClick={() => setPageTab(id)}
+          className={clsx('flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
+            pageTab === id
+              ? 'border-nms-accent text-nms-accent'
+              : 'border-transparent text-nms-text-dim hover:text-nms-text'
+          )}>
+          <Icon className="w-4 h-4" /> {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function MmsTab({ pageTab, setPageTab }: { pageTab: 'sms' | 'mms'; setPageTab: (t: 'sms' | 'mms') => void }) {
+  const [status,     setStatus]     = useState<MmsStatus | null>(null);
+  const [loading,    setLoading]    = useState(true);
+  const [acting,     setActing]     = useState(false);
+  const [streamLog,  setStreamLog]  = useState('');
+  const [syncResult, setSyncResult] = useState<{ synced: number; failed: string[]; removed: number } | null>(null);
+  const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallLog, setUninstallLog] = useState('');
+  const [mm1PublicIp, setMm1PublicIp] = useState('');
+  const [mobileconfigApn, setMobileconfigApn] = useState('internet');
+  const [mobileconfigMmscUrl, setMobileconfigMmscUrl] = useState('');
+  const cfgSeeded = useRef(false);
+  const mobileconfigSeeded = useRef(false);
+
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const s = await mmsApi.getStatus();
+      setStatus(s);
+      if (!cfgSeeded.current && s.currentConfig?.mm1PublicIp) {
+        setMm1PublicIp(s.currentConfig.mm1PublicIp);
+        cfgSeeded.current = true;
+      }
+      if (!mobileconfigSeeded.current && s.currentConfig?.mm1PublicIp) {
+        setMobileconfigMmscUrl(`http://${s.currentConfig.mm1PublicIp}:8002/mms/retrieve`);
+        mobileconfigSeeded.current = true;
+      }
+    } catch (err: any) {
+      if (!silent) toast.error(`Status fetch failed: ${err.message}`);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const iv = setInterval(() => load(true), 10_000);
+    return () => clearInterval(iv);
+  }, [load]);
+
+  const handleInstall = async () => {
+    setActing(true);
+    setStreamLog('');
+    try {
+      const resp   = await mmsApi.install();
+      const reader = resp.body?.getReader();
+      const dec    = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          setStreamLog(prev => prev + dec.decode(value));
+        }
+      }
+      await load(true);
+    } catch (err: any) {
+      toast.error(`Install failed: ${err.message}`);
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handleUninstall = async () => {
+    setShowUninstallConfirm(false);
+    setUninstalling(true);
+    setUninstallLog('');
+    try {
+      const resp = await mmsApi.uninstall();
+      const reader = resp.body?.getReader();
+      const dec = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          setUninstallLog(prev => prev + dec.decode(value, { stream: true }));
+        }
+      }
+      toast.success('MMS removed');
+      await load(true);
+    } catch (err: any) {
+      toast.error(`Uninstall failed: ${err.message}`);
+    } finally {
+      setUninstalling(false);
+    }
+  };
+
+  const handleConfigure = async () => {
+    setActing(true);
+    try {
+      await mmsApi.configure(mm1PublicIp);
+      toast.success('VectorCore MMSC configured and wired to osmo-msc via SMPP');
+      await load(true);
+    } catch (err: any) {
+      toast.error(`Configure failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setActing(true);
+    setSyncResult(null);
+    try {
+      const r = await mmsApi.syncSubscribers();
+      setSyncResult(r);
+      toast.success(`Synced ${r.synced} subscriber${r.synced !== 1 ? 's' : ''}${r.removed ? ` · removed ${r.removed} stale` : ''}`);
+      await load(true);
+    } catch (err: any) {
+      toast.error(`Sync failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handleSvcAction = async (action: 'start' | 'stop' | 'restart') => {
+    setActing(true);
+    try {
+      await mmsApi[action]();
+      toast.success(`VectorCore MMSC ${action}ed`);
+      await load(true);
+    } catch (err: any) {
+      toast.error(`${action} failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setActing(false);
+    }
+  };
+
+  if (loading) return (
+    <div className="flex items-center justify-center h-64 text-nms-text-dim">
+      <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading MMS status…
+    </div>
+  );
+
+  const installed = status?.installed ?? false;
+
+  return (
+    <>
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold font-display">MMS</h1>
+          <p className="text-sm text-nms-text-dim mt-1">Multimedia Messaging via VectorCore MMSC — delivery notifications ride on the SMS (SGs) SMPP interface</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {installed && (
+            <>
+              <button onClick={() => handleSvcAction('start')} disabled={acting}
+                className="nms-btn-ghost flex items-center gap-2 text-sm text-green-400 border-green-500/20 hover:border-green-500/40">
+                <CheckCircle className="w-4 h-4" /> Start
+              </button>
+              <button onClick={() => handleSvcAction('stop')} disabled={acting}
+                className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400 border-red-500/20 hover:border-red-500/40">
+                <XCircle className="w-4 h-4" /> Stop
+              </button>
+              <button onClick={() => handleSvcAction('restart')} disabled={acting}
+                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400 border-amber-500/20 hover:border-amber-500/40">
+                <RotateCw className={`w-4 h-4 ${acting ? 'animate-spin' : ''}`} /> Restart
+              </button>
+              <button onClick={() => setShowUninstallConfirm(true)} disabled={acting || uninstalling}
+                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                <Trash2 className="w-4 h-4" /> Uninstall
+              </button>
+              <div className="w-px h-6 bg-nms-border" />
+            </>
+          )}
+          <button onClick={() => load()} className="nms-btn-ghost flex items-center gap-2 text-sm">
+            <RefreshCw className="w-4 h-4" /> Refresh
+          </button>
+        </div>
+      </div>
+
+      {FEATURES.mms && <ModuleTabBar pageTab={pageTab} setPageTab={setPageTab} />}
+
+      {showUninstallConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-nms-surface border border-nms-border rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <Trash2 className="w-5 h-5 text-red-400 shrink-0" />
+              <h2 className="text-base font-semibold text-nms-text">Uninstall MMS</h2>
+            </div>
+            <p className="text-sm text-nms-text-dim mb-3 leading-relaxed">This completely removes VectorCore MMSC and all traces of it:</p>
+            <ul className="text-xs text-nms-text-dim space-y-1 mb-4 pl-4 list-disc">
+              <li>Stop and disable the vectorcore-smsc service</li>
+              <li>Remove the SMPP ESME from osmo-msc</li>
+              <li>Delete the systemd unit</li>
+              <li>Delete /opt/vectorcore entirely — binary, database, and stored media</li>
+            </ul>
+            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 mb-5">
+              This does not touch SMS (SGs) itself, only the MMS layer on top of it. Cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowUninstallConfirm(false)} className="flex-1 nms-btn-ghost text-sm py-2">Cancel</button>
+              <button onClick={handleUninstall} className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm font-semibold hover:bg-red-500/20 transition-colors">
+                <Trash2 className="w-3.5 h-3.5" /> Uninstall
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(uninstalling || uninstallLog) && (
+        <div className="nms-card">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Trash2 className="w-4 h-4 text-red-400" />
+              <span className="text-sm font-semibold text-nms-text">Uninstall Log</span>
+              {uninstalling && <span className="text-xs text-amber-400 animate-pulse">running…</span>}
+            </div>
+            {!uninstalling && <button onClick={() => setUninstallLog('')} className="nms-btn-ghost text-xs">Clear</button>}
+          </div>
+          <LogTerminal lines={uninstallLog} />
+        </div>
+      )}
+
+      {status?.configStale && (
+        <div className="nms-card border-blue-500/30 bg-blue-500/5 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-blue-300">Configuration out of date</p>
+            <p className="text-xs text-nms-text-dim mt-0.5">
+              This deployment was configured by an older version ({status.configuredWithVersion ?? 'unknown'}, running {status.appVersion}).
+              Click Configure below to regenerate with the current template.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Status panel */}
+      <div className={`nms-card ${!installed ? 'border-amber-500/30 bg-amber-500/5' : status?.healthy ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
+        <div className="flex items-start justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-3">
+            {!installed
+              ? <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+              : status?.healthy
+                ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
+                : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
+            }
+            <div>
+              <p className="text-sm font-semibold">
+                {!installed ? 'VectorCore MMSC not installed' : status?.healthy ? 'Running and healthy' : status?.serviceActive ? 'Running but not responding' : 'Stopped'}
+              </p>
+              <p className="text-xs text-nms-text-dim mt-0.5">
+                IMS: {status?.imsConfigured ? 'configured' : 'not configured'} · SMS (SGs): {status?.smsConfigured ? 'configured' : 'not configured — configure it on the SMS (SGs) tab first'}
+              </p>
+            </div>
+          </div>
+          {installed && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <SvcBadge label="vectorcore-smsc" active={!!status?.serviceActive} />
+              <SvcBadge label="SMPP ESME" active={!!status?.esmeActive} />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Install card */}
+      {!installed && (
+        <div className="nms-card">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-nms-accent" /> Install VectorCore MMSC
+              </h2>
+              <p className="text-xs text-nms-text-dim mt-1">
+                Builds VectorCore MMSC from source (Go toolchain + embedded web UI) and installs it as a host service. Can take a few minutes.
+                Requires IMS to already be installed — MMS relies on IMS being the default SMS delivery path for a fully working deployment.
+              </p>
+            </div>
+            <button onClick={handleInstall} disabled={acting || !status?.imsInstalled} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
+              <Terminal className="w-4 h-4" />
+              {acting ? 'Installing…' : 'Install'}
+            </button>
+          </div>
+          {!status?.imsInstalled && (
+            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+              IMS is not installed yet — install IMS on the IMS page first.
+            </p>
+          )}
+          {streamLog && <LogTerminal lines={streamLog} />}
+        </div>
+      )}
+
+      {/* Configure card */}
+      {installed && (
+        <div className="nms-card">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+            <Settings className="w-4 h-4 text-nms-accent" /> Configure
+          </h2>
+          <p className="text-xs text-nms-text-dim mb-4">
+            Writes VectorCore's config, registers its SMPP link to osmo-msc, and wires it up. Requires IMS and SMS (SGs) to already be configured.
+          </p>
+          {(!status?.imsConfigured || !status?.smsConfigured) && (
+            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 mb-4">
+              {!status?.imsConfigured && !status?.smsConfigured
+                ? 'IMS and SMS (SGs) are not configured yet — configure both first.'
+                : !status?.imsConfigured
+                  ? 'IMS is not configured yet — configure IMS first.'
+                  : 'SMS (SGs) is not configured yet — configure it on the SMS (SGs) tab first.'}
+            </p>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+            <div>
+              <label className="nms-label flex items-center gap-1.5">
+                <Network className="w-3 h-3" /> MM1 public IP
+              </label>
+              <input
+                value={mm1PublicIp}
+                onChange={e => setMm1PublicIp(e.target.value)}
+                placeholder="10.0.1.178"
+                className="nms-input font-mono text-xs mt-1"
+              />
+              <p className="text-xs text-nms-text-dim mt-1">IP real handsets can reach this host on — same address used for other UE-facing services (e.g. P-CSCF)</p>
+            </div>
+          </div>
+          <button onClick={handleConfigure} disabled={acting || !mm1PublicIp || !status?.imsConfigured || !status?.smsConfigured} className="nms-btn-primary flex items-center gap-2 text-sm">
+            <Settings className="w-4 h-4" />
+            {acting ? 'Configuring…' : 'Configure'}
+          </button>
+        </div>
+      )}
+
+      {/* Subscriber sync card */}
+      {installed && (
+        <div className="nms-card">
+          <div className="flex items-start justify-between flex-wrap gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+                <Users className="w-4 h-4 text-nms-accent" /> Subscriber Sync
+              </h2>
+              <p className="text-xs text-nms-text-dim">
+                Push MSISDNs from Open5GS MongoDB into VectorCore so it knows which numbers can send/receive MMS.
+              </p>
+              {syncResult && (
+                <p className={`text-xs mt-2 font-mono ${syncResult.failed.length ? 'text-amber-400' : 'text-green-400'}`}>
+                  Synced {syncResult.synced}
+                  {(syncResult.removed ?? 0) > 0 && ` · Removed ${syncResult.removed} stale`}
+                  {syncResult.failed.length > 0 && ` · Failed: ${syncResult.failed.join(', ')}`}
+                </p>
+              )}
+            </div>
+            <button onClick={handleSync} disabled={acting} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
+              <Users className="w-4 h-4" />
+              {acting ? 'Syncing…' : 'Sync Now'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* iPhone MMS settings profile */}
+      {installed && (
+        <div className="nms-card">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+            <Smartphone className="w-4 h-4 text-nms-accent" /> iPhone MMS Settings Profile
+          </h2>
+          <p className="text-xs text-nms-text-dim mb-4">
+            iOS hides the manual APN/MMSC settings screen on most SIMs — a Configuration Profile is the
+            reliable way to set these on a real iPhone. Download it here, then AirDrop/email/Message it to
+            the subscriber's phone (same "Review Profile" install flow either way) — Settings will prompt to
+            install it, then Settings &gt; General &gt; VPN &amp; Device Management to confirm.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+            <div>
+              <label className="nms-label">APN name</label>
+              <input
+                value={mobileconfigApn}
+                onChange={e => setMobileconfigApn(e.target.value)}
+                placeholder="internet"
+                className="nms-input font-mono text-xs mt-1"
+              />
+            </div>
+            <div>
+              <label className="nms-label flex items-center gap-1.5">
+                <Network className="w-3 h-3" /> MMSC URL
+              </label>
+              <input
+                value={mobileconfigMmscUrl}
+                onChange={e => setMobileconfigMmscUrl(e.target.value)}
+                placeholder={`http://${mm1PublicIp || '10.0.1.178'}:8002/mms/retrieve`}
+                className="nms-input font-mono text-xs mt-1"
+              />
+            </div>
+          </div>
+          <a
+            href={`/api/mms/mobileconfig?apn=${encodeURIComponent(mobileconfigApn || 'internet')}${mobileconfigMmscUrl ? `&mmscUrl=${encodeURIComponent(mobileconfigMmscUrl)}` : ''}`}
+            className="nms-btn-primary inline-flex items-center gap-2 text-sm"
+          >
+            <Download className="w-4 h-4" /> Download .mobileconfig
+          </a>
+        </div>
+      )}
+
+      {installed && <VectorCoreAdminLinks />}
+
+      {/* Empty state */}
+      {!installed && !streamLog && (
+        <div className="nms-card border-dashed border-nms-border text-center py-10">
+          <Image className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
+          <p className="text-sm text-nms-text-dim">VectorCore MMSC is not installed on this host.</p>
+          <p className="text-xs text-nms-text-dim mt-1">Click <strong>Install</strong> above to build it from source.</p>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function SMSPage() {
+  const [pageTab,    setPageTab]    = useState<'sms' | 'mms'>('sms');
   const [activeTab,  setActiveTab]  = useState<'overview' | 'configs'>('overview');
   const [status,     setStatus]     = useState<SmsStatus | null>(null);
   const [loading,    setLoading]    = useState(true);
@@ -287,6 +765,14 @@ export function SMSPage() {
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallLog, setUninstallLog] = useState('');
+
+  // SMS delivery-mode selector (SMS over IMS vs SMS over SGs) — real phones
+  // prefer IMS-based SMS whenever they're IMS-registered, regardless of
+  // whether SGs is also configured, so this is a deployment-wide gate
+  // enforced on the IMS side (S-CSCF hard-rejects SIP MESSAGE when SGs mode
+  // is selected — see ims-controller.ts's setSmsDeliveryMode()).
+  const [imsStatus, setImsStatus]   = useState<ImsStatus | null>(null);
+  const [modeActing, setModeActing] = useState(false);
 
   // Send test SMS
   const [testTo,      setTestTo]      = useState('');
@@ -320,11 +806,31 @@ export function SMSPage() {
     }
   }, []);
 
+  const loadImsStatus = useCallback(() => {
+    imsApi.getStatus().then(setImsStatus).catch(() => {});
+  }, []);
+
   useEffect(() => {
     load();
-    const iv = setInterval(() => load(true), 10_000);
+    loadImsStatus();
+    const iv = setInterval(() => { load(true); loadImsStatus(); }, 10_000);
     return () => clearInterval(iv);
-  }, [load]);
+  }, [load, loadImsStatus]);
+
+  const handleSetDeliveryMode = async (mode: 'sgs' | 'ims') => {
+    setModeActing(true);
+    try {
+      await imsApi.setSmsDeliveryMode(mode);
+      toast.success(mode === 'sgs'
+        ? 'SMS over IMS is now blocked at S-CSCF — SGs only'
+        : 'SMS over IMS restored');
+      loadImsStatus();
+    } catch (err: any) {
+      toast.error(`Failed to change delivery mode: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setModeActing(false);
+    }
+  };
 
   const handleInstall = async () => {
     setActing(true);
@@ -447,18 +953,18 @@ export function SMSPage() {
     }
   };
 
-  if (loading) return (
-    <div className="p-6 flex items-center justify-center h-64 text-nms-text-dim">
-      <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading SMS status…
-    </div>
-  );
-
   const installed = status?.installed ?? false;
   const svcs      = status?.services;
   const allUp     = svcs?.stp && svcs?.hlr && svcs?.msc;
 
   return (
     <div className="p-6 space-y-6">
+      {pageTab === 'mms' ? <MmsTab pageTab={pageTab} setPageTab={setPageTab} /> : loading ? (
+        <div className="flex items-center justify-center h-64 text-nms-text-dim">
+          <RefreshCw className="w-5 h-5 animate-spin mr-2" /> Loading SMS status…
+        </div>
+      ) : (
+      <>
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -519,6 +1025,8 @@ export function SMSPage() {
           </button>
         </div>
       </div>
+
+      {FEATURES.mms && <ModuleTabBar pageTab={pageTab} setPageTab={setPageTab} />}
 
       {showUninstallConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -612,6 +1120,46 @@ export function SMSPage() {
           )}
         </div>
       </div>
+
+      {/* SMS delivery mode — real phones prefer SMS over IMS whenever
+          they're IMS-registered, regardless of whether SGs is also
+          available, so this deployment-wide gate lives on the IMS side
+          (S-CSCF hard-rejects MESSAGE when SGs mode is selected). Only
+          shown once IMS has been configured — the toggle is meaningless
+          otherwise. */}
+      {imsStatus?.hasSavedConfig && (
+        <div className="nms-card">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+            <Network className="w-4 h-4 text-nms-accent" /> SMS Delivery Mode
+          </h2>
+          <p className="text-xs text-nms-text-dim mb-4">
+            SMS over IMS is the default — real phones prefer it whenever they're IMS-registered, and it's the confirmed working baseline for this deployment.
+            Select SGs-only to hard-block SIP MESSAGE at S-CSCF and force delivery over this SGs path instead (experimental — see docs before enabling).
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleSetDeliveryMode('ims')}
+              disabled={modeActing || imsStatus.smsDeliveryMode === 'ims'}
+              className={clsx('flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border transition-all',
+                imsStatus.smsDeliveryMode === 'ims'
+                  ? 'bg-nms-accent/15 text-nms-accent border-nms-accent/30'
+                  : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text')}
+            >
+              SMS over IMS (default) {imsStatus.smsDeliveryMode === 'ims' && '· active'}
+            </button>
+            <button
+              onClick={() => handleSetDeliveryMode('sgs')}
+              disabled={modeActing || imsStatus.smsDeliveryMode === 'sgs'}
+              className={clsx('flex-1 flex items-center justify-center gap-2 text-sm px-4 py-2.5 rounded-lg border transition-all',
+                imsStatus.smsDeliveryMode === 'sgs'
+                  ? 'bg-nms-accent/15 text-nms-accent border-nms-accent/30'
+                  : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text')}
+            >
+              SMS over SGs (this page, experimental) {imsStatus.smsDeliveryMode === 'sgs' && '· active'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Install card — shown only when not installed */}
       {!installed && (
@@ -805,6 +1353,8 @@ export function SMSPage() {
       )}
 
       </>}
+      </>
+      )}
     </div>
   );
 }

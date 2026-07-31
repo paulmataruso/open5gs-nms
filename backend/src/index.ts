@@ -52,6 +52,7 @@ import { createTunRouter } from './interfaces/rest/tun-controller';
 import { TunManagementUseCase } from './application/use-cases/tun-management';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { GtpBandwidthMonitor } from './application/use-cases/interface-status/gtp-bandwidth';
+import { ImsCallStatsMonitor } from './application/use-cases/ims/call-stats-monitor';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
@@ -68,6 +69,7 @@ import { createSyslogRouter } from './interfaces/rest/syslog-controller';
 import { createFrrRouter } from './interfaces/rest/frr-controller';
 import { createFrrSourceBuildRouter } from './interfaces/rest/frr-source-build-controller';
 import { createSmsRouter } from './interfaces/rest/sms-controller';
+import { createMmsRouter, MmsMsisdnMapRefresher } from './interfaces/rest/mms-controller';
 import { createImsRouter } from './interfaces/rest/ims-controller';
 import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
 import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controller';
@@ -128,8 +130,22 @@ async function main() {
   // already running in this stack (see prometheus-metrics.ts header comment).
   const subscriberIpAccounting = new SubscriberIpAccounting(hostExecutor, subscriberRepo, logger);
   subscriberIpAccounting.start();
+
+  // Keeps the MM1 MSISDN header-injection proxy's UE-IP -> MSISDN map fresh
+  // (see mms-controller.ts) so a new subscriber or a reassigned Framed Route
+  // IP doesn't require a manual MMS Configure re-run.
+  const mmsMsisdnMapRefresher = new MmsMsisdnMapRefresher(subscriberRepo, logger);
+  mmsMsisdnMapRefresher.start();
   const trafficMetricsGtpMonitor = new GtpBandwidthMonitor(hostExecutor, configRepo, logger);
   const trafficMetricsRegistry = createTrafficMetricsRegistry(trafficMetricsGtpMonitor, subscriberIpAccounting);
+
+  // ── IMS call stats ──
+  // Background sampler for the Dashboard's IMS Status card — live active-call
+  // count plus a durable cumulative "total calls placed" counter (S-CSCF's own
+  // dialog_ng:processed stat resets on every kamailio-scscf restart, which
+  // happens often; see call-stats-monitor.ts header for the accumulation scheme).
+  const imsCallStatsMonitor = new ImsCallStatsMonitor(hostExecutor, logger);
+  imsCallStatsMonitor.start();
 
   // ── SAS service ──
   // Create a child logger tagged with module:'sas' so the log stream can filter SAS-only messages
@@ -371,7 +387,8 @@ async function main() {
   app.use('/api/frr/source-build', createFrrSourceBuildRouter(logger, auditLogger));
   app.use('/api/frr',      createFrrRouter(logger, auditLogger));
   app.use('/api/sms',        createSmsRouter(subscriberRepo, logger, auditLogger));
-  app.use('/api/ims',        createImsRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/mms',        createMmsRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/ims',        createImsRouter(subscriberRepo, logger, auditLogger, imsCallStatsMonitor));
   app.use('/api/vowifi',     createVowifiRouter(logger, auditLogger));
   app.use('/api/pstn',       createPstnRouter(subscriberRepo, config.mongodbUri, logger, auditLogger));
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
@@ -470,6 +487,7 @@ async function main() {
     sasService.stopSummaryLogger();
     logStreamHandler.cleanup();
     subscriberIpAccounting.stop();
+    mmsMsisdnMapRefresher.stop();
     await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
     httpServer.close();

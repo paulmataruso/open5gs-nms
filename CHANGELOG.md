@@ -4,6 +4,212 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.37] - 2026-07-30
+
+### Added — MMS/PSTN gated behind IMS install order, iPhone .mobileconfig download
+
+Both MMS and PSTN Gateway are built on the assumption that IMS is present
+(MMS: "SMS over IMS" is this project's default delivery path for regular
+texting, so MMS working while IMS is never installed leaves a half-working
+deployment; PSTN: literally built on top of IMS's Kamailio signaling chain).
+Neither was previously stopped from installing out of order. Added a
+two-tier gate to both (`mms-controller.ts`, `pstn-controller.ts`): Install
+now requires IMS **installed** (backend 400 + frontend disabled button with
+an explanatory banner — cheap check, avoids wasting a multi-minute build on
+a deployment that can't work end-to-end anyway), Configure requires IMS
+**configured** (PSTN already had this; MMS's existing SMS/SGs-configured
+check is now joined by the same IMS check). Existing users who already have
+IMS installed/configured are unaffected — both checks pass immediately.
+
+Fixed a real regression risk found while doing this: `mmscYamlCfg()`'s
+template still generated `log.level: info` — the Debug-logging visibility
+bug fixed in v2.0-beta_0.36 was only ever patched on the live host directly,
+never in the generator itself, so a fresh Configure (or any new user's
+first Configure) would have silently regenerated the exact bug that made
+MMS's earlier failures invisible. Template now generates `debug`.
+
+Added a `.mobileconfig` (Apple Configuration Profile) download on the MMS
+tab — same APN/MMSC/proxy settings confirmed working on a real iPhone in
+v2.0-beta_0.36, now with editable APN name and MMSC URL fields (defaulting
+to the currently-configured `mm1PublicIp`) instead of hand-editing a file.
+`GET /api/mms/mobileconfig` is `requireAdmin` like every other endpoint here
+— this project's global `app.use('/api', authMiddleware)` hard-401s any
+unauthenticated request, so a subscriber's phone can never fetch this URL
+directly regardless of route-level auth choices; the admin downloads it via
+their own session and hands the file to the subscriber by any transfer
+method (AirDrop/email/Messages all trigger iOS's same "Review Profile"
+install flow as a direct Safari download).
+
+A full cross-module config-clobbering audit (user-requested, covering every
+optional add-on module's install/configure/uninstall flow) found the known
+IMS/PSTN/MMS/SMS interaction points already safe by design (VTY-only osmo-msc
+ESME, external `dispatcher.list`, BIND9 ownership discipline) — but also
+found a real bug unrelated to any of this session's other changes: the Core
+Config page's Zustand store can go stale (most plausibly with Core Config
+open in one browser tab while IMS/SMS Configure runs in another), and
+`apply-config.ts`'s unconditional 17-NF bulk Apply could then silently
+delete IMS's/SMS's live `smf.yaml`/`upf.yaml`/`pcrf.conf`/`mme.yaml` patches.
+Fixed: `ConfigPage.tsx` now refetches fresh `rawYaml` whenever the page
+regains focus/visibility, but only when there are no unsaved local edits
+(`!dirty`) — never clobbers the user's own in-progress work either. See
+memory: `config-page-stale-store-clobbers-addon-patches`.
+
+## [v2.0-beta_0.36] - 2026-07-30
+
+### Fixed — Real end-to-end MMS confirmed working: two real bugs found and fixed
+
+First confirmed real MMS delivery between real UEs. Two real, distinct bugs
+were blocking it, both found via live packet capture + source-level
+debugging of VectorCore MMSC (github.com/vectorcore-mobile/vectorcore-mmsc):
+
+1. **VectorCore logs at Debug, ships configured at Info.** Every log line on
+   the MM1 request path (`http request started/completed`, `mm1 pdu decoded`,
+   `mm1 mo message conversion failed`, etc., in `cmd/mmsc/http_logging.go` and
+   `internal/mm1/server.go`/`handler_mo.go`) is a `zap.Debug()` call, but
+   `mmsc.yaml`'s shipped default is `log.level: info` — so a fully-received,
+   correctly-formed request that VectorCore actively rejected left *zero*
+   trace in its own log file. Looked exactly like the request wasn't reaching
+   the application at all, even with tcpdump confirming a complete TCP
+   transfer with the exact right `Content-Type`/`Content-Length`. Fixed by
+   setting `log.level: debug` in the deployed `mmsc.yaml`.
+
+2. **Real MO MMS PDUs from real phones have no usable `From` field** (WAP MMS
+   spec behavior — the phone expects the network to stamp its identity via
+   HTTP header enrichment, same as a real GGSN/PGW would do). VectorCore's own
+   fallback (`senderAddressFromRequest()` in `internal/mm1/handler_mo.go`)
+   checks for `X-WAP-Network-Client-MSISDN`/`X-MSISDN`/`X-Nokia-MSISDN`
+   headers — nothing in this stack ever set them, so every real MO MMS 400'd
+   with `"missing from: header missing"`, which is exactly what "Not
+   Delivered" + endless client-side retry looks like.
+
+   Fixed with a new, small dependency-free reverse proxy
+   (`mm1-msisdn-proxy.go`, deployed alongside VectorCore as its own systemd
+   unit `vectorcore-mm1-proxy`) that owns the real public `:8002` the phone
+   connects to, resolves the sender's MSISDN from their Framed-Routing IP
+   (same static-per-subscriber-IP assumption `subscriber-ip-accounting.ts`
+   already relies on), injects `X-MSISDN`, strips any client-supplied
+   MSISDN-family headers first (don't let a UE spoof another subscriber's
+   number), and forwards to VectorCore itself rebound to loopback-only
+   `:18002`. The UE-IP → MSISDN map (`ip-msisdn-map.json`) is written by a new
+   `MmsMsisdnMapRefresher` (mirrors `SubscriberIpAccounting`'s `start()`/
+   `stop()` shape, 30s interval) so a new subscriber or a reassigned Framed
+   Route IP doesn't need a manual MMS Configure re-run.
+
+   Written in Go rather than Node, and compiled fresh from source on every
+   Configure (no `go.mod` needed — stdlib-only): a Go toolchain is already a
+   hard, verified prerequisite of this exact install flow, whereas Node.js is
+   NOT a documented prerequisite anywhere in this project — VectorCore's own
+   web-UI build only needs Node transiently at *build* time. A Node-based
+   proxy would have quietly made Node.js a new permanent *runtime*
+   dependency on a fresh host that might not have it (this dev host's Node
+   only existed from an undocumented, out-of-band manual install — not
+   anything the install flow itself guarantees).
+
+   Found and fixed a second real bug while building this: the initial
+   `writeMmsIpMsisdnMap()` used `/^\\d+$/` (matches a literal backslash+`d`,
+   never a real MSISDN) instead of `/^\d+$/` — silently produced an always-
+   empty map, which the 30s refresher then used to overwrite a
+   manually-verified-correct map on the live host, making the fix appear not
+   to work at all on the first real retest.
+
+`mms-controller.ts`'s `/configure` now deploys/enables the proxy alongside
+VectorCore on every Configure re-run (script + systemd unit regenerated each
+time), and `/uninstall` tears it down too. `/status` reports `proxyActive`.
+
+## [v2.0-beta_0.35] - 2026-07-30
+
+### Changed — SMS over IMS confirmed as the default/primary delivery path
+
+Following a real investigation (see the SMS Delivery Mode toggle added in
+v2.0-beta_0.34): SMS-over-IMS is confirmed as the deployment default —
+real phones prefer it whenever IMS-registered regardless of whether SGs is
+also configured, so IMS-primary matches actual UE behavior rather than
+fighting it. `configureIms()` and `/status` in `ims-controller.ts` already
+defaulted fresh/unconfigured deployments to `'ims'` — no code change was
+needed for a fresh install to replicate this baseline automatically, only
+confirmation. Live deployment switched back to `'ims'` (was left on `'sgs'`
+after v2.0-beta_0.34's investigation).
+
+SMS-over-SGs remains available as an opt-in, experimental alternative via
+the same toggle — real two-UE SGs delivery still has an open, unresolved bug
+(P-CSCF's `ims_ipsec_pcscf` failing to relay a locally-generated reply back
+through the IPsec tunnel; same error signature as the separate, already-known
+Android→iPhone PRACK issue). SMS/MMS page's delivery-mode card updated to
+label IMS as "(default)" and SGs as "(experimental)" so this isn't presented
+as two equally-supported options.
+
+Clarified in `CLAUDE.md`'s feature table: MMS's WAP Push delivery (via
+osmo-msc's SMPP interface) is completely independent of this toggle — it
+stays wired up and functional regardless of whether regular SMS texting is
+using IMS or SGs. This was already true architecturally, just not
+documented clearly enough to avoid a future "why does MMS use SGs but SMS
+uses IMS" confusion.
+
+## [v2.0-beta_0.34] - 2026-07-30
+
+### Fixed — PyHSS "None" domain corruption regressed on every plain IMS Configure
+
+The `sip:<msisdn>@None` identity-corruption bug (first fixed 2026-07-27) was
+recurring: the fix only ever patched the *deployed file* during `POST
+/api/ims/install`'s streamed script, but `configureIms()` — called on every
+plain Configure, per this project's "full rewrite every time" convention —
+writes `defaultIfcXml()`'s original template fresh via `fs.writeFileSync`
+with no equivalent patch, silently re-introducing the exact same bug on the
+next Configure. Root-caused live this session via real SIP MESSAGE traffic
+(`Orig user is [sip:15550000004@None]`, `could not resolve hostname: ""`),
+confirming a real subscriber's IMS SMS was failing because of it.
+
+Fixed properly this time: `defaultIfcXml()`/`defaultShUserDataXml()` now
+embed the already-known, static `imsDomain` as a literal directly, instead
+of `{{ iFC_vars.scscf_realm }}` (a per-subscriber DB column PyHSS nulls on
+every deregister). This removes the runtime DB dependency entirely — no
+per-subscriber field to null, so Configure can no longer regress this no
+matter how many times it runs. Verified live: after a kamailio-scscf
+restart, both real test iPhones re-registered with clean identities
+(`sip:...@ims.mnc001.mcc001.3gppnetwork.org`, not `@None`).
+
+### Added — SMS/MMS page: SMS delivery mode selector (SMS over IMS vs SGs)
+
+Real phones prefer SMS over IMS (SIP MESSAGE) whenever they're IMS-registered
+— confirmed live this session, this is why "SMS over SGs isn't working" often
+actually meant "SGs was never being exercised at all, the phone used IMS
+instead." New toggle on the SMS/MMS page's SMS (SGs) tab lets an operator
+force SGs-only delivery: selecting it hard-rejects SIP `MESSAGE` at S-CSCF
+(`403 SMS routed via SGs only`) before any ISC/iFC processing, rather than
+just removing the smsc iFC — confirmed live that removing the iFC alone is
+insufficient, since an unmatched MESSAGE just falls through to ordinary
+registrar-based peer-to-peer delivery instead of being blocked. New backend:
+`setSmsDeliveryMode()` + `POST /api/ims/sms-delivery-mode` in
+`ims-controller.ts` (lightweight — only touches the S-CSCF include file and
+restarts that one service, not a full IMS Configure); mode persists across a
+plain Configure re-run the same way other IMS state does.
+
+## [v2.0-beta_0.33] - 2026-07-29
+
+### Added — Dashboard IMS Status card: live + durable call volume
+
+The Dashboard's IMS Status card is now split (horizontal divider) into a top
+half (unchanged: enabled/stopped state, registered count, IPsec SA count)
+and a new bottom half showing **active calls** and **total calls placed**.
+
+Active calls comes straight from S-CSCF's own `dialog_ng:active` stat, but
+`dialog_ng:processed` (its cumulative counter) resets to 0 on every
+kamailio-scscf restart — which happens often in this project (every IMS
+Configure click, plus any ad hoc restart). A "total calls placed" figure
+sourced directly from that stat would silently drop back to near-zero any
+time an operator reconfigures IMS, which isn't what "total" should mean.
+
+Added a small backend-side background sampler, `ImsCallStatsMonitor`
+(`application/use-cases/ims/call-stats-monitor.ts`, mirrors the existing
+`GtpBandwidthMonitor` pattern: `start()`/`getLatest()`, 5s interval),
+that polls `dialog_ng:` every 5s and persists a delta-accumulated
+cumulative total to `/etc/open5gs/.ims-call-stats.json` — if the polled
+`processed` value is lower than last seen, that's treated as a restart
+(the new value is added directly rather than clamped to zero), so the
+total survives across restarts instead of resetting. Exposed via a new
+`GET /api/ims/call-stats` endpoint; the Dashboard polls it every 5s, same
+pattern as the existing GTP bandwidth card.
+
 ## [v2.0-beta_0.32] - 2026-07-29
 
 ### Added — IMS page: Live Status tab (IPsec SAs, registered users, active calls)

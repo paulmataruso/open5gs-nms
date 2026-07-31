@@ -644,6 +644,32 @@ export function ConfigPage(): JSX.Element {
     fetchConfigs();
   }, [fetchConfigs]);
 
+  // Refetch fresh rawYaml whenever this page becomes active again (tab/window
+  // regains focus, or becomes the visible tab) rather than trusting whatever
+  // was loaded on mount for the rest of the browser session. Fixes a real
+  // bug: several add-on modules (IMS's updateSmfImsSession/updateUpfImsSession/
+  // upsertPcrfPcscfPeer, SMS's replaceSgsapSection) patch smf.yaml/upf.yaml/
+  // pcrf.conf/mme.yaml directly on disk, outside this page entirely — with a
+  // stale store, Apply Config's unconditional bulk-save of all 17 NFs would
+  // silently overwrite those patches back to their pre-patch content. Only
+  // when the store isn't dirty — never clobber the user's own in-progress
+  // unsaved edits out from under them. See memory:
+  // config-page-stale-store-clobbers-addon-patches.
+  useEffect(() => {
+    const refreshIfClean = () => {
+      if (!useConfigStore.getState().dirty) fetchConfigs();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshIfClean();
+    };
+    window.addEventListener('focus', refreshIfClean);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', refreshIfClean);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [fetchConfigs]);
+
   const getYamlForService = (service: Tab): string => {
     if (!configs || !configs[service]) return '';
     try {

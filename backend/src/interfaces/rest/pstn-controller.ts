@@ -82,6 +82,20 @@ function readImsState(): ImsState | null {
   try { return JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')); } catch { return null; }
 }
 
+// PSTN Gateway is built entirely on top of IMS's Kamailio S-CSCF/I-CSCF
+// signaling chain (see module header) — Install itself only installs the
+// Asterisk packages so it doesn't strictly need IMS present, but there's no
+// point letting a user go through that step on a host that can never reach
+// a working Configure. Same two-tier gate as mms-controller.ts's isImsInstalled/
+// isImsConfigured — Install requires IMS installed, Configure (already gated
+// below via readImsState()) requires IMS configured.
+async function isImsInstalled(): Promise<boolean> {
+  try {
+    const { stdout } = await nsenter('which', ['kamailio']);
+    return stdout.trim().length > 0;
+  } catch { return false; }
+}
+
 export interface PstnExtension {
   extension: string;      // Any 1-15 digit string, e.g. "1111" or "5551111" —
                           // stored WITHOUT a leading "+". S-CSCF's
@@ -351,6 +365,7 @@ export function createPstnRouter(
         installed,
         services: { asterisk: svcActive(asteriskRes), 'kamailio-scscf': svcActive(scscfRes) },
         codecAmrLoaded,
+        imsInstalled: await isImsInstalled(),
         imsConfigured: !!imsState,
         hasSavedConfig: !!state,
         dispatcherWired,
@@ -372,6 +387,9 @@ export function createPstnRouter(
   // condition) rather than just trusting the package installed cleanly.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
+    if (!(await isImsInstalled())) {
+      return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. PSTN Gateway is built entirely on top of IMS\'s Kamailio signaling chain.' });
+    }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
