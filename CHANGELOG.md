@@ -4,6 +4,101 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.39] - 2026-07-31
+
+### Fixed — real user-reported SMF crash: duplicate ConnectPeer + misplaced parameter: key
+
+Two real bugs from a live `test01` bug report — Open5GS SMF failing to start
+entirely with `smf_fd_init: Assertion 'rv == 0' failed` after
+`fd_peer_add ... File exists`.
+
+**Duplicate ConnectPeer entries (fatal, crash-looped SMF):**
+`upsertSmfAaaPeer()` (vowifi-controller.ts) manages SMF's S6b ConnectPeer for
+osmo-epdg's AAA identity, and was supposed to unconditionally strip any
+existing "aaa.*" entry before writing a fresh one — but only matched
+`aaa.epc.*` specifically, on the incorrect assumption that a literal
+`aaa.localdomain` identity was some separately-managed placeholder this
+function never writes. It's not: `aaaFqdn` is derived as `aaa.${realm}`
+from SMF's own freeDiameter identity, which is still the stock
+`smf.localdomain` default on any host that hasn't been through the
+DNS/FQDN Migration Wizard — an entirely ordinary deployment state, not an
+edge case. Re-running VoWiFi Configure with a different `s6bLocalIp` (e.g.
+after changing IPs) left the previous `aaa.localdomain` entry behind
+instead of replacing it, and freeDiameter hard-aborts SMF at startup on a
+duplicate peer rather than warning. Fixed by matching any `aaa.*` identity —
+this peer slot is exclusively owned by this function regardless of its
+current value.
+
+**`parameter:` key nested inside `smf:` (warning, silently dropped the
+flag it was trying to set):** `updateSmfImsSession()` (ims-controller.ts)
+was writing `no_ipv4v6_local_addr_in_packet_filter` under a `parameter:`
+key nested 2 spaces inside `smf:`. Confirmed against Open5GS's own source
+that `parameter:` is a top-level YAML key parsed by
+`ogs_app_parse_global_conf()` against the document root
+(`lib/app/ogs-init.c`), a sibling of `smf:`/`global:`/`logger:`, never a
+child of any NF-specific block — SMF's own `smf:`-scoped parser has no
+idea what an unrecognized `parameter` child key means and just warns
+`unknown key 'parameter'`, silently discarding the whole block. Fixed to
+write `parameter:` at the correct top-level location, and to migrate away
+any previously-written wrongly-nested block on the next IMS Configure so
+an already-affected deployment self-heals rather than accumulating a
+second, still-broken copy. `removeSmfImsSession()` (the uninstall
+counterpart) updated symmetrically, cleaning up either the correct or the
+legacy location.
+
+Both fixes verified against realistic reproductions of the exact reported
+scenario (compiled output, not just source review) before deploying:
+duplicate-IP re-Configure collapses to one clean ConnectPeer line, a
+wrongly-nested `parameter:` block migrates to the correct top-level
+location with the flag preserved, a fresh install inserts it correctly the
+first time, and uninstall cleans up completely.
+
+**Existing affected deployments** (like the one in the original report)
+need either a manual one-time fix of the live files or to redeploy this
+version and re-run Configure (VoWiFi Configure self-heals the ConnectPeer
+duplication; IMS Configure self-heals the parameter: placement) — the code
+fix alone doesn't retroactively repair a host's already-written config.
+
+## [v2.0-beta_0.38] - 2026-07-31
+
+### Fixed — VoWiFi's osmo-epdg pin was a release behind its own strongSwan plugin
+
+Investigated after a user question about which strongSwan is used where
+("Are we using strongSwan just for VoWiFi?") surfaced a real version-skew
+bug: `vowifi-build.ts` builds `strongswan-epdg` from the `fix_dns_parse`
+branch (a personal-fork-only branch, not on the official
+`gitea.osmocom.org/ims-volte-vowifi/strongswan-epdg`), which traces back to
+the `osmo-epdg-0.1.2` tag plus 8 unreleased fixes (GSUP context_id bug, auth
+resync mechanism, a UE-address acquire/release crash) — but `OSMO_EPDG_TAG`
+(the paired Erlang GSUP server) was still pinned to `0.1.1`, a full release
+behind. Two components that speak a shared, versioned protocol (GSUP) to
+each other were being built one release apart.
+
+Not a safe drop-in bump: `vowifi-build.ts` applies 3 hand-written Erlang
+source patches on top of osmo-epdg (a real fix — without it, VoWiFi sessions
+ignore a subscriber's HSS-configured static IP and can hand out an address
+already in use by another UE). osmo-epdg 0.1.2 added its own native
+mechanism for the same underlying goal (forwarding a PDN address into the
+GTP-C Create Session Request), sourced from the UE's own IKEv2 request
+instead of the HSS's static IP — same destination, different source,
+occupying the same struct fields our patch also touches. Reconciled by
+threading a `StaticIp` parameter through the call chain so the
+HSS-configured IP wins when present, falling through cleanly to upstream's
+native behavior otherwise (an operator-provisioned static IP should always
+be authoritative over a UE's own suggestion). Verified for real, twice: the
+reconciled patch was extracted byte-exact from the actual
+`buildVowifiScript()` output (not hand-copied) and run through a genuine
+`rebar3 compile` + `escriptize` against real `osmo-epdg` 0.1.2 source before
+being committed — clean compile, working binary produced both times.
+
+Added build-version staleness detection for existing deployments, mirroring
+`ims-controller.ts`/`pstn-controller.ts`'s `configStale` pattern but for a
+from-source build rather than a templated config: `/api/vowifi/status` now
+returns `buildStale` (true when a deployment's recorded
+`builtWithOsmoEpdgTag` doesn't match the currently-pinned `OSMO_EPDG_TAG`,
+including deployments from before this field existed). `VoWiFiPage.tsx`
+shows a banner explaining a rebuild (not just Configure) is available.
+
 ## [v2.0-beta_0.37] - 2026-07-30
 
 ### Added — MMS/PSTN gated behind IMS install order, iPhone .mobileconfig download

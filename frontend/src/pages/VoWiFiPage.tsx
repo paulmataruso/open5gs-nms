@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Editor, { type BeforeMount } from '@monaco-editor/react';
 import {
   CheckCircle, XCircle, RefreshCw, RotateCw, Play, Square, Wifi,
-  AlertTriangle, BookOpen, ChevronDown, Trash2, RadioTower,
+  AlertTriangle, AlertCircle, BookOpen, ChevronDown, Trash2, RadioTower,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -630,6 +630,28 @@ export function VoWiFiPage() {
           </p>
         </div>
       </div>
+
+      {status?.buildStale && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-blue-500/30 bg-blue-500/10 px-4 py-3">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-200 leading-relaxed">
+              <span className="font-semibold text-blue-400">Rebuild available.</span>{' '}
+              This deployment was built from osmo-epdg{' '}
+              {status.builtWithOsmoEpdgTag ? `v${status.builtWithOsmoEpdgTag}` : 'an older, unrecorded version'},
+              but this server is now pinned to v{status.currentOsmoEpdgTag}. Unlike a Configure re-run, this
+              needs a full Install (source rebuild) to pick up — go to the Setup Wizard and run Install again.
+              This briefly stops osmo-epdg/charon while it rebuilds.
+            </p>
+          </div>
+          <button
+            onClick={() => setActiveTab('wizard')}
+            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25 transition-colors"
+          >
+            Go to Setup Wizard
+          </button>
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="flex gap-1 border-b border-nms-border">

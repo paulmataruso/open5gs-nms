@@ -1171,20 +1171,47 @@ function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: string): str
     lines.splice(insertAt, 0, ...pCscfEntry.split('\n'));
   }
 
-  // Step 3: Add parameter.no_ipv4v6_local_addr_in_packet_filter at smf: level
-  // Required for VoLTE UEs that self-assign IPv6 local addresses
-  const paramIdx = lines.findIndex(l => /^ {2}parameter:\s*$/.test(l));
-  const flagLine  = '    no_ipv4v6_local_addr_in_packet_filter: true';
+  // Step 3: Add parameter.no_ipv4v6_local_addr_in_packet_filter — required for
+  // VoLTE UEs that self-assign IPv6 local addresses.
+  //
+  // `parameter:` is a top-level (0-indent) YAML key, a sibling of `smf:` —
+  // NOT a child of it. Confirmed against Open5GS's own source
+  // (lib/app/ogs-init.c: `ogs_app_parse_global_conf(&root_iter)`, called
+  // with the document ROOT, not any NF-specific sub-iterator;
+  // lib/app/ogs-config.c's `ogs_app_parse_global_conf` is what actually
+  // understands `no_ipv4v6_local_addr_in_packet_filter` as a child of
+  // `parameter:`). A previous version of this code wrote `  parameter:` at
+  // 2-space indent, nesting it inside `smf:` — SMF's own smf:-specific
+  // parser has no idea what to do with an unrecognized `parameter` child key
+  // there and just warns `unknown key 'parameter'` and ignores the whole
+  // block, silently losing the flag entirely. Fixed live (2026-07-31, real
+  // bug report) — also migrates away any previously-written wrongly-nested
+  // block so an existing deployment self-heals on its next IMS Configure,
+  // the same pattern used elsewhere in this codebase for drifted templates.
+  const wrongParamIdx = lines.findIndex(l => /^ {2}parameter:\s*$/.test(l));
+  if (wrongParamIdx >= 0) {
+    let wrongEndIdx = wrongParamIdx + 1;
+    while (wrongEndIdx < lines.length) {
+      const line = lines[wrongEndIdx];
+      if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= 2) break;
+      wrongEndIdx++;
+    }
+    lines.splice(wrongParamIdx, wrongEndIdx - wrongParamIdx);
+  }
+
+  const paramIdx = lines.findIndex(l => /^parameter:\s*$/.test(l));
+  const flagLine  = '  no_ipv4v6_local_addr_in_packet_filter: true';
   if (paramIdx >= 0) {
     // Check if flag already present in parameter block
-    const flagExists = lines.slice(paramIdx + 1).some(l => /no_ipv4v6_local_addr_in_packet_filter/.test(l) && (l.match(/^(\s*)/) ?? ['', ''])[1].length > 2);
+    const flagExists = lines.slice(paramIdx + 1).some(l => /no_ipv4v6_local_addr_in_packet_filter/.test(l) && (l.match(/^(\s*)/) ?? ['', ''])[1].length > 0);
     if (!flagExists) lines.splice(paramIdx + 1, 0, flagLine);
   } else {
-    // Insert parameter block before mtu: or freeDiameter:
-    const mtuIdx2 = lines.findIndex(l => /^ {2}mtu:\s/.test(l));
-    const fdIdx   = lines.findIndex(l => /^ {2}freeDiameter:/.test(l));
-    const at2     = mtuIdx2 >= 0 ? mtuIdx2 : (fdIdx >= 0 ? fdIdx : lines.length);
-    lines.splice(at2, 0, '  parameter:', flagLine);
+    // Insert as a new top-level block right before the top-level smf: key
+    // (matching the shipped template's own logger:/global:/smf: ordering
+    // convention), falling back to end-of-file if smf: is somehow absent.
+    const smfTopIdx = lines.findIndex(l => /^smf:\s*$/.test(l));
+    const at2 = smfTopIdx >= 0 ? smfTopIdx : lines.length;
+    lines.splice(at2, 0, 'parameter:', flagLine, '');
   }
 
   return lines.join('\n');
@@ -1220,16 +1247,30 @@ function removeSmfImsSession(raw: string): string {
     lines.splice(pCscfIdx, endIdx - pCscfIdx);
   }
 
-  // Remove parameter block (added for IMS)
-  const paramIdx = lines.findIndex(l => /^ {2}parameter:\s*$/.test(l));
+  // Remove parameter block (added for IMS). Top-level (0-indent) is the
+  // correct, current location (see updateSmfImsSession) — also clean up a
+  // legacy wrongly-nested 2-indent block if this deployment never had a
+  // Configure re-run since that was fixed, so uninstall fully cleans up
+  // either state.
+  const paramIdx = lines.findIndex(l => /^parameter:\s*$/.test(l));
   if (paramIdx >= 0) {
     let endIdx = paramIdx + 1;
+    while (endIdx < lines.length) {
+      const line = lines[endIdx];
+      if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= 0) break;
+      endIdx++;
+    }
+    lines.splice(paramIdx, endIdx - paramIdx);
+  }
+  const legacyParamIdx = lines.findIndex(l => /^ {2}parameter:\s*$/.test(l));
+  if (legacyParamIdx >= 0) {
+    let endIdx = legacyParamIdx + 1;
     while (endIdx < lines.length) {
       const line = lines[endIdx];
       if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= 2) break;
       endIdx++;
     }
-    lines.splice(paramIdx, endIdx - paramIdx);
+    lines.splice(legacyParamIdx, endIdx - legacyParamIdx);
   }
 
   return lines.join('\n');

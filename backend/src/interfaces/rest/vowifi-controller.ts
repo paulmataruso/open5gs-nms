@@ -8,7 +8,7 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { createDummyInterface, deleteDummyInterface } from '../../infrastructure/network/dummy-interface';
 import {
   nsenter, BUILD_WORKDIR, RUNTIME_BIN_DIR, OSMO_EPDG_RUNTIME_DIR, OSMO_EPDG_CONFIG_DIR,
-  VOWIFI_BUILD_STEPS, VowifiBuildStep, buildVowifiScript, reloadGtpModule,
+  VOWIFI_BUILD_STEPS, VowifiBuildStep, buildVowifiScript, reloadGtpModule, OSMO_EPDG_TAG,
 } from '../../application/use-cases/vowifi-build';
 
 // ─── Host paths ─────────────────────────────────────────────────────────────
@@ -67,6 +67,15 @@ export interface VowifiState {
   gsupPort: number | null;
   aaaFqdn: string | null;
   smfConfHadBackup: boolean;
+  // Which OSMO_EPDG_TAG this deployment was actually built from source with —
+  // null for any deployment from before this field existed. Compared against
+  // the currently-pinned OSMO_EPDG_TAG in /status (see the "buildStale" field)
+  // so an older deployment can be told a rebuild is available, the same
+  // configStale pattern ims-controller.ts/pstn-controller.ts already use for
+  // their own Configure-time template drift. Unlike those, this needs a full
+  // Install (source rebuild) to fix, not just a Configure re-run — osmo-epdg
+  // and strongswan-epdg are compiled from source, not templated config files.
+  builtWithOsmoEpdgTag: string | null;
 }
 
 function defaultState(): VowifiState {
@@ -74,7 +83,7 @@ function defaultState(): VowifiState {
     installStatus: 'idle', installStartedAt: null, installCompletedAt: null, installError: null,
     configured: false, configuredAt: null,
     epdgIp: null, epdgInterfaceMode: null, s6bLocalIp: null, gsupPort: null, aaaFqdn: null,
-    smfConfHadBackup: false,
+    smfConfHadBackup: false, builtWithOsmoEpdgTag: null,
   };
 }
 
@@ -370,10 +379,11 @@ function patchOsmoEpdgSysConfig(template: string, opts: {
 
 function upsertSmfAaaPeer(raw: string, aaaFqdn: string, s6bLocalIp: string): string {
   const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${s6bLocalIp}"; No_TLS; };`;
-  // Unconditionally strip EVERY "aaa.<realm>" ConnectPeer entry first (there
-  // should only ever be one), then add exactly one clean line back — never
-  // just patch-in-place or append-if-absent. A previous version only handled
-  // the "line already exists" and "line entirely absent" cases, silently
+  // Unconditionally strip EVERY "aaa.*" ConnectPeer entry first (there
+  // should only ever be one — this slot is exclusively owned by this
+  // function), then add exactly one clean line back — never just
+  // patch-in-place or append-if-absent. A previous version only handled the
+  // "line already exists" and "line entirely absent" cases, silently
   // leaving a second, stale "aaa.<old-realm>" entry behind whenever the realm
   // itself changed (e.g. a PLMN migration) between one Configure and the
   // next. Both entries point at the same local IP (osmo-epdg's own S6b bind
@@ -384,11 +394,26 @@ function upsertSmfAaaPeer(raw: string, aaaFqdn: string, s6bLocalIp: string): str
   // existed, and simply re-running Configure again did NOT self-heal it,
   // since by then the new entry already existed and the old "already present"
   // branch never looked at any OTHER aaa.* line.
-  // Only "aaa.epc.*" (the real PLMN-realm peer this function itself manages)
-  // — NOT "aaa.localdomain", the build template's own separate placeholder
-  // peer entry, which is deliberately left alone (see the module-level notes
-  // on osmo-epdg's S6b identity fields for why both exist).
-  const withoutAnyAaaPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"aaa\.epc\.[^"]*"[^\n]*\n?/gm, '');
+  //
+  // Previously only matched "aaa.epc.*" specifically, on the assumption that
+  // a literal "aaa.localdomain" identity was some OTHER, separately-managed
+  // placeholder this function never writes — WRONG, confirmed live
+  // (2026-07-31, real bug report): aaaFqdn is derived as `aaa.${realm}`
+  // where realm comes from SMF's own freeDiameter identity
+  // (readFreeDiameterIdentity/realmFromIdentity) — on any host that hasn't
+  // been through the DNS/FQDN Migration Wizard yet, that identity is still
+  // the stock "smf.localdomain" default, making aaaFqdn literally
+  // "aaa.localdomain" too. That's a completely ordinary, easily-reached
+  // deployment state, not an edge case — the exclusion meant re-running
+  // Configure with a different s6bLocalIp (e.g. after changing IPs) always
+  // left the previous "aaa.localdomain" line behind, producing two
+  // ConnectPeer entries for the same Diameter identity. freeDiameter's
+  // `fd_peer_add` hard-aborts SMF at startup on a duplicate ("File exists" /
+  // "Error adding ConnectPeer information" / `smf_fd_init: Assertion `rv ==
+  // 0' failed`) — not a soft warning, a full SMF crash-loop. Matching
+  // literally any "aaa.*" identity is correct regardless of its current
+  // value, since this function is the sole owner of this peer slot.
+  const withoutAnyAaaPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"aaa\.[^"]*"[^\n]*\n?/gm, '');
   return withoutAnyAaaPeer.trimEnd() + '\n' + peerLine + '\n';
 }
 
@@ -436,6 +461,7 @@ async function verifyInstall(): Promise<void> {
   const ok = binExists && charonExists;
   s.installStatus = ok ? 'complete' : 'failed';
   s.installCompletedAt = new Date().toISOString();
+  if (ok) s.builtWithOsmoEpdgTag = OSMO_EPDG_TAG;
   if (!ok) s.installError = 'Build finished but expected binaries were not found (osmo-epdg or charon).';
   saveState(s);
   appendLog(`\n==VERIFY:osmo-epdg=${binExists} charon=${charonExists}==\n`);
@@ -728,9 +754,18 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         ? smfConfExists && fs.readFileSync(HOST_SMF_CONF, 'utf-8').includes(`"${state.aaaFqdn}"`)
         : false;
 
+      // No recorded tag at all (deployment predates this field) counts as
+      // stale too, same as ims-controller.ts's configStale check — we
+      // genuinely don't know what osmo-epdg/strongswan-epdg source that
+      // build came from.
+      const buildStale = installedOnDisk && state.builtWithOsmoEpdgTag !== OSMO_EPDG_TAG;
+
       res.json({
         success: true,
         installedOnDisk,
+        builtWithOsmoEpdgTag: state.builtWithOsmoEpdgTag,
+        currentOsmoEpdgTag: OSMO_EPDG_TAG,
+        buildStale,
         installStatus: state.installStatus,
         installStartedAt: state.installStartedAt,
         installCompletedAt: state.installCompletedAt,

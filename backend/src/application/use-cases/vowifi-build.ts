@@ -18,7 +18,7 @@ export const nsenter = async (
   });
 
 export const BUILD_WORKDIR = '/opt/vowifi-build';
-export const OSMO_EPDG_TAG = '0.1.1';
+export const OSMO_EPDG_TAG = '0.1.2';
 export const STRONGSWAN_EPDG_BRANCH = 'fix_dns_parse';
 export const RUNTIME_BIN_DIR = '/usr/local/bin';
 export const OSMO_EPDG_RUNTIME_DIR = '/var/lib/vowifi-osmo-epdg';
@@ -198,12 +198,24 @@ path = "src/epdg_ue_fsm.erl"
 with open(path) as f:
     content = f.read()
 
+# osmo-epdg 0.1.2 (see OSMO_EPDG_TAG) added its own native pdp_type_nr/pdp_address
+# fields to this same record — its own mechanism for forwarding a PDN address into
+# the GTP-C Create Session Request, sourced from the UE's own IKEv2 CFG_REQUEST
+# (via strongSwan -> GSUP) rather than the HSS's SWx-configured static IP this
+# patch adds. Both now feed the same PAA IE (see epdg_gtpc_s2b.erl patch below,
+# which makes static_ip win when present) — this patch's insertion point moved
+# to account for those new upstream fields, verified against real 0.1.2 source
+# (compiled clean via rebar3, escript built successfully) before this tag bump.
 old = """-record(ue_fsm_data, {
         imsi,
+        pdp_type_nr,
+        pdp_address,
         apn                     = "internet"    :: string(),
         pgw_rem_addr_list       = []            :: list(),"""
 new = """-record(ue_fsm_data, {
         imsi,
+        pdp_type_nr,
+        pdp_address,
         apn                     = "internet"    :: string(),
         pgw_rem_addr_list       = []            :: list(),
         static_ip               = undefined,"""
@@ -240,13 +252,20 @@ new2 = """        case Result of
 assert old2 in content, "epdg_ue_fsm.erl: lu_response block not found"
 content = content.replace(old2, new2)
 
+# Call site now takes osmo-epdg 0.1.2's own pdp_type_nr/pdp_address too (6 args,
+# up from 4 in 0.1.1) - appending static_ip as a 7th, matching
+# epdg_gtpc_s2b.erl's create_session_req/7 below.
 old3 = """        epdg_gtpc_s2b:create_session_req(Data#ue_fsm_data.imsi,
                                          Data#ue_fsm_data.apn,
                                          PCO,
+                                         Data#ue_fsm_data.pdp_type_nr,
+                                         Data#ue_fsm_data.pdp_address,
                                          Data#ue_fsm_data.pgw_rem_addr_list),"""
 new3 = """        epdg_gtpc_s2b:create_session_req(Data#ue_fsm_data.imsi,
                                          Data#ue_fsm_data.apn,
                                          PCO,
+                                         Data#ue_fsm_data.pdp_type_nr,
+                                         Data#ue_fsm_data.pdp_address,
                                          Data#ue_fsm_data.pgw_rem_addr_list,
                                          Data#ue_fsm_data.static_ip),"""
 assert old3 in content, "epdg_ue_fsm.erl: create_session_req call site not found"
@@ -262,19 +281,28 @@ path = "src/epdg_gtpc_s2b.erl"
 with open(path) as f:
     content = f.read()
 
-old = "-export([create_session_req/4, delete_session_req/1])."
-new = "-export([create_session_req/5, delete_session_req/1])."
+old = "-export([create_session_req/6, delete_session_req/1])."
+new = "-export([create_session_req/7, delete_session_req/1])."
 assert old in content, "epdg_gtpc_s2b.erl: export not found"
 content = content.replace(old, new)
 
-old2 = """create_session_req(Imsi, Apn, APCO, PGWAddrCandidateList) ->
-    gen_server:call(?SERVER, {gtpc_create_session_req, {Imsi, Apn, APCO, PGWAddrCandidateList}})."""
-new2 = """create_session_req(Imsi, Apn, APCO, PGWAddrCandidateList, StaticIp) ->
-    gen_server:call(?SERVER, {gtpc_create_session_req, {Imsi, Apn, APCO, PGWAddrCandidateList, StaticIp}})."""
+old2 = """create_session_req(Imsi, Apn, APCO, PdpTypeNr, PdpAddress, PGWAddrCandidateList) ->
+    gen_server:call(?SERVER, {gtpc_create_session_req, {Imsi, Apn, APCO, PdpTypeNr, PdpAddress, PGWAddrCandidateList}})."""
+new2 = """create_session_req(Imsi, Apn, APCO, PdpTypeNr, PdpAddress, PGWAddrCandidateList, StaticIp) ->
+    gen_server:call(?SERVER, {gtpc_create_session_req, {Imsi, Apn, APCO, PdpTypeNr, PdpAddress, PGWAddrCandidateList, StaticIp}})."""
 assert old2 in content, "epdg_gtpc_s2b.erl: public API function not found"
 content = content.replace(old2, new2)
 
-old3 = """handle_call({gtpc_create_session_req, {Imsi, Apn, APCO, PGWAddrCandidateList}}, {Pid, _Tag} = _From, State0) ->
+# A subscriber's HSS-provisioned static IP takes priority over whatever the UE
+# itself requested via IKEv2 CFG_REQUEST (PdpTypeNr/PdpAddress, osmo-epdg 0.1.2's
+# own native mechanism, see OSMO_EPDG_TAG) - an operator-provisioned static IP
+# exists specifically to be authoritative, and falling through to a UE's own
+# suggestion would defeat the point of configuring one. Falls back to upstream's
+# own conv:pdp_address_to_gtp2_paa/2 (UE-requested, or its own dynamic default)
+# when no static IP is configured for this subscriber. gen_create_session_request
+# itself already accepts a pre-built Paa record unchanged - only this call chain
+# needs to thread StaticIp through.
+old3 = """handle_call({gtpc_create_session_req, {Imsi, Apn, APCO, PdpTypeNr, PdpAddress, PGWAddrCandidateList}}, {Pid, _Tag} = _From, State0) ->
     RemoteAddrStr = pick_gtpc_remote_address(PGWAddrCandidateList, State0),
     lager:debug("Selected PGW Remote Address ~p~n", [RemoteAddrStr]),
     {ok, RemoteAddrInet} = inet_parse:address(RemoteAddrStr),
@@ -284,8 +312,9 @@ old3 = """handle_call({gtpc_create_session_req, {Imsi, Apn, APCO, PGWAddrCandida
                                      raddr_str = RemoteAddrInet,
                                      raddr = RemoteAddrInet},
                         State0),
-    Req = gen_create_session_request(Sess0, APCO, State1),"""
-new3 = """handle_call({gtpc_create_session_req, {Imsi, Apn, APCO, PGWAddrCandidateList, StaticIp}}, {Pid, _Tag} = _From, State0) ->
+    Paa = conv:pdp_address_to_gtp2_paa(PdpTypeNr, PdpAddress),
+    Req = gen_create_session_request(Sess0, APCO, Paa, State1),"""
+new3 = """handle_call({gtpc_create_session_req, {Imsi, Apn, APCO, PdpTypeNr, PdpAddress, PGWAddrCandidateList, StaticIp}}, {Pid, _Tag} = _From, State0) ->
     RemoteAddrStr = pick_gtpc_remote_address(PGWAddrCandidateList, State0),
     lager:debug("Selected PGW Remote Address ~p~n", [RemoteAddrStr]),
     {ok, RemoteAddrInet} = inet_parse:address(RemoteAddrStr),
@@ -295,39 +324,13 @@ new3 = """handle_call({gtpc_create_session_req, {Imsi, Apn, APCO, PGWAddrCandida
                                      raddr_str = RemoteAddrInet,
                                      raddr = RemoteAddrInet},
                         State0),
-    lager:info("Requested PDN Address Allocation: ~p~n", [StaticIp]),
-    Req = gen_create_session_request(Sess0, APCO, StaticIp, State1),"""
+    Paa = case StaticIp of
+        {A, B, C, D} -> #v2_pdn_address_allocation{type = ipv4, address = conv:ip_to_bin({A, B, C, D})};
+        _ -> conv:pdp_address_to_gtp2_paa(PdpTypeNr, PdpAddress)
+    end,
+    Req = gen_create_session_request(Sess0, APCO, Paa, State1),"""
 assert old3 in content, "epdg_gtpc_s2b.erl: handle_call not found"
 content = content.replace(old3, new3)
-
-old4 = """gen_create_session_request(#gtp_session{imsi = Imsi,
-                                    apn = Apn,
-                                    local_control_tei = LocalCtlTEI} = Sess,
-                           APCO,
-                           #gtp_state{laddr = LocalAddr,
-                                      laddr_gtpu = LocalAddrGtpu,
-                                      restart_counter = RCnt,
-                                      seq_no = SeqNo}) ->"""
-new4 = """gen_create_session_request(#gtp_session{imsi = Imsi,
-                                    apn = Apn,
-                                    local_control_tei = LocalCtlTEI} = Sess,
-                           APCO,
-                           StaticIp,
-                           #gtp_state{laddr = LocalAddr,
-                                      laddr_gtpu = LocalAddrGtpu,
-                                      restart_counter = RCnt,
-                                      seq_no = SeqNo}) ->
-    PaaAddress = case StaticIp of
-        {A, B, C, D} -> conv:ip_to_bin({A, B, C, D});
-        _ -> <<0,0,0,0>>
-    end,"""
-assert old4 in content, "epdg_gtpc_s2b.erl: gen_create_session_request head not found"
-content = content.replace(old4, new4)
-
-old5 = "#v2_pdn_address_allocation{type = ipv4, address = <<0,0,0,0>>},"
-new5 = "#v2_pdn_address_allocation{type = ipv4, address = PaaAddress},"
-assert old5 in content, "epdg_gtpc_s2b.erl: PAA IE construction line not found"
-content = content.replace(old5, new5)
 
 with open(path, "w") as f:
     f.write(content)

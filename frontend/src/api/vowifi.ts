@@ -9,6 +9,9 @@ export type VowifiInstallStatus =
 export interface VowifiStatus {
   success: boolean;
   installedOnDisk: boolean;
+  builtWithOsmoEpdgTag: string | null;
+  currentOsmoEpdgTag: string;
+  buildStale: boolean;
   installStatus: VowifiInstallStatus;
   installStartedAt: string | null;
   installCompletedAt: string | null;
