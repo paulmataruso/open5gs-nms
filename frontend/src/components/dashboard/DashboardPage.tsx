@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall, Phone } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall, Phone, MessageSquare } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
 import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
+import { mmsApi } from '../../api/mms';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -133,6 +134,7 @@ export function DashboardPage(): JSX.Element {
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [gtpBandwidth, setGtpBandwidth] = useState<{ upMbps: number; downMbps: number } | null>(null);
+  const [mmsMessagesSent, setMmsMessagesSent] = useState<number | null>(null);
 
   useEffect(() => {
     fetchStatuses();
@@ -205,7 +207,22 @@ export function DashboardPage(): JSX.Element {
     };
     fetchImsCallStats();
     const callStatsInterval = setInterval(fetchImsCallStats, 5000);
-    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); };
+    // MMS total sent — sum of VectorCore's own message_counts. Unlike the
+    // SMS/call counters above, this is already a durable, sqlite-DB-backed
+    // count (not an in-process counter reset by a service restart), so it
+    // needs no accumulation logic of its own — just read and sum. Silently
+    // stays null (rendered as —) if MMS isn't installed/configured.
+    const fetchMmsStats = () => {
+      mmsApi.getAdmin<{ message_counts?: Record<string, number> }>('api/v1/system/status')
+        .then(d => {
+          const counts = d.message_counts ?? {};
+          setMmsMessagesSent(Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0));
+        })
+        .catch(() => {});
+    };
+    fetchMmsStats();
+    const mmsStatsInterval = setInterval(fetchMmsStats, 5000);
+    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(mmsStatsInterval); };
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
@@ -422,19 +439,42 @@ export function DashboardPage(): JSX.Element {
                 <PhoneCall className="w-5 h-5 text-nms-accent" />
               </div>
             </div>
-            <div className="flex items-start justify-between p-4">
-              <div>
-                <p className="text-xs text-nms-text-dim uppercase tracking-wider">Call Volume</p>
-                <p className="text-2xl font-semibold font-display mt-1">
-                  {imsCallStats?.activeCalls ?? '—'}
-                </p>
-                <p className="text-xs text-nms-text-dim mt-1">
-                  active
-                  <span className="ml-2 text-nms-accent">{imsCallStats?.totalCallsPlaced ?? 0} placed total</span>
-                </p>
+            <div className="grid grid-cols-2 divide-x divide-nms-border">
+              <div className="flex items-start justify-between p-4">
+                <div>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">Call Volume</p>
+                  <p className="text-2xl font-semibold font-display mt-1">
+                    {imsCallStats?.activeCalls ?? '—'}
+                  </p>
+                  <p className="text-xs text-nms-text-dim mt-1">
+                    active
+                    <span className="ml-2 text-nms-accent">{imsCallStats?.totalCallsPlaced ?? 0} placed total</span>
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                  <Phone className="w-5 h-5 text-nms-accent" />
+                </div>
               </div>
-              <div className="p-2.5 rounded-lg bg-nms-accent/10">
-                <Phone className="w-5 h-5 text-nms-accent" />
+              {/* Total SMS+MMS sent — SMS side is IMS-path only (this
+                  project's default delivery path; SGs-path SMS has no
+                  durable counter yet, see call-stats-monitor.ts), MMS side
+                  sums VectorCore's own message_counts. */}
+              <div className="flex items-start justify-between p-4">
+                <div>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">Messages Sent</p>
+                  <p className="text-2xl font-semibold font-display mt-1">
+                    {(imsCallStats || mmsMessagesSent !== null)
+                      ? (imsCallStats?.totalSmsSent ?? 0) + (mmsMessagesSent ?? 0)
+                      : '—'}
+                  </p>
+                  <p className="text-xs text-nms-text-dim mt-1">
+                    <span className="text-nms-accent">{imsCallStats?.totalSmsSent ?? 0} SMS</span>
+                    <span className="ml-2">{mmsMessagesSent ?? 0} MMS</span>
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                  <MessageSquare className="w-5 h-5 text-nms-accent" />
+                </div>
               </div>
             </div>
           </div>

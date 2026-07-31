@@ -88,6 +88,7 @@ export interface ImsLiveStatus {
 export interface ImsCallStats {
   activeCalls: number;
   totalCallsPlaced: number;
+  totalSmsSent: number;
   sampledAt: number;
 }
 

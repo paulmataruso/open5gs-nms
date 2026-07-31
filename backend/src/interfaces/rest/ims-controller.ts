@@ -2005,7 +2005,7 @@ export function createImsRouter(
   // sampler's last computed value (see call-stats-monitor.ts). Polled on a
   // short interval by the Dashboard's IMS Status card.
   router.get('/call-stats', (_req: Request, res: Response) => {
-    const latest = callStatsMonitor?.getLatest() ?? { activeCalls: 0, totalCallsPlaced: 0, sampledAt: 0 };
+    const latest = callStatsMonitor?.getLatest() ?? { activeCalls: 0, totalCallsPlaced: 0, totalSmsSent: 0, sampledAt: 0 };
     res.json({ success: true, ...latest });
   });
 
