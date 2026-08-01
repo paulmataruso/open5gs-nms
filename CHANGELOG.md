@@ -4,6 +4,149 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.41] - 2026-08-01
+
+### Fixed — SMS-over-IMS: 4 real, independent bugs, confirmed working end-to-end after all four
+
+Chased a "SMS never arrives" report all the way through the stack — each fix
+revealed the next layer, and none of them alone was sufficient:
+
+- **P-CSCF never acknowledged MO `MESSAGE` requests missing a Contact
+  header.** RFC 3428 doesn't require MESSAGE to carry one (unlike
+  REGISTER/INVITE), and real phones often omit it. `ims_ipsec_pcscf`'s
+  `fill_contact()` rebuilds its view of the request from `t->uas.request` —
+  the transaction's snapshot taken by `t_lookup_request()`, the very first
+  thing `route[REQINIT]` does — so a fix has to run before that point, and
+  `append_hf()` alone isn't enough either: it only queues a lump, applied
+  at actual relay time, after the snapshot is already taken.
+  `msg_apply_changes()` forces it to apply immediately — verified safe
+  against real Kamailio 5.8.8 source (it only crashes for `SUBST_SND_*`
+  lumps needing a resolved send socket; a plain `append_hf()` lump can
+  never trigger that path, and nothing else runs before this point in the
+  route). Fixed in `kamailio_pcscf.cfg`'s `route[REQINIT]`.
+- **The RP-ACK sent back to the sender was corrupting the separate MT
+  delivery sent to the recipient.** Both `$uac_req(...)` (uac module) and
+  the RP-DATA builder (smsops module) are single process-wide globals, not
+  per-message state — sending the RP-ACK inline via `uac_req_send()` right
+  before queuing the real message for later delivery left a window for
+  state to bleed across the two separate calls. The recipient's phone was
+  receiving the 13-byte RP-ACK structure (zero room for actual text)
+  instead of the real SMS-DELIVER body. Config was byte-for-byte identical
+  to the `docker_open5gs` reference project here — a real upstream
+  smsops/uac interaction bug, not something this project introduced. Fixed
+  by dropping the RP-ACK entirely (the SIP 202 already acknowledges the
+  sender at the transport layer).
+- **`enum_pv_query()` silently dropped every message before it was ever
+  queued.** The reference project's `route[SMS]` uses ENUM to decide
+  "local subscriber vs. route to an external gateway via Nexmo" — this
+  deployment has no real ENUM DNS delegation and no Nexmo credentials at
+  all (a fully self-contained private network where every subscriber is
+  local by definition), so the lookup always failed and the original
+  fallback (`return 1`) just gave up with no error. This was the actual,
+  direct reason nothing ever arrived — upstream of and independent of the
+  two bugs above.
+- **`SMSC_SERVER` had no port.** DNS only has a plain `A` record
+  (`smsc.<domain>` → same IP P-CSCF listens on), so anywhere this constant
+  was used as a bare URI, resolution defaulted to port 5060 — P-CSCF's
+  port, not the SMSC's real 7090. S-CSCF's reg-event NOTIFY back to the
+  SMSC was landing at P-CSCF and getting rejected with 404, so the SMSC's
+  own local contact cache never populated and messages dropped after
+  retries even once queuing worked. Fixed by baking `:7090` into the
+  constant.
+
+Confirmed live end-to-end, both directions, real phones, after all four.
+
+### Added — SMS-over-IMS delivery poll interval is now configurable
+
+`kamailio-smsc`'s store-and-forward queue was hardcoded to a 30-second
+poll. Now configurable (1–300s) via the SMS/MMS page or
+`POST /api/ims/sms-worker-interval`, preserved across Configure re-runs.
+
+### Fixed — MMS: wrong PNG content-type token
+
+VectorCore's well-known content-type table had `0xA9` mapped to
+`image/png` — wrong on both counts, verified against the real WAP-WINA WSP
+Content Type registry (`wapforum.org/wina/wsp-content-type.htm`): PNG's
+real token is `0xA0`; `0xA9` actually belongs to
+`application/vnd.wap.wbxml`. Any real phone sending a PNG MMS attachment
+used the correct standard token, which VectorCore's decoder didn't
+recognize at all (`mmspdu: unsupported content-type token 0xa0`, message
+dropped). GIF and JPEG tokens were already correct — this specifically
+affected PNG. Patched into VectorCore's source and baked into the MMS
+Install flow (git clone → patch → build), so it applies automatically on
+every install or re-install. Confirmed live end-to-end with real photos,
+both directions.
+
+### Added — MMS install-time staleness detection
+
+MMS's Configure step only rewrites `mmsc.yaml` and restarts with whatever
+binary is already on disk — it never rebuilds VectorCore, so it could
+never surface a source-level fix like the PNG token patch above. Added a
+separate `installedWithVersion`/`installStale` signal, distinct from the
+existing `configuredWithVersion`/`configStale`, with its own banner on the
+SMS/MMS page telling the operator to re-run Install specifically.
+
+### Fixed — Dashboard: registered-UE count, dead space in stat cards
+
+- `registeredUes` was reading S-CSCF's raw IMPU-binding count
+  (`ulscscf.status`'s "Records:") — every real device registers 3 public
+  identities (`tel:X`/`sip:X`/`sip:imsi@domain`) that all share one
+  Contact, so 3 real phones showed as "9 registered". Fixed by dumping the
+  full usrloc snapshot and deduping by Contact URI; also added a device-type
+  breakdown (iPhone/Android, from each contact's User-Agent) and a new
+  "Active" metric (real IPsec SA traffic in the last 5 minutes, distinct
+  from merely holding a still-valid registration).
+- The stats grid's paired-card columns used `grid-rows-2` (equal-fraction
+  rows), which force-split a column's height evenly whenever any card in
+  that row grew — leaving large dead space in shorter cards. Rebalanced the
+  column groupings and switched to `flex flex-col` with `flex-1` on each
+  column's last card, so columns size to their own content and any small
+  residual stretch-to-match gets absorbed by growing the last card rather
+  than leaving blank space.
+
+### Added — IPsec SA cleanup (workaround for a real ims_ipsec_pcscf bug)
+
+`ims_ipsec_pcscf`'s own stale-SA cleanup (`delete_unused_sa()`) never
+actually found anything to delete — confirmed via 19/19 real REGISTER
+refreshes over 6h all hitting its `ENODATA` netlink error path, while a
+real UE was independently confirmed (via `ip xfrm state`) to be carrying
+two full stale SA quadruplets from two different registration
+generations. New backend poller (`IpsecSaCleanup`, runs every 10s)
+reconciles the kernel's actual SA table against real registration
+activity and safely removes anything stale, independent of the broken
+upstream matching logic.
+
+## [v2.0-beta_0.40] - 2026-07-31
+
+### Fixed — VoWiFi's own "Rebuild" flow was actually impossible without Uninstall first
+
+Follow-up to the osmo-epdg version bump/staleness detection above, found by
+checking whether this dev host's own VoWiFi deployment (installed
+2026-07-12, well before today's fix) was actually current — it wasn't, and
+the buildStale banner correctly said so, but there was no real way to act
+on it. Two compounding bugs:
+
+- `VoWiFiPage.tsx`'s Setup Wizard hard-disabled the "Start Install" button
+  once `installStatus === 'complete'`, with no other path back to a
+  clickable state short of Uninstall. Fixed: the button (relabeled
+  "Rebuild") is now clickable again whenever `buildStale` is true, with an
+  inline note that rebuilding only recompiles binaries and does not disturb
+  the existing SMF peer/DNS zone/dummy interface config.
+- `POST /api/vowifi/install`'s handler unconditionally reset the *entire*
+  persisted state to defaults on every call — including `configured`,
+  `epdgIp`, `aaaFqdn`, and every other Configure-time value — even though a
+  rebuild only touches compiled binaries, never the live config files. That
+  forced a full Configure redo after every rebuild for no real reason,
+  which is what made "Uninstall then reconfigure from scratch" look like
+  the only option. Fixed: only the install-progress-tracking fields
+  (`installStatus`/`installStartedAt`/`installCompletedAt`/`installError`)
+  reset now; everything else carries over.
+
+Rebuilding does not restart the running services on its own (`verifyInstall()`
+only confirms the new binaries exist on disk) — both the wizard's inline note
+and the top-level staleness banner now say so explicitly: Rebuild, then
+Restart.
+
 ## [v2.0-beta_0.39] - 2026-07-31
 
 ### Fixed — real user-reported SMF crash: duplicate ConnectPeer + misplaced parameter: key

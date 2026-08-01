@@ -16,6 +16,8 @@ export interface MmsStatus {
   appVersion: string;
   configuredWithVersion?: string;
   configStale: boolean;
+  installedWithVersion?: string;
+  installStale: boolean;
 }
 
 export interface MmsSyncResult {

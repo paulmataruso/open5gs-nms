@@ -207,6 +207,12 @@ function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDon
 
   const stepIdx = status ? INSTALL_STEP_ORDER.indexOf(status.installStatus as any) : -1;
   const installComplete = status?.installStatus === 'complete';
+  // A stale build (see buildStale in VowifiStatus) still counts as
+  // "complete" for step-progress display, but the Install button itself
+  // needs to stay clickable so a rebuild can be triggered without an
+  // Uninstall detour — Install alone is non-destructive to the live config
+  // (smf.conf/DNS/dummy interface untouched, only binaries rebuilt).
+  const canReinstall = installComplete && !!status?.buildStale;
 
   return (
     <div className="space-y-4 mt-4">
@@ -221,17 +227,27 @@ function SetupWizardTab({ status, onDone }: { status: VowifiStatus | null; onDon
           <span className="text-xs text-nms-text-dim">— builds libosmocore, osmo-epdg, and strongswan-epdg from source (10-20+ minutes)</span>
         </div>
 
+        {canReinstall && (
+          <p className="text-xs text-blue-300 bg-blue-500/10 border border-blue-500/20 rounded px-3 py-2">
+            A newer osmo-epdg/strongswan-epdg build is available (currently built with{' '}
+            {status?.builtWithOsmoEpdgTag ? `v${status.builtWithOsmoEpdgTag}` : 'an older, unrecorded version'}, this
+            server is pinned to v{status?.currentOsmoEpdgTag}). Rebuilding only recompiles the binaries — your
+            existing configuration (SMF peer, DNS zone, dummy interface) is left alone and does not need to be
+            redone. Remember to Restart the services afterward to load the new build.
+          </p>
+        )}
+
         <div className="flex items-end gap-3 flex-wrap">
           <div>
             <label className="text-xs text-nms-text-dim block mb-1">GSUP bridge port</label>
             <input type="number" value={gsupPort} onChange={e => setGsupPort(parseInt(e.target.value) || 4223)}
-              disabled={!!installActive || installComplete} className="nms-input text-sm w-28 font-mono" />
+              disabled={!!installActive || (installComplete && !canReinstall)} className="nms-input text-sm w-28 font-mono" />
           </div>
           <p className="text-[10px] text-nms-text-dim max-w-xs mb-2">Local-only port used between charon and osmo-epdg. Default 4223 avoids colliding with the existing SMS-over-SGs OsmoHLR (port 4222).</p>
           <div className="flex-1" />
-          <button onClick={doInstall} disabled={busy !== null || !!installActive || installComplete} className="nms-btn-primary flex items-center gap-2 text-sm">
+          <button onClick={doInstall} disabled={busy !== null || !!installActive || (installComplete && !canReinstall)} className="nms-btn-primary flex items-center gap-2 text-sm">
             {busy === 'install' || installActive ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {installComplete ? 'Installed' : installActive ? 'Installing…' : 'Start Install'}
+            {installActive ? 'Installing…' : canReinstall ? 'Rebuild' : installComplete ? 'Installed' : 'Start Install'}
           </button>
         </div>
 
@@ -639,9 +655,10 @@ export function VoWiFiPage() {
               <span className="font-semibold text-blue-400">Rebuild available.</span>{' '}
               This deployment was built from osmo-epdg{' '}
               {status.builtWithOsmoEpdgTag ? `v${status.builtWithOsmoEpdgTag}` : 'an older, unrecorded version'},
-              but this server is now pinned to v{status.currentOsmoEpdgTag}. Unlike a Configure re-run, this
-              needs a full Install (source rebuild) to pick up — go to the Setup Wizard and run Install again.
-              This briefly stops osmo-epdg/charon while it rebuilds.
+              but this server is now pinned to v{status.currentOsmoEpdgTag}. Go to the Setup Wizard and click
+              Rebuild — this only recompiles the binaries, your existing configuration (SMF peer, DNS zone, dummy
+              interface) is left alone and doesn't need to be redone. Restart the services afterward to load the
+              new build.
             </p>
           </div>
           <button

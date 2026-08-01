@@ -563,6 +563,26 @@ function MmsTab({ pageTab, setPageTab }: { pageTab: 'sms' | 'mms'; setPageTab: (
         </div>
       )}
 
+      {/* Distinct from configStale below: Install rebuilds the actual
+          VectorCore binary from source (git pull + go build), Configure
+          only rewrites mmsc.yaml and restarts with whatever binary is
+          already on disk - a source-level fix (e.g. the PNG content-type
+          token patch, 2026-08-01) needs a real re-Install, Configure alone
+          can never pick it up. Amber (heavier/slower operation, briefly
+          stops the service) vs the lighter blue Configure banner below. */}
+      {status?.installStale && (
+        <div className="nms-card border-amber-500/30 bg-amber-500/5 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-300">VectorCore build out of date</p>
+            <p className="text-xs text-nms-text-dim mt-0.5">
+              This deployment's VectorCore binary was built by an older version ({status.installedWithVersion ?? 'unknown'}, running {status.appVersion}) —
+              a source-level fix has shipped since then. Click Install Packages above to rebuild (safe to re-run — reuses the existing clone, only rebuilds).
+            </p>
+          </div>
+        </div>
+      )}
+
       {status?.configStale && (
         <div className="nms-card border-blue-500/30 bg-blue-500/5 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" />
@@ -773,6 +793,8 @@ export function SMSPage() {
   // is selected — see ims-controller.ts's setSmsDeliveryMode()).
   const [imsStatus, setImsStatus]   = useState<ImsStatus | null>(null);
   const [modeActing, setModeActing] = useState(false);
+  const [intervalActing, setIntervalActing] = useState(false);
+  const [intervalInput, setIntervalInput] = useState<string>('');
 
   // Send test SMS
   const [testTo,      setTestTo]      = useState('');
@@ -829,6 +851,24 @@ export function SMSPage() {
       toast.error(`Failed to change delivery mode: ${err?.response?.data?.error ?? err.message}`);
     } finally {
       setModeActing(false);
+    }
+  };
+
+  const handleSetSmsWorkerInterval = async () => {
+    const seconds = parseInt(intervalInput, 10);
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+      toast.error('Enter an integer between 1 and 300 seconds');
+      return;
+    }
+    setIntervalActing(true);
+    try {
+      await imsApi.setSmsWorkerInterval(seconds);
+      toast.success(`SMS delivery poll interval set to ${seconds}s`);
+      loadImsStatus();
+    } catch (err: any) {
+      toast.error(`Failed to change poll interval: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setIntervalActing(false);
     }
   };
 
@@ -1157,6 +1197,39 @@ export function SMSPage() {
             >
               SMS over SGs (this page, experimental) {imsStatus.smsDeliveryMode === 'sgs' && '· active'}
             </button>
+          </div>
+
+          {/* SMS_TO_3GPP/SMS_TO_SIP delivery over IMS is store-and-forward,
+              polled by kamailio-smsc's own rtimer at this interval (see
+              route[SMS_WORKER] in ims-controller.ts's smscMainCfg()) -
+              applies regardless of which delivery mode above is currently
+              selected, since it's purely about how often the IMS path's
+              queue gets drained once a message reaches it. */}
+          <div className="flex items-center justify-between gap-3 mt-4 pt-4 border-t border-nms-border">
+            <div>
+              <p className="text-sm font-medium">SMS-over-IMS delivery poll interval</p>
+              <p className="text-xs text-nms-text-dim mt-0.5">
+                Currently {imsStatus.smsWorkerIntervalSeconds}s — lower means faster delivery, at the cost of more frequent queue polling (1-300s)
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                type="number"
+                min={1}
+                max={300}
+                placeholder={String(imsStatus.smsWorkerIntervalSeconds)}
+                value={intervalInput}
+                onChange={e => setIntervalInput(e.target.value)}
+                className="w-20 text-sm px-2 py-1.5 rounded-lg border border-nms-border bg-nms-surface-2 text-nms-text"
+              />
+              <button
+                onClick={handleSetSmsWorkerInterval}
+                disabled={intervalActing || !intervalInput}
+                className="nms-btn-secondary text-sm px-3 py-1.5"
+              >
+                Set
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -730,13 +730,28 @@ WantedBy=multi-user.target
 // ── SMSC templates ────────────────────────────────────────────────────────────
 
 function smscIncludeCfg(p: { smscIp: string; imsDomain: string }): string {
+  // Real bug, confirmed live (2026-08-01): SMSC_SERVER (this SMSC's own
+  // self-identity constant - used as the alias, the pua_reginfo
+  // server_address, and every outbound request's From URI) had no port.
+  // DNS only has a plain A record for smsc.<domain> (10.0.1.178 - same IP
+  // P-CSCF listens on), so anywhere this constant got used as a bare URI
+  // without an explicit port, resolution silently defaulted to standard
+  // SIP port 5060 - P-CSCF's port, not the SMSC's real 7090. Confirmed via
+  // the pua DB table (SUBSCRIBE's own stored contact: "sip:smsc.<domain>",
+  // no port) and S-CSCF's NOTIFY-building log (watcher_contact same, no
+  // port) - S-CSCF's reg-event NOTIFY back to the SMSC was resolving to
+  // P-CSCF's socket and getting rejected with 404, so the SMSC's own local
+  // contact cache never populated and every message eventually dropped
+  // after retries even once queuing itself worked. Fix: bake the real port
+  // into the constant so every use (alias, pua_reginfo server_address,
+  // every uac_req furi) is unambiguous.
   return `listen=udp:${p.smscIp}:7090
 listen=tcp:${p.smscIp}:7090
 
 #!define DOMAIN "${p.imsDomain}"
 #!subst "/DOMAIN/${p.imsDomain}/"
-#!define SMSC_SERVER "smsc.${p.imsDomain}"
-#!subst "/SMSC_SERVER/smsc.${p.imsDomain}/"
+#!define SMSC_SERVER "smsc.${p.imsDomain}:7090"
+#!subst "/SMSC_SERVER/smsc.${p.imsDomain}:7090/"
 
 #!define SMS_DB_URL "sms=>mysql://smsc:heslo@127.0.0.1/smsc"
 #!define DIALPLAN_PUA_DB_URL "mysql://smsc:heslo@127.0.0.1/smsc"
@@ -747,8 +762,12 @@ listen=tcp:${p.smscIp}:7090
 `;
 }
 
-function smscMainCfg(): string {
-  // Verbatim from herlesupreeth/docker_open5gs smsc/kamailio_smsc.cfg (BSD 2-Clause)
+function smscMainCfg(smsWorkerIntervalSeconds: number = 30): string {
+  // Verbatim from herlesupreeth/docker_open5gs smsc/kamailio_smsc.cfg (BSD 2-Clause),
+  // except smsWorkerIntervalSeconds (originally hardcoded 30 - the rtimer poll
+  // interval for the store-and-forward SMS_WORKER route, see route[SMS_WORKER]
+  // below) is now configurable - exposed via the SMS/MMS page and
+  // POST /api/ims/sms-worker-interval, see setSmsWorkerInterval().
   return `#!KAMAILIO
 
 include_file "smsc.cfg"
@@ -806,7 +825,7 @@ modparam("sqlops", "sqlcon", SMS_DB_URL)
 modparam("dialplan", "db_url", DIALPLAN_PUA_DB_URL)
 modparam("uac", "restore_mode", "none")
 modparam("htable", "htable", "sms_retries=>size=8;autoexpire=SUBSCRIBE_EXPIRE")
-modparam("rtimer", "timer", "name=sms;interval=30;mode=1;")
+modparam("rtimer", "timer", "name=sms;interval=${smsWorkerIntervalSeconds};mode=1;")
 modparam("rtimer", "exec", "timer=sms;route=SMS_WORKER")
 modparam("pua_reginfo", "server_address", "sip:SMSC_SERVER")
 modparam("pua_reginfo", "publish_reginfo", 0)
@@ -859,13 +878,28 @@ route[REQINIT] {
 route[SMS_FROM_3GPP] {
   send_reply("202", "Accepted");
   if (isRPDATA()) {
-    $uac_req(method) = "MESSAGE";
-    $uac_req(ruri) = $ai;
-    $uac_req(furi) = "sip:"+SMSC_SERVER;
-    $uac_req(turi) = $ai;
-    $uac_req(hdrs) = "Content-Type: application/vnd.3gpp.sms\\r\\nRequest-Disposition: no-fork\\r\\nAccept-Contact: *;+g.3gpp.smsip\\r\\n";
-    $uac_req(body) = $smsack;
-    uac_req_send();
+    # Real bug, confirmed live (2026-07-31): the RP-ACK sent here back to
+    # the ORIGINAL SENDER (via $smsack/uac_req_send()) was corrupting the
+    # SEPARATE MT delivery sent to the RECIPIENT later by route[SMS_TO_3GPP]
+    # (via $smsbody/uac_req_send()) - the recipient's phone was receiving
+    # $smsack's 13-byte RP-ACK structure (RP_ACK_NETWORK_TO_MS + fixed
+    # protocol bytes, zero room for actual text) instead of $smsbody's real
+    # RP-DATA/SMS-DELIVER content. Root-caused via a byte-for-byte match
+    # against smsops's pv_sms_ack() source (5 of 13 captured bytes are
+    # fixed constants - 0x41/0x09/SUBMIT/0x00 - that only pv_sms_ack()
+    # produces) - both $uac_req(...) and smsops's own RP-data structures
+    # are single process-wide globals (uac_send.c's static _uac_req,
+    # smsops_impl.c's static _smsops_rp_send_data/_smsops_rp_data), shared
+    # across every uac_req_send() call in a worker; sending this RP-ACK
+    # inline right before route(SMS) queues the real message for later
+    # delivery left a window for state to bleed across the two separate
+    # uac_req_send() calls. Config is otherwise byte-for-byte identical to
+    # docker_open5gs's reference kamailio_smsc.cfg - this looks like a real
+    # upstream module bug in the smsops/uac interaction, not something
+    # introduced by this project. Fix: skip the RP-ACK entirely - the SIP
+    # "202 Accepted" above already acknowledges the sender at the
+    # transport layer, and removing this eliminates the interfering
+    # concurrent uac_req_send() call.
     $avp(from) = $(ai{uri.user});
     $avp(to) = $tpdu(destination);
     $avp(dcs) = $tpdu(coding);
@@ -898,6 +932,7 @@ event_route[xhttp:request] {
 }
 
 route[SMS_TO_3GPP] {
+  xlog("DBG-SMS: SMS_TO_3GPP enter, id=$avp(id) from=$avp(from) to=$avp(to) text=$avp(text)\\n");
   $rpdata(all) = $null;
   $rpdata(type) = 1;
   $rpdata(reference) = $avp(id);
@@ -913,6 +948,7 @@ route[SMS_TO_3GPP] {
   $uac_req(hdrs) = "Content-Type: application/vnd.3gpp.sms\\r\\nRequest-Disposition: no-fork\\r\\nAccept-Contact: *;+g.3gpp.smsip\\r\\nX-MSG-ID: "+$avp(id)+"\\r\\n";
   $uac_req(body) = $smsbody;
   $uac_req(evroute)=1;
+  xlog("DBG-SMS: SMS_TO_3GPP about to send, ruri=$uac_req(ruri) bodylen=$(uac_req(body){s.len})\\n");
   uac_req_send();
 }
 
@@ -928,18 +964,40 @@ route[SMS_TO_SIP] {
 }
 
 route[SMS] {
-  $var(enum) = "+"+$avp(to);
-  if (!enum_pv_query("$var(enum)")) {
+  xlog("DBG-SMS: route[SMS] enter, from=$avp(from) to=$avp(to) text=$avp(text)\\n");
+  # Real bug, confirmed live (2026-08-01): the reference docker_open5gs
+  # project's enum_pv_query("+"+$avp(to)) gate exists to distinguish "local
+  # subscriber" (queue for IMS/SIP delivery) from "route to PSTN via an
+  # external gateway" (route(SMS_TO_OUTBOUND), which POSTs to Nexmo's REST
+  # API using real API credentials). This project has no real ENUM DNS
+  # infrastructure and no Nexmo/outbound SMS gateway configured at all - a
+  # fully self-contained private IMS test network where every subscriber IS
+  # a local number by definition. The ENUM lookup unconditionally fails for
+  # every real test MSISDN (confirmed live via debug logging: "enum_pv_query
+  # FAILED for +155500000XX - not treated as local number" for every single
+  # send, both directions), and the original config's failure path was just
+  # "return 1" - silently dropping the message before it ever reached the
+  # messages queue, before ANY of SMS_TO_3GPP/SMS_TO_SIP ever had a chance
+  # to run. This was the actual, direct cause of "SMS never arrives" all
+  # along - upstream of and independent of the separate real bugs already
+  # fixed in this session (P-CSCF's Contact-header/fill_contact() bug, and
+  # the RP-ACK/uac_req_send() interference removed from
+  # route[SMS_FROM_3GPP]) - both of those fixes are still correct and
+  # necessary, they just couldn't matter while every message was being
+  # dropped here first. Fix: skip the ENUM gate entirely, always treat the
+  # destination as local.
+  if (sql_query("sms", "insert into messages (caller, callee, text, dcs, valid) values ('$(avp(from){s.escape.common})', '$(avp(to){s.escape.common})', '$(avp(text){s.escape.common})', $avp(dcs), now());")) {
+    xlog("DBG-SMS: insert into messages OK\\n");
     return 1;
-  }
-  if (sql_query("sms", "insert into messages (caller, callee, text, dcs, valid) values ('$(avp(from){s.escape.common})', '$(avp(to){s.escape.common})', '$(avp(text){s.escape.common})', $avp(dcs), now());"))
-    return 1;
-  else
+  } else {
+    xlog("DBG-SMS: insert into messages FAILED\\n");
     return -1;
+  }
 }
 
 route[SMS_WORKER] {
   sql_query("sms", "select id, caller, callee, text, dcs from messages;", "q");
+  xlog("DBG-SMS: SMS_WORKER tick, rows=$dbr(q=>rows)\\n");
   if ($dbr(q=>rows) > 0) {
     $var(i) = 0;
     while ($var(i) < $dbr(q=>rows)) {
@@ -979,6 +1037,7 @@ route[NOTIFY] {
 route[SEND_SMS] {
   $var(uri) = "sip:"+$avp(to)+"@"+DOMAIN;
   if (reg_fetch_contacts("location", "$var(uri)", "caller")) {
+    xlog("DBG-SMS: SEND_SMS uri=$var(uri) contacts=$(ulc(caller=>count))\\n");
     $var(j) = 0;
     $var(is3gpp) = 0;
     while($var(j) < $(ulc(caller=>count))) {
@@ -995,6 +1054,7 @@ route[SEND_SMS] {
       $var(j) = $var(j) + 1;
     }
   } else {
+    xlog("DBG-SMS: SEND_SMS reg_fetch_contacts FAILED for $var(uri) - not registered, subscribing\\n");
     reginfo_subscribe("$var(uri)", "SUBSCRIBE_EXPIRE");
   }
 }
@@ -1758,9 +1818,17 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // across a plain Configure re-run — this project's "full rewrite every
   // time" convention would otherwise silently reset it back to 'ims'.
   let smsDeliveryMode: 'sgs' | 'ims' = 'ims';
+  // Preserve the SMS_WORKER poll interval (see setSmsWorkerInterval() below)
+  // across a plain Configure re-run for the same reason as smsDeliveryMode
+  // above. Default 30s matches the reference project's original hardcoded
+  // value.
+  let smsWorkerIntervalSeconds = 30;
   if (fs.existsSync(HOST_IMS_STATE)) {
     try {
       const prevSaved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      if (typeof prevSaved?.smsWorkerIntervalSeconds === 'number' && prevSaved.smsWorkerIntervalSeconds > 0) {
+        smsWorkerIntervalSeconds = prevSaved.smsWorkerIntervalSeconds;
+      }
       const prevAdditionalPlmns: { mcc: string; mnc: string }[] = prevSaved?.config?.additionalPlmns ?? [];
       const prevDomains = prevAdditionalPlmns.map(p => deriveImsDomain(p.mcc, p.mnc));
       const prevPrimaryDomain: string | undefined = prevSaved?.imsDomain;
@@ -1799,7 +1867,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/smsc.cfg`,
     smscIncludeCfg({ smscIp, imsDomain }), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/kamailio_smsc.cfg`,
-    smscMainCfg(), 'utf-8');
+    smscMainCfg(smsWorkerIntervalSeconds), 'utf-8');
   fs.writeFileSync(`${HOST_SYSTEMD_DIR}/kamailio-smsc.service`,
     smscSystemdUnit(), 'utf-8');
 
@@ -1961,6 +2029,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     // every upgrade without the operator choosing when. See app-version.ts.
     configuredWithVersion: getAppVersion(),
     smsDeliveryMode,
+    smsWorkerIntervalSeconds,
     config: {
       mcc, mnc, additionalPlmns: additionalPlmns ?? [],
       pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
@@ -2032,6 +2101,110 @@ export async function setSmsDeliveryMode(mode: 'sgs' | 'ims'): Promise<void> {
   fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
 }
 
+// Sets the SMS_WORKER rtimer poll interval (see route[SMS_WORKER] in
+// smscMainCfg()) — how often kamailio-smsc's store-and-forward queue gets
+// drained. Lower = faster real-world delivery, at the cost of more frequent
+// DB polling. Deliberately lightweight, same shape as setSmsDeliveryMode()
+// above: only regenerates kamailio_smsc.cfg (the interval is baked into the
+// modparam there, not the include file) and restarts kamailio-smsc.
+export async function setSmsWorkerInterval(seconds: number): Promise<void> {
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+    throw new Error('Interval must be an integer between 1 and 300 seconds');
+  }
+  if (!fs.existsSync(HOST_IMS_STATE)) {
+    throw new Error('IMS is not configured yet — configure IMS first');
+  }
+  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+
+  fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/kamailio_smsc.cfg`,
+    smscMainCfg(seconds), 'utf-8');
+  await nsenter('systemctl', ['restart', 'kamailio-smsc']);
+
+  state.smsWorkerIntervalSeconds = seconds;
+  fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
+}
+
+// Real bug, confirmed live (2026-07-31): the Dashboard's "registered UEs"
+// count came from ulscscf.status's "Records:" figure, which is a raw IMPU
+// binding count - every real device registers 3 public identities
+// (tel:X, sip:X, sip:imsi@domain) that all share the same Contact/
+// User-Agent, so 3 real phones showed as "9 registered". Fixed by dumping
+// the full usrloc snapshot (ulscscf.snapshot) and deduping by Contact URI
+// to get the true distinct-device count, classified by device type from
+// each contact's User-Agent header.
+async function getRegisteredUesWithActivity(): Promise<{
+  registeredUes: number;
+  registeredUesByType: { iphone: number; android: number; other: number };
+  activeUes: number;
+}> {
+  const empty = { registeredUes: 0, registeredUesByType: { iphone: 0, android: 0, other: 0 }, activeUes: 0 };
+  const snapshotPath = '/tmp/.nms-scscf-snapshot.txt';
+  try {
+    await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.snapshot', snapshotPath]);
+  } catch {
+    return empty;
+  }
+  const hostSnapshotPath = `/proc/1/root${snapshotPath}`;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(hostSnapshotPath, 'utf-8');
+  } catch {
+    return empty;
+  }
+  try { fs.unlinkSync(hostSnapshotPath); } catch { /* best-effort cleanup */ }
+
+  const contactRe = /Contact\s*:\s*'([^']+)'/g;
+  const uaRe = /User-Agent:\s*'([^']*)'/g;
+  const contacts: string[] = [];
+  const uas: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = contactRe.exec(raw))) contacts.push(m[1]);
+  while ((m = uaRe.exec(raw))) uas.push(m[1]);
+
+  const byContact = new Map<string, { ip: string; userAgent: string }>();
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+    if (byContact.has(contact)) continue;
+    // Handles both "sip:IP:PORT..." and "sip:<uuid>@IP:PORT..." contact forms.
+    const ipMatch = contact.match(/@([\d.]+):/) ?? contact.match(/:([\d.]+):/);
+    byContact.set(contact, { ip: ipMatch ? ipMatch[1] : '', userAgent: uas[i] ?? '' });
+  }
+
+  const registeredUesByType = { iphone: 0, android: 0, other: 0 };
+  for (const { userAgent } of byContact.values()) {
+    const ua = userAgent.toLowerCase();
+    if (ua.includes('iphone') || ua.includes('ios/')) registeredUesByType.iphone++;
+    else if (ua.includes('android')) registeredUesByType.android++;
+    else registeredUesByType.other++;
+  }
+
+  // "Active" = the UE's IPsec SA has passed real traffic in the last 5
+  // minutes - distinguishes actually-doing-something-right-now from
+  // merely holding a still-valid-but-idle registration binding.
+  const activeIps = new Set<string>();
+  try {
+    const xfrmOut = await nsenter('ip', ['-s', 'xfrm', 'state']);
+    const blocks = xfrmOut.stdout.split(/\n(?=src )/);
+    const now = Date.now();
+    for (const block of blocks) {
+      const srcDst = /^src (\S+) dst (\S+)/.exec(block);
+      const lastUsed = /lastused (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(block);
+      if (!srcDst || !lastUsed) continue;
+      const t = new Date(lastUsed[1].replace(' ', 'T')).getTime();
+      if (Number.isNaN(t) || now - t > 5 * 60 * 1000) continue;
+      activeIps.add(srcDst[1]);
+      activeIps.add(srcDst[2]);
+    }
+  } catch { /* best-effort */ }
+
+  let activeUes = 0;
+  for (const { ip } of byContact.values()) {
+    if (ip && activeIps.has(ip)) activeUes++;
+  }
+
+  return { registeredUes: byContact.size, registeredUesByType, activeUes };
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
 export function createImsRouter(
@@ -2080,6 +2253,7 @@ export function createImsRouter(
       let imsDomain: string | undefined;
       let configuredWithVersion: string | undefined;
       let smsDeliveryMode: 'sgs' | 'ims' = 'ims';
+      let smsWorkerIntervalSeconds = 30;
       if (hasSavedConfig) {
         try {
           const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
@@ -2087,6 +2261,9 @@ export function createImsRouter(
           imsDomain = saved.imsDomain;
           configuredWithVersion = saved.configuredWithVersion;
           if (saved.smsDeliveryMode === 'sgs') smsDeliveryMode = 'sgs';
+          if (typeof saved.smsWorkerIntervalSeconds === 'number' && saved.smsWorkerIntervalSeconds > 0) {
+            smsWorkerIntervalSeconds = saved.smsWorkerIntervalSeconds;
+          }
         } catch { /* corrupt */ }
       }
       // Deployments configured before this field existed have no
@@ -2115,18 +2292,15 @@ export function createImsRouter(
       // isn't necessarily registered, and IPsec SAs get wiped by any P-CSCF
       // restart until the phone re-registers — see memory:
       // ims-ue-to-ue-calling-investigation.
-      let registeredUes = 0;
       let ipsecSaCount = 0;
-      const [ulStatusRes, xfrmRes] = await Promise.allSettled([
+      const [ueRes, xfrmRes] = await Promise.allSettled([
         services.scscf
-          ? nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.status'])
+          ? getRegisteredUesWithActivity()
           : Promise.reject(new Error('scscf not running')),
         nsenter('ip', ['xfrm', 'state']),
       ]);
-      if (ulStatusRes.status === 'fulfilled') {
-        const m = ulStatusRes.value.stdout.match(/Records:\s*(\d+)/);
-        if (m) registeredUes = parseInt(m[1], 10);
-      }
+      const { registeredUes, registeredUesByType, activeUes } =
+        ueRes.status === 'fulfilled' ? ueRes.value : { registeredUes: 0, registeredUesByType: { iphone: 0, android: 0, other: 0 }, activeUes: 0 };
       if (xfrmRes.status === 'fulfilled') {
         ipsecSaCount = (xfrmRes.value.stdout.match(/^src /gm) ?? []).length;
       }
@@ -2160,6 +2334,8 @@ export function createImsRouter(
         imsSubscribers,
         open5gsSubscribers,
         registeredUes,
+        registeredUesByType,
+        activeUes,
         ipsecSaCount,
         smfImsConfigured,
         dnsConfigured,
@@ -2171,6 +2347,7 @@ export function createImsRouter(
         configuredWithVersion,
         configStale,
         smsDeliveryMode,
+        smsWorkerIntervalSeconds,
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'ims status error');
@@ -2193,6 +2370,26 @@ export function createImsRouter(
     } catch (err) {
       await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
       logger.error({ err: String(err) }, 'ims sms-delivery-mode error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/ims/sms-worker-interval — body: { seconds: number (1-300) }.
+  // Controls how often kamailio-smsc's store-and-forward queue is polled —
+  // see setSmsWorkerInterval() above.
+  router.post('/sms-worker-interval', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { seconds } = req.body as { seconds?: number };
+    if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+      return res.status(400).json({ success: false, error: 'seconds must be an integer between 1 and 300' });
+    }
+    try {
+      await setSmsWorkerInterval(seconds);
+      await auditLogger.log({ action: 'ims_configure', user, details: `sms_worker_interval_seconds=${seconds}`, success: true });
+      res.json({ success: true, seconds });
+    } catch (err) {
+      await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
+      logger.error({ err: String(err) }, 'ims sms-worker-interval error');
       res.status(500).json({ success: false, error: String(err) });
     }
   });

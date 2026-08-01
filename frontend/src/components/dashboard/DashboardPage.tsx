@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall, Phone, MessageSquare } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall, Phone, MessageSquare, Smartphone } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
@@ -282,7 +282,13 @@ export function DashboardPage(): JSX.Element {
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Stats Grid — default align-items:stretch (columns fill the row's
+          tallest natural height), now safe since the 4 second-row column
+          groups below were rebalanced to have close natural heights on
+          their own. Each multi-card column's LAST card gets flex-1 so any
+          small leftover stretch is absorbed by growing that card's own
+          body (bottom edges line up), not by appending blank margin below
+          it or force-splitting evenly across cards that don't need it. */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           icon={Activity}
@@ -342,7 +348,7 @@ export function DashboardPage(): JSX.Element {
 
         {/* CBRS Radios + Primary PLMN group — one grid slot, CBRS on top and the
             combined PLMN card stacked below it (same pattern as the GTP/Time group). */}
-        <div className="grid grid-rows-2 gap-4">
+        <div className="flex flex-col gap-4">
           <div className="nms-card animate-fade-in">
             <div className="flex items-start justify-between">
               <div>
@@ -364,8 +370,11 @@ export function DashboardPage(): JSX.Element {
             </div>
           </div>
 
-          {/* Primary PLMN card — split top/bottom: 5G (AMF) over 4G (MME) */}
-          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+          {/* Primary PLMN card — split top/bottom: 5G (AMF) over 4G (MME).
+              flex-1: last card in this column, absorbs any leftover
+              row-stretch height so this column's bottom edge lines up
+              with its siblings. */}
+          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border flex-1">
             <div className="flex items-start justify-between p-4">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">5G Primary PLMN</p>
@@ -393,31 +402,20 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
 
-        {/* UEs (combined active/total) + IMS Status group — one grid slot, same
-            stacked pattern as CBRS/PLMN and GTP/Time below. Previously Active UEs
-            and Total UEs were two halves of one split card; combined into a single
-            compact card to free the second slot for IMS status. */}
-        <div className="grid grid-rows-2 gap-4">
-          <div className="nms-card animate-fade-in">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs text-nms-text-dim uppercase tracking-wider">UEs</p>
-                <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}/{subscriberTotal ?? '—'}</p>
-                <p className="text-xs text-nms-text-dim mt-1">Active / total subscribers</p>
-              </div>
-              <div className="p-2.5 rounded-lg bg-nms-accent/10">
-                <Users className="w-5 h-5 text-nms-accent" />
-              </div>
-            </div>
-          </div>
-
-          {/* IMS Status card — split: service/registrar health on top, call
-              volume (live + durable cumulative) on bottom. The bottom half
-              is fed by the backend's ImsCallStatsMonitor background sampler
-              (call-stats-monitor.ts), not computed here — S-CSCF's own
-              cumulative dialog stat resets on every kamailio-scscf restart,
-              so "total calls placed" has to be persisted server-side. */}
-          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
+        {/* IMS Status group — its own grid slot now (previously paired with
+            the UEs stat card, but adding the Registered/Active split grew
+            this to 3 stacked sections, tall enough on its own to no longer
+            need a partner — see the GTP/Time/UEs group below for where UEs
+            moved to, keeping this row's 4 columns close in natural height
+            without forcing any of them to stretch). Split: service/
+            registrar health on top, registered/active UEs in the middle,
+            call volume (live + durable cumulative) on bottom. The bottom
+            section is fed by the backend's ImsCallStatsMonitor background
+            sampler (call-stats-monitor.ts), not computed here — S-CSCF's
+            own cumulative dialog stat resets on every kamailio-scscf
+            restart, so "total calls placed" has to be persisted
+            server-side. */}
+        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
             <div className="flex items-start justify-between p-4">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">IMS Status</p>
@@ -431,12 +429,45 @@ export function DashboardPage(): JSX.Element {
                   </p>
                 </div>
                 <p className="text-xs text-nms-text-dim mt-1">
-                  <span className="text-nms-accent">{imsStatus?.registeredUes ?? 0} registered</span>
-                  <span className="ml-2">{imsStatus?.ipsecSaCount ?? 0} IPsec SAs</span>
+                  {imsStatus?.ipsecSaCount ?? 0} IPsec SAs
                 </p>
               </div>
               <div className="p-2.5 rounded-lg bg-nms-accent/10">
                 <PhoneCall className="w-5 h-5 text-nms-accent" />
+              </div>
+            </div>
+            {/* Registered vs Active UEs — split per subscriber count vs
+                real recent activity. "Registered" dedupes each UE's 3
+                IMPU bindings (tel:X/sip:X/sip:imsi@domain) down to one
+                distinct Contact, classified by device type from its
+                User-Agent. "Active" = that UE's IPsec SA passed real
+                traffic in the last 5 minutes (see ims-controller.ts's
+                getRegisteredUesWithActivity) — distinguishes a UE that's
+                actually doing something right now from one just holding
+                a still-valid-but-idle registration. */}
+            <div className="grid grid-cols-2 divide-x divide-nms-border">
+              <div className="flex items-start justify-between p-4">
+                <div>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">Registered</p>
+                  <p className="text-2xl font-semibold font-display mt-1">{imsStatus?.registeredUes ?? 0}</p>
+                  <p className="text-xs text-nms-text-dim mt-1">
+                    <span className="text-nms-accent">{imsStatus?.registeredUesByType?.iphone ?? 0} iPhone</span>
+                    <span className="ml-2">{imsStatus?.registeredUesByType?.android ?? 0} Android</span>
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                  <Smartphone className="w-5 h-5 text-nms-accent" />
+                </div>
+              </div>
+              <div className="flex items-start justify-between p-4">
+                <div>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">Active</p>
+                  <p className="text-2xl font-semibold font-display mt-1">{imsStatus?.activeUes ?? 0}</p>
+                  <p className="text-xs text-nms-text-dim mt-1">last 5 min</p>
+                </div>
+                <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                  <Activity className="w-5 h-5 text-nms-accent" />
+                </div>
               </div>
             </div>
             <div className="grid grid-cols-2 divide-x divide-nms-border">
@@ -478,11 +509,25 @@ export function DashboardPage(): JSX.Element {
               </div>
             </div>
           </div>
-        </div>
 
-        {/* GTP U-Plane Traffic + Time Server group — same single grid slot as the
-            old combined card, now 2 separate bordered cards stacked inside it. */}
-        <div className="grid grid-rows-2 gap-4">
+        {/* UEs + GTP U-Plane Traffic + Time Server group — 3 short single-
+            stat cards stacked, regrouped here (UEs moved from the IMS
+            Status group above) so this column's natural height stays
+            close to its 3 siblings instead of standing out short. */}
+        <div className="flex flex-col gap-4">
+          <div className="nms-card animate-fade-in">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">UEs</p>
+                <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}/{subscriberTotal ?? '—'}</p>
+                <p className="text-xs text-nms-text-dim mt-1">Active / total subscribers</p>
+              </div>
+              <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                <Users className="w-5 h-5 text-nms-accent" />
+              </div>
+            </div>
+          </div>
+
           <div className="nms-card animate-fade-in">
             <div className="flex items-start justify-between">
               <div>
@@ -509,7 +554,10 @@ export function DashboardPage(): JSX.Element {
             </div>
           </div>
 
-          <div className="nms-card animate-fade-in">
+          {/* flex-1: last card in this column, absorbs any leftover
+              row-stretch height so this column's bottom edge lines up
+              with its siblings. */}
+          <div className="nms-card animate-fade-in flex-1">
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">Time Server</p>

@@ -801,7 +801,24 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
     }
     try {
       const gsupPort = Number(req.body?.gsupPort) || DEFAULT_GSUP_PORT;
-      const state: VowifiState = { ...defaultState(), installStatus: 'preparing', installStartedAt: new Date().toISOString() };
+      // Preserve any existing config-related state across a re-Install (a
+      // rebuild after a version bump, e.g. OSMO_EPDG_TAG) — only reset the
+      // install-progress-tracking fields. Previously this unconditionally
+      // reset to defaultState(), wiping `configured`/`epdgIp`/`aaaFqdn`/etc.
+      // on every Install call even though a rebuild never touches the live
+      // config files (smf.conf's ConnectPeer, DNS zone, dummy interface) at
+      // all — only the compiled binaries change. That forced a full
+      // Configure redo after every rebuild for no real reason, which is
+      // what made "Uninstall then reconfigure from scratch" look like the
+      // only path forward. installError is cleared since it refers to
+      // whatever attempt is now starting fresh.
+      const state: VowifiState = {
+        ...current,
+        installStatus: 'preparing',
+        installStartedAt: new Date().toISOString(),
+        installCompletedAt: null,
+        installError: null,
+      };
       saveState(state);
       appendLog(`\n==BUILD:start ts=${state.installStartedAt}==\n`);
       startInstall(gsupPort, logger);

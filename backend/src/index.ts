@@ -53,6 +53,7 @@ import { TunManagementUseCase } from './application/use-cases/tun-management';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { GtpBandwidthMonitor } from './application/use-cases/interface-status/gtp-bandwidth';
 import { ImsCallStatsMonitor } from './application/use-cases/ims/call-stats-monitor';
+import { IpsecSaCleanup } from './application/use-cases/ims/ipsec-sa-cleanup';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
@@ -146,6 +147,16 @@ async function main() {
   // happens often; see call-stats-monitor.ts header for the accumulation scheme).
   const imsCallStatsMonitor = new ImsCallStatsMonitor(hostExecutor, logger);
   imsCallStatsMonitor.start();
+
+  // Workaround for a real bug in ims_ipsec_pcscf (kamailio-ims-modules,
+  // third-party, not part of this repo): its own stale-SA cleanup
+  // (delete_unused_sa()) never actually finds anything to delete, so a
+  // UE's old IPsec SA quadruplet survives every re-registration and piles
+  // up without bound — see ipsec-sa-cleanup.ts header for the full
+  // investigation. Runs unconditionally like the other pollers above;
+  // it's a safe no-op on any host where IMS isn't configured.
+  const ipsecSaCleanup = new IpsecSaCleanup(hostExecutor, logger);
+  ipsecSaCleanup.start();
 
   // ── SAS service ──
   // Create a child logger tagged with module:'sas' so the log stream can filter SAS-only messages

@@ -15,6 +15,8 @@ export interface ImsStatus {
   imsSubscribers: number;
   open5gsSubscribers: number;
   registeredUes: number;
+  registeredUesByType: { iphone: number; android: number; other: number };
+  activeUes: number;
   ipsecSaCount: number;
   smfImsConfigured: boolean;
   dnsConfigured: boolean;
@@ -26,6 +28,7 @@ export interface ImsStatus {
   configuredWithVersion?: string;
   configStale: boolean;
   smsDeliveryMode: 'sgs' | 'ims';
+  smsWorkerIntervalSeconds: number;
 }
 
 export interface ImsConfigureInput {
@@ -104,6 +107,7 @@ export const imsApi = {
   disable:         async ()                             => { const { data } = await api.post('/disable');           return data; },
   restart:         async ()                             => { const { data } = await api.post('/restart');           return data; },
   setSmsDeliveryMode: async (mode: 'sgs' | 'ims')       => { const { data } = await api.post('/sms-delivery-mode', { mode }); return data; },
+  setSmsWorkerInterval: async (seconds: number)         => { const { data } = await api.post('/sms-worker-interval', { seconds }); return data; },
   install:         () => fetch('/api/ims/install', {
     method: 'POST', credentials: 'include',
     headers: { 'Content-Type': 'application/json' },

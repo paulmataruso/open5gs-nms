@@ -314,6 +314,15 @@ interface MmsState {
   esmeName: string;
   esmePassword: string;
   configuredWithVersion?: string;
+  // Separate from configuredWithVersion: Install (git clone/patch/go build)
+  // and Configure (write mmsc.yaml, restart with the CURRENTLY-BUILT
+  // binary) are genuinely different operations - Configure alone can never
+  // pick up a source-level fix like the PNG content-type token patch
+  // (2026-08-01), only a re-Install rebuilds the actual binary. Written at
+  // the end of the /install handler; compared against appVersion in
+  // /status as installStale, with its own banner distinct from the
+  // config-staleness one.
+  installedWithVersion?: string;
 }
 
 function readMmsState(): MmsState | null {
@@ -578,6 +587,13 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
 
       const appVersion = getAppVersion();
       const configStale = !!state && state.configuredWithVersion !== appVersion;
+      // installed (not just hasSavedConfig) gates this — a deployment
+      // that's never been Installed at all shouldn't show "reinstall me",
+      // it should show the normal first-time Install flow instead. Missing
+      // installedWithVersion on an otherwise-installed deployment (i.e. it
+      // was installed before this field existed) counts as stale too, same
+      // "unrecorded counts as stale" rule IMS's configStale uses.
+      const installStale = installed && state?.installedWithVersion !== appVersion;
 
       res.json({
         success: true,
@@ -587,6 +603,8 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
         proxyActive,
         hasSavedConfig: !!state,
         esmeActive,
+        installedWithVersion: state?.installedWithVersion,
+        installStale,
         smsConfigured: !!readCurrentSmsConfig(),
         imsInstalled: await isImsInstalled(),
         imsConfigured: isImsConfigured(),
@@ -679,6 +697,67 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
       write('\n=== Cloning VectorCore MMSC ===');
       await spawnStream(`[ -d ${VC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-mmsc.git ${VC_DIR}`);
 
+      // Real bug, confirmed live (2026-08-01): VectorCore's own well-known
+      // content-type token table (internal/mmspdu/content_type.go) has
+      // 0xA9 mapped to "image/png" - wrong on both counts. Verified against
+      // the real, authoritative WAP-WINA WSP Content Type registry
+      // (wapforum.org/wina/wsp-content-type.htm): image/png's assigned
+      // number is 0x20 (well-known token 0x80|0x20 = 0xA0, not 0xA9), and
+      // 0xA9 (assigned number 0x29) actually belongs to a completely
+      // different type, application/vnd.wap.wbxml. A real phone sending an
+      // MMS with a PNG attachment uses the correct standard token 0xA0,
+      // which VectorCore's decoder doesn't recognize at all (logs
+      // "mmspdu: unsupported content-type token 0xa0" and drops the
+      // message) - this looked exactly like "MMS is broken" from the
+      // outside but only affected PNG attachments specifically; GIF (0x9D)
+      // and JPEG (0x9E) were already correct in the table. Idempotent
+      // (line-anchored) so it's safe to re-run against an already-patched
+      // clone.
+      write('\n=== Patching VectorCore content_type.go (PNG token fix) ===');
+      const contentTypePatchExit = await spawnStream(
+        'set -e\n' +
+        'python3 - <<\'PYEOF\'\n' +
+        'import sys\n' +
+        `path = "${VC_DIR}/internal/mmspdu/content_type.go"\n` +
+        'with open(path) as f:\n' +
+        '    content = f.read()\n' +
+        'changed = False\n' +
+        'decode_old = \'0xA9: "image/png",\'\n' +
+        'decode_new = \'0xA0: "image/png",\\n\\t0xA9: "application/vnd.wap.wbxml",\'\n' +
+        'encode_old = \'"image/png":                             0xA9,\'\n' +
+        'encode_new = \'"image/png":                             0xA0,\\n\\t"application/vnd.wap.wbxml":            0xA9,\'\n' +
+        'if decode_old in content:\n' +
+        '    content = content.replace(decode_old, decode_new, 1)\n' +
+        '    changed = True\n' +
+        'elif "0xA0:" in content and \'"image/png"\' in content.split("0xA0:")[1][:40]:\n' +
+        '    print("already patched (decode side) - skipping")\n' +
+        'else:\n' +
+        '    print("ERROR: decode-side anchor not found - VectorCore source may have changed, skipping patch, please review manually.")\n' +
+        '    sys.exit(1)\n' +
+        'if encode_old in content:\n' +
+        '    content = content.replace(encode_old, encode_new, 1)\n' +
+        '    changed = True\n' +
+        'elif \'"image/png":                             0xA0,\' in content:\n' +
+        '    print("already patched (encode side) - skipping")\n' +
+        'else:\n' +
+        '    print("ERROR: encode-side anchor not found - VectorCore source may have changed, skipping patch, please review manually.")\n' +
+        '    sys.exit(1)\n' +
+        'if changed:\n' +
+        '    with open(path, "w") as f:\n' +
+        '        f.write(content)\n' +
+        '    print("patched")\n' +
+        'else:\n' +
+        '    print("already patched - skipping")\n' +
+        'PYEOF\n'
+      );
+      if (contentTypePatchExit !== 0) {
+        write('\n⚠️ WARNING: content_type.go PNG-token patch FAILED (see errors above). ' +
+          'MMS attachments encoded as PNG will fail to decode with "unsupported content-type token 0xa0" ' +
+          'until this is fixed and Install is re-run - the patch is idempotent and will retry automatically.\n');
+      } else {
+        write('✅ content_type.go patched.\n');
+      }
+
       write('\n=== Building (web UI + Go binary) ===');
       const buildExit = await spawnStream(
         `set -e\n` +
@@ -703,6 +782,15 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
 
       write('\n=== Installing systemd unit (as shipped) ===');
       await spawnStream(`cp ${VC_DIR}/systemd/${SYSTEMD_UNIT}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
+
+      // Record installedWithVersion (preserving any existing config state —
+      // Install can run standalone before Configure on a fresh deploy, or
+      // as a re-install picking up a source patch on an already-configured
+      // one) so /status can tell an operator this deployment's VectorCore
+      // binary predates a fix shipped since then and prompt a re-Install —
+      // see the MmsState.installedWithVersion comment above.
+      const existingState = readMmsState();
+      writeMmsState({ ...(existingState ?? {} as MmsState), installedWithVersion: getAppVersion() });
 
       await auditLogger.log({ action: 'mms_install', user, details: 'success', success: true });
       write('\n✅ VectorCore MMSC installed. Run Configure next.');
@@ -807,7 +895,10 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
 
       await registerSmppUpstream(ESME_NAME, esmePassword);
 
-      writeMmsState({ deliveryPath: 'sgs', mm1PublicIp, esmeName: ESME_NAME, esmePassword, configuredWithVersion: getAppVersion() });
+      // Spread existing state first so installedWithVersion (written by
+      // /install, see MmsState comment) survives a subsequent Configure —
+      // a plain object literal here would silently wipe it every time.
+      writeMmsState({ ...(readMmsState() ?? {} as MmsState), deliveryPath: 'sgs', mm1PublicIp, esmeName: ESME_NAME, esmePassword, configuredWithVersion: getAppVersion() });
 
       await auditLogger.log({ action: 'mms_configure', user, details: `mm1PublicIp=${mm1PublicIp}`, success: true });
       res.json({ success: true, message: 'VectorCore MMSC configured and wired to osmo-msc via SMPP.' });
