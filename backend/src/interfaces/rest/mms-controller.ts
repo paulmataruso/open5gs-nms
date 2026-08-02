@@ -937,7 +937,19 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
       // its own source — no PRAGMA journal_mode anywhere), so a concurrent
       // external sqlite3 CLI write risks "database is locked" the same way
       // OsmoHLR's did — stop the service around the bulk write, same as SMS.
+      //
+      // vectorcore-mm1-proxy.service has PartOf=vectorcore-smsc.service (so a
+      // real Configure-triggered restart of VectorCore also bounces the
+      // proxy) — but PartOf= only propagates stop/restart, never start.
+      // Stopping SYSTEMD_UNIT here takes the proxy down as a side effect;
+      // starting SYSTEMD_UNIT back up again does NOT bring the proxy back,
+      // since that's a bare start, not a restart. Confirmed live 2026-08-02:
+      // this silently killed MMS sending (the proxy is what injects the
+      // X-MSISDN header VectorCore needs) until manually restarted. Track
+      // and restore the proxy's own state explicitly rather than relying on
+      // the PartOf= propagation to do it.
       const wasActive = (await nsenter('systemctl', ['is-active', SYSTEMD_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+      const proxyWasActive = (await nsenter('systemctl', ['is-active', MM1_PROXY_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
       if (wasActive) await nsenter('systemctl', ['stop', SYSTEMD_UNIT]).catch(() => {});
 
       let synced = 0;
@@ -980,6 +992,9 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
         res.json({ success: true, synced, failed, removed });
       } finally {
         if (wasActive) await nsenter('systemctl', ['start', SYSTEMD_UNIT]).catch(() => {});
+        // See comment above wasActive/proxyWasActive: PartOf= stopped the proxy
+        // as a side effect but won't start it back up on its own.
+        if (proxyWasActive) await nsenter('systemctl', ['start', MM1_PROXY_UNIT]).catch(() => {});
       }
     } catch (err) {
       await auditLogger.log({ action: 'mms_sync_subscribers', user, details: String(err), success: false });
@@ -992,6 +1007,12 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
     const user = (req as any).user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', SYSTEMD_UNIT]);
+      // vectorcore-mm1-proxy.service's PartOf=vectorcore-smsc.service only
+      // propagates stop/restart, not start — a bare start here won't revive
+      // the proxy if a prior Stop (or the sync-subscribers stop/start pair)
+      // took it down. Ensure it's up too, same as configure/sync-subscribers
+      // both already do. Harmless no-op if the proxy isn't installed yet.
+      await nsenter('systemctl', ['start', MM1_PROXY_UNIT]).catch(() => {});
       await auditLogger.log({ action: 'mms_start', user, details: 'started', success: true });
       res.json({ success: true });
     } catch (err) {

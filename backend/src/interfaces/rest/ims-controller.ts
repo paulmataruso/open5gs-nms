@@ -110,6 +110,13 @@ export interface RegisteredUserInfo {
   callId: string | null;
   userAgent: string | null;
   received: string | null;
+  // Filled in by the /live route after parsing, from the subscriber DB —
+  // not present in the raw usrloc snapshot itself. IMPI is `<imsi>@<ims
+  // domain>` per default_ifc.xml's <PrivateID>, so the part before '@' is
+  // a reliable IMSI even though publicIdentities mix MSISDN- and
+  // IMSI-based URIs.
+  imsi: string | null;
+  nickname: string | null;
 }
 
 // Parses the text file `kamcmd ulscscf.snapshot <file>` writes — S-CSCF's
@@ -127,12 +134,16 @@ function parseRegisteredUsersSnapshot(raw: string): RegisteredUserInfo[] {
     const publicIdentity = rec.match(/public_identity\s*:\s*'([^']*)'/)?.[1] ?? '';
     const state = rec.match(/\bstate:\s*'([^']*)'/)?.[1] ?? '';
     const impi = rec.match(/IMPI for subscription:\s*\[([^\]]*)\]/)?.[1] ?? '';
+    // default_ifc.xml's <PrivateID> is always `<imsi>@<ims domain>` — the
+    // part before '@' is a reliable IMSI regardless of which form (MSISDN
+    // or IMSI) the individual publicIdentities happen to use.
+    const imsi = impi.split('@')[0] || null;
     const contactBlocks = rec.split(/~~~Contact\(/).slice(1);
     if (contactBlocks.length === 0) {
       // Genuinely no contact (e.g. a barred/unregistered IMPU still present
       // in the dump) — has no natural grouping key, keep as its own row.
       byRegistration.set(`unkeyed-${unkeyedCounter++}`, {
-        publicIdentities: [publicIdentity], state, impi,
+        publicIdentities: [publicIdentity], state, impi, imsi, nickname: null,
         contact: null, expiresSeconds: null, callId: null, userAgent: null, received: null,
       });
       continue;
@@ -149,7 +160,7 @@ function parseRegisteredUsersSnapshot(raw: string): RegisteredUserInfo[] {
         if (!existing.publicIdentities.includes(publicIdentity)) existing.publicIdentities.push(publicIdentity);
       } else {
         byRegistration.set(key, {
-          publicIdentities: [publicIdentity], state, impi,
+          publicIdentities: [publicIdentity], state, impi, imsi, nickname: null,
           contact: contactUri,
           expiresSeconds: expires ? parseInt(expires, 10) : null,
           callId, userAgent, received,
@@ -2424,6 +2435,22 @@ export function createImsRouter(
 
       const ipsecSas = ipsecRes.status === 'fulfilled' ? parseIpsecSaText(ipsecRes.value.stdout) : [];
       const registeredUsers = snapshotRes.status === 'fulfilled' ? parseRegisteredUsersSnapshot(snapshotRes.value) : [];
+
+      // Tag each registered row with its subscriber nickname, looked up by
+      // the IMSI already extracted from IMPI — best-effort, a lookup
+      // failure shouldn't blank out the registration data itself.
+      try {
+        const imsis = [...new Set(registeredUsers.map(u => u.imsi).filter((v): v is string => !!v))];
+        if (imsis.length > 0) {
+          const nicknames = await subscriberRepo.getNicknamesByImsi(imsis);
+          for (const u of registeredUsers) {
+            if (u.imsi && nicknames[u.imsi]) u.nickname = nicknames[u.imsi];
+          }
+        }
+      } catch (err) {
+        logger.warn({ err: String(err) }, 'ims live status: nickname lookup failed');
+      }
+
       let activeDialogs: Record<string, unknown> = {};
       if (dlgRes.status === 'fulfilled') {
         try { activeDialogs = (parseKamcmdOutput(dlgRes.value.stdout).Dialogs as Record<string, unknown>) ?? {}; }
@@ -2629,13 +2656,21 @@ export function createImsRouter(
     // 2026-07-28. Try with the flag first; only fall back to without it if
     // the flag itself is what's unrecognized, not on any other failure (a
     // real requirements.txt/network failure should still surface as failed).
+    // --ignore-installed avoids a second, separate failure mode confirmed live
+    // 2026-08-02: "Cannot uninstall pyparsing 3.1.1, RECORD file not found.
+    // Hint: The package was installed by debian." — some of requirements.txt's
+    // deps (pyparsing here, but this class of conflict can hit any dep) are
+    // already present as an apt/dpkg-installed system package, which has no
+    // RECORD file for pip to use to uninstall it before replacing it. Telling
+    // pip to ignore what's already installed makes it install straight over
+    // (shadowing it in site-packages) instead of trying to uninstall first.
     const pipExitCode = await spawnStream(
       'set -o pipefail\n' +
-      'OUT=$(pip3 install --break-system-packages -r /opt/pyhss/requirements.txt 2>&1); RC=$?\n' +
+      'OUT=$(pip3 install --break-system-packages --ignore-installed -r /opt/pyhss/requirements.txt 2>&1); RC=$?\n' +
       'echo "$OUT"\n' +
       'if [ $RC -ne 0 ] && echo "$OUT" | grep -q "no such option.*break-system-packages"; then\n' +
       '  echo "pip3 does not support --break-system-packages (older pip) — retrying without it."\n' +
-      '  pip3 install -r /opt/pyhss/requirements.txt\n' +
+      '  pip3 install --ignore-installed -r /opt/pyhss/requirements.txt\n' +
       'else\n' +
       '  exit $RC\n' +
       'fi'
@@ -2770,20 +2805,33 @@ export function createImsRouter(
       'path = "/opt/pyhss/default_ifc.xml"\n' +
       'with open(path) as f:\n' +
       '    src = f.read()\n' +
-      'needle = "{{ iFC_vars.scscf_realm }}"\n' +
-      'replacement = "ims.mnc{{ iFC_vars.mnc }}.mcc{{ iFC_vars.mcc }}.3gppnetwork.org"\n' +
-      'count = src.count(needle)\n' +
-      'if count == 0:\n' +
-      '    if replacement in src:\n' +
-      '        print("already patched — skipping")\n' +
-      '    else:\n' +
-      '        print("ERROR: expected \'{{ iFC_vars.scscf_realm }}\' not found in default_ifc.xml — PyHSS source may have changed, skipping patch, please review manually.")\n' +
-      '        raise SystemExit(1)\n' +
-      'else:\n' +
-      '    src = src.replace(needle, replacement)\n' +
+      '# Upstream PyHSS has used two different Jinja2 attribute-access syntaxes for\n' +
+      '# this template over time — dot notation ("iFC_vars.scscf_realm") and, as of a\n' +
+      '# 2026-07-31 upstream commit confirmed live 2026-08-02, bracket/subscript\n' +
+      '# notation ("iFC_vars[\'scscf_realm\']"). Handle both instead of only the dot form.\n' +
+      'variants = [\n' +
+      '    ("{{ iFC_vars.scscf_realm }}", "ims.mnc{{ iFC_vars.mnc }}.mcc{{ iFC_vars.mcc }}.3gppnetwork.org"),\n' +
+      '    ("{{ iFC_vars[\'scscf_realm\'] }}", "ims.mnc{{ iFC_vars[\'mnc\'] }}.mcc{{ iFC_vars[\'mcc\'] }}.3gppnetwork.org"),\n' +
+      ']\n' +
+      'count = 0\n' +
+      'for needle, replacement in variants:\n' +
+      '    c = src.count(needle)\n' +
+      '    if c:\n' +
+      '        src = src.replace(needle, replacement)\n' +
+      '        count += c\n' +
+      'if count:\n' +
       '    with open(path, "w") as f:\n' +
       '        f.write(src)\n' +
       '    print("patched " + str(count) + " occurrence(s)")\n' +
+      'elif "scscf_realm" not in src:\n' +
+      '    # Upstream itself no longer derives the subscriber identity domain from\n' +
+      '    # scscf_realm at all (already building it from mnc/mcc directly) — the bug\n' +
+      '    # this patch guards against cannot occur, nothing to do.\n' +
+      '    print("not applicable — PyHSS source no longer derives the identity domain from scscf_realm, nothing to patch")\n' +
+      'else:\n' +
+      '    print("ERROR: default_ifc.xml still references scscf_realm but not via a recognized ' +
+        'dot or bracket accessor form — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '    raise SystemExit(1)\n' +
       'PYEOF\n' +
       'python3 -c "import xml.dom.minidom, jinja2; t = jinja2.Environment(loader=jinja2.FileSystemLoader(\'/opt/pyhss\')).get_template(\'default_ifc.xml\'); xml.dom.minidom.parseString(t.render(iFC_vars={\'imsi\':\'1\',\'msisdn\':\'1\',\'mnc\':\'001\',\'mcc\':\'001\',\'scscf_realm\':None}))"\n'
     );
@@ -3334,14 +3382,20 @@ export function createImsRouter(
     }
     if (fs.existsSync(HOST_IMS_UPF_BAK)) { try { fs.unlinkSync(HOST_IMS_UPF_BAK); } catch { /* ok */ } }
 
-    // 3. Remove IMS APN from all Open5GS subscriber profiles
-    write('\n=== Removing IMS APN from subscriber profiles ===\n');
-    try {
-      const count = await subscriberRepo.removeImsSessionFromAll();
-      write(`  Removed IMS APN from ${count} subscriber profile(s).\n`);
-    } catch (err) {
-      write(`  Warning: ${String(err)}\n`);
-    }
+    // 3. Deliberately NOT touching subscriber profiles here. This used to call
+    // subscriberRepo.removeImsSessionFromAll() to strip every subscriber's
+    // 'ims' PDN session on the theory that a dangling session for a DNN that
+    // no longer exists in smf.yaml/upf.yaml (removed in steps 2/2b above) was
+    // worth cleaning up. In practice that session is inert once the DNN is
+    // gone — Open5GS just won't establish a PDU session for an APN the SMF/UPF
+    // don't know about — but the mutation was NOT inert: it destructively
+    // wiped each subscriber's real per-session QoS/AMBR/PCC-rule config, and
+    // reinstalling IMS never added it back (no corresponding "add" step
+    // exists). Confirmed live 2026-08-02: two routine Remove→Install test
+    // cycles silently erased 'ims' sessions a subscriber-restore had *just*
+    // put back, with no warning anywhere that this would happen. If you want
+    // a clean slate for subscriber APNs, do it explicitly via the Subscribers
+    // page, not as a side effect of removing IMS.
 
     // 4. Drop MariaDB IMS databases
     write('\n=== Dropping IMS databases ===\n');

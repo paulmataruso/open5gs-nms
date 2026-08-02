@@ -4,6 +4,72 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.43] - 2026-08-02
+
+### Fixed — IMS Install: PyHSS Python dependency install was silently broken
+
+`pip3 install --break-system-packages -r requirements.txt` failed with
+`Cannot uninstall pyparsing 3.1.1, RECORD file not found. Hint: The package
+was installed by debian.` — `pyparsing` (and potentially other deps) ships
+as an apt/dpkg-installed system package with no pip RECORD metadata, so pip
+can't uninstall it before replacing it. The Install step printed "✅ IMS
+installation complete" regardless, leaving PyHSS's real dependencies never
+actually installed. Fixed by adding `--ignore-installed`, which installs
+straight over the apt copy (shadowing it in site-packages) instead of
+trying to uninstall first. Confirmed live: full dependency install now
+completes cleanly on a real Ubuntu 24.04 host.
+
+### Fixed — IMS Install: default_ifc.xml identity-domain patch false-failure
+
+Upstream PyHSS's `default_ifc.xml` switched Jinja2 syntax from dot notation
+(`iFC_vars.scscf_realm`) to bracket notation (`iFC_vars['scscf_realm']`),
+*and* independently fixed the identity-domain bug this project's own patch
+guards against (upstream now derives the SIP domain from mnc/mcc directly,
+no longer referencing `scscf_realm` at all). The patch step's needle only
+matched the old dot form, so a fresh clone of current upstream printed a
+scary but spurious ERROR every Install. Now recognizes both syntaxes and
+treats "upstream no longer uses scscf_realm at all" as success instead of a
+warning.
+
+### Fixed — IMS Remove was destructively wiping subscriber APN profiles
+
+Removing IMS called `subscriberRepo.removeImsSessionFromAll()`, stripping
+the `ims` PDN session (with its real per-subscriber QoS/AMBR/PCC-rule
+config) from every subscriber's Mongo document — with no corresponding
+"add it back" step on a later Install. A routine Remove→Install test cycle
+silently erased `ims` sessions a subscriber restore had *just* put back,
+with zero warning anywhere. IMS Remove no longer touches subscriber
+profiles at all; the Remove confirmation modal's copy was also corrected
+(it previously claimed this would happen).
+
+### Fixed — MMS: MM1 MSISDN header-injection proxy could get stuck down after Sync Subscribers or Start
+
+`vectorcore-mm1-proxy.service` (injects the `X-MSISDN` header VectorCore
+needs to identify senders, since real phones don't send a usable `From`)
+has `PartOf=vectorcore-smsc.service` so a real Configure-triggered restart
+of VectorCore also bounces the proxy — but `PartOf=` only propagates
+*stop*/*restart*, never *start*. `POST /api/mms/sync-subscribers` stops
+VectorCore around its bulk SQLite write then starts it back up as two
+separate systemctl calls (not a single restart, to avoid a lock race) —
+the `stop` took the proxy down as a side effect, and the later bare
+`start` never brought it back, silently killing MMS sending until manually
+restarted. Found and fixed the same latent bug in the standalone Start
+action too. Both now explicitly track and restore the proxy's own running
+state instead of relying on `PartOf=` propagation.
+
+### Added — IMS Live Status: registered users tagged with subscriber nickname
+
+`GET /api/ims/live` now resolves each registration's IMSI from its IMPI
+(`<imsi>@<ims-domain>`, per `default_ifc.xml`'s `<PrivateID>`) and looks up
+the subscriber's nickname, shown as a small tag next to their identity on
+the IMS page's Live Status tab.
+
+### Changed — VoWiFi page: Service Control buttons restyled to match IMS/other pages
+
+Cosmetic only — the larger secondary-style Start/Stop/Restart buttons are
+now the same compact ghost-button style used on the IMS page and
+elsewhere.
+
 ## [v2.0-beta_0.42-testing] - 2026-08-02
 
 **⚠️ Testing build.** VoWiFi's control plane is fully replaced and confirmed

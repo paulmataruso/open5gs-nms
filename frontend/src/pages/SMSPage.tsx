@@ -571,15 +571,22 @@ function MmsTab({ pageTab, setPageTab }: { pageTab: 'sms' | 'mms'; setPageTab: (
           can never pick it up. Amber (heavier/slower operation, briefly
           stops the service) vs the lighter blue Configure banner below. */}
       {status?.installStale && (
-        <div className="nms-card border-amber-500/30 bg-amber-500/5 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-amber-300">VectorCore build out of date</p>
-            <p className="text-xs text-nms-text-dim mt-0.5">
-              This deployment's VectorCore binary was built by an older version ({status.installedWithVersion ?? 'unknown'}, running {status.appVersion}) —
-              a source-level fix has shipped since then. Click Install Packages above to rebuild (safe to re-run — reuses the existing clone, only rebuilds).
-            </p>
+        <div className="nms-card border-amber-500/30 bg-amber-500/5">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-semibold text-amber-300">VectorCore build out of date</p>
+              <p className="text-xs text-nms-text-dim mt-0.5">
+                This deployment's VectorCore binary was built by an older version ({status.installedWithVersion ?? 'unknown'}, running {status.appVersion}) —
+                a source-level fix has shipped since then. Click Rebuild below (safe to re-run — reuses the existing clone, only rebuilds).
+              </p>
+            </div>
+            <button onClick={handleInstall} disabled={acting} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
+              <Terminal className="w-4 h-4" />
+              {acting ? 'Rebuilding…' : 'Rebuild'}
+            </button>
           </div>
+          {streamLog && <LogTerminal lines={streamLog} />}
         </div>
       )}
 

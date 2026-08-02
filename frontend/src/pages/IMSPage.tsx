@@ -970,7 +970,14 @@ function LiveStatusTab() {
                         const { primary, others } = splitPrimaryAlias(u.publicIdentities);
                         return (
                           <>
-                            <div className="font-mono text-nms-text">{primary}</div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-nms-text">{primary}</span>
+                              {u.nickname && (
+                                <span className="px-1.5 py-0.5 rounded bg-nms-accent/10 text-nms-accent text-[10px] font-medium">
+                                  {u.nickname}
+                                </span>
+                              )}
+                            </div>
                             {others.map(id => (
                               <div key={id} className="font-mono text-[10px] text-nms-text-dim mt-0.5">{id}</div>
                             ))}
@@ -1350,9 +1357,12 @@ export function IMSPage() {
                 <ul className="text-xs text-nms-text-dim space-y-1 mb-4 pl-4 list-disc">
                   <li>Stop and uninstall Kamailio, PyHSS + Redis, RTPengine, MariaDB, BIND9</li>
                   <li>Delete all IMS configuration files and databases</li>
-                  <li>Remove the IMS APN from all subscriber profiles</li>
                   <li>Remove the IMS DNN from the SMF config</li>
                 </ul>
+                <p className="text-xs text-nms-text-dim mb-4 leading-relaxed">
+                  Subscriber profiles are left alone — a subscriber's <span className="font-mono">ims</span> APN/session
+                  is not removed, so it's still there if you reinstall IMS later.
+                </p>
                 <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 mb-5">
                   The L3 IP address will not be changed. This cannot be undone.
                 </p>

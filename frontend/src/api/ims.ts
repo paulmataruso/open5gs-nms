@@ -78,6 +78,8 @@ export interface RegisteredUserInfo {
   callId: string | null;
   userAgent: string | null;
   received: string | null;
+  imsi: string | null;
+  nickname: string | null;
 }
 
 export interface ImsLiveStatus {

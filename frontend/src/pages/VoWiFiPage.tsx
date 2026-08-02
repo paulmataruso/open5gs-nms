@@ -255,15 +255,15 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
           {status && <SvcBadge label={`dummy-epdg ${status.dummyInterfaceUp ? 'up' : 'down'}`} active={status.dummyInterfaceUp} />}
           {status && <SvcBadge label={`SMF peer ${status.smfConnectPeerPresent ? 'present' : 'missing'}`} active={status.smfConnectPeerPresent} />}
         </div>
-        <div className="flex gap-2">
-          <button className="nms-btn-secondary" disabled={!!busy} onClick={() => handleAction('start')}>
-            <Play className="w-4 h-4" /> Start
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => handleAction('start')} disabled={!!busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <Play className="w-3 h-3" /> Start
           </button>
-          <button className="nms-btn-secondary" disabled={!!busy} onClick={() => handleAction('stop')}>
-            <Square className="w-4 h-4" /> Stop
+          <button onClick={() => handleAction('stop')} disabled={!!busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <Square className="w-3 h-3" /> Stop
           </button>
-          <button className="nms-btn-secondary" disabled={!!busy} onClick={() => handleAction('restart')}>
-            <RotateCw className="w-4 h-4" /> Restart
+          <button onClick={() => handleAction('restart')} disabled={!!busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RotateCw className="w-3 h-3" /> Restart
           </button>
         </div>
       </div>
