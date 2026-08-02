@@ -321,22 +321,23 @@ ${blockImsSms}`;
 // ── Diameter XML templates ────────────────────────────────────────────────────
 
 function pcscfDiameterXml(p: { pcscfIp: string; imsDomain: string; pcrfFqdn: string; pcrfPort: number }): string {
-  // Deliberately NO <Peer FQDN="${p.pcrfFqdn}" .../> element here — PCRF's own
-  // pcrf.conf already has an active `ConnectPeer` pointing at us (added by
-  // upsertPcrfPcscfPeer() below), so both sides would otherwise try to
-  // actively connect to each other simultaneously. cdp's connection-collision
-  // handling for that scenario is broken in practice: confirmed live,
-  // 2026-07-26, this produced an endless connect/disconnect flap ("Peer ...
-  // has no attached send pipe", "Bad file descriptor" spamming every few
-  // seconds) that starved real INVITE processing entirely (not even 100
-  // Trying got sent). Making P-CSCF accept-only (AcceptUnknownPeers="1" +
-  // <Acceptor> below, no outbound <Peer>) — PCRF is the only side that
-  // actively connects — fixed it: confirmed stable with zero flap/errors
-  // for 80+ seconds straight after this change. <DefaultRoute> alone (no
-  // matching <Peer>) is still required and sufficient for cdp to route our
-  // own outbound Rx_AAR messages back over that same accepted connection —
-  // do not add the <Peer> line back without re-testing this collision
-  // scenario first. See memory: ims-ue-to-ue-calling-investigation.
+  // EXPERIMENT 2026-08-01: re-adding the outbound <Peer> for PCRF, which was
+  // deliberately removed on 2026-07-26 after it caused a confirmed live
+  // connect/disconnect flap ("Peer ... has no attached send pipe", "Bad file
+  // descriptor" spamming every few seconds) that starved real INVITE
+  // processing entirely. Re-trying it because the reference
+  // herlesupreeth/docker_open5gs pcscf.xml *does* define this exact
+  // bidirectional pattern (both P-CSCF and PCRF actively connect to each
+  // other) and apparently runs it successfully — worth finding out whether
+  // our earlier flap was actually caused by something else (e.g. a stale
+  // ConnectPeer left over from a prior PLMN, which upsertPcrfPcscfPeer()
+  // below now actively cleans up — that cleanup did not exist yet on
+  // 2026-07-26) rather than the bidirectional-connect pattern itself.
+  // <DefaultRoute> stays either way — see cdp routing-table note in
+  // icscfDiameterXml() below, same requirement applies here. If this flaps
+  // again, revert to accept-only (delete the <Peer> line, keep everything
+  // else) — see memory: ims-ue-to-ue-calling-investigation for the original
+  // incident.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE DiameterPeer SYSTEM "DiameterPeer.dtd">
 <DiameterPeer
@@ -355,6 +356,7 @@ function pcscfDiameterXml(p: { pcscfIp: string; imsDomain: string; pcrfFqdn: str
   <Auth id="16777236" vendor="10415"/>
   <Auth id="16777236" vendor="0"/>
   <SupportedVendor vendor="10415"/>
+  <Peer FQDN="${p.pcrfFqdn}" port="${p.pcrfPort}"/>
   <DefaultRoute FQDN="${p.pcrfFqdn}" metric="10"/>
 </DiameterPeer>
 `;
