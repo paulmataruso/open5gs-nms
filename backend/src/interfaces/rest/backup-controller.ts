@@ -285,11 +285,19 @@ export function createBackupRouter(
     }
   });
 
-  // POST /api/backup/full/restore - Upload and restore a full backup archive
-  router.post('/full/restore', requireAdmin, async (req, res) => {
-    const tmpPath = `/tmp/open5gs-upload-${Date.now()}.tar.gz`;
+  // POST /api/backup/full/upload - Upload a full backup archive and inspect its
+  // contents (which categories are present) WITHOUT restoring anything yet.
+  // The frontend uses this to show a pick-and-choose restore checklist before
+  // committing. uploadId is just the sanitized temp filename — validated
+  // strictly on every subsequent use to prevent path traversal.
+  const UPLOADS_DIR = '/tmp/open5gs-backup-uploads';
+  const isValidUploadId = (id: unknown): id is string => typeof id === 'string' && /^[a-zA-Z0-9._-]+\.tar\.gz$/.test(id);
+
+  router.post('/full/upload', requireAdmin, async (req, res) => {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+    const uploadId = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tar.gz`;
+    const tmpPath = `${UPLOADS_DIR}/${uploadId}`;
     try {
-      // Stream the raw request body to a temp file
       await new Promise<void>((resolve, reject) => {
         const writeStream = fs.createWriteStream(tmpPath);
         req.pipe(writeStream);
@@ -298,16 +306,49 @@ export function createBackupRouter(
         req.on('error', reject);
       });
 
-      logger?.info({ tmpPath }, 'Full backup upload received, restoring');
-      const result = await backupRestoreUseCase.restoreFullBackup(tmpPath);
+      logger?.info({ tmpPath }, 'Full backup upload received, inspecting');
+      const inspection = await backupRestoreUseCase.inspectFullBackup(tmpPath);
+
+      if (!inspection.success) {
+        fs.unlink(tmpPath, () => {});
+        return res.status(400).json({ success: false, error: inspection.error || 'Archive could not be read' });
+      }
+
+      res.json({ success: true, uploadId, categories: inspection.categories, createdAt: inspection.createdAt });
+    } catch (err) {
+      fs.unlink(tmpPath, () => {});
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : 'Unknown error',
+      });
+    }
+  });
+
+  // POST /api/backup/full/restore - Restore selected categories from a
+  // previously uploaded archive (see /full/upload above).
+  router.post('/full/restore', requireAdmin, async (req, res) => {
+    try {
+      const { uploadId, categories } = req.body || {};
+      if (!isValidUploadId(uploadId)) {
+        return res.status(400).json({ success: false, error: 'Invalid or missing uploadId — upload the archive via /full/upload first' });
+      }
+      if (!Array.isArray(categories) || categories.length === 0) {
+        return res.status(400).json({ success: false, error: 'categories array is required (at least one)' });
+      }
+      const tmpPath = `${UPLOADS_DIR}/${uploadId}`;
+      if (!fs.existsSync(tmpPath)) {
+        return res.status(404).json({ success: false, error: 'Upload not found — it may have already been restored or expired; upload again' });
+      }
+
+      logger?.info({ uploadId, categories }, 'Restoring selected categories from uploaded backup');
+      const result = await backupRestoreUseCase.restoreFullBackup(tmpPath, categories);
 
       if (!result.success) {
         return res.status(500).json({ success: false, error: result.error });
       }
 
-      res.json({ success: true, message: 'Full backup restored successfully' });
+      res.json({ success: true, restored: result.restored, message: 'Selected backup categories restored successfully' });
     } catch (err) {
-      fs.unlink(tmpPath, () => {});
       res.status(500).json({
         success: false,
         error: err instanceof Error ? err.message : 'Unknown error',

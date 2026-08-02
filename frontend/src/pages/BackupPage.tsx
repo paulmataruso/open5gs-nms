@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { Database, HardDrive, Settings as SettingsIcon, RotateCw, Check, AlertTriangle, Download, Upload, Archive, Radio } from 'lucide-react';
-import { backupApi as legacyBackupApi, BackupListItem, BackupSettings } from '../api/backup';
+import { backupApi as legacyBackupApi, BackupListItem, BackupSettings, BackupCategory, BackupCategoryInfo } from '../api/backup';
 import { backupApi, genieacsApi, sercommNRApi } from '../api';
 import toast from 'react-hot-toast';
 import { ConfigRestoreModal } from '../components/backup/ConfigRestoreModal';
+import { FullRestoreSelectionModal } from '../components/backup/FullRestoreSelectionModal';
 import { LabelWithTooltip } from '../components/common/UniversalTooltipWrappers';
 import { BACKUP_TOOLTIPS } from '../data/tooltips';
 
@@ -18,6 +19,7 @@ export const BackupPage: React.FC = () => {
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [fullBackupLoading, setFullBackupLoading] = useState(false);
   const [fullRestoreLoading, setFullRestoreLoading] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<{ uploadId: string; categories: BackupCategoryInfo[]; createdAt?: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Radio backups
@@ -59,13 +61,10 @@ export const BackupPage: React.FC = () => {
       toast.error('Please select a valid .tar.gz backup file');
       return;
     }
-    if (!confirm(`Restore full backup from "${file.name}"?\n\nThis will overwrite ALL config files and subscriber data. Are you sure?`)) {
-      return;
-    }
     setFullRestoreLoading(true);
     try {
-      toast.loading('Restoring full backup...', { id: 'full-restore' });
-      const response = await fetch('/api/backup/full/restore', {
+      toast.loading('Uploading and inspecting backup archive...', { id: 'full-restore' });
+      const response = await fetch('/api/backup/full/upload', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/octet-stream' },
@@ -73,15 +72,35 @@ export const BackupPage: React.FC = () => {
       });
       const result = await response.json();
       if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Restore failed');
+        throw new Error(result.error || 'Upload failed');
       }
-      toast.success('Full backup restored successfully', { id: 'full-restore' });
-      await loadBackups();
+      toast.dismiss('full-restore');
+      setPendingRestore({ uploadId: result.uploadId, categories: result.categories, createdAt: result.createdAt });
     } catch (err: any) {
-      toast.error(err.message || 'Full restore failed', { id: 'full-restore' });
+      toast.error(err.message || 'Full restore upload failed', { id: 'full-restore' });
     } finally {
       setFullRestoreLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleFullRestoreConfirm = async (uploadId: string, categories: BackupCategory[]) => {
+    toast.loading('Restoring selected categories...', { id: 'full-restore-confirm' });
+    try {
+      const response = await fetch('/api/backup/full/restore', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId, categories }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Restore failed');
+      }
+      toast.success(`Restored: ${(result.restored || categories).join(', ')}`, { id: 'full-restore-confirm' });
+      await loadBackups();
+    } catch (err: any) {
+      toast.error(err.message || 'Full restore failed', { id: 'full-restore-confirm' });
     }
   };
 
@@ -301,6 +320,16 @@ export const BackupPage: React.FC = () => {
         />
       )}
 
+      {pendingRestore && (
+        <FullRestoreSelectionModal
+          uploadId={pendingRestore.uploadId}
+          categories={pendingRestore.categories}
+          createdAt={pendingRestore.createdAt}
+          onClose={() => setPendingRestore(null)}
+          onConfirm={handleFullRestoreConfirm}
+        />
+      )}
+
     <div className="p-6 max-w-7xl mx-auto">
       {/* Header */}
       <div className="mb-6">
@@ -475,9 +504,11 @@ export const BackupPage: React.FC = () => {
           <h2 className="text-lg font-semibold font-display text-nms-text">Full Backup / Disaster Recovery</h2>
         </div>
         <p className="text-xs text-nms-text-dim mb-4">
-          Download a single <code className="text-nms-accent">.tar.gz</code> archive containing all Open5GS config YAMLs
-          and a full MongoDB subscriber dump. Use this to fully restore the system from scratch — even if the project
-          folder and backups directory are gone.
+          Download a single <code className="text-nms-accent">.tar.gz</code> archive containing subscribers &amp; SAS data,
+          all Open5GS core NF configs, SUCI keys, optional module configs, L3/FRR routing, and DNS/BIND — everything needed
+          to fully restore the system from scratch, even if the project folder and backups directory are gone. (IMS and
+          PSTN Gateway are intentionally excluded — reinstall those modules and resync subscribers instead.) Restoring
+          lets you pick exactly which of these to bring back.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -488,8 +519,8 @@ export const BackupPage: React.FC = () => {
               <span className="text-sm font-semibold text-nms-text">Download Full Backup</span>
             </div>
             <p className="text-xs text-nms-text-dim mb-3">
-              Generates a <code className="text-nms-accent">.tar.gz</code> containing all 16 NF config files
-              and a MongoDB dump. Save this file somewhere safe off the server.
+              Generates a <code className="text-nms-accent">.tar.gz</code> with subscribers &amp; SAS, core NF configs,
+              SUCI keys, optional module configs, L3/FRR, and DNS/BIND. Save this file somewhere safe off the server.
             </p>
             <button
               onClick={handleFullBackupDownload}
@@ -512,7 +543,7 @@ export const BackupPage: React.FC = () => {
             </div>
             <p className="text-xs text-nms-text-dim mb-3">
               Upload a previously downloaded <code className="text-nms-accent">.tar.gz</code> backup file.
-              This will overwrite all config files and subscriber data.
+              You'll get to pick exactly which categories to restore before anything is overwritten.
             </p>
             <input
               ref={fileInputRef}

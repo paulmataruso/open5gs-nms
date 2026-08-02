@@ -4,6 +4,89 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.42-testing] - 2026-08-02
+
+**⚠️ Testing build.** VoWiFi's control plane is fully replaced and confirmed
+working end-to-end on a real phone; its data plane (actual voice/data
+traffic over the tunnel) is confirmed **not** working yet. Do not treat this
+tag as a stable release.
+
+### Changed — VoWiFi backend fully replaced: osmo-epdg + strongSwan → VectorCore ePDG/AAA
+
+Hard replacement, not a toggle, per explicit instruction. The old backend
+(5 local Erlang patches, fwmark/nftables policy-routing scheme) is archived
+intact to `archive/vowifi-osmo-epdg/` — not deleted, restorable. New backend
+is VectorCore ePDG (Go, native IKEv2/EAP-AKA', XDP/eBPF+TC dataplane) +
+VectorCore AAA (Erlang, forked from osmo-epdg's own lineage), both vendored
+and built from source on the host. New files land at the same paths the old
+ones occupied — `index.ts`'s router mount and `App.tsx`'s page import
+needed zero changes.
+
+**Confirmed working end-to-end on a real phone**: IKEv2, real EAP-AKA'
+authentication, all three Diameter interfaces (SWm ePDG↔AAA, S6b SMF↔AAA,
+SWx AAA↔real HSS), GTPv2-C session establishment, real IP assignment, DNS
+discovery.
+
+**Confirmed still broken**: the actual ESP/GTP-U data relay — decrypted
+uplink traffic never reaches VectorCore's own TC-BPF forwarding program.
+Root cause not yet found; likely inside the vendored ePDG binary's own
+kernel XFRM-interface wiring, not something reachable from NMS config.
+
+Real bugs found and fixed along the way (see `PROJECT_STATE.md`'s Handoff
+Summary for full detail on each):
+- Domain-doubling bug in every generated Diameter FQDN (`epc.epc...`)
+- Self-signed ePDG cert missing the `keyUsage` X.509 extension
+- Admin API port collision with PyHSS's own `apiService.py` (8080 → 8091)
+- `nsenter` exec timeout too short for the epdg unit's own startup polling
+- No Swx-capable HSS was ever wired up — added a real `ConnectPeer` for
+  VectorCore AAA to `open5gs-hssd` (which has genuine, compiled-in Swx
+  support), and cleaned up a stale, wrong `ConnectPeer` left over from an
+  unrelated, much older experiment
+- A real host/kernel networking quirk: SCTP from a non-loopback source to
+  a loopback destination silently times out; fixed by giving the ePDG's
+  SWm client its own dedicated loopback source IP, matching every other
+  Diameter interface in this project
+- A real bug in the vendored VectorCore AAA source itself
+  (`aaa_ue_fsm.erl`): a raw EAP-Identity payload was being forwarded as if
+  it were AKA resync data on every first-time auth attempt — patched
+  directly and rebuilt
+- APN name case mismatch (`ims` vs `IMS`) between subscriber provisioning
+  and what real phones request — patched the same vendored source
+- Removed a fwmark/nftables/policy-routing scheme carried over from the
+  archived backend that was actively misrouting decrypted uplink packets
+  into a dead route pointing at the old system's long-gone tun device
+- A stale kernel XFRM policy conflict (`file exists` on install) from
+  accumulated earlier test sessions
+
+### Added — Full-backup module: SUCI keys, L3/DNS, and selective restore
+
+Full audit of the backup/restore module, at explicit request:
+
+- **SUCI keys are now backed up.** `/etc/open5gs/hnet/` (the actual SUCI/SUPI
+  concealment private/public key material) was never included before — only
+  `udm.yaml`, which merely references these files by path. Losing them
+  permanently breaks 5G SUCI de-concealment for every subscriber using it.
+- **L3/IP network config is now backed up**: `/etc/frr/{frr.conf,daemons}`
+  (EIGRP config) and `/etc/netplan/60-open5gs-managed.yaml` (real physical
+  interface addressing — not derivable from anything else already backed up).
+- **DNS/BIND is now backed up**: `named.conf.{local,options}` and every
+  zone file, covering the FQDN-based NF discovery this project's addressing
+  scheme depends on.
+- **Restore is no longer all-or-nothing.** Uploading a backup now runs a
+  real inspect step first (parses a new per-category manifest) and presents
+  a checklist before touching anything — pick exactly which categories to
+  restore. L3/IP and DNS default unchecked, since restoring those onto a
+  host with different network topology can break connectivity outright.
+- **MongoDB backup/restore is now correctly scoped to the `open5gs`
+  database.** The old code ran a bare `mongodump`/`mongorestore` with no
+  `--db` filter, which blindly touched *every* database on the instance —
+  including GenieACS's own DB and Mongo's internal `admin`/`config`/`local`
+  system databases. Restoring those onto a different host risked corrupting
+  auth/replication state for no benefit.
+- Deliberately still excluded: the IMS database (PyHSS's own MariaDB — a
+  separate system, reinstall + resync instead) and the PSTN Gateway
+  (Asterisk config — same story).
+
 ## [v2.0-beta_0.41] - 2026-08-01
 
 ### Fixed — SMS-over-IMS: 4 real, independent bugs, confirmed working end-to-end after all four

@@ -7,8 +7,9 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { createDummyInterface, deleteDummyInterface } from '../../infrastructure/network/dummy-interface';
 import {
-  nsenter, BUILD_WORKDIR, RUNTIME_BIN_DIR, OSMO_EPDG_RUNTIME_DIR, OSMO_EPDG_CONFIG_DIR,
-  VOWIFI_BUILD_STEPS, VowifiBuildStep, buildVowifiScript, reloadGtpModule, OSMO_EPDG_TAG,
+  nsenter, BUILD_WORKDIR, RUNTIME_BIN_DIR, VECTORCORE_EPDG_CONFIG_DIR, VECTORCORE_AAA_CONFIG_DIR,
+  VOWIFI_BUILD_STEPS, VowifiBuildStep, buildVowifiScript,
+  VECTORCORE_EPDG_COMMIT, VECTORCORE_AAA_COMMIT, VECTORCORE_PATCH_REV,
 } from '../../application/use-cases/vowifi-build';
 
 // ─── Host paths ─────────────────────────────────────────────────────────────
@@ -17,42 +18,58 @@ const HOST_HSS_CONF       = '/proc/1/root/etc/freeDiameter/hss.conf';
 const HOST_SMF_CONF       = '/proc/1/root/etc/freeDiameter/smf.conf';
 const HOST_SMF_YAML       = '/proc/1/root/etc/open5gs/smf.yaml';
 const HOST_SMF_CONF_BAK   = '/proc/1/root/etc/open5gs-nms/.vowifi-smf-conf.bak';
-const HOST_SWANCTL_DIR    = '/proc/1/root/etc/swanctl';
-const HOST_SWANCTL_CONF   = '/proc/1/root/etc/swanctl/swanctl.conf';
-const HOST_STRONGSWAN_D   = '/proc/1/root/etc/strongswan.d';
-const HOST_CHARON_CONF    = '/proc/1/root/etc/strongswan.d/charon.conf';
-const HOST_EAP_AKA_CONF   = '/proc/1/root/etc/strongswan.d/charon/eap-aka.conf';
-const HOST_SAVE_KEYS_CONF = '/proc/1/root/etc/strongswan.d/charon/save-keys.conf';
-const HOST_OSMO_EPDG_TEMPLATE = `/proc/1/root${BUILD_WORKDIR}/osmo-epdg/config/sys.config`;
-const HOST_OSMO_EPDG_CONFIG   = `/proc/1/root${OSMO_EPDG_CONFIG_DIR}/osmo-epdg.config`;
-const HOST_SYSTEMD_DIR     = '/proc/1/root/etc/systemd/system';
-const HOST_MME_YAML        = '/proc/1/root/etc/open5gs/mme.yaml';
-const HOST_BIND_DIR        = '/proc/1/root/etc/bind';
-const HOST_BIND_ZONES_DIR  = '/proc/1/root/etc/bind/zones';
-const HOST_RUNTIME_BIN     = `/proc/1/root${RUNTIME_BIN_DIR}/osmo-epdg`;
-const HOST_OSMO_EPDG_RUNTIME_DIR = `/proc/1/root${OSMO_EPDG_RUNTIME_DIR}`;
-const HOST_BUILD_WORKDIR   = `/proc/1/root${BUILD_WORKDIR}`;
-const LOG_FILE             = '/var/log/open5gs-nms/vowifi-install.log'; // bind-mounted, host-visible
+const HOST_HSS_CONF_BAK   = '/proc/1/root/etc/open5gs-nms/.vowifi-hss-conf.bak';
+const HOST_MME_YAML       = '/proc/1/root/etc/open5gs/mme.yaml';
+const HOST_BIND_DIR       = '/proc/1/root/etc/bind';
+const HOST_BIND_ZONES_DIR = '/proc/1/root/etc/bind/zones';
+const HOST_SYSTEMD_DIR    = '/proc/1/root/etc/systemd/system';
+const HOST_EPDG_RUNTIME_BIN = `/proc/1/root${RUNTIME_BIN_DIR}/epdg/bin/epdg`;
+const HOST_AAA_RUNTIME_BIN  = `/proc/1/root${RUNTIME_BIN_DIR}/aaa/bin/vectorcore-aaa`;
+const HOST_BUILD_WORKDIR    = `/proc/1/root${BUILD_WORKDIR}`;
+const HOST_EPDG_CONFIG_DIR  = `/proc/1/root${VECTORCORE_EPDG_CONFIG_DIR}`;
+const HOST_AAA_CONFIG_DIR   = `/proc/1/root${VECTORCORE_AAA_CONFIG_DIR}`;
+const HOST_EPDG_YAML        = `${HOST_EPDG_CONFIG_DIR}/epdg.yaml`;
+const HOST_AAA_CONFIG       = `${HOST_AAA_CONFIG_DIR}/aaa.config`;
+const HOST_EPDG_CERT_DIR    = `${HOST_EPDG_CONFIG_DIR}/certs`;
+const LOG_FILE              = '/var/log/open5gs-nms/vowifi-install.log'; // bind-mounted, host-visible
 
 const DUMMY_IF_NAME = 'dummy-epdg';
 const DEFAULT_EPDG_IP = '10.0.1.180';
-const DEFAULT_S6B_LOCAL_IP = '127.0.0.10';
-const DEFAULT_GSUP_PORT = 4223;
+const DEFAULT_AAA_LISTEN_IP = '127.0.0.11';
+// Dedicated loopback source address for the ePDG's own SWm Diameter/SCTP connection to
+// VectorCore AAA — deliberately NOT the same as epdgIp. Confirmed live 2026-08-01: an
+// SCTP association sourced from a real/dummy-interface address (epdgIp) to a loopback
+// destination (aaaListenIp) times out on this host with no INIT-ACK ever returned, while
+// the identical connect from ANY loopback source address succeeds immediately — a
+// real Docker-host netfilter/conntrack quirk with non-loopback-to-loopback SCTP, not an
+// application bug. Every other Diameter interface in this project (S6a, S6b, Cx, Rx,
+// etc.) already uses loopback-to-loopback for exactly this reason; SWm now follows the
+// same convention instead of reusing the public-facing epdgIp.
+const EPDG_SWM_LOCAL_IP = '127.0.0.16';
+const AAA_DIAMETER_PORT = 3868;
+// 8080 collides with PyHSS's own apiService.py (already bound 0.0.0.0:8080 on this
+// host as part of the IMS module) — confirmed live 2026-08-01. 8091 follows the same
+// admin-API port family as VectorCore MMSC's 8090 (see mms-controller.ts).
+const ADMIN_API_PORT = 8091;
+
+// NOTE: the archived osmo-epdg backend used a fwmark + policy-routing + nftables
+// scheme here to force decrypted UE traffic out via its own kernel GTP tun device,
+// since otherwise-normal routing could send it somewhere else entirely. VectorCore's
+// dataplane doesn't need (and must NOT carry forward) that scheme: its TC-BPF program
+// attaches directly to the kernel XFRM interface it owns (vc-xfrm0) via a TC hook,
+// which sees every decrypted packet unconditionally, regardless of routing/policy —
+// no fwmark or custom route required. Confirmed live 2026-08-02: carrying the old
+// scheme forward anyway (with a renamed-but-never-real "vc-epdg-tun" interface
+// constant) left a stale `ip rule fwmark 100 -> table vowifi_epdg -> default dev
+// gtp0` policy route active on this host (gtp0 being the OLD system's device, long
+// gone) — every real decrypted uplink packet got policy-routed into that dead route
+// instead of ever reaching vc-xfrm0's TC-BPF program, which is exactly why
+// `/api/v1/stats/bpf` showed `tc_uplink.seen: 0` despite real ESP packets arriving
+// on the wire and real IKE_AUTH completing successfully. Removed entirely rather
+// than fixed, since it's dead weight for this architecture, not a needed safeguard.
 
 // ─── State ──────────────────────────────────────────────────────────────────
 export type VowifiInstallStatus = 'idle' | VowifiBuildStep | 'complete' | 'failed';
-
-export interface VowifiConfigureInput {
-  epdgIp?: string;
-  s6bLocalIp?: string;
-  gsupPort?: number;
-  // 'dummy' (default): create+own a new dummy-epdg interface with epdgIp assigned to it —
-  // the original, always-on behavior. 'existing': skip interface creation entirely and use
-  // epdgIp as-is — for an operator who already bound it to a loopback or a real LAN
-  // interface themselves (any L3-reachable IP works; osmo-epdg/strongSwan only bind to the
-  // IP string, they don't care which interface owns it).
-  interfaceMode?: 'dummy' | 'existing';
-}
 
 export interface VowifiState {
   installStatus: VowifiInstallStatus;
@@ -63,27 +80,27 @@ export interface VowifiState {
   configuredAt: string | null;
   epdgIp: string | null;
   epdgInterfaceMode: 'dummy' | 'existing' | null;
-  s6bLocalIp: string | null;
-  gsupPort: number | null;
+  // vectorcore-aaa's own Diameter listen IP (loopback-only) — replaces the archived
+  // backend's s6bLocalIp. Same underlying purpose (a private address SMF's own
+  // freeDiameter ConnectPeer dials into for S6b), but now shared by SWm (from the
+  // ePDG) and SWx (to the HSS) too, since vectorcore-aaa is a single Diameter stack
+  // for all three interfaces rather than osmo-epdg's per-interface split.
+  aaaListenIp: string | null;
   aaaFqdn: string | null;
   smfConfHadBackup: boolean;
-  // Which OSMO_EPDG_TAG this deployment was actually built from source with —
-  // null for any deployment from before this field existed. Compared against
-  // the currently-pinned OSMO_EPDG_TAG in /status (see the "buildStale" field)
-  // so an older deployment can be told a rebuild is available, the same
-  // configStale pattern ims-controller.ts/pstn-controller.ts already use for
-  // their own Configure-time template drift. Unlike those, this needs a full
-  // Install (source rebuild) to fix, not just a Configure re-run — osmo-epdg
-  // and strongswan-epdg are compiled from source, not templated config files.
-  builtWithOsmoEpdgTag: string | null;
+  hssConfHadBackup: boolean;
+  builtWithVectorcoreEpdgCommit: string | null;
+  builtWithVectorcoreAaaCommit: string | null;
+  builtWithVectorcorePatchRev: number | null;
 }
 
 function defaultState(): VowifiState {
   return {
     installStatus: 'idle', installStartedAt: null, installCompletedAt: null, installError: null,
     configured: false, configuredAt: null,
-    epdgIp: null, epdgInterfaceMode: null, s6bLocalIp: null, gsupPort: null, aaaFqdn: null,
-    smfConfHadBackup: false, builtWithOsmoEpdgTag: null,
+    epdgIp: null, epdgInterfaceMode: null, aaaListenIp: null, aaaFqdn: null,
+    smfConfHadBackup: false, hssConfHadBackup: false,
+    builtWithVectorcoreEpdgCommit: null, builtWithVectorcoreAaaCommit: null, builtWithVectorcorePatchRev: null,
   };
 }
 
@@ -117,10 +134,9 @@ function tailLog(maxLines: number): string {
   }
 }
 
-// ─── Domain helpers ──────────────────────────────────────────────────────────
+// ─── Domain helpers (unchanged from the archived backend — generic, not
+// osmo-epdg-specific: read real host state rather than hardcoding it) ───────
 
-// Same convention as ims-controller.ts's readPcrfFreeDiameterInfo(): read the real,
-// currently-configured address rather than hardcoding it.
 function readFreeDiameterIdentity(confPath: string, fallback: string): string {
   try {
     const raw = fs.readFileSync(confPath, 'utf-8');
@@ -158,11 +174,20 @@ function readMccMnc(): { mcc: string; mnc: string } {
   return { mcc, mnc };
 }
 
-// 3GPP TS 23.003 ePDG discovery FQDN (real UEs resolve this via DNS to find the ePDG —
-// our SWu-IKEv2 test emulator bypasses this with a manual -d <ip> flag, so this was never
-// exercised by that test). Reuses whatever BIND9 install already exists (from IMS, or
-// installs its own if IMS isn't enabled) — see vowifi-dns-epdg-discovery memory for how
-// herlesupreeth/docker_open5gs does the equivalent zone.
+function readSmfGtpcAddress(): string {
+  try {
+    const raw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
+    const m = raw.match(/gtpc:\s*\n\s*server:\s*\n\s*-\s*address:\s*([0-9.]+)/);
+    return m?.[1] ?? '127.0.0.4';
+  } catch {
+    return '127.0.0.4';
+  }
+}
+
+// 3GPP TS 23.003 ePDG discovery FQDN — unchanged from the archived backend. Real UEs
+// resolve this via DNS to find the ePDG regardless of which binary answers on the
+// resolved IP; per the migration plan's explicit decision, this backend swap reuses
+// the exact same zone/FQDN/virtual IP, so DNS/BIND config is untouched by this file.
 function pubEpdgDomain(mcc: string, mnc: string): string {
   return `mnc${mnc.padStart(3, '0')}.mcc${mcc}.pub.3gppnetwork.org`;
 }
@@ -202,100 +227,226 @@ function upsertNamedZone(raw: string, zoneName: string, zoneFilePath: string): s
   return raw.trimEnd() + '\n\n' + zoneBlock;
 }
 
-// Same shape as ims-controller.ts's removeNamedZone — used to clean up the old
-// mnc/mcc.pub zone after a primary-PLMN change (this Configure route never
-// tracked/removed a *previous* domain before; see configureVowifi's
-// previousPubDomain param).
 function removeNamedZone(raw: string, zoneName: string): string {
   const zoneRe = new RegExp(`zone\\s+"${zoneName.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
   return raw.replace(zoneRe, '');
 }
 
-function readSmfGtpcAddress(): string {
-  try {
-    const raw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
-    const m = raw.match(/gtpc:\s*\n\s*server:\s*\n\s*-\s*address:\s*([0-9.]+)/);
-    return m?.[1] ?? '127.0.0.4';
-  } catch {
-    return '127.0.0.4';
-  }
+// Surgical single-record upsert INSIDE an existing zone file's own content — distinct
+// from upsertNamedZone/removeNamedZone above, which manage the zone STANZA in
+// named.conf.local, not a zone file's records. Used only for the shared internal "epc"
+// zone, which is otherwise entirely owned and wholesale-regenerated by the DNS/FQDN
+// Migration Wizard (dns-migration-usecase.ts, from its own fixed core-17-NF list, which
+// has no notion of optional add-on modules like VoWiFi) — a merge here, never a full
+// rewrite, so this "aaa" line survives untouched across VoWiFi's own repeated Configure
+// calls. NOTE: re-running the Migration Wizard's own Phase C *will* wipe this line (it
+// doesn't know AAA exists) — Configure must be re-run afterward to restore it, the same
+// re-apply requirement plmn-migration-usecase.ts already imposes on VoWiFi's SMF/HSS
+// ConnectPeer entries.
+function upsertZoneRecordLine(raw: string, name: string, ip: string): string {
+  const lineRe = new RegExp(`^${name}\\s+IN\\s+A\\s+\\S+\\s*$`, 'm');
+  const line = `${name} IN A ${ip}`;
+  return lineRe.test(raw) ? raw.replace(lineRe, line) : raw.trimEnd() + '\n' + line + '\n';
+}
+
+function removeZoneRecordLine(raw: string, name: string): string {
+  const lineRe = new RegExp(`^${name}\\s+IN\\s+A\\s+\\S+\\s*\\n?`, 'm');
+  return raw.replace(lineRe, '');
 }
 
 // ─── Config generators ───────────────────────────────────────────────────────
 
-// strongSwan connection definition for the ePDG's rw (road-warrior) IKEv2/EAP-AKA
-// connection. `proposals` (the IKE SA itself) must be explicit, not `default` —
-// confirmed empirically: strongSwan's `default` IKE proposal set does not include
-// aes128-sha1-modp2048/modp1024, which is exactly what the SWu-IKEv2 test emulator
-// (and real 3GPP UEs following the same mandated cipher suite) offers, so IKE_SA_INIT
-// was failing with NO_PROPOSAL_CHOSEN (IKEv2 Notify type 14). `esp_proposals` for the
-// child SA can stay `default` since strongSwan's default ESP set already covers
-// aes128-sha256, which is what gets negotiated in practice.
-function swanctlConf(epdgIp: string): string {
-  return `connections {
-  rw {
-    local_addrs = ${epdgIp}
-    local {
-      auth = eap-aka
-    }
-    remote {
-      auth = eap-aka
-    }
-    children {
-      net {
-        local_ts = 0.0.0.0/0
-        esp_proposals = default
-      }
-    }
-    version = 2
-    proposals = aes128-sha1-modp2048,aes128-sha1-modp1024
-  }
-}
-secrets {
-}
-pools {
-}
+// epdg.yaml — field values per the real vendor-shipped example config (fetched and
+// read directly, not guessed), mapped onto this project's PLMN/HSS/SMF constants the
+// same way ims-controller.ts's template functions map PLMN constants into Kamailio
+// config. See docs/vectorcore-epdg-integration-plan.md §5.2 for the full field-by-field
+// reasoning; only the load-bearing decisions are called out inline below.
+function epdgYamlConf(opts: {
+  epdgIp: string; mcc: string; mnc: string; realm: string;
+  aaaListenIp: string; smfGtpcIp: string; swmLocalIp: string;
+}): string {
+  const mncLength = opts.mnc.length;
+  return `epdg:
+  name: epdg.${opts.realm}
+  realm: ${opts.realm}
+  mcc: "${opts.mcc}"
+  mnc: "${opts.mnc}"
+  mnc_length: ${mncLength}
+
+logging:
+  level: info
+  file: /var/log/vectorcore/epdg/epdg.log
+
+api:
+  # Read-only admin/diagnostics API (Huma) — no auth of its own per the vendor's own
+  # docs, so this is bound to loopback only; this project's Node backend is the sole
+  # client, proxied through an authenticated NMS endpoint (see the /admin/* route
+  # below), same pattern already used for VectorCore MMSC's equally-unauthenticated
+  # admin API in mms-controller.ts.
+  enabled: true
+  listen_address: 127.0.0.1
+  listen_port: ${ADMIN_API_PORT}
+
+ikev2:
+  listen_addr: ${opts.epdgIp}
+  cert_file: ${VECTORCORE_EPDG_CONFIG_DIR}/certs/epdg.crt
+  key_file:  ${VECTORCORE_EPDG_CONFIG_DIR}/certs/epdg.key
+  ca_file:   ${VECTORCORE_EPDG_CONFIG_DIR}/certs/ca.crt
+  dpd_enabled: true
+  dpd_delay: 30
+  dpd_timeout: 120
+  max_concurrent_packets: 2048
+  half_open_sa_timeout: 30
+  max_half_open_sas: 4096
+  cookie_threshold: 2048
+
+swm:
+  local_addr: ${opts.swmLocalIp}
+  peer_addr: ${opts.aaaListenIp}
+  peer_port: ${AAA_DIAMETER_PORT}
+  proto: sctp
+  origin_host: epdg.${opts.realm}
+  origin_realm: ${opts.realm}
+  destination_realm: ${opts.realm}
+  watchdog_interval_seconds: 30
+  watchdog_timeout_seconds: 10
+
+gtp:
+  local_gtpc: ${opts.epdgIp}
+  local_gtpu: ${opts.epdgIp}
+  local_port: 2152
+  pgw_gtpc: ${opts.smfGtpcIp}
+  mtu: 1400
+  validate_outer_peer: true
+  strict_peer_check: true
+
+pgw_discovery:
+  # Open5GS's SMF does not publish S-NAPTR PGW-discovery records — the vendor's own
+  # example config explicitly calls out disabling this for Open5GS. Followed literally,
+  # not second-guessed (see integration plan §5.2).
+  dns_enabled: false
+  allow_s5s8_fallback: false
+
+bpf:
+  # generic (SKB) mode, not native — confirmed live on this host that XDP attaches
+  # cleanly to a dummy interface in BOTH modes, but "generic works on any NIC; use
+  # native for full performance on supported drivers" is the vendor's own guidance,
+  # and a dummy interface is not a real NIC driver in the sense native mode assumes.
+  # Safer default; revisit only if generic-mode throughput proves insufficient.
+  xdp_attach_mode: generic
+  xdp_interface: ${DUMMY_IF_NAME}
+  map_max_entries: 20480
+
+apn:
+  default: ims
+
+pco:
+  enabled: true
+  request_dns_v4: true
+  request_dns_v6: false
+  request_pcscf_v4: true
+  request_pcscf_v6: false
+  include_apco: true
+  strict_decode: false
+
+shutdown:
+  timeout_seconds: 5
 `;
 }
 
-function eapAkaConf(): string {
-  return `eap-aka {
-    load = yes
-    request_identity = no
-}
+// aaa.config — Erlang term format, structurally close to the archived osmo-epdg.config
+// (same lager logging block verbatim) since vectorcore-aaa is a direct fork of that
+// lineage. Peers list follows the same "accept-only for peers that connect to us,
+// actively connect out only where we must" pattern already used throughout this
+// project (P-CSCF/PCRF, I-CSCF/S-CSCF/HSS) — SWm (from the ePDG) and S6b (from SMF)
+// are both accept-only here; only SWx (to the real HSS) is an active outbound peer.
+function aaaConfigFile(opts: {
+  aaaListenIp: string; realm: string; epdgFqdn: string; smfIdentity: string; hssSwxIp: string;
+}): string {
+  return `[%% ===========================================
+ %% vectorcore_aaa standalone config
+ %% ===========================================
+ {vectorcore_aaa,
+  [{diameter,
+    [{origin_host, "aaa.${opts.realm}"},
+     {origin_realm, "${opts.realm}"},
+     {vendor_id, 0},
+     {listen_ip, "${opts.aaaListenIp}"},
+     {listen_port, ${AAA_DIAMETER_PORT}},
+     {proto, sctp},
+     {connect_timer, 30000},
+     {watchdog_timer, 30000},
+     {watchdog_config, [{okay, 3}, {suspect, 1}]},
+     {apps, [swm, s6b, swx]},
+     {peers, [
+       {epdg, [{host, "${opts.epdgFqdn}"}, {apps, [swm]}]},
+       {smf, [{host, "${opts.smfIdentity}"}, {apps, [s6b]}]},
+       {hss, [{host, "hss.${opts.realm}"}, {ip, "${opts.hssSwxIp}"}, {port, 3868}, {connect, true}, {apps, [swx]}]}
+     ]}
+    ]},
+   {eap_aka_prime_network_name, "wlan.${opts.realm}"}
+  ]},
+ %% ===========================================
+ %% Lager logging config
+ %% ===========================================
+  {lager, [
+    {log_root, "/var/log/vectorcore/aaa"},
+    {colored, true},
+    {handlers,
+      [{lager_console_backend, [{level, info}]},
+      {lager_file_backend,
+        [{file, "console.log"}, {level, debug}, {size, 104857600}, {date, "$D0"}, {count, 10}]},
+      {lager_file_backend,
+        [{file, "error.log"}, {level, error}, {size, 104857600}, {date, "$D0"}, {count, 10}]}]},
+    {crash_log, "crash.log"},
+    {crash_log_msg_size, 65536},
+    {crash_log_size, 104857600},
+    {crash_log_date, "$D0"},
+    {crash_log_count, 10},
+    {error_logger_redirect, true}
+  ]},
+  {kernel, [
+   {logger, [{handler, debug, logger_std_h,
+              #{config => #{file => "/var/log/vectorcore/aaa/erlang.log"}}
+            }]
+    }
+  ]}
+].
 `;
 }
 
-function saveKeysConf(): string {
-  return `save-keys {
-    load = yes
-    esp = yes
-    ike = yes
-    wireshark_keys = /wireshark_keys
-}
-`;
+// Self-signed CA + ePDG certificate, generated idempotently (only if missing) —
+// exact copy-paste procedure from the vendor's own README, using this project's
+// existing nginx/setup-sas-cert.sh self-signed-cert pattern as the model for
+// "generate once, regenerate only if missing". Real UEs will NOT trust this
+// self-signed CA by default — same trust tier as this project's existing
+// self-signed SAS/ACS certs (already accepted by real Sercomm/Baicells radios in
+// this specific deployment's configuration), but a real limitation worth surfacing,
+// not silently papered over (see integration plan §5.3's OPEN QUESTION).
+function epdgCertGenScript(epdgFqdn: string): string {
+  return `if [ ! -f ${VECTORCORE_EPDG_CONFIG_DIR}/certs/epdg.crt ]; then
+  mkdir -p ${VECTORCORE_EPDG_CONFIG_DIR}/certs
+  cd ${VECTORCORE_EPDG_CONFIG_DIR}/certs
+  openssl genrsa -out ca.key 4096
+  openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -subj "/CN=open5gs-nms VectorCore ePDG Lab CA" -out ca.crt
+  openssl genrsa -out epdg.key 2048
+  openssl req -new -key epdg.key -subj "/CN=${epdgFqdn}" -out epdg.csr
+  openssl x509 -req -in epdg.csr -CA ca.crt -CAkey ca.key -CAcreateserial -sha256 -days 825 \\
+    -extfile <(printf "subjectAltName=DNS:${epdgFqdn}\\nkeyUsage=critical,digitalSignature,keyEncipherment\\nextendedKeyUsage=serverAuth") -out epdg.crt
+  rm -f epdg.csr
+  chmod 0640 ca.crt epdg.crt epdg.key
+fi`;
 }
 
-function vowifiOsmoEpdgUnit(): string {
-  // WorkingDirectory MUST be the original build tree, not a separate "clean" runtime dir:
-  // the escript resolves at least one native NIF library (gen_socket_nif.so, used by
-  // gen_netlink/GTP) via a path relative to cwd, baked in at rebar3-escriptize time. A
-  // mismatched cwd doesn't fail loudly — the BEAM VM stays up and `systemctl is-active`
-  // reports healthy, but gen_socket/gen_netlink/diameter/osmo_gsup all silently fail to
-  // start, leaving SWx/S6b/GTP completely dead. Confirmed by log inspection after this bit
-  // an actual test run — never assume "process is running" means "application started".
+function vectorcoreEpdgUnit(): string {
   return `[Unit]
-Description=VoWiFi ePDG (osmo-epdg) — managed by open5gs-nms
+Description=VoWiFi ePDG (VectorCore) — managed by open5gs-nms
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=${BUILD_WORKDIR}/osmo-epdg
-Environment=HOME=${BUILD_WORKDIR}/osmo-epdg
-Environment="ERL_FLAGS=-sname osmo_epdg -setcookie osmo-epdg_cookie -config ${OSMO_EPDG_CONFIG_DIR}/osmo-epdg"
-ExecStartPre=-/sbin/rmmod gtp
-ExecStartPre=/sbin/modprobe gtp
-ExecStart=${RUNTIME_BIN_DIR}/osmo-epdg
+WorkingDirectory=${RUNTIME_BIN_DIR}
+ExecStart=${RUNTIME_BIN_DIR}/epdg/bin/epdg -c ${VECTORCORE_EPDG_CONFIG_DIR}/epdg.yaml
 Restart=on-failure
 RestartSec=5
 
@@ -304,24 +455,15 @@ WantedBy=multi-user.target
 `;
 }
 
-function vowifiCharonUnit(): string {
-  // charon does NOT auto-load swanctl.conf on startup — connections must be pushed in
-  // explicitly via `swanctl --load-all` over its vici socket. Without this ExecStartPost,
-  // every restart of this unit (including cascading restarts triggered by the
-  // vowifi-osmo-epdg dependency above) silently leaves charon with zero connections
-  // loaded — no crash, no error, it just responds NO_PROPOSAL_CHOSEN to every IKE_SA_INIT
-  // as if no config existed at all. Confirmed live: this bit a real test after an
-  // unrelated restart of the osmo-epdg unit. The retry loop covers the vici socket not
-  // being ready in the first instant after ExecStart.
+function vectorcoreAaaUnit(): string {
   return `[Unit]
-Description=VoWiFi ePDG (strongSwan charon, osmo_epdg plugin) — managed by open5gs-nms
-After=network.target vowifi-osmo-epdg.service
-Requires=vowifi-osmo-epdg.service
+Description=VoWiFi AAA (VectorCore) — managed by open5gs-nms
+After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/libexec/ipsec/charon
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 10); do /usr/local/sbin/swanctl --load-all >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
+Environment="ERL_FLAGS=-config ${VECTORCORE_AAA_CONFIG_DIR}/aaa"
+ExecStart=${RUNTIME_BIN_DIR}/aaa/bin/vectorcore-aaa
 Restart=on-failure
 RestartSec=5
 
@@ -330,94 +472,45 @@ WantedBy=multi-user.target
 `;
 }
 
-// Copies the pristine, just-built osmo-epdg default sys.config and applies the exact
-// substitutions proven working during manual testing. Deliberately does NOT regenerate
-// the file from scratch — the shipped default has structure/keys beyond what's listed
-// here, and reconstructing all of it by hand risks subtle Erlang term syntax errors.
-function patchOsmoEpdgSysConfig(template: string, opts: {
-  epdgIp: string; hssSwxIp: string; smfGtpcIp: string; s6bLocalIp: string; gsupPort: number;
-  aaaFqdn: string; realm: string;
-}): string {
-  let content = template;
-  const replaceOnce = (from: string, to: string, label: string) => {
-    if (!content.includes(from)) {
-      throw new Error(`osmo-epdg sys.config template is missing an expected field (${label}: "${from}") — the upstream default config may have changed. Re-check config/sys.config in the osmo-epdg source tree.`);
-    }
-    content = content.replace(from, to);
-  };
-
-  replaceOnce('dia_swx_remote_ip, "127.0.0.1"', `dia_swx_remote_ip, "${opts.hssSwxIp}"`, 'dia_swx_remote_ip');
-  replaceOnce('gtpc_local_ip, "127.0.0.2"', `gtpc_local_ip, "${opts.epdgIp}"`, 'gtpc_local_ip');
-  replaceOnce('gtpc_remote_ip, "127.0.0.1"', `gtpc_remote_ip, "${opts.smfGtpcIp}"`, 'gtpc_remote_ip');
-  replaceOnce('{ip, {127,0,0,2}}', `{ip, {${opts.epdgIp.split('.').join(',')}}}`, 'gtp_u_kmod socket ip');
-  replaceOnce('gsup_local_ip, "0.0.0.0"', `gsup_local_ip, "${opts.epdgIp}"`, 'gsup_local_ip');
-  replaceOnce('gsup_local_port, 4222', `gsup_local_port, ${opts.gsupPort}`, 'gsup_local_port');
-
-  // osmo-epdg's own S6b Diameter identity — the pristine template ships with stock
-  // "localdomain" placeholders that were never wired up to the real PLMN's realm.
-  // SMF's own S6b ConnectPeer (upsertSmfAaaPeer, below) is correctly configured to
-  // expect a peer identified as `aaaFqdn` — but until osmo-epdg is ALSO told to
-  // present that same identity in its own CER/CEA, the two never match. freeDiameter
-  // requires "the configured Diameter Identity MUST match the information received
-  // inside CEA, or the connection will be aborted" — so SMF's S6b AAR silently fails
-  // with DIAMETER_UNABLE_TO_DELIVER (its ConnectPeer for aaaFqdn never opens, since
-  // osmo-epdg keeps identifying itself as "aaa.localdomain" instead), which is misread
-  // by Open5GS's own SMF state machine as if a Gx session existed and needs
-  // terminating — the actual VoWiFi PDN session never has a chance to establish.
-  // Confirmed live (2026-07-18): this was the root cause of every VoWiFi tunnel
-  // attempt failing at the final IKE_AUTH step with a generic AUTHENTICATION_FAILED.
-  replaceOnce('dia_s6b_origin_host, "aaa.localdomain"', `dia_s6b_origin_host, "${opts.aaaFqdn}"`, 'dia_s6b_origin_host');
-  replaceOnce('dia_s6b_origin_realm, "localdomain"', `dia_s6b_origin_realm, "${opts.realm}"`, 'dia_s6b_origin_realm');
-  replaceOnce('dia_s6b_context_id, "aaa@localdomain"', `dia_s6b_context_id, "aaa@${opts.realm}"`, 'dia_s6b_context_id');
-
-  if (opts.s6bLocalIp !== '127.0.0.10' && content.includes('dia_s6b_local_ip, "127.0.0.10"')) {
-    content = content.replace('dia_s6b_local_ip, "127.0.0.10"', `dia_s6b_local_ip, "${opts.s6bLocalIp}"`);
-  }
-
-  return content;
-}
-
-function upsertSmfAaaPeer(raw: string, aaaFqdn: string, s6bLocalIp: string): string {
-  const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${s6bLocalIp}"; No_TLS; };`;
-  // Unconditionally strip EVERY "aaa.*" ConnectPeer entry first (there
-  // should only ever be one — this slot is exclusively owned by this
-  // function), then add exactly one clean line back — never just
-  // patch-in-place or append-if-absent. A previous version only handled the
-  // "line already exists" and "line entirely absent" cases, silently
-  // leaving a second, stale "aaa.<old-realm>" entry behind whenever the realm
-  // itself changed (e.g. a PLMN migration) between one Configure and the
-  // next. Both entries point at the same local IP (osmo-epdg's own S6b bind
-  // address), and freeDiameter's peer-election logic gets confused by the
-  // ambiguity — confirmed live (2026-07-19): every CER from a correctly
-  // reconfigured osmo-epdg was rejected with ELECTION_LOST /
-  // "save_remote_CE_info: Invalid argument" while a second aaa.* peer
-  // existed, and simply re-running Configure again did NOT self-heal it,
-  // since by then the new entry already existed and the old "already present"
-  // branch never looked at any OTHER aaa.* line.
-  //
-  // Previously only matched "aaa.epc.*" specifically, on the assumption that
-  // a literal "aaa.localdomain" identity was some OTHER, separately-managed
-  // placeholder this function never writes — WRONG, confirmed live
-  // (2026-07-31, real bug report): aaaFqdn is derived as `aaa.${realm}`
-  // where realm comes from SMF's own freeDiameter identity
-  // (readFreeDiameterIdentity/realmFromIdentity) — on any host that hasn't
-  // been through the DNS/FQDN Migration Wizard yet, that identity is still
-  // the stock "smf.localdomain" default, making aaaFqdn literally
-  // "aaa.localdomain" too. That's a completely ordinary, easily-reached
-  // deployment state, not an edge case — the exclusion meant re-running
-  // Configure with a different s6bLocalIp (e.g. after changing IPs) always
-  // left the previous "aaa.localdomain" line behind, producing two
-  // ConnectPeer entries for the same Diameter identity. freeDiameter's
-  // `fd_peer_add` hard-aborts SMF at startup on a duplicate ("File exists" /
-  // "Error adding ConnectPeer information" / `smf_fd_init: Assertion `rv ==
-  // 0' failed`) — not a soft warning, a full SMF crash-loop. Matching
-  // literally any "aaa.*" identity is correct regardless of its current
-  // value, since this function is the sole owner of this peer slot.
+function upsertSmfAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): string {
+  const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${aaaListenIp}"; No_TLS; };`;
+  // Unconditionally strip EVERY "aaa.*" ConnectPeer entry first — this slot is
+  // exclusively owned by this function — then add exactly one clean line back.
+  // Carried over verbatim from the archived backend's own hard-won fix: matching
+  // literally any "aaa.*" identity (not just the currently-expected one) avoids
+  // leaving a stale duplicate behind across a realm change (PLMN migration) or a
+  // backend swap, either of which freeDiameter's peer-election/fd_peer_add logic
+  // reacts very badly to (confirmed live: ELECTION_LOST loops, or a hard SMF
+  // crash-loop on a literal duplicate ConnectPeer).
   const withoutAnyAaaPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"aaa\.[^"]*"[^\n]*\n?/gm, '');
   return withoutAnyAaaPeer.trimEnd() + '\n' + peerLine + '\n';
 }
 
 function removeSmfAaaPeer(raw: string, aaaFqdn: string): string {
+  const escaped = aaaFqdn.replace(/\./g, '\\.');
+  const re = new RegExp(`^[ \\t]*ConnectPeer\\s*=\\s*"${escaped}"[^\n]*\n?`, 'm');
+  return raw.replace(re, '');
+}
+
+// open5gs-hssd has real, built-in Swx support (compiled directly into the binary —
+// ogs_diam_swx_init/swx_rx_mar/swx_rx_sar etc., confirmed live via `strings` on the
+// binary 2026-08-01) — it does NOT need PyHSS or any translator, contrary to this
+// migration's original assumption. freeDiameter's own default policy rejects any
+// connecting peer whose identity has no matching ConnectPeer entry ("no_connection"
+// on the AAA side, confirmed live), so this upsert is required for real Swx auth to
+// ever succeed, exactly like upsertSmfAaaPeer() above for S6b.
+function upsertHssAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): string {
+  const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${aaaListenIp}"; No_TLS; };`;
+  const withoutAnyAaaPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"aaa\.[^"]*"[^\n]*\n?/gm, '');
+  // Also drop a stale, wrong "epdg.localdomain" ConnectPeer entry found live in
+  // hss.conf 2026-08-01 — predates this backend entirely (file untouched since
+  // 2026-07-25, a leftover from an earlier, unrelated experiment) and was never a
+  // reachable real Swx peer; harmless until this migration made Swx load-bearing.
+  const withoutStaleEpdgLocaldomain = withoutAnyAaaPeer.replace(/^[ \t]*ConnectPeer\s*=\s*"epdg\.localdomain"[^\n]*\n?/gm, '');
+  return withoutStaleEpdgLocaldomain.trimEnd() + '\n' + peerLine + '\n';
+}
+
+function removeHssAaaPeer(raw: string, aaaFqdn: string): string {
   const escaped = aaaFqdn.replace(/\./g, '\\.');
   const re = new RegExp(`^[ \\t]*ConnectPeer\\s*=\\s*"${escaped}"[^\n]*\n?`, 'm');
   return raw.replace(re, '');
@@ -436,14 +529,12 @@ interface ConfigFileEntry {
 
 function getVowifiConfigManifest(): ConfigFileEntry[] {
   const entries: Omit<ConfigFileEntry, 'exists'>[] = [
-    { group: 'osmo-epdg', label: 'osmo-epdg.config', path: `${OSMO_EPDG_CONFIG_DIR}/osmo-epdg.config`, language: 'erlang', restartServices: ['vowifi-osmo-epdg'] },
-    { group: 'strongSwan', label: 'swanctl.conf', path: '/etc/swanctl/swanctl.conf', language: 'plaintext', restartServices: ['vowifi-charon'] },
-    { group: 'strongSwan', label: 'charon.conf', path: '/etc/strongswan.d/charon.conf', language: 'plaintext', restartServices: ['vowifi-charon'] },
-    { group: 'strongSwan', label: 'charon/eap-aka.conf', path: '/etc/strongswan.d/charon/eap-aka.conf', language: 'plaintext', restartServices: ['vowifi-charon'] },
-    { group: 'strongSwan', label: 'charon/save-keys.conf', path: '/etc/strongswan.d/charon/save-keys.conf', language: 'plaintext', restartServices: ['vowifi-charon'] },
+    { group: 'VectorCore ePDG', label: 'epdg.yaml', path: `${VECTORCORE_EPDG_CONFIG_DIR}/epdg.yaml`, language: 'yaml', restartServices: ['vowifi-vectorcore-epdg'] },
+    { group: 'VectorCore AAA', label: 'aaa.config', path: `${VECTORCORE_AAA_CONFIG_DIR}/aaa.config`, language: 'erlang', restartServices: ['vowifi-vectorcore-aaa'] },
     { group: 'Open5GS', label: 'smf.conf (S6b peer)', path: '/etc/freeDiameter/smf.conf', language: 'plaintext', restartServices: ['open5gs-smfd'] },
-    { group: 'Systemd Units', label: 'vowifi-osmo-epdg.service', path: '/etc/systemd/system/vowifi-osmo-epdg.service', language: 'ini', restartServices: ['vowifi-osmo-epdg'] },
-    { group: 'Systemd Units', label: 'vowifi-charon.service', path: '/etc/systemd/system/vowifi-charon.service', language: 'ini', restartServices: ['vowifi-charon'] },
+    { group: 'Open5GS', label: 'hss.conf (Swx peer)', path: '/etc/freeDiameter/hss.conf', language: 'plaintext', restartServices: ['open5gs-hssd'] },
+    { group: 'Systemd Units', label: 'vowifi-vectorcore-epdg.service', path: '/etc/systemd/system/vowifi-vectorcore-epdg.service', language: 'ini', restartServices: ['vowifi-vectorcore-epdg'] },
+    { group: 'Systemd Units', label: 'vowifi-vectorcore-aaa.service', path: '/etc/systemd/system/vowifi-vectorcore-aaa.service', language: 'ini', restartServices: ['vowifi-vectorcore-aaa'] },
   ];
   return entries.map(e => ({ ...e, exists: fs.existsSync(`/proc/1/root${e.path}`) }));
 }
@@ -452,23 +543,28 @@ function isAllowedConfigPath(p: string): boolean {
   return getVowifiConfigManifest().some(e => e.path === p);
 }
 
-// ─── Install (detached build, mirrors frr-source-build-controller.ts) ───────
+// ─── Install (detached build, mirrors frr-source-build-controller.ts and the
+// archived osmo-epdg backend's own install flow) ─────────────────────────────
 
 async function verifyInstall(): Promise<void> {
   const s = loadState();
-  const binExists = fs.existsSync(HOST_RUNTIME_BIN);
-  const charonExists = fs.existsSync('/proc/1/root/usr/local/libexec/ipsec/charon');
-  const ok = binExists && charonExists;
+  const epdgExists = fs.existsSync(HOST_EPDG_RUNTIME_BIN);
+  const aaaExists = fs.existsSync(HOST_AAA_RUNTIME_BIN);
+  const ok = epdgExists && aaaExists;
   s.installStatus = ok ? 'complete' : 'failed';
   s.installCompletedAt = new Date().toISOString();
-  if (ok) s.builtWithOsmoEpdgTag = OSMO_EPDG_TAG;
-  if (!ok) s.installError = 'Build finished but expected binaries were not found (osmo-epdg or charon).';
+  if (ok) {
+    s.builtWithVectorcoreEpdgCommit = VECTORCORE_EPDG_COMMIT;
+    s.builtWithVectorcoreAaaCommit = VECTORCORE_AAA_COMMIT;
+    s.builtWithVectorcorePatchRev = VECTORCORE_PATCH_REV;
+  }
+  if (!ok) s.installError = 'Build finished but expected binaries were not found (epdg or vectorcore-aaa).';
   saveState(s);
-  appendLog(`\n==VERIFY:osmo-epdg=${binExists} charon=${charonExists}==\n`);
+  appendLog(`\n==VERIFY:epdg=${epdgExists} vectorcore-aaa=${aaaExists}==\n`);
 }
 
-function startInstall(gsupPort: number, logger: pino.Logger): void {
-  const script = buildVowifiScript({ gsupPort });
+function startInstall(logger: pino.Logger): void {
+  const script = buildVowifiScript();
   fs.mkdirSync(HOST_BUILD_WORKDIR, { recursive: true });
   fs.writeFileSync(`${HOST_BUILD_WORKDIR}/run.sh`, script, { mode: 0o755 });
 
@@ -479,13 +575,8 @@ function startInstall(gsupPort: number, logger: pino.Logger): void {
     { stdio: ['ignore', logFd, logFd], detached: true },
   );
   fs.closeSync(logFd);
-  logger.info({ pid: child.pid }, 'VoWiFi install started (detached)');
+  logger.info({ pid: child.pid }, 'VoWiFi (VectorCore) install started (detached)');
 
-  // Without this, a script that dies mid-step (e.g. `set -e` hitting a real error) leaves
-  // the state machine stuck forever on the last-seen step, since step transitions only ever
-  // move forward on sentinel lines — there was no other way to detect "the process is gone
-  // and never got to done". Listened for before unref() so the exit event still fires as
-  // long as this backend process itself keeps running.
   let processExited = false;
   child.on('exit', () => { processExited = true; });
   child.unref();
@@ -553,12 +644,6 @@ export async function reconcileVowifiInstallState(logger: pino.Logger): Promise<
 }
 
 // ─── Configure (extracted for reuse by the PLMN Migration Wizard) ────────────
-// No internal default-fallbacks here — callers (the manual /configure route below,
-// or the PLMN migration use-case) must pass a fully-populated input. Defaults for
-// the manual-UI path live only in the thin route wrapper. Status-differentiated
-// failures (409 "not installed" vs 400 validation vs 500 unexpected) are carried
-// via VowifiConfigureError so the route wrapper can still return the right HTTP
-// status without duplicating the checks.
 export class VowifiConfigureError extends Error {
   constructor(message: string, public status: number) {
     super(message);
@@ -567,22 +652,16 @@ export class VowifiConfigureError extends Error {
 
 export interface VowifiConfigureFullInput {
   epdgIp: string;
-  s6bLocalIp: string;
-  gsupPort: number;
+  aaaListenIp: string;
   interfaceMode: 'dummy' | 'existing';
-  // If provided and different from the newly-derived pub domain, its BIND zone +
-  // named.conf.local stanza are removed. This route never previously tracked or
-  // cleaned up a *previous* domain (only ims-controller.ts's did, via its
-  // removedDomains diff) — needed so a primary-PLMN change doesn't leave the old
-  // mnc/mcc.pub zone orphaned forever.
   previousPubDomain?: string;
 }
 
 export async function configureVowifi(input: VowifiConfigureFullInput): Promise<{
-  epdgIp: string; interfaceMode: 'dummy' | 'existing'; s6bLocalIp: string; gsupPort: number;
-  aaaFqdn: string; hssSwxIp: string; smfGtpcIp: string; smfActive: boolean; dnsConfigured: boolean;
+  epdgIp: string; interfaceMode: 'dummy' | 'existing'; aaaListenIp: string;
+  aaaFqdn: string; hssSwxIp: string; smfGtpcIp: string; smfActive: boolean; hssActive: boolean; dnsConfigured: boolean;
 }> {
-  const { epdgIp, s6bLocalIp, gsupPort, interfaceMode, previousPubDomain } = input;
+  const { epdgIp, aaaListenIp, interfaceMode, previousPubDomain } = input;
 
   const state = loadState();
   if (state.installStatus !== 'complete') {
@@ -592,19 +671,13 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
   if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(epdgIp)) {
     throw new VowifiConfigureError('Invalid epdgIp', 400);
   }
-  if (!/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s6bLocalIp)) {
-    throw new VowifiConfigureError('S6b local IP must be a loopback (127.0.0.0/8) address — SMF cannot route loopback-sourced Diameter traffic to a non-loopback local destination.', 400);
+  if (!/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(aaaListenIp)) {
+    throw new VowifiConfigureError('AAA listen IP must be a loopback (127.0.0.0/8) address — SMF cannot route loopback-sourced Diameter traffic to a non-loopback local destination.', 400);
   }
 
-  // 1. ePDG local IP. Two modes:
-  //   'dummy'    (default) — create+own a new dummy-epdg interface with epdgIp assigned
-  //              (persisted across reboots, NOT advertised into EIGRP — it only needs to
-  //              be reachable on this host, and EIGRP advertisement was the trigger for a
-  //              real eigrpd crash-loop incident on this host).
-  //   'existing' — the operator already bound epdgIp to a loopback or a real LAN
-  //              interface themselves; skip interface creation entirely and just confirm
-  //              it's actually present on the host before writing config that depends on
-  //              being able to bind to it.
+  // 1. ePDG local IP — same dummy-interface convention as every other core NF and as
+  // the archived VoWiFi backend used (not advertised into EIGRP — that was the
+  // trigger for a real eigrpd crash-loop incident on this host).
   if (interfaceMode === 'dummy') {
     await createDummyInterface(DUMMY_IF_NAME, epdgIp, 24, true);
   } else {
@@ -620,46 +693,36 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
     }
   }
 
-  // 2. Read real HSS/SMF addresses — never hardcode these.
+  // 2. Read real HSS/SMF addresses and PLMN — never hardcode these.
   const hssSwxIp = readFreeDiameterListenOn(HOST_HSS_CONF, '127.0.0.8');
   const smfGtpcIp = readSmfGtpcAddress();
   const smfIdentity = readFreeDiameterIdentity(HOST_SMF_CONF, 'smf.localdomain');
   const realm = realmFromIdentity(smfIdentity);
   const aaaFqdn = `aaa.${realm}`;
+  const { mcc, mnc } = readMccMnc();
+  // `realm` already starts with "epc." (it's sliced straight off SMF's own freeDiameter
+  // Identity, e.g. "smf.epc.mnc001.mcc001.3gppnetwork.org" -> "epc.mnc001.mcc001...") —
+  // do not re-prepend "epc." here or in any of the Diameter FQDNs derived from it below,
+  // that produces a real, confirmed-live "epc.epc...." double-domain bug.
+  const epdgFqdn = `epdg.${realm}`;
 
-  // 3. osmo-epdg config, from the pristine build template
-  if (!fs.existsSync(HOST_OSMO_EPDG_TEMPLATE)) {
-    throw new VowifiConfigureError(`osmo-epdg config template not found at ${BUILD_WORKDIR}/osmo-epdg/config/sys.config — the build directory may have been removed. Reinstall to regenerate it.`, 500);
-  }
-  const template = fs.readFileSync(HOST_OSMO_EPDG_TEMPLATE, 'utf-8');
-  const patched = patchOsmoEpdgSysConfig(template, { epdgIp, hssSwxIp, smfGtpcIp, s6bLocalIp, gsupPort, aaaFqdn, realm });
-  fs.mkdirSync(path.dirname(HOST_OSMO_EPDG_CONFIG), { recursive: true });
-  fs.writeFileSync(HOST_OSMO_EPDG_CONFIG, patched, 'utf-8');
-  fs.mkdirSync(HOST_OSMO_EPDG_RUNTIME_DIR + '/log', { recursive: true });
+  // 3. epdg.yaml + certs
+  fs.mkdirSync(HOST_EPDG_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(HOST_EPDG_YAML, epdgYamlConf({ epdgIp, mcc, mnc, realm, aaaListenIp, smfGtpcIp, swmLocalIp: EPDG_SWM_LOCAL_IP }), 'utf-8');
+  fs.mkdirSync(HOST_EPDG_CERT_DIR, { recursive: true });
+  await nsenter('bash', ['-c', epdgCertGenScript(epdgFqdn)], 30000);
 
-  // 4. strongSwan config
-  fs.mkdirSync(HOST_SWANCTL_DIR, { recursive: true });
-  fs.writeFileSync(HOST_SWANCTL_CONF, swanctlConf(epdgIp), 'utf-8');
-  fs.mkdirSync(`${HOST_STRONGSWAN_D}/charon`, { recursive: true });
-  fs.writeFileSync(HOST_EAP_AKA_CONF, eapAkaConf(), 'utf-8');
-  fs.writeFileSync(HOST_SAVE_KEYS_CONF, saveKeysConf(), 'utf-8');
-  if (fs.existsSync(HOST_CHARON_CONF)) {
-    let charonRaw = fs.readFileSync(HOST_CHARON_CONF, 'utf-8');
-    if (/^\s*#\s*force_eap_only_authentication\s*=/m.test(charonRaw)) {
-      charonRaw = charonRaw.replace(/^(\s*)#\s*(force_eap_only_authentication\s*=.*)$/m, '$1$2');
-    } else if (!/^\s*force_eap_only_authentication\s*=\s*yes/m.test(charonRaw)) {
-      charonRaw = charonRaw.replace(/^(charon\s*\{)/m, '$1\n\tforce_eap_only_authentication = yes');
-    }
-    fs.writeFileSync(HOST_CHARON_CONF, charonRaw, 'utf-8');
-  }
+  // 4. aaa.config
+  fs.mkdirSync(HOST_AAA_CONFIG_DIR, { recursive: true });
+  fs.writeFileSync(HOST_AAA_CONFIG, aaaConfigFile({ aaaListenIp, realm, epdgFqdn, smfIdentity, hssSwxIp }), 'utf-8');
 
-  // 5. systemd units
+  // 6. systemd units
   fs.mkdirSync(HOST_SYSTEMD_DIR, { recursive: true });
-  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-osmo-epdg.service`, vowifiOsmoEpdgUnit(), 'utf-8');
-  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-charon.service`, vowifiCharonUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-vectorcore-epdg.service`, vectorcoreEpdgUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/vowifi-vectorcore-aaa.service`, vectorcoreAaaUnit(), 'utf-8');
   await nsenter('systemctl', ['daemon-reload']);
 
-  // 6. smf.conf — exactly one new ConnectPeer line, back up first
+  // 7. smf.conf — exactly one new ConnectPeer line, back up first
   let smfConfHadBackup = state.smfConfHadBackup;
   if (fs.existsSync(HOST_SMF_CONF)) {
     if (!fs.existsSync(HOST_SMF_CONF_BAK)) {
@@ -667,20 +730,36 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
       smfConfHadBackup = true;
     }
     const smfRaw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
-    fs.writeFileSync(HOST_SMF_CONF, upsertSmfAaaPeer(smfRaw, aaaFqdn, s6bLocalIp), 'utf-8');
+    fs.writeFileSync(HOST_SMF_CONF, upsertSmfAaaPeer(smfRaw, aaaFqdn, aaaListenIp), 'utf-8');
     await nsenter('systemctl', ['restart', 'open5gs-smfd']);
     await new Promise(r => setTimeout(r, 3000));
   }
 
-  // 7. Verify Gx survived the SMF restart
+  // 7b. hss.conf — open5gs-hssd has real, built-in Swx support, but freeDiameter
+  // rejects any connecting peer with no matching ConnectPeer entry ("no_connection"
+  // on the AAA side, confirmed live 2026-08-01 — every real EAP-AKA' attempt failed
+  // silently until this was added). Same back-up-first pattern as smf.conf above.
+  let hssConfHadBackup = state.hssConfHadBackup;
+  if (fs.existsSync(HOST_HSS_CONF)) {
+    if (!fs.existsSync(HOST_HSS_CONF_BAK)) {
+      fs.copyFileSync(HOST_HSS_CONF, HOST_HSS_CONF_BAK);
+      hssConfHadBackup = true;
+    }
+    const hssRaw = fs.readFileSync(HOST_HSS_CONF, 'utf-8');
+    fs.writeFileSync(HOST_HSS_CONF, upsertHssAaaPeer(hssRaw, aaaFqdn, aaaListenIp), 'utf-8');
+    await nsenter('systemctl', ['restart', 'open5gs-hssd']);
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  // 8. Verify Gx/S6a survived the SMF/HSS restarts
   const smfActive = await nsenter('systemctl', ['is-active', 'open5gs-smfd'])
     .then(r => r.stdout.trim() === 'active').catch(() => false);
+  const hssActive = await nsenter('systemctl', ['is-active', 'open5gs-hssd'])
+    .then(r => r.stdout.trim() === 'active').catch(() => false);
 
-  // 8. DNS — ePDG discovery FQDN (epdg.epc.mnc<mnc>.mcc<mcc>.pub.3gppnetwork.org). Real
-  // UEs resolve this to find the ePDG; the SWu-IKEv2 test emulator bypasses it with a
-  // manual -d <ip> flag so this was never exercised by that test. Installs BIND9 itself
-  // if not already present (e.g. IMS isn't enabled on this deployment) — see the "DNS
-  // (BIND9)" page for manual editing beyond what this generates.
+  // 9. DNS — ePDG discovery FQDN, reused as-is per the migration plan's explicit
+  // decision (§3): only which binary answers on the resolved IP changes, not the
+  // discovery mechanism itself.
   let dnsConfigured = false;
   try {
     const bindInstalled = await nsenter('bash', ['-c', 'command -v named >/dev/null 2>&1 && echo yes || echo no'])
@@ -692,7 +771,6 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
     if (!fs.existsSync(`${HOST_BIND_DIR}/named.conf.options`)) {
       fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.options`, bindNamedOptionsDefault(), 'utf-8');
     }
-    const { mcc, mnc } = readMccMnc();
     const pubDomain = pubEpdgDomain(mcc, mnc);
     const zoneFilePath = `/etc/bind/zones/${pubDomain}.zone`;
     fs.writeFileSync(`${HOST_BIND_ZONES_DIR}/${pubDomain}.zone`, pubEpdgZoneFile(pubDomain, epdgIp, epdgIp), 'utf-8');
@@ -706,6 +784,18 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
       namedLocalRaw = removeNamedZone(namedLocalRaw, previousPubDomain);
     }
     fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.local`, namedLocalRaw, 'utf-8');
+
+    // "aaa" record in the shared internal epc zone — see upsertZoneRecordLine()'s
+    // comment for why this is a merge into a file another module owns, not a fresh
+    // write. Zone filename matches `realm` exactly (confirmed live 2026-08-01:
+    // realm === "epc.mnc001.mcc001.3gppnetwork.org", the same string the Migration
+    // Wizard names this zone file after).
+    const epcZonePath = `${HOST_BIND_ZONES_DIR}/${realm}.zone`;
+    if (fs.existsSync(epcZonePath)) {
+      const epcZoneRaw = fs.readFileSync(epcZonePath, 'utf-8');
+      fs.writeFileSync(epcZonePath, upsertZoneRecordLine(epcZoneRaw, 'aaa', aaaListenIp), 'utf-8');
+    }
+
     await nsenter('systemctl', ['enable', '--now', 'bind9']).catch(() => {});
     await nsenter('systemctl', ['restart', 'bind9']);
     dnsConfigured = true;
@@ -713,11 +803,11 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
 
   const newState: VowifiState = {
     ...state, configured: true, configuredAt: new Date().toISOString(),
-    epdgIp, epdgInterfaceMode: interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, smfConfHadBackup,
+    epdgIp, epdgInterfaceMode: interfaceMode, aaaListenIp, aaaFqdn, smfConfHadBackup, hssConfHadBackup,
   };
   saveState(newState);
 
-  return { epdgIp, interfaceMode, s6bLocalIp, gsupPort, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, dnsConfigured };
+  return { epdgIp, interfaceMode, aaaListenIp, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, hssActive, dnsConfigured };
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -728,25 +818,21 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   router.get('/status', async (_req: Request, res: Response) => {
     try {
       const state = loadState();
-      const installedOnDisk = fs.existsSync(HOST_RUNTIME_BIN) &&
-        fs.existsSync('/proc/1/root/usr/local/libexec/ipsec/charon');
+      const installedOnDisk = fs.existsSync(HOST_EPDG_RUNTIME_BIN) && fs.existsSync(HOST_AAA_RUNTIME_BIN);
 
-      const [osmoEpdgRes, charonRes] = await Promise.allSettled([
-        nsenter('systemctl', ['is-active', 'vowifi-osmo-epdg']),
-        nsenter('systemctl', ['is-active', 'vowifi-charon']),
+      const [epdgRes, aaaRes] = await Promise.allSettled([
+        nsenter('systemctl', ['is-active', 'vowifi-vectorcore-epdg']),
+        nsenter('systemctl', ['is-active', 'vowifi-vectorcore-aaa']),
       ]);
       const svcActive = (r: PromiseSettledResult<any>) => r.status === 'fulfilled' && r.value.stdout.trim() === 'active';
-
-      const gtpModuleLoaded = await nsenter('bash', ['-c', "lsmod | grep -q '^gtp ' && echo yes || echo no"])
-        .then(r => r.stdout.trim() === 'yes').catch(() => false);
 
       const dummyInterfaceUp = await nsenter('bash', ['-c', `ip link show ${DUMMY_IF_NAME} >/dev/null 2>&1 && echo yes || echo no`])
         .then(r => r.stdout.trim() === 'yes').catch(() => false);
 
-      let activeIkeSas = 0;
-      if (svcActive(charonRes)) {
-        activeIkeSas = await nsenter('swanctl', ['--list-sas'], 10000)
-          .then(r => (r.stdout.match(/ESTABLISHED/g) ?? []).length).catch(() => 0);
+      let activeClients = 0;
+      if (svcActive(epdgRes)) {
+        activeClients = await nsenter('curl', ['-fsS', `http://127.0.0.1:${ADMIN_API_PORT}/api/v1/stats`], 5000)
+          .then(r => JSON.parse(r.stdout)?.clients ?? 0).catch(() => 0);
       }
 
       const smfConfExists = fs.existsSync(HOST_SMF_CONF);
@@ -754,17 +840,20 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         ? smfConfExists && fs.readFileSync(HOST_SMF_CONF, 'utf-8').includes(`"${state.aaaFqdn}"`)
         : false;
 
-      // No recorded tag at all (deployment predates this field) counts as
-      // stale too, same as ims-controller.ts's configStale check — we
-      // genuinely don't know what osmo-epdg/strongswan-epdg source that
-      // build came from.
-      const buildStale = installedOnDisk && state.builtWithOsmoEpdgTag !== OSMO_EPDG_TAG;
+      const buildStale = installedOnDisk &&
+        (state.builtWithVectorcoreEpdgCommit !== VECTORCORE_EPDG_COMMIT ||
+         state.builtWithVectorcoreAaaCommit !== VECTORCORE_AAA_COMMIT ||
+         state.builtWithVectorcorePatchRev !== VECTORCORE_PATCH_REV);
 
       res.json({
         success: true,
         installedOnDisk,
-        builtWithOsmoEpdgTag: state.builtWithOsmoEpdgTag,
-        currentOsmoEpdgTag: OSMO_EPDG_TAG,
+        builtWithVectorcoreEpdgCommit: state.builtWithVectorcoreEpdgCommit,
+        currentVectorcoreEpdgCommit: VECTORCORE_EPDG_COMMIT,
+        builtWithVectorcoreAaaCommit: state.builtWithVectorcoreAaaCommit,
+        currentVectorcoreAaaCommit: VECTORCORE_AAA_COMMIT,
+        builtWithVectorcorePatchRev: state.builtWithVectorcorePatchRev,
+        currentVectorcorePatchRev: VECTORCORE_PATCH_REV,
         buildStale,
         installStatus: state.installStatus,
         installStartedAt: state.installStartedAt,
@@ -774,129 +863,89 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         configuredAt: state.configuredAt,
         epdgIp: state.epdgIp,
         epdgInterfaceMode: state.epdgInterfaceMode,
-        s6bLocalIp: state.s6bLocalIp,
-        gsupPort: state.gsupPort,
-        services: {
-          'vowifi-osmo-epdg': svcActive(osmoEpdgRes),
-          'vowifi-charon': svcActive(charonRes),
-        },
-        running: svcActive(osmoEpdgRes) && svcActive(charonRes),
-        gtpModuleLoaded,
-        dummyInterfaceUp,
-        activeIkeSas,
+        aaaListenIp: state.aaaListenIp,
+        aaaFqdn: state.aaaFqdn,
         smfConnectPeerPresent,
+        dummyInterfaceUp,
+        activeClients,
+        services: {
+          'vowifi-vectorcore-epdg': svcActive(epdgRes),
+          'vowifi-vectorcore-aaa': svcActive(aaaRes),
+        },
       });
     } catch (err) {
-      logger.error({ err: String(err) }, 'vowifi status error');
       res.status(500).json({ success: false, error: String(err) });
     }
   });
 
-  // POST /api/vowifi/install — detached build, mirrors FRR source-build's /start
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
-    const current = loadState();
-    if (!['idle', 'complete', 'failed'].includes(current.installStatus)) {
-      return res.status(409).json({ ok: false, error: `An install is already in progress (status: ${current.installStatus})` });
-    }
-    try {
-      const gsupPort = Number(req.body?.gsupPort) || DEFAULT_GSUP_PORT;
-      // Preserve any existing config-related state across a re-Install (a
-      // rebuild after a version bump, e.g. OSMO_EPDG_TAG) — only reset the
-      // install-progress-tracking fields. Previously this unconditionally
-      // reset to defaultState(), wiping `configured`/`epdgIp`/`aaaFqdn`/etc.
-      // on every Install call even though a rebuild never touches the live
-      // config files (smf.conf's ConnectPeer, DNS zone, dummy interface) at
-      // all — only the compiled binaries change. That forced a full
-      // Configure redo after every rebuild for no real reason, which is
-      // what made "Uninstall then reconfigure from scratch" look like the
-      // only path forward. installError is cleared since it refers to
-      // whatever attempt is now starting fresh.
-      const state: VowifiState = {
-        ...current,
-        installStatus: 'preparing',
-        installStartedAt: new Date().toISOString(),
-        installCompletedAt: null,
-        installError: null,
-      };
-      saveState(state);
-      appendLog(`\n==BUILD:start ts=${state.installStartedAt}==\n`);
-      startInstall(gsupPort, logger);
-      await auditLogger.log({ action: 'vowifi_install', user, details: `gsupPort=${gsupPort}`, success: true });
-      res.json({ ok: true });
-    } catch (err) {
-      await auditLogger.log({ action: 'vowifi_install', user, details: String(err), success: false });
-      res.status(500).json({ ok: false, error: String(err) });
-    }
-  });
-
   router.get('/install/log', (_req: Request, res: Response) => {
-    res.type('text/plain').send(tailLog(100000));
+    res.type('text/plain').send(tailLog(2000));
   });
 
   router.get('/install/log/stream', (req: Request, res: Response) => {
-    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
-    res.write(tailLog(200));
-
-    if (!fs.existsSync(LOG_FILE)) {
-      fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-      fs.writeFileSync(LOG_FILE, '');
-    }
-    const tail = spawn('tail', ['-f', '-n', '0', LOG_FILE]);
-    tail.stdout.on('data', (d: Buffer) => res.write(d));
-    tail.stderr.on('data', () => {});
-    const cleanup = () => { tail.kill(); };
-    req.on('close', cleanup);
-    tail.on('close', () => res.end());
+    res.write(tailLog(500));
+    let closed = false;
+    req.on('close', () => { closed = true; });
+    const interval = setInterval(() => {
+      if (closed) { clearInterval(interval); return; }
+      const state = loadState();
+      if (state.installStatus === 'complete' || state.installStatus === 'failed') {
+        res.write(`\n==FINAL:${state.installStatus}==\n`);
+        clearInterval(interval);
+        res.end();
+      }
+    }, 2000);
   });
 
-  // POST /api/vowifi/configure
+  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const state = loadState();
+    if (!['idle', 'failed', 'complete'].includes(state.installStatus)) {
+      res.status(409).json({ success: false, error: `An install is already in progress (status: ${state.installStatus})` });
+      return;
+    }
+    const newState: VowifiState = { ...defaultState(), installStatus: 'preparing', installStartedAt: new Date().toISOString() };
+    saveState(newState);
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    fs.writeFileSync(LOG_FILE, `=== VoWiFi (VectorCore) install started ${newState.installStartedAt} by ${user} ===\n`, 'utf-8');
+    startInstall(logger);
+    await auditLogger.log({ action: 'vowifi_install', user, details: 'Started VectorCore ePDG/AAA install', success: true });
+    res.json({ ok: true, installStatus: 'preparing' });
+  });
+
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const body = req.body as VowifiConfigureInput;
-      const epdgIp = body.epdgIp || DEFAULT_EPDG_IP;
-      const s6bLocalIp = body.s6bLocalIp || DEFAULT_S6B_LOCAL_IP;
-      const gsupPort = Number(body.gsupPort) || DEFAULT_GSUP_PORT;
+      const body = req.body ?? {};
+      const epdgIp = typeof body.epdgIp === 'string' && body.epdgIp ? body.epdgIp : DEFAULT_EPDG_IP;
+      const aaaListenIp = typeof body.aaaListenIp === 'string' && body.aaaListenIp ? body.aaaListenIp : DEFAULT_AAA_LISTEN_IP;
       const interfaceMode: 'dummy' | 'existing' = body.interfaceMode === 'existing' ? 'existing' : 'dummy';
-
-      const result = await configureVowifi({ epdgIp, s6bLocalIp, gsupPort, interfaceMode });
-      if (!result.smfActive) {
-        logger.error('open5gs-smfd is not active after VoWiFi configure — check smf.conf syntax');
-      }
-      if (!result.dnsConfigured) {
-        logger.error('VoWiFi DNS zone setup failed — configure otherwise succeeded');
-      }
-
-      await auditLogger.log({ action: 'vowifi_configure', user, details: `epdgIp=${epdgIp} interfaceMode=${interfaceMode} gsupPort=${gsupPort} dnsConfigured=${result.dnsConfigured}`, success: true });
+      const result = await configureVowifi({ epdgIp, aaaListenIp, interfaceMode });
+      await auditLogger.log({ action: 'vowifi_configure', user, details: `epdgIp=${epdgIp} interfaceMode=${interfaceMode} aaaListenIp=${aaaListenIp} dnsConfigured=${result.dnsConfigured}`, success: true });
       res.json({ ok: true, ...result });
     } catch (err) {
-      await auditLogger.log({ action: 'vowifi_configure', user, details: String(err), success: false });
       const status = err instanceof VowifiConfigureError ? err.status : 500;
-      res.status(status).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      await auditLogger.log({ action: 'vowifi_configure', user, details: String(err), success: false });
+      res.status(status).json({ ok: false, error: String(err instanceof Error ? err.message : err) });
     }
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      // `enable --now` is a no-op on an already-running unit — same class of bug found
-      // and fixed in bind-controller.ts/ims-controller.ts's own Configure flows. If
-      // Configure just regenerated osmo-epdg.config (e.g. a new S6b identity fix), an
-      // already-running vowifi-osmo-epdg would otherwise keep serving the stale config
-      // until something else happened to restart it. `enable` + unconditional
-      // `restart` guarantees Start always actually applies whatever config currently
-      // exists on disk, whether this is a first start or a re-start after Configure.
-      await nsenter('systemctl', ['enable', 'vowifi-osmo-epdg']);
-      await nsenter('systemctl', ['restart', 'vowifi-osmo-epdg']);
-      await new Promise(r => setTimeout(r, 2000));
-      await nsenter('systemctl', ['enable', 'vowifi-charon']);
-      await nsenter('systemctl', ['restart', 'vowifi-charon']);
-      await auditLogger.log({ action: 'vowifi_start', user, success: true });
+      await nsenter('systemctl', ['enable', '--now', 'vowifi-vectorcore-aaa']);
+      await new Promise(r => setTimeout(r, 1500));
+      // 35s, not the 20s default: the epdg unit's ExecStartPost polls up to 20s for its
+      // tun device to appear before systemd reports the unit started (confirmed live
+      // 2026-08-01 — the default timeout killed this exec even though the service came
+      // up fine moments later).
+      await nsenter('systemctl', ['enable', '--now', 'vowifi-vectorcore-epdg'], 35000);
+      await auditLogger.log({ action: 'vowifi_start', user, details: 'Started vowifi-vectorcore-aaa + vowifi-vectorcore-epdg', success: true });
       res.json({ ok: true });
     } catch (err) {
       await auditLogger.log({ action: 'vowifi_start', user, details: String(err), success: false });
@@ -907,9 +956,9 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      await nsenter('systemctl', ['stop', 'vowifi-charon']).catch(() => {});
-      await nsenter('systemctl', ['stop', 'vowifi-osmo-epdg']).catch(() => {});
-      await auditLogger.log({ action: 'vowifi_stop', user, success: true });
+      await nsenter('systemctl', ['disable', '--now', 'vowifi-vectorcore-epdg']).catch(() => {});
+      await nsenter('systemctl', ['disable', '--now', 'vowifi-vectorcore-aaa']).catch(() => {});
+      await auditLogger.log({ action: 'vowifi_stop', user, details: 'Stopped VectorCore VoWiFi services', success: true });
       res.json({ ok: true });
     } catch (err) {
       await auditLogger.log({ action: 'vowifi_stop', user, details: String(err), success: false });
@@ -920,11 +969,10 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      await nsenter('systemctl', ['stop', 'vowifi-charon']).catch(() => {});
-      await nsenter('systemctl', ['restart', 'vowifi-osmo-epdg']);
-      await new Promise(r => setTimeout(r, 2000));
-      await nsenter('systemctl', ['start', 'vowifi-charon']);
-      await auditLogger.log({ action: 'vowifi_restart', user, success: true });
+      await nsenter('systemctl', ['restart', 'vowifi-vectorcore-aaa']);
+      await new Promise(r => setTimeout(r, 1500));
+      await nsenter('systemctl', ['restart', 'vowifi-vectorcore-epdg'], 35000);
+      await auditLogger.log({ action: 'vowifi_restart', user, details: 'Restarted VectorCore VoWiFi services', success: true });
       res.json({ ok: true });
     } catch (err) {
       await auditLogger.log({ action: 'vowifi_restart', user, details: String(err), success: false });
@@ -932,57 +980,54 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
     }
   });
 
-  // POST /api/vowifi/reload-gtp-module — standalone mitigation for the known
-  // gtp_u_kmod EEXIST flakiness; also runs automatically as an ExecStartPre.
-  router.post('/reload-gtp-module', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
-    try {
-      await reloadGtpModule();
-      await auditLogger.log({ action: 'vowifi_reload_gtp_module', user, success: true });
-      res.json({ ok: true });
-    } catch (err) {
-      await auditLogger.log({ action: 'vowifi_reload_gtp_module', user, details: String(err), success: false });
-      res.status(500).json({ ok: false, error: String(err) });
-    }
-  });
-
-  // ── Config file manifest editor (generic, same pattern as IMS) ─────────────
   router.get('/configs', (_req: Request, res: Response) => {
-    res.json({ success: true, files: getVowifiConfigManifest() });
+    res.json({ success: true, configs: getVowifiConfigManifest() });
   });
 
   router.get('/configs/content', (req: Request, res: Response) => {
     const p = String(req.query.path ?? '');
-    if (!isAllowedConfigPath(p)) return res.status(400).json({ success: false, error: 'Path not in manifest' });
+    if (!isAllowedConfigPath(p)) { res.status(400).json({ success: false, error: 'Path not in manifest' }); return; }
     try {
-      const content = fs.existsSync(`/proc/1/root${p}`) ? fs.readFileSync(`/proc/1/root${p}`, 'utf-8') : '';
-      res.json({ success: true, content });
+      res.json({ success: true, content: fs.readFileSync(`/proc/1/root${p}`, 'utf-8') });
     } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
+      res.status(404).json({ success: false, error: String(err) });
     }
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    const { path: p, content } = req.body as { path: string; content: string };
-    if (!isAllowedConfigPath(p)) return res.status(400).json({ success: false, error: 'Path not in manifest' });
+    const { path: p, content } = req.body ?? {};
+    if (!isAllowedConfigPath(p) || typeof content !== 'string') { res.status(400).json({ success: false, error: 'Invalid request' }); return; }
     try {
-      fs.mkdirSync(path.dirname(`/proc/1/root${p}`), { recursive: true });
       fs.writeFileSync(`/proc/1/root${p}`, content, 'utf-8');
       const entry = getVowifiConfigManifest().find(e => e.path === p);
       for (const svc of entry?.restartServices ?? []) {
         await nsenter('systemctl', ['restart', svc]).catch(() => {});
       }
-      await auditLogger.log({ action: 'vowifi_config_save', user, target: p, success: true });
-      res.json({ success: true });
+      await auditLogger.log({ action: 'vowifi_config_save', user, details: `path=${p}`, success: true });
+      res.json({ ok: true });
     } catch (err) {
-      await auditLogger.log({ action: 'vowifi_config_save', user, target: p, details: String(err), success: false });
-      res.status(500).json({ success: false, error: String(err) });
+      await auditLogger.log({ action: 'vowifi_config_save', user, details: String(err), success: false });
+      res.status(500).json({ ok: false, error: String(err) });
     }
   });
 
-  // POST /api/vowifi/uninstall — synchronous streamed teardown (fast shell ops,
-  // unlike the multi-minute build — no detached-process/log-polling needed).
+  // GET /api/vowifi/admin/* — read-only proxy into VectorCore ePDG's own admin API
+  // (:8080 has zero auth of its own — bound to 127.0.0.1 only, this project's own
+  // session auth is the sole gate). Copied directly from mms-controller.ts's
+  // existing getAdmin proxy pattern for VectorCore MMSC's equally-unauthenticated
+  // admin API — same vendor, same shape, no reinvention needed.
+  router.get('/admin/*', requireAdmin, async (req: Request, res: Response) => {
+    const subPath = (req.params as any)[0] as string;
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    try {
+      const { stdout } = await nsenter('curl', ['-fsS', `http://127.0.0.1:${ADMIN_API_PORT}/${subPath}${qs}`], 10000);
+      res.type('application/json').send(stdout);
+    } catch (err) {
+      res.status(502).json({ success: false, error: String(err) });
+    }
+  });
+
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -995,27 +1040,17 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
     try {
       const state = loadState();
 
-      write('=== Stopping and disabling VoWiFi services ===');
-      await nsenter('systemctl', ['disable', '--now', 'vowifi-charon']).catch(() => {});
-      await nsenter('systemctl', ['disable', '--now', 'vowifi-osmo-epdg']).catch(() => {});
-      for (const unit of ['vowifi-charon.service', 'vowifi-osmo-epdg.service']) {
+      write('=== Stopping and disabling VoWiFi (VectorCore) services ===');
+      await nsenter('systemctl', ['disable', '--now', 'vowifi-vectorcore-epdg']).catch(() => {});
+      await nsenter('systemctl', ['disable', '--now', 'vowifi-vectorcore-aaa']).catch(() => {});
+      for (const unit of ['vowifi-vectorcore-epdg.service', 'vowifi-vectorcore-aaa.service']) {
         const p = `${HOST_SYSTEMD_DIR}/${unit}`;
         if (fs.existsSync(p)) fs.unlinkSync(p);
       }
       await nsenter('systemctl', ['daemon-reload']).catch(() => {});
       write('Services stopped, disabled, and unit files removed.');
 
-      write('\n=== Unloading gtp kernel module ===');
-      // Left loaded (and gtp0 with it) after every previous uninstall — osmo-epdg is the
-      // only thing that ever uses it in this deployment, and it's now stopped, so it's
-      // safe to unload. Ignore failure (module may legitimately still be "in use" if
-      // something else on the host happens to depend on it — non-fatal either way).
-      const gtpUnloadResult = await nsenter('bash', ['-c', 'rmmod gtp 2>&1; echo "EXIT:$?"']).catch(() => ({ stdout: '', stderr: '' }));
-      write(gtpUnloadResult.stdout.includes('EXIT:0')
-        ? 'gtp kernel module unloaded.'
-        : `gtp module unload result: ${gtpUnloadResult.stdout.trim() || '(not loaded, or already removed)'}`);
-
-      write('\n=== Removing smf.conf S6b peer entry ===');
+      write('\n=== Removing smf.conf S6b/SWm peer entry ===');
       if (state.aaaFqdn && fs.existsSync(HOST_SMF_CONF)) {
         if (fs.existsSync(HOST_SMF_CONF_BAK)) {
           fs.copyFileSync(HOST_SMF_CONF_BAK, HOST_SMF_CONF);
@@ -1033,7 +1068,28 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         write(`SMF restarted — is-active: ${smfActive}`);
         if (!smfActive) write('WARNING: open5gs-smfd is not active — check smf.conf manually before assuming Gx is healthy.');
       } else {
-        write('No S6b peer entry was ever added to smf.conf — nothing to remove.');
+        write('No S6b/SWm peer entry was ever added to smf.conf — nothing to remove.');
+      }
+
+      write('\n=== Removing hss.conf Swx peer entry ===');
+      if (state.aaaFqdn && fs.existsSync(HOST_HSS_CONF)) {
+        if (fs.existsSync(HOST_HSS_CONF_BAK)) {
+          fs.copyFileSync(HOST_HSS_CONF_BAK, HOST_HSS_CONF);
+          fs.unlinkSync(HOST_HSS_CONF_BAK);
+          write('Restored hss.conf from pre-configure backup.');
+        } else {
+          const raw = fs.readFileSync(HOST_HSS_CONF, 'utf-8');
+          fs.writeFileSync(HOST_HSS_CONF, removeHssAaaPeer(raw, state.aaaFqdn), 'utf-8');
+          write('Removed the ConnectPeer line directly (no backup was present).');
+        }
+        await nsenter('systemctl', ['restart', 'open5gs-hssd']).catch(() => {});
+        await new Promise(r => setTimeout(r, 3000));
+        const hssActive = await nsenter('systemctl', ['is-active', 'open5gs-hssd'])
+          .then(r => r.stdout.trim() === 'active').catch(() => false);
+        write(`HSS restarted — is-active: ${hssActive}`);
+        if (!hssActive) write('WARNING: open5gs-hssd is not active — check hss.conf manually before assuming S6a is healthy.');
+      } else {
+        write('No Swx peer entry was ever added to hss.conf — nothing to remove.');
       }
 
       if (state.epdgInterfaceMode === 'existing') {
@@ -1043,6 +1099,22 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         await deleteDummyInterface(DUMMY_IF_NAME).catch(() => {});
         write('dummy-epdg removed.');
       }
+
+      // One-time legacy cleanup: VectorCore's own Configure/systemd-unit generation
+      // never creates this fwmark/policy-routing/nftables scheme (removed 2026-08-02 —
+      // it was dead weight carried over from the archived osmo-epdg backend, and on
+      // this host it was actively misrouting real decrypted uplink packets into a
+      // stale `default dev gtp0` route instead of vc-xfrm0's own TC-BPF program). Kept
+      // here only to clean up any host that configured VoWiFi before that fix.
+      write('\n=== Removing legacy fwmark policy routing + nftables marking table (if present) ===');
+      await nsenter('bash', ['-c',
+        'while ip rule del priority 230 2>/dev/null; do :; done; ' +
+        'while ip rule del fwmark 100 table vowifi_epdg priority 230 2>/dev/null; do :; done; ' +
+        'while ip rule del priority 231 2>/dev/null; do :; done; ' +
+        'while ip rule del fwmark 100 priority 231 blackhole 2>/dev/null; do :; done; ' +
+        'ip route flush table vowifi_epdg 2>/dev/null; ' +
+        'nft delete table inet vowifi_epdg 2>/dev/null; true']).catch(() => {});
+      write('Removed any legacy fwmark ip rules, flushed the routing table, deleted the nftables table.');
 
       write('\n=== Removing ePDG DNS zone (leaving BIND9 itself installed — shared infrastructure) ===');
       try {
@@ -1055,67 +1127,34 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
           const zoneRe = new RegExp(`zone\\s+"${pubDomain.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
           fs.writeFileSync(`${HOST_BIND_DIR}/named.conf.local`, raw.replace(zoneRe, ''), 'utf-8');
         }
+        // "aaa" record in the shared internal epc zone — remove just this one line,
+        // never the whole file (that zone belongs to the DNS Migration Wizard).
+        const smfIdentityForRemoval = readFreeDiameterIdentity(HOST_SMF_CONF, 'smf.localdomain');
+        const epcZonePath = `${HOST_BIND_ZONES_DIR}/${realmFromIdentity(smfIdentityForRemoval)}.zone`;
+        if (fs.existsSync(epcZonePath)) {
+          const epcZoneRaw = fs.readFileSync(epcZonePath, 'utf-8');
+          fs.writeFileSync(epcZonePath, removeZoneRecordLine(epcZoneRaw, 'aaa'), 'utf-8');
+        }
         await nsenter('systemctl', ['restart', 'bind9']).catch(() => {});
-        write(`Removed zone ${pubDomain}.`);
+        write(`Removed zone ${pubDomain} and the "aaa" record from the internal epc zone.`);
       } catch (err) {
         write(`Could not clean up DNS zone (non-fatal): ${String(err)}`);
       }
 
-      write('\n=== Removing strongSwan / swanctl install ===');
-      const strongswanSrc = `${BUILD_WORKDIR}/strongswan-epdg`;
-      const hasSrcTree = await nsenter('bash', ['-c', `[ -d ${strongswanSrc} ] && echo yes || echo no`])
-        .then(r => r.stdout.trim() === 'yes').catch(() => false);
-      if (hasSrcTree) {
-        await nsenter('bash', ['-c', `cd ${strongswanSrc} && make uninstall 2>&1`], 60000).catch(() => {});
-        write('Ran `make uninstall` from the strongswan-epdg source tree.');
-      }
-      await nsenter('bash', ['-c',
-        'rm -rf /usr/local/sbin/swanctl /usr/local/sbin/ipsec /usr/local/libexec/ipsec ' +
-        '/usr/local/lib/ipsec /etc/strongswan.d /etc/swanctl'], 30000).catch(() => {});
-      write('Removed installed strongSwan binaries/plugins and /etc/strongswan.d, /etc/swanctl.');
-
-      write('\n=== Removing osmo-epdg ===');
-      await nsenter('bash', ['-c',
-        `rm -rf ${RUNTIME_BIN_DIR}/osmo-epdg ${OSMO_EPDG_CONFIG_DIR} ${OSMO_EPDG_RUNTIME_DIR}`], 15000).catch(() => {});
-      write('Removed osmo-epdg binary, config, and runtime directory.');
-
-      write('\n=== Removing from-source libosmocore (leaving apt runtime .so.19 untouched) ===');
-      await nsenter('bash', ['-c',
-        'rm -f /usr/lib/x86_64-linux-gnu/libosmo*.so* /usr/lib/libosmo*.so* ' +
-        '/usr/lib/x86_64-linux-gnu/pkgconfig/libosmo*.pc /usr/lib/pkgconfig/libosmo*.pc; ' +
-        'rm -rf /usr/include/osmocom; ldconfig'], 20000).catch(() => {});
-
-      const [hlrRes, msRes, stpRes] = await Promise.allSettled([
-        nsenter('systemctl', ['is-active', 'osmo-hlr']),
-        nsenter('systemctl', ['is-active', 'osmo-msc']),
-        nsenter('systemctl', ['is-active', 'osmo-stp']),
-      ]);
-      const svcActive = (r: PromiseSettledResult<any>) => r.status === 'fulfilled' && r.value.stdout.trim() === 'active';
-      write(`Post-removal check — osmo-hlr: ${svcActive(hlrRes)}, osmo-msc: ${svcActive(msRes)}, osmo-stp: ${svcActive(stpRes)} (SMS-over-SGs module must remain unaffected)`);
-      if (!svcActive(hlrRes) || !svcActive(msRes) || !svcActive(stpRes)) {
-        write('WARNING: one or more SMS-over-SGs services are not active after libosmocore removal — investigate before assuming this is unrelated.');
-      }
-
-      write('\n=== Removing build workdir ===');
-      await nsenter('bash', ['-c', `rm -rf ${BUILD_WORKDIR}`], 30000).catch(() => {});
-      write(`Removed ${BUILD_WORKDIR}.`);
+      write('\n=== Removing VectorCore binaries, configs, and build tree ===');
+      await nsenter('bash', ['-c', `rm -rf ${RUNTIME_BIN_DIR} ${VECTORCORE_EPDG_CONFIG_DIR} ${VECTORCORE_AAA_CONFIG_DIR} /var/log/vectorcore ${BUILD_WORKDIR}`], 30000).catch(() => {});
+      write('Removed /opt/vectorcore, /etc/vectorcore/{epdg,aaa}, /var/log/vectorcore, and the build tree.');
 
       if (fs.existsSync(HOST_STATE_FILE)) fs.unlinkSync(HOST_STATE_FILE);
       if (fs.existsSync(LOG_FILE)) fs.unlinkSync(LOG_FILE);
-      saveState(defaultState());
-
-      await auditLogger.log({ action: 'vowifi_uninstall', user, success: true });
-      write('\n✅ VoWiFi fully uninstalled — state reset to fresh.');
-      res.end();
+      write('\n=== Uninstall complete ===');
+      await auditLogger.log({ action: 'vowifi_uninstall', user, details: 'Uninstalled VectorCore VoWiFi backend', success: true });
     } catch (err) {
-      write(`\n❌ Uninstall error: ${String(err)}`);
+      write(`\nERROR: ${String(err)}`);
       await auditLogger.log({ action: 'vowifi_uninstall', user, details: String(err), success: false });
-      res.end();
     }
+    res.end();
   });
-
-  reconcileVowifiInstallState(logger).catch(err =>
-    logger.error({ err: String(err) }, 'VoWiFi install-state reconciliation failed'));
 
   return router;
 }

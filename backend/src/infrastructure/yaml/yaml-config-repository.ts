@@ -26,7 +26,13 @@ export const EXTRA_BACKUP_FILES = [
   '/etc/osmocom/osmo-hlr.cfg',
   '/etc/osmocom/osmo-msc.cfg',
   '/etc/osmocom/osmo-stp.cfg',
+  // osmo-epdg.config: the archived osmo-epdg-based VoWiFi backend (see
+  // archive/vowifi-osmo-epdg/) — left in this list for any host that hasn't
+  // reinstalled onto the VectorCore backend yet; harmless no-op (skipped with a
+  // warning) once it no longer exists.
   '/etc/osmocom/osmo-epdg.config',
+  '/etc/vectorcore/epdg/epdg.yaml',
+  '/etc/vectorcore/aaa/aaa.config',
 ];
 
 // ── mme.yaml sgsap map: round-trip helpers ────────────────────────────────────

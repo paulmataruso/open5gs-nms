@@ -353,7 +353,7 @@ export class PcapUseCase {
           hostPorts: [
             { proto: 'udp', addr: vw.epdgIp, port: 500, role: 'IKEv2' },
             { proto: 'udp', addr: vw.epdgIp, port: 4500, role: 'IKEv2 NAT-T' },
-            { proto: 'tcp', addr: vw.s6bLocalIp ?? '127.0.0.10', port: 3868, role: 'S6b Diameter' },
+            { proto: 'tcp', addr: vw.aaaListenIp ?? '127.0.0.11', port: 3868, role: 'SWm/S6b/SWx Diameter (VectorCore AAA)' },
           ],
         });
       }

@@ -3,18 +3,16 @@ import axios from 'axios';
 const api = axios.create({ baseURL: '/api/vowifi', withCredentials: true });
 
 export type VowifiInstallStatus =
-  | 'idle' | 'preparing' | 'installing_apt_deps' | 'installing_vectorcore_epdg'
-  | 'installing_vectorcore_aaa' | 'verifying' | 'complete' | 'failed';
+  | 'idle' | 'preparing' | 'installing_libosmocore' | 'installing_osmo_epdg'
+  | 'installing_strongswan' | 'verifying' | 'complete' | 'failed';
 
 export interface VowifiStatus {
   success: boolean;
   installedOnDisk: boolean;
-  builtWithVectorcoreEpdgCommit: string | null;
-  currentVectorcoreEpdgCommit: string;
-  builtWithVectorcoreAaaCommit: string | null;
-  currentVectorcoreAaaCommit: string;
-  builtWithVectorcorePatchRev: number | null;
-  currentVectorcorePatchRev: number;
+  builtWithOsmoEpdgTag: string | null;
+  currentOsmoEpdgTag: string;
+  builtWithOsmoEpdgPatchRev: number | null;
+  currentOsmoEpdgPatchRev: number;
   buildStale: boolean;
   installStatus: VowifiInstallStatus;
   installStartedAt: string | null;
@@ -24,20 +22,23 @@ export interface VowifiStatus {
   configuredAt: string | null;
   epdgIp: string | null;
   epdgInterfaceMode: 'dummy' | 'existing' | null;
-  aaaListenIp: string | null;
-  aaaFqdn: string | null;
-  smfConnectPeerPresent: boolean;
-  dummyInterfaceUp: boolean;
-  activeClients: number;
+  s6bLocalIp: string | null;
+  gsupPort: number | null;
   services: {
-    'vowifi-vectorcore-epdg': boolean;
-    'vowifi-vectorcore-aaa': boolean;
+    'vowifi-osmo-epdg': boolean;
+    'vowifi-charon': boolean;
   };
+  running: boolean;
+  gtpModuleLoaded: boolean;
+  dummyInterfaceUp: boolean;
+  activeIkeSas: number;
+  smfConnectPeerPresent: boolean;
 }
 
 export interface VowifiConfigureInput {
   epdgIp?: string;
-  aaaListenIp?: string;
+  s6bLocalIp?: string;
+  gsupPort?: number;
   // 'dummy' (default): create+own a new dummy-epdg interface with epdgIp assigned.
   // 'existing': skip interface creation — epdgIp must already be bound to a loopback
   // alias or a real LAN interface by the operator (any L3-reachable IP works).
@@ -53,28 +54,14 @@ export interface VowifiConfigFile {
   exists: boolean;
 }
 
-// Admin API shapes, from VectorCore ePDG's own /docs/API.md — kept minimal/loose
-// (only the fields the status panel actually renders) since this is a third-party
-// upstream schema, not something this project owns.
-export interface VectorcoreClient {
-  imsi: string;
-  ue_ip: string;
-  outer_ip: string;
-  apn: string;
-  state: string;
-}
-
-export interface VectorcoreStats {
-  clients: number;
-  ike_sas: number;
-  child_sas: number;
-  bearers: number;
-}
-
 export const vowifiApi = {
   getStatus: async (): Promise<VowifiStatus> => { const { data } = await api.get('/status'); return data; },
 
-  install: () => fetch('/api/vowifi/install', { method: 'POST', credentials: 'include' }),
+  install: (gsupPort?: number) => fetch('/api/vowifi/install', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(gsupPort ? { gsupPort } : {}),
+  }),
   getInstallLog: async (): Promise<string> => { const { data } = await api.get('/install/log', { responseType: 'text' }); return data; },
   streamInstallLog: () => fetch('/api/vowifi/install/log/stream', { credentials: 'include' }),
 
@@ -83,21 +70,17 @@ export const vowifiApi = {
   start:   async () => { const { data } = await api.post('/start');   return data; },
   stop:    async () => { const { data } = await api.post('/stop');    return data; },
   restart: async () => { const { data } = await api.post('/restart'); return data; },
+  reloadGtpModule: async () => { const { data } = await api.post('/reload-gtp-module'); return data; },
 
-  getConfigs:        async (): Promise<{ success: boolean; configs: VowifiConfigFile[] }> => { const { data } = await api.get('/configs'); return data; },
-  getConfigContent:  async (filePath: string): Promise<{ success: boolean; content: string }> => {
+  getConfigs:        async (): Promise<{ files: VowifiConfigFile[] }> => { const { data } = await api.get('/configs'); return data; },
+  getConfigContent:  async (filePath: string): Promise<{ content: string; exists: boolean }> => {
     const { data } = await api.get('/configs/content', { params: { path: filePath } });
     return data;
   },
-  saveConfigContent: async (filePath: string, content: string): Promise<{ ok: boolean }> => {
+  saveConfigContent: async (filePath: string, content: string): Promise<{ success: boolean }> => {
     const { data } = await api.put('/configs/content', { path: filePath, content });
     return data;
   },
-
-  // Thin proxy into VectorCore ePDG's own read-only admin API (see vowifi-controller.ts's
-  // /admin/* route) — same pattern as the MMS admin-proxy panel.
-  getClients: async (): Promise<VectorcoreClient[]> => { const { data } = await api.get('/admin/api/v1/clients'); return data ?? []; },
-  getStats:   async (): Promise<VectorcoreStats> => { const { data } = await api.get('/admin/api/v1/stats'); return data; },
 
   uninstall: () => fetch('/api/vowifi/uninstall', { method: 'POST', credentials: 'include' }),
 };

@@ -58,6 +58,36 @@ export interface SelectiveRestoreResponse {
   errors: Record<string, string>;
 }
 
+export type BackupCategory =
+  | 'subscribers'
+  | 'core-configs'
+  | 'suci-keys'
+  | 'optional-modules'
+  | 'l3-network'
+  | 'dns';
+
+export interface BackupCategoryInfo {
+  id: BackupCategory;
+  label: string;
+  description: string;
+  present: boolean;
+  itemCount: number;
+}
+
+export interface FullBackupUploadResponse {
+  success: boolean;
+  uploadId?: string;
+  categories?: BackupCategoryInfo[];
+  createdAt?: string;
+  error?: string;
+}
+
+export interface FullBackupRestoreResponse {
+  success: boolean;
+  restored?: BackupCategory[];
+  error?: string;
+}
+
 export const backupApi = {
   createMongoBackup: async (): Promise<CreateBackupResponse> => {
     const { data } = await api.post<CreateBackupResponse>('/backup/mongo');

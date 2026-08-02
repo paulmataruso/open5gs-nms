@@ -360,12 +360,11 @@ export class PlmnMigrationUseCase {
       // previousPubDomain cleans up the stale mnc/mcc.pub BIND zone.
       const vowifiState = loadVowifiState();
       if (vowifiState.installStatus === 'complete' && vowifiState.configured &&
-          vowifiState.epdgIp && vowifiState.epdgInterfaceMode && vowifiState.s6bLocalIp && vowifiState.gsupPort) {
+          vowifiState.epdgIp && vowifiState.epdgInterfaceMode && vowifiState.aaaListenIp) {
         try {
           const result = await configureVowifi({
             epdgIp: vowifiState.epdgIp,
-            s6bLocalIp: vowifiState.s6bLocalIp,
-            gsupPort: vowifiState.gsupPort,
+            aaaListenIp: vowifiState.aaaListenIp,
             interfaceMode: vowifiState.epdgInterfaceMode,
             // Derived from the PERSISTED old mcc/mnc (migrationState), not
             // plan.oldPubDomain — computeMigrationPlan() always re-reads
@@ -377,17 +376,15 @@ export class PlmnMigrationUseCase {
             previousPubDomain: (oldMcc !== plan.newMcc || oldMnc !== plan.newMnc)
               ? derivePubEpdgDomain(oldMcc, oldMnc) : undefined,
           });
-          // configureVowifi() writes fresh osmo-epdg.config/swanctl.conf but
-          // never restarts vowifi-osmo-epdg/vowifi-charon themselves (same gap
-          // as SMS above, and the same bug class as the manual /start route's
-          // now-fixed enable-vs-restart issue) — without this, the running
-          // osmo-epdg process keeps presenting the OLD PLMN's S6b identity
-          // (Origin-Host) to SMF, which SMF's freeDiameter peer rejects with
-          // ELECTION_LOST, and the tunnel never gets past GTP-C session setup.
-          for (const svc of ['vowifi-osmo-epdg', 'vowifi-charon']) {
+          // configureVowifi() writes fresh epdg.yaml/aaa.config but never restarts
+          // vowifi-vectorcore-epdg/vowifi-vectorcore-aaa themselves (same gap as SMS
+          // above, and the same bug class the manual /start route already fixed for
+          // itself) — without this, the running ePDG/AAA processes keep presenting
+          // the OLD PLMN's identity to SMF/HSS, which their Diameter peers reject.
+          for (const svc of ['vowifi-vectorcore-aaa', 'vowifi-vectorcore-epdg']) {
             await this.hostExecutor.restartService(svc).catch(() => {});
           }
-          details.push(`VoWiFi reconfigured: aaaFqdn=${result.aaaFqdn} dnsConfigured=${result.dnsConfigured} (vowifi-osmo-epdg/charon restarted)`);
+          details.push(`VoWiFi reconfigured: aaaFqdn=${result.aaaFqdn} dnsConfigured=${result.dnsConfigured} (vowifi-vectorcore-epdg/aaa restarted)`);
         } catch (err) {
           const msg = err instanceof VowifiConfigureError ? err.message : String(err);
           throw new Error(`VoWiFi reconfigure failed: ${msg}`);
@@ -535,10 +532,10 @@ export class PlmnMigrationUseCase {
       if (vowifiRestored) {
         const vowifiState = loadVowifiState();
         if (vowifiState.installStatus === 'complete' && vowifiState.configured &&
-            vowifiState.epdgIp && vowifiState.epdgInterfaceMode && vowifiState.s6bLocalIp && vowifiState.gsupPort) {
+            vowifiState.epdgIp && vowifiState.epdgInterfaceMode && vowifiState.aaaListenIp) {
           const result = await configureVowifi({
-            epdgIp: vowifiState.epdgIp, s6bLocalIp: vowifiState.s6bLocalIp,
-            gsupPort: vowifiState.gsupPort, interfaceMode: vowifiState.epdgInterfaceMode,
+            epdgIp: vowifiState.epdgIp, aaaListenIp: vowifiState.aaaListenIp,
+            interfaceMode: vowifiState.epdgInterfaceMode,
           });
           details.push(`VoWiFi reconfigured from rolled-back state: aaaFqdn=${result.aaaFqdn}`);
         }
