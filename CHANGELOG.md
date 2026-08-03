@@ -4,6 +4,65 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.44] - 2026-08-03
+
+### Fixed — VoWiFi: uplink data plane never worked (root cause found and fixed)
+
+VectorCore ePDG's `detectNAT()` compared the initiator's
+`NAT_DETECTION_SOURCE_IP` hash against the just-generated responder SPI
+instead of `0` — RFC 7296 §2.23 requires the initiator to compute that hash
+with SPI_r = 0, since it doesn't know the responder's SPI yet at the point
+the IKE_SA_INIT request is sent. Comparing against the real random SPI
+instead meant the hash could never match, so NAT-T was force-enabled on
+100% of sessions regardless of the real network path. Every kernel XFRM SA
+was then installed expecting UDP-encapsulated ESP, while a real, non-NATed
+UE correctly sent plain ESP (IP proto 50) — a guaranteed mismatch that
+silently dropped all inbound traffic (`XfrmInStateMismatch`) before it ever
+reached the TC-BPF forwarding program. Confirmed live: after the fix, real
+phones report `nat:false`, and the eBPF uplink counters show real,
+successful traffic for the first time. Two earlier, real bugs in the same
+vendored source (a wrong local IP in the kernel XFRM SA, and a hardcoded
+NAT-T port) were also found and fixed this cycle — both necessary but not
+sufficient on their own. Downlink and real SIP registration over VoWiFi are
+still not yet confirmed working.
+
+### Fixed — FRR L3 Wizard: OSPF option was completely non-functional
+
+The config generator emitted `router ospf <id>` — a multi-instance-OSPF
+syntax FRR has since removed entirely (`ospf multi-instance` isn't even a
+recognized command on FRR 10.6.1). Every OSPF apply hit
+`% OSPF is not running in instance mode` and FRR silently dropped the whole
+stanza, including the `network ... area ...` statement — so the neighbor
+could never come up regardless of how correctly the peer router was
+configured. Fixed to the process-ID-less `router ospf` form FRR actually
+accepts; removed the now-meaningless "Process ID" field from the OSPF
+wizard form. Confirmed live: neighbor now reaches Full state within
+seconds. EIGRP and BGP were unaffected — this was OSPF-only.
+
+### Added — IMS Live Status: split IPsec SAs into IMS/SIP vs VoWiFi tables
+
+The kernel's `ip xfrm state` table is shared by both P-CSCF's SIP-signaling
+IPsec (Gm) and VoWiFi's ePDG↔UE tunnel IPsec (SWu), with no notion of which
+subsystem owns which SA. The Live Status page now classifies each SA by
+matching its src/dst against each subsystem's own known bind address and
+renders them as separate grouped tables.
+
+### Fixed — VoWiFi page: stale Live Sessions rows
+
+`clients.map(c => <tr key={c.imsi}>)` used a non-unique key — IMSI repeats
+across zombie/active session rows for the same subscriber — which could
+leave stale rows on screen after the underlying session list shrank. Now
+keyed by array index.
+
+### Added — Third-party credit for VectorCore
+
+`THIRD_PARTY_NOTICES.md` and the README's Acknowledgments section now
+credit Stacy Vinson (svinson1121) and the VectorCore Mobile project for
+VectorCore ePDG, VectorCore AAA, and VectorCore MMSC, which this NMS builds
+from source to power the VoWiFi and MMS backends.
+
+---
+
 ## [v2.0-beta_0.43] - 2026-08-02
 
 ### Fixed — IMS Install: PyHSS Python dependency install was silently broken
