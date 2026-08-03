@@ -1014,42 +1014,57 @@ function LiveStatusTab() {
             No IPsec SAs right now.
           </p>
         ) : (
-          <div className="border border-nms-border rounded-lg overflow-hidden overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-nms-surface-2 text-nms-text-dim">
-                <tr>
-                  <th className="text-left px-3 py-2 font-medium">Direction</th>
-                  <th className="text-left px-3 py-2 font-medium">SPI</th>
-                  <th className="text-left px-3 py-2 font-medium">Auth</th>
-                  <th className="text-left px-3 py-2 font-medium">Enc</th>
-                  <th className="text-right px-3 py-2 font-medium">Traffic</th>
-                  <th className="text-left px-3 py-2 font-medium">Last used</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sas.map((sa, i) => (
-                  <tr key={i} className="border-t border-nms-border">
-                    <td className="px-3 py-2 font-mono text-nms-text-dim">
-                      {sa.src} <span className="text-nms-text-dim">→</span> {sa.dst}
-                    </td>
-                    <td className="px-3 py-2 font-mono text-nms-text-dim">{sa.spi}</td>
-                    <td className="px-3 py-2 text-nms-text-dim">{sa.authAlg || '—'}</td>
-                    <td className="px-3 py-2 text-nms-text-dim">
-                      {sa.encAlg}
-                      {sa.encAlg.includes('cipher_null') && (
-                        <span className="ml-1.5 text-[10px] text-nms-text-dim/70" title="Integrity-only IPsec — no payload encryption, by design of the ipsec-3gpp profile used here">
-                          (integrity-only)
-                        </span>
-                      )}
-                    </td>
-                    <td className={clsx('px-3 py-2 text-right font-mono', sa.packets === 0 ? 'text-amber-400' : 'text-nms-text')}>
-                      {sa.bytes.toLocaleString()}B / {sa.packets.toLocaleString()}pkt
-                    </td>
-                    <td className="px-3 py-2 text-nms-text-dim">{sa.lastUsed ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-4">
+            {([
+              ['ims', 'IMS / SIP (Gm, P-CSCF)'],
+              ['vowifi', 'VoWiFi (SWu, ePDG)'],
+              ['other', 'Other / unclassified'],
+            ] as const).map(([groupKey, label]) => {
+              const rows = sas.filter(sa => sa.group === groupKey);
+              if (rows.length === 0) return null;
+              return (
+                <div key={groupKey}>
+                  <p className="text-xs font-medium text-nms-text-dim mb-1.5">{label} ({rows.length})</p>
+                  <div className="border border-nms-border rounded-lg overflow-hidden overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-nms-surface-2 text-nms-text-dim">
+                        <tr>
+                          <th className="text-left px-3 py-2 font-medium">Direction</th>
+                          <th className="text-left px-3 py-2 font-medium">SPI</th>
+                          <th className="text-left px-3 py-2 font-medium">Auth</th>
+                          <th className="text-left px-3 py-2 font-medium">Enc</th>
+                          <th className="text-right px-3 py-2 font-medium">Traffic</th>
+                          <th className="text-left px-3 py-2 font-medium">Last used</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((sa, i) => (
+                          <tr key={i} className="border-t border-nms-border">
+                            <td className="px-3 py-2 font-mono text-nms-text-dim">
+                              {sa.src} <span className="text-nms-text-dim">→</span> {sa.dst}
+                            </td>
+                            <td className="px-3 py-2 font-mono text-nms-text-dim">{sa.spi}</td>
+                            <td className="px-3 py-2 text-nms-text-dim">{sa.authAlg || '—'}</td>
+                            <td className="px-3 py-2 text-nms-text-dim">
+                              {sa.encAlg}
+                              {sa.encAlg.includes('cipher_null') && (
+                                <span className="ml-1.5 text-[10px] text-nms-text-dim/70" title="Integrity-only IPsec — no payload encryption, by design of the ipsec-3gpp profile used here">
+                                  (integrity-only)
+                                </span>
+                              )}
+                            </td>
+                            <td className={clsx('px-3 py-2 text-right font-mono', sa.packets === 0 ? 'text-amber-400' : 'text-nms-text')}>
+                              {sa.bytes.toLocaleString()}B / {sa.packets.toLocaleString()}pkt
+                            </td>
+                            <td className="px-3 py-2 text-nms-text-dim">{sa.lastUsed ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

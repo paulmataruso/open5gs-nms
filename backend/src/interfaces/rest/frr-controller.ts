@@ -224,7 +224,20 @@ function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[]
   const allPassive = [...(cfg.passiveInterfaces ?? []), ...ueDev];
   const lines = [
     ...frrHeader(version, hostname, logLevel),
-    `router ospf ${cfg.processId}`,
+    // NMS fix (2026-08-03): this used to be `router ospf ${cfg.processId}`.
+    // FRR removed multi-instance OSPF support entirely — `ospf multi-instance`
+    // isn't even a recognized command anymore on FRR 10.6.1 — so `router ospf
+    // <id>` unconditionally fails with "OSPF is not running in instance mode"
+    // and FRR's config loader silently drops the whole stanza, including the
+    // `network ... area ...` line nested inside it. The per-interface
+    // `ip ospf area` command below isn't gated by process ID and still
+    // applies, but with no live `router ospf` process behind it, the
+    // interface never actually sources Hellos — so the neighbor never came
+    // up on every wizard-driven OSPF apply. Confirmed live: dropping the
+    // process ID and using the plain `router ospf` form brings the neighbor
+    // to Full within seconds. Only the ID-less form is valid on this and any
+    // other modern (post-multi-instance-removal) FRR version.
+    'router ospf',
     ...(cfg.routerId ? [`  ospf router-id ${cfg.routerId}`] : []),
     ...allPassive.map((i: string) => `  passive-interface ${i}`),
   ];
@@ -253,7 +266,7 @@ function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[]
   const outFilters = filters.filter(f => f.direction === 'out');
   if (inFilters.length > 0 || outFilters.length > 0) {
     // Re-open the router ospf block to add distribute-list
-    lines.push(`router ospf ${cfg.processId}`);
+    lines.push('router ospf');
     if (inFilters.length > 0)  lines.push(`  distribute-list route-map NMS_IN in`);
     if (outFilters.length > 0) lines.push(`  distribute-list route-map NMS_OUT out`);
     lines.push('exit', '!');
@@ -1237,11 +1250,15 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         parsed.transitCidr = net?.[1] ?? '';
       }
 
-      // OSPF
-      const ospfPid = raw.match(/^router ospf (\d+)/m);
-      if (ospfPid) {
+      // OSPF — matches both the plain `router ospf` form (the only valid one;
+      // see generateOspfConfig()) and, for backward compat when parsing a
+      // pre-fix config still on disk from before this was fixed, the old
+      // `router ospf <id>` form (which FRR itself never actually accepted,
+      // but the text may still be sitting in frr.conf from a prior failed
+      // wizard run).
+      const ospfMatch = raw.match(/^router ospf\b(?: (\d+))?/m);
+      if (ospfMatch) {
         parsed.protocol = 'ospf';
-        parsed.processId = parseInt(ospfPid[1]);
         const rid = raw.match(/ospf router-id (\S+)/);
         parsed.routerId = rid?.[1] ?? '';
         const areaMatch = raw.match(/ip ospf area (\S+)/);

@@ -337,7 +337,7 @@ function PhaseCard({ title, description, phase, current, acting, canRun, onRun,
 // ─── Protocol config form ─────────────────────────────────────────────────────
 
 function ProtocolForm({ protocol, eigrpAs, setEigrpAs, eigrpPeer, setEigrpPeer,
-  ospfPid, setOspfPid, ospfArea, setOspfArea, ospfNetType, setOspfNetType, ospfMethod, setOspfMethod,
+  ospfArea, setOspfArea, ospfNetType, setOspfNetType, ospfMethod, setOspfMethod,
   bgpLocal, setBgpLocal, bgpPeer, setBgpPeer, bgpPeerIp, setBgpPeerIp, bgpHop, setBgpHop, bgpNHS, setBgpNHS }: any) {
   return (
     <div className="bg-nms-bg border border-nms-border rounded-lg p-4 space-y-3">
@@ -348,8 +348,7 @@ function ProtocolForm({ protocol, eigrpAs, setEigrpAs, eigrpPeer, setEigrpPeer,
         </div>
       )}
       {protocol === 'ospf' && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div><label className="nms-label">Process ID</label><input value={ospfPid} onChange={(e: any) => setOspfPid(e.target.value)} className="nms-input font-mono text-sm" /></div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <div><label className="nms-label">Area ID</label><input value={ospfArea} onChange={(e: any) => setOspfArea(e.target.value)} className="nms-input font-mono text-sm" /></div>
           <div><label className="nms-label">Network type</label>
             <select value={ospfNetType} onChange={(e: any) => setOspfNetType(e.target.value)} className="nms-input text-sm">
@@ -1144,7 +1143,6 @@ export function FRRPage() {
   const [eigrpAs,     setEigrpAs]     = useState('1');
   const [eigrpPeer,   setEigrpPeer]   = useState('192.168.253.1');
   const [ospfArea,    setOspfArea]    = useState('0');
-  const [ospfPid,     setOspfPid]     = useState('1');
   const [ospfNetType, setOspfNetType] = useState<'point-to-point' | 'broadcast'>('point-to-point');
   const [ospfMethod,  setOspfMethod]  = useState<'redistribute' | 'network'>('redistribute');
   const [bgpLocal,    setBgpLocal]    = useState('65001');
@@ -1157,7 +1155,6 @@ export function FRRPage() {
     if (!parsed) return;
     if (parsed.protocol) setProtocol(parsed.protocol as Protocol);
     if (parsed.as) setEigrpAs(String(parsed.as));
-    if (parsed.processId) setOspfPid(String(parsed.processId));
     if (parsed.area) setOspfArea(String(parsed.area));
     if (parsed.networkType) setOspfNetType(parsed.networkType);
     if (parsed.redistributeMethod) setOspfMethod(parsed.redistributeMethod);
@@ -1201,7 +1198,7 @@ export function FRRPage() {
 
   const buildProtocolConfig = () => {
     if (protocol === 'eigrp') return { protocol: 'eigrp', as: parseInt(eigrpAs), peerIp: eigrpPeer, mgmtInterface: mgmtIface };
-    if (protocol === 'ospf')  return { protocol: 'ospf', processId: parseInt(ospfPid), area: ospfArea, networkType: ospfNetType, passiveInterfaces: [mgmtIface].filter(Boolean), redistributeMethod: ospfMethod };
+    if (protocol === 'ospf')  return { protocol: 'ospf', area: ospfArea, networkType: ospfNetType, passiveInterfaces: [mgmtIface].filter(Boolean), redistributeMethod: ospfMethod };
     return { protocol: 'bgp', localAs: parseInt(bgpLocal), peerAs: parseInt(bgpPeer), peerIp: bgpPeerIp, ebgpMultihop: parseInt(bgpHop), nextHopSelf: bgpNHS };
   };
 
@@ -1262,7 +1259,7 @@ export function FRRPage() {
 
   const protoFormProps = {
     protocol, eigrpAs, setEigrpAs, eigrpPeer, setEigrpPeer,
-    ospfPid, setOspfPid, ospfArea, setOspfArea, ospfNetType, setOspfNetType, ospfMethod, setOspfMethod,
+    ospfArea, setOspfArea, ospfNetType, setOspfNetType, ospfMethod, setOspfMethod,
     bgpLocal, setBgpLocal, bgpPeer, setBgpPeer, bgpPeerIp, setBgpPeerIp, bgpHop, setBgpHop, bgpNHS, setBgpNHS,
   };
 
@@ -1660,10 +1657,10 @@ export function FRRPage() {
               </div>
               <div className="bg-nms-bg border border-nms-border rounded-xl px-4 py-3">
                 <p className="text-xs text-nms-text-dim mb-0.5">
-                  {protocol === 'eigrp' ? 'AS Number' : protocol === 'ospf' ? 'Process ID' : 'Local AS'}
+                  {protocol === 'eigrp' ? 'AS Number' : protocol === 'ospf' ? 'Area ID' : 'Local AS'}
                 </p>
                 <p className="text-sm font-bold font-mono text-nms-text">
-                  {protocol === 'eigrp' ? eigrpAs : protocol === 'ospf' ? ospfPid : bgpLocal}
+                  {protocol === 'eigrp' ? eigrpAs : protocol === 'ospf' ? ospfArea : bgpLocal}
                 </p>
               </div>
               <div className="bg-nms-bg border border-nms-border rounded-xl px-4 py-3">

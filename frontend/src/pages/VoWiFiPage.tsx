@@ -412,8 +412,8 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
               </tr>
             </thead>
             <tbody>
-              {clients.map(c => (
-                <tr key={c.imsi} className="border-b border-nms-border/50">
+              {clients.map((c, idx) => (
+                <tr key={idx} className="border-b border-nms-border/50">
                   <td className="py-1.5 font-mono text-nms-text">{c.imsi}</td>
                   <td className="py-1.5 font-mono text-nms-text-dim">{c.ue_ip}</td>
                   <td className="py-1.5 font-mono text-nms-text-dim">{c.outer_ip}</td>

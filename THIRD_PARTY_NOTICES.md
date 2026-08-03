@@ -44,6 +44,19 @@ The full AGPL-3.0 license text is available at: https://www.gnu.org/licenses/agp
 
 ---
 
+## VectorCore ePDG, VectorCore AAA, VectorCore MMSC
+
+**Copyright (C) Stacy Vinson ([svinson1121](https://github.com/svinson1121)) and the [VectorCore Mobile](https://github.com/vectorcore-mobile) project**
+
+- **Source:** https://github.com/vectorcore-mobile/vectorcore-ePDG, https://github.com/vectorcore-mobile/vectorcore-aaa, https://github.com/vectorcore-mobile/vectorcore-mmsc
+- **License:** vectorcore-ePDG and vectorcore-mmsc are Apache License 2.0; vectorcore-aaa is GNU Affero General Public License v3.0 (AGPL-3.0) (vectorcore-aaa is itself derived from the Osmocom `osmo-epdg` project — see that repository's own `NOTICE.md` for upstream Osmocom attribution).
+- **Usage:** This NMS builds all three components from source on the host (vendored, not bundled — cloned and compiled during the VoWiFi and MMS modules' own Install/Configure steps) to provide the VoWiFi (ePDG/AAA, SWu/SWm/S2b/Swx) and MMS (MM1/MM3/MM4/MM7 MMSC) backends. Sincere thanks to Stacy Vinson and the VectorCore Mobile project for this work.
+
+The full Apache-2.0 license text is available at: https://www.apache.org/licenses/LICENSE-2.0
+The full AGPL-3.0 license text is available at: https://www.gnu.org/licenses/agpl-3.0.html
+
+---
+
 ## docker_open5gs (reference)
 
 **Copyright (C) Supreeth Herle and contributors**
@@ -185,4 +198,4 @@ The following npm packages are used under MIT or compatible licenses. Full licen
 
 *This notices file is provided for informational purposes. The presence of a project in this list does not imply endorsement by the respective copyright holders.*
 
-*Last updated: May 2026*
+*Last updated: August 2026*

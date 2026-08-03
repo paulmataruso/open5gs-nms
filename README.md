@@ -631,6 +631,7 @@ For commercial licensing inquiries, open an issue or discussion on [GitHub](http
 ## 🙏 Acknowledgments
 
 - **[Open5GS Project](https://open5gs.org/)** - The open-source 5G Core and EPC implementation
+- **[Stacy Vinson (svinson1121)](https://github.com/svinson1121)** and the **[VectorCore Mobile](https://github.com/vectorcore-mobile)** project - VectorCore ePDG, VectorCore AAA, and VectorCore MMSC, which power this NMS's VoWiFi (ePDG/AAA) and MMS (MMSC) backends
 - **[Lucia Auth](https://lucia-auth.com/)** - Session management library
 - **[JointJS](https://www.jointjs.com/)** - Professional diagramming library
 - **[React](https://reactjs.org/)** and **[TypeScript](https://www.typescriptlang.org/)** communities

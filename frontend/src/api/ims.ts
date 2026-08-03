@@ -67,6 +67,7 @@ export interface IpsecSaInfo {
   lastUsed: string | null;
   bytes: number;
   packets: number;
+  group: 'ims' | 'vowifi' | 'other';
 }
 
 export interface RegisteredUserInfo {

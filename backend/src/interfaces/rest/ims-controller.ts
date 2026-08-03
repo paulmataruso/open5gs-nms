@@ -11,6 +11,7 @@ import { readListenOn, writeListenOn } from './bind-controller';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import { parseKamcmdOutput } from '../../infrastructure/system/kamcmd-parser';
 import { ImsCallStatsMonitor } from '../../application/use-cases/ims/call-stats-monitor';
+import { loadState as loadVowifiState } from './vowifi-controller';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +66,14 @@ export interface IpsecSaInfo {
   lastUsed: string | null;
   bytes: number;
   packets: number;
+  // Which subsystem owns this SA — the kernel's `ip xfrm state` table is
+  // global and has no concept of "this SA belongs to P-CSCF's SIP security
+  // vs. the ePDG's own S2b/SWu tunnel", so this page has to infer it by
+  // matching src/dst against each subsystem's own known bind address.
+  // 'other' covers anything that doesn't match either (should be rare/none
+  // in a normal deployment, but real data shouldn't just vanish if it
+  // shows up).
+  group: 'ims' | 'vowifi' | 'other';
 }
 
 // Parses `ip -s xfrm state` (real, verified output format — see
@@ -91,6 +100,7 @@ function parseIpsecSaText(raw: string): IpsecSaInfo[] {
       lastUsed: lastUsed?.[1] ?? null,
       bytes: counters ? parseInt(counters[1], 10) : 0,
       packets: counters ? parseInt(counters[2], 10) : 0,
+      group: 'other' as const, // classified by the caller, see /live
     };
   });
 }
@@ -2434,6 +2444,25 @@ export function createImsRouter(
       ]);
 
       const ipsecSas = ipsecRes.status === 'fulfilled' ? parseIpsecSaText(ipsecRes.value.stdout) : [];
+
+      // `ip xfrm state` is a single global kernel table shared by both
+      // P-CSCF's own SIP-signaling IPsec (Gm, TS 33.203) and VoWiFi's
+      // ePDG↔UE tunnel IPsec (SWu) — the kernel has no notion of which
+      // subsystem an SA belongs to, so classify by matching each SA's
+      // src/dst against each subsystem's own known bind address.
+      try {
+        const pcscfIp = readCurrentImsConfig()?.pcscfIp;
+        const epdgIp = loadVowifiState().epdgIp;
+        for (const sa of ipsecSas) {
+          if (pcscfIp && (sa.src === pcscfIp || sa.dst === pcscfIp)) sa.group = 'ims';
+          else if (epdgIp && (sa.src === epdgIp || sa.dst === epdgIp)) sa.group = 'vowifi';
+          else sa.group = 'other';
+        }
+      } catch (err) {
+        logger.warn({ err: String(err) }, 'ims live status: IPsec SA classification failed');
+        for (const sa of ipsecSas) sa.group = sa.group ?? 'other';
+      }
+
       const registeredUsers = snapshotRes.status === 'fulfilled' ? parseRegisteredUsersSnapshot(snapshotRes.value) : [];
 
       // Tag each registered row with its subscriber nickname, looked up by
