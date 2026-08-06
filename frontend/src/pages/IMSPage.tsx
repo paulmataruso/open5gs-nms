@@ -166,7 +166,12 @@ function ConfigureCard({ status, onDone }: {
     icscfIp: '127.0.1.1',  icscfPort: 4060,
     scscfIp: '127.0.1.2',  scscfPort: 6060,
     rtpEngineIp: '10.0.1.178', rtpPortMin: 20000, rtpPortMax: 40000,
-    dnsIp: '10.0.1.178',
+    // Placeholder only — overwritten by the real saved config below whenever
+    // one exists. A fresh deployment's first-ever Configure would otherwise
+    // silently inherit whatever's typed in here; 127.0.0.1 is always a safe
+    // value for BIND (see the matching backend-side fix in ims-controller.ts's
+    // /configure route) instead of a guessed, unrelated real IP.
+    dnsIp: '127.0.0.1',
     mcc: '', mnc: '',
     additionalPlmns: [],
   });
@@ -596,8 +601,8 @@ function InstallCard({
   const hssOnly = !!(status?.installed && !status?.pyhssInstalled);
   const installTitle = hssOnly ? 'Install PyHSS' : 'Install IMS Software';
   const installDesc = hssOnly
-    ? 'Kamailio is already installed. This will install redis-server + pip dependencies and clone PyHSS from source. Takes about a minute.'
-    : 'Installs: kamailio + IMS/MySQL/TLS modules, rtpengine, mariadb-server, bind9, redis-server, python3-pip via apt-get. Then clones PyHSS and installs pip dependencies. Fast — no build step required.';
+    ? 'Kamailio is already installed. This will install redis-server + pip dependencies and clone PyHSS from source. Also checks whether the Open5GS SMF core-network bug fix (below) needs (re)building. Usually about a minute, longer if that build runs.'
+    : 'Installs: kamailio + IMS/MySQL/TLS modules, rtpengine, mariadb-server, bind9, redis-server, python3-pip via apt-get. Then clones PyHSS and installs pip dependencies. Also patches and rebuilds Open5GS SMF from source to fix a real core-network bug (skipped if already up to date) — this step alone can take several minutes the first time.';
 
   return (
     <div className="nms-card">
@@ -1195,6 +1200,33 @@ export function IMSPage() {
     }
   };
 
+  // Re-runs Install (same underlying streamed call InstallCard uses) —
+  // this is the only entry point for this once IMS is already installed,
+  // since InstallCard itself only renders when `!status?.installed`. Drives
+  // the "Reinstall available" banner's CTA.
+  const handleReinstallStale = async () => {
+    setInstalling(true);
+    setInstallLog('');
+    try {
+      const response = await imsApi.install();
+      if (response.body) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          setInstallLog(prev => prev + decoder.decode(value));
+        }
+      }
+      toast.success('IMS reinstalled.');
+      await load(true);
+    } catch (err) {
+      setInstallLog(prev => prev + '\n❌ Install error: ' + String(err));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
   const handleRemove = async () => {
     setShowRemoveConfirm(false);
     setRemoving(true);
@@ -1334,6 +1366,31 @@ export function IMSPage() {
             className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
           >
             Configure
+          </button>
+        </div>
+      )}
+
+      {s?.installStale && (
+        <div className="flex items-start justify-between gap-3 p-4 rounded-lg border border-amber-500/30 bg-amber-500/10">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+            <p className="text-xs text-amber-200 leading-relaxed">
+              <span className="font-semibold text-amber-400">Reinstall available.</span>{' '}
+              This deployment was last installed by
+              {s.installedWithVersion ? ` v${s.installedWithVersion}` : ' an older version'},
+              but this server is running v{s.appVersion} — a newer version may include install-time
+              fixes (package versions, compiled patches) this deployment doesn't have yet, including
+              real core-network bug fixes that require rebuilding a system binary from source. Click
+              Install to reapply everything — this can take several minutes and briefly restarts
+              core services.
+            </p>
+          </div>
+          <button
+            onClick={handleReinstallStale}
+            disabled={installing}
+            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-amber-300 bg-amber-500/15 border-amber-500/30 hover:bg-amber-500/25 transition-colors disabled:opacity-50"
+          >
+            {installing ? 'Installing…' : 'Install'}
           </button>
         </div>
       )}

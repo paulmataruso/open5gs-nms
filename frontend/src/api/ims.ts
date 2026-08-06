@@ -27,6 +27,8 @@ export interface ImsStatus {
   appVersion: string;
   configuredWithVersion?: string;
   configStale: boolean;
+  installedWithVersion?: string;
+  installStale: boolean;
   smsDeliveryMode: 'sgs' | 'ims';
   smsWorkerIntervalSeconds: number;
 }

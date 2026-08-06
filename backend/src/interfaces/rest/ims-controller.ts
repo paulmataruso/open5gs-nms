@@ -12,6 +12,7 @@ import { getAppVersion } from '../../infrastructure/system/app-version';
 import { parseKamcmdOutput } from '../../infrastructure/system/kamcmd-parser';
 import { ImsCallStatsMonitor } from '../../application/use-cases/ims/call-stats-monitor';
 import { loadState as loadVowifiState } from './vowifi-controller';
+import { buildSmfLateCsrPatchScript } from '../../application/use-cases/smf-late-csr-patch';
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +35,15 @@ const HOST_MME_YAML            = '/proc/1/root/etc/open5gs/mme.yaml';
 const HOST_PCRF_FD_CONF        = '/proc/1/root/etc/freeDiameter/pcrf.conf';
 const HOST_UPF_YAML            = '/proc/1/root/etc/open5gs/upf.yaml';
 const HOST_IMS_STATE           = '/proc/1/root/etc/open5gs/.ims-config.json';
+// Tracks which NMS app version last successfully ran POST /install — separate
+// from HOST_IMS_STATE (which tracks Configure), since Install and Configure
+// are independent actions with independent staleness. Anything that changes
+// an Install-time step (the cdp.so patch, the PyHSS crash-guard/identity
+// patches, the SMF late-overlapping-CSR patch, ...) ships as part of an app
+// version bump per this project's own release convention — comparing whole
+// app versions here is the same deliberately blunt approach configStale
+// already uses for Configure, not per-patch tracking.
+const HOST_IMS_INSTALL_STATE   = '/proc/1/root/etc/open5gs/.ims-install.json';
 const HOST_IMS_SMF_BAK         = '/proc/1/root/etc/open5gs/.ims-smf.bak';
 const HOST_IMS_UPF_BAK         = '/proc/1/root/etc/open5gs/.ims-upf.bak';
 const HOST_KAMAILIO_PCSCF_DIR  = '/proc/1/root/etc/kamailio_pcscf';
@@ -2295,6 +2305,22 @@ export function createImsRouter(
       const appVersion = getAppVersion();
       const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
 
+      // Same pattern, for Install rather than Configure — see
+      // HOST_IMS_INSTALL_STATE's own comment for why these are tracked
+      // separately. A deployment that's `installed` but has never gone
+      // through a version that wrote this marker (i.e. every deployment
+      // installed before this tracking existed) is treated as stale too,
+      // same reasoning as configStale above — we don't know what install
+      // steps it actually got.
+      let installedWithVersion: string | undefined;
+      const hasInstallMarker = fs.existsSync(HOST_IMS_INSTALL_STATE);
+      if (hasInstallMarker) {
+        try {
+          installedWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8')).installedWithVersion;
+        } catch { /* corrupt */ }
+      }
+      const installStale = installed && installedWithVersion !== appVersion;
+
       const services = {
         pcscf:            svcActive(pcscfRes),
         icscf:            svcActive(icscfRes),
@@ -2369,6 +2395,8 @@ export function createImsRouter(
         appVersion,
         configuredWithVersion,
         configStale,
+        installedWithVersion,
+        installStale,
         smsDeliveryMode,
         smsWorkerIntervalSeconds,
       });
@@ -2873,6 +2901,46 @@ export function createImsRouter(
       write('✅ PyHSS default_ifc.xml patched.\n');
     }
 
+    // Patch Open5GS SMF's "Late/overlapping Create Session Request" gap
+    // (src/smf/gsm-sm.c): smf_gsm_state_operational() silently drops a
+    // Create Session Request that collides with an already-operational
+    // session instead of replying with a proper GTP2 cause — confirmed
+    // live 2026-08-04 via a real Nokia AirScale Pico BTS B66 eNB attach,
+    // this is exactly what "IMS won't create the bearer" looked like: the
+    // silent drop causes a multi-second peer-side timeout whose cleanup
+    // also tears down the UE's OTHER, unrelated sibling PDN session (a
+    // working "internet" bearer dying just because a colliding "ims"
+    // request arrived for the same UE). Builds a patched open5gs-smfd from
+    // source (matching whatever commit the host's own smfd was already
+    // built from — Open5GS isn't vendored by this NMS, so this can't pin a
+    // fixed version the way the VoWiFi/FRR from-source builds do) and
+    // installs it over the host's binary, with an automatic rollback to
+    // the pre-patch binary if the newly built one fails to come up
+    // healthy. This step failing is a warning, not a hard Install failure
+    // — IMS still works without it, this specific race just stays open.
+    write('\n=== Patching Open5GS SMF (Create Session Request collision fix) ===\n');
+    const smfPatchExitCode = await spawnStream(buildSmfLateCsrPatchScript());
+    if (smfPatchExitCode !== 0) {
+      write('\n⚠️ WARNING: Open5GS SMF late-overlapping-CSR patch FAILED or was skipped ' +
+        '(see errors above) — IMS bearer setup may still intermittently fail on radios ' +
+        'whose attach timing triggers this race (confirmed on a Nokia AirScale Pico BTS). ' +
+        'Fix the underlying issue and re-run Install — this step is idempotent.\n');
+    } else {
+      write('✅ Open5GS SMF patched (or already up to date).\n');
+    }
+
+    // Record which app version this Install ran under — drives the
+    // "Reinstall available" banner (installStale in /status) so a future
+    // release that changes an Install-time step (a new patch, a fixed
+    // package list, ...) doesn't sit silently unapplied on an existing
+    // deployment. Written unconditionally at the end, same as every other
+    // step above: Install is considered "done" once it reaches here even
+    // if an individual patch step warned rather than hard-failed.
+    fs.writeFileSync(HOST_IMS_INSTALL_STATE, JSON.stringify({
+      installedWithVersion: getAppVersion(),
+      installedAt: new Date().toISOString(),
+    }, null, 2), 'utf-8');
+
     await auditLogger.log({ action: 'ims_install', user, details: 'packages + pyhss', success: true });
     write('\n✅ IMS installation complete. Run Configure next.\n');
     res.end();
@@ -2882,6 +2950,22 @@ export function createImsRouter(
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
+      // NMS fix (2026-08-05): dnsIp used to default to pcscfIp — a
+      // coincidental, unrelated value (P-CSCF's own bind IP has nothing to
+      // do with DNS) that a caller omitting dnsIp would silently inherit.
+      // Confirmed live: this is exactly how one real deployment ended up
+      // with dnsIp="10.0.1.178" (P-CSCF's IP) instead of the real DNS
+      // service IP — which every subsequent Configure then kept merging
+      // into BIND's listen-on list (see writeListenOn() below), alongside
+      // the real DNS IP that was separately, correctly configured via the
+      // BIND page. Since BIND's own already-configured listen-on list
+      // (owned by bind-controller.ts, shared across every module) is the
+      // one authoritative source for "what non-loopback IP does BIND
+      // actually answer on in this deployment" — no per-deployment guess
+      // needed — derive the default from that instead. 127.0.0.1 is always
+      // a safe fallback: writeListenOn() guarantees it's in the list on
+      // every deployment regardless of anything else configured.
+      const bindListenIp = readListenOn().find(ip => ip !== '127.0.0.1');
       const {
         pcscfIp    = '10.0.1.178',
         pcscfPort  = 5060,
@@ -2892,7 +2976,7 @@ export function createImsRouter(
         rtpEngineIp = pcscfIp,
         rtpPortMin  = 20000,
         rtpPortMax  = 30000,
-        dnsIp       = pcscfIp,
+        dnsIp       = bindListenIp ?? '127.0.0.1',
         additionalPlmns = [],
       } = req.body as Partial<ImsConfigureInput>;
 
@@ -3514,7 +3598,7 @@ export function createImsRouter(
 
     // 10. Remove NMS IMS state files
     write('\n=== Removing IMS state files ===\n');
-    for (const f of [HOST_IMS_STATE, HOST_IMS_SMF_BAK]) {
+    for (const f of [HOST_IMS_STATE, HOST_IMS_SMF_BAK, HOST_IMS_INSTALL_STATE]) {
       try { fs.unlinkSync(f); write(`  Removed: ${path.basename(f)}\n`); }
       catch { /* already gone */ }
     }

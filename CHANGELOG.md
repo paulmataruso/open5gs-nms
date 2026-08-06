@@ -4,6 +4,52 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.45] - 2026-08-06
+
+### Fixed — Open5GS SMF: real core-network bug causing "IMS won't create the bearer"
+
+Root-caused live via a real Nokia AirScale Pico BTS B66 eNB attach:
+`smf_gsm_state_operational()` (`src/smf/gsm-sm.c`, upstream Open5GS) silently
+drops a Create Session Request that collides with an already-operational
+session — no GTP2 response sent at all. The peer times out several seconds
+later, and as an observed side effect of that timeout's cleanup, the UE's
+other, unrelated sibling PDN session also gets torn down (a working
+"internet" bearer dying just because a colliding "ims" request arrived for
+the same UE). Fixed by replying immediately with
+`OGS_GTP2_CAUSE_LATE_OVERLAPPING_REQUEST` (121) — the exact cause 3GPP TS
+29.274 Table 8.4-1 defines for this collision — instead of silently
+dropping. Confirmed live, twice: the `ims` bearer now comes up cleanly and a
+real SIP REGISTER reaches P-CSCF from it.
+
+Baked into `POST /api/ims/install`: a new step (`smf-late-csr-patch.ts`)
+detects the host's own already-installed `open5gs-smfd` commit (Open5GS
+isn't vendored by this NMS, so it can't pin a fixed version), checks that
+exact commit out, patches it, builds it, and installs it over the host's
+binary — with an automatic rollback to the pre-patch binary if the newly
+built one fails to come up healthy. Verified end-to-end through the real
+`POST /api/ims/install` API, not just a manual live patch.
+
+### Fixed — IMS: DNS IP defaulted to P-CSCF's IP instead of a real DNS IP
+
+`POST /api/ims/configure` used to default `dnsIp` to `pcscfIp` when a caller
+didn't pass one explicitly — a coincidental, unrelated value. Every
+subsequent Configure then merged that wrong IP into BIND's `listen-on` list
+permanently (nothing ever removed it). Now defaults to whatever non-loopback
+IP BIND is already configured to listen on (falling back to `127.0.0.1`),
+derived from BIND's own live config instead of guessed. Also fixed the same
+wrong hardcoded placeholder (`10.0.1.178`) in the frontend Configure form's
+initial state.
+
+### Added — IMS: "Reinstall available" prompt
+
+New `installedWithVersion`/`installStale` tracking (`.ims-install.json`),
+mirroring the existing `configuredWithVersion`/`configStale` pattern used
+for Configure. A version bump that changes any Install-time step (a new
+patch, a fixed package list, ...) now surfaces a banner prompting the user
+to re-run Install — previously nothing signaled this, and worse, the
+Install button itself disappears from the UI entirely once IMS is already
+installed, so there was no way to even manually trigger it again.
+
 ## [v2.0-beta_0.44] - 2026-08-03
 
 ### Fixed — VoWiFi: uplink data plane never worked (root cause found and fixed)
