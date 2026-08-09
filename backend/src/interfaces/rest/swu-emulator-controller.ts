@@ -10,6 +10,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { nsenter } from '../../infrastructure/network/dummy-interface';
 import { ipToNum, numToIp, cidrRange } from '../../domain/services/ip-utils';
+import { readEpdgListenAddr } from './vowifi-controller';
 
 // ─── Host paths / constants ─────────────────────────────────────────────────
 const SWU_DIR           = '/opt/swu-emulator';
@@ -87,10 +88,13 @@ function readMccMnc(): { mcc: string; mnc: string } {
 function readVowifiEpdgIp(): string | null {
   try {
     const state = JSON.parse(fs.readFileSync(HOST_VOWIFI_STATE, 'utf-8'));
-    return state.configured && state.epdgIp ? state.epdgIp : null;
-  } catch {
-    return null;
-  }
+    if (state.configured && state.epdgIp) return state.epdgIp;
+  } catch { /* fall through to live derivation */ }
+  // Same live-fallback reasoning as vowifi-controller.ts's /status endpoint —
+  // a deployment configured before epdgIp tracking existed (or configured
+  // outside this NMS entirely) still has a real, working ePDG; this test
+  // should target it instead of refusing to run.
+  return readEpdgListenAddr();
 }
 
 

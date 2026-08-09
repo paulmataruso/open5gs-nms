@@ -27,6 +27,8 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Dashboard Overview](docs/screenshots/dashboard-overview.png)
 
+![IMS / VoWiFi Status Split](docs/screenshots/dashboard-ims-vowifi-split.png)
+
 ---
 
 ## ✨ Key Features
@@ -239,11 +241,15 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **Optional TLS/mutual-TLS on N32** — toggle between plaintext HTTP and TLS; "Generate Certs" creates a self-signed keypair for your home SEPP and displays the public cert for handing to a visited-network operator; paste their public cert back in as the trusted peer CA
 - **Generate Visited PLMN Config** — builds a complete, downloadable `sepp.yaml` for the visited operator from your already-configured home SEPP values, including your public cert when TLS is enabled
 
+![SEPP Configuration](docs/screenshots/sepp-config.png)
+
 ### DNS (BIND9) / FQDN Migration Wizard
 - **BIND9 zone management** — dedicated "DNS (BIND9)" page for managing the DNS server backing your core's internal domain resolution
 - **FQDN migration wizard** — converts the entire core from hardcoded IP addressing to 3GPP FQDN/DNS addressing (`5gc.mnc<mnc>.mcc<mcc>.3gppnetwork.org` for SBI, `epc.mnc<mnc>.mcc<mcc>.3gppnetwork.org` for the EPC Diameter mesh), matching carrier-grade deployment conventions and Open5GS's own roaming tutorial
 - **Phased, reversible** — Phase A (DNS zones only), Phase B (EPC/Diameter mesh), Phase C (5G SBI mesh); a fresh backup is taken before B/C and rollback stays available as long as it exists
 - **SEPP-aware** — includes SEPP's local SBI client in the FQDN scheme (its N32 peer to the visited PLMN is deliberately excluded — that's a different operator's DNS, not something local zone management can resolve)
+
+![DNS / FQDN Migration Wizard](docs/screenshots/dns-migration-wizard.png)
 
 ### Real-Time Logging
 - **Four log sources** — Open5GS systemd services, Docker containers, GenieACS access logs, and FRR, all streamed live via WebSocket
@@ -280,14 +286,19 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![SMS over SGs](docs/screenshots/sms-config.png)
 
-### VoWiFi *(Alpha — Highly Experimental, Not Production-Ready)*
+### VoWiFi *(Alpha — Experimental)*
 
-> ⚠️ **This module is more experimental than IMS/VoLTE.** It was proven working end-to-end against a test IKEv2/EAP-AKA emulator (real SWx/S6b/GTP-C signaling, a real subscriber, a real static-IP assignment, EAP-AKA authentication succeeding), but a real handset has not been confirmed working. Do not rely on this for a production voice deployment.
+> ⚠️ **This module is in alpha.** Real SIP signaling over VoWiFi is confirmed working end-to-end on a real phone — full IKEv2/EAP-AKA' attach, a real REGISTER → 401 Challenge → REGISTER → 200 OK → SUBSCRIBE → NOTIFY exchange, and a real iPhone-to-iPhone call with two-way audio. VoWiFi-to-VoLTE calling still has an open issue (connects with audio, drops after a few seconds). Do not rely on this for a production voice deployment yet.
 
-- **osmo-epdg + strongSwan ePDG** — one-click install, configure, and lifecycle management from the UI
-- **Config file editor** — Monaco-based editor for the ePDG config with save and save-and-restart
-- **Upstream bug fixes carried forward** — two real bugs found and patched in `osmo-epdg` during testing (a silently-dropped HSS-assigned static IP, and an oversized GTP hash-table size a real Linux kernel's GTP driver rejects); a "Reload GTP Module" button is available if a tunnel ever gets stuck
-- **Requires manual DNS/ePDG discovery setup** beyond what this page automates for real handsets — see [docs/features.md](docs/features.md) for details
+- **VectorCore ePDG + VectorCore AAA** ([vectorcore-mobile](https://github.com/vectorcore-mobile)) — a native Go/eBPF ePDG (XDP/TC-BPF GTP-U dataplane) paired with an Erlang Diameter AAA stack (SWx to the HSS, SWm relay from the ePDG, S6b to the SMF), built from source and installed with one click
+- **Config file editor** — Monaco-based editor for `epdg.yaml`/`aaa.config` with save and save-and-restart
+- **Live Sessions page** — real-time client list (IMSI, UE IP, outer IP, APN, state) plus aggregate Clients/IKE SAs/Child SAs/Bearers counters, proxied straight from VectorCore ePDG's own admin API
+- **Automatic staleness detection** — separate "reinstall available" and "reconfigure available" banners track vendored source patches and generated-config drift independently, so a deployment never silently runs stale patches after an update
+- **Real upstream bugs found and patched** — including a same-host uplink GTP-U delivery bug (VectorCore's TC-BPF dataplane assumed a remote, ARP-resolvable PGW; fixed with a userspace ringbuf delivery path for the always-colocated case this project uses) and a half-open IKE SA reaper leak — both patched automatically during the vendored source build, not just live on one host
+
+![VoWiFi Setup](docs/screenshots/vowifi-setup.png)
+
+![VoWiFi Live Sessions](docs/screenshots/vowifi-live-sessions.png)
 
 ### UE Validation *(Beta)*
 - **Simulated test UEs** — spin up a 4G (srsRAN) or 5G (UERANSIM) test UE against your live core, no physical radio needed

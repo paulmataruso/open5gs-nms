@@ -4,6 +4,7 @@ import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
 import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
+import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
 import { mmsApi } from '../../api/mms';
 import type { ValidationResult, ServiceStatus } from '../../types';
@@ -130,6 +131,8 @@ export function DashboardPage(): JSX.Element {
   const [activeUes, setActiveUes] = useState<number | null>(null);
   const [imsStatus, setImsStatus] = useState<ImsStatus | null>(null);
   const [imsCallStats, setImsCallStats] = useState<ImsCallStats | null>(null);
+  const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
+  const [vowifiStats, setVowifiStats] = useState<VectorcoreStats | null>(null);
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
@@ -176,6 +179,8 @@ export function DashboardPage(): JSX.Element {
     }).catch(() => {});
     // IMS status — service health, live S-CSCF registrar count, active IPsec SAs
     imsApi.getStatus().then(setImsStatus).catch(() => {});
+    // VoWiFi status — service health, for the split half of the IMS Status card below.
+    vowifiApi.getStatus().then(setVowifiStatus).catch(() => {});
     // PSTN Gateway status — just need services.asterisk for the Network
     // Functions grid below (P/I/S-CSCF come from imsStatus.services above).
     pstnApi.getStatus().then(setPstnStatus).catch(() => {});
@@ -207,6 +212,16 @@ export function DashboardPage(): JSX.Element {
     };
     fetchImsCallStats();
     const callStatsInterval = setInterval(fetchImsCallStats, 5000);
+    // VoWiFi live stats (active_clients/active_ike_sas/...) — straight from
+    // VectorCore ePDG's own admin API (proxied), same poll cadence as IMS call
+    // stats. Only succeeds while vowifi-vectorcore-epdg is actually running;
+    // a stopped/not-installed deployment just keeps the last-known (or null)
+    // value, same as every other optional-module card on this dashboard.
+    const fetchVowifiStats = () => {
+      vowifiApi.getStats().then(setVowifiStats).catch(() => {});
+    };
+    fetchVowifiStats();
+    const vowifiStatsInterval = setInterval(fetchVowifiStats, 5000);
     // MMS total sent — sum of VectorCore's own message_counts. Unlike the
     // SMS/call counters above, this is already a durable, sqlite-DB-backed
     // count (not an in-process counter reset by a service restart), so it
@@ -222,7 +237,7 @@ export function DashboardPage(): JSX.Element {
     };
     fetchMmsStats();
     const mmsStatsInterval = setInterval(fetchMmsStats, 5000);
-    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(mmsStatsInterval); };
+    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(vowifiStatsInterval); clearInterval(mmsStatsInterval); };
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
@@ -416,24 +431,56 @@ export function DashboardPage(): JSX.Element {
             restart, so "total calls placed" has to be persisted
             server-side. */}
         <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
-            <div className="flex items-start justify-between p-4">
-              <div>
-                <p className="text-xs text-nms-text-dim uppercase tracking-wider">IMS Status</p>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className={`w-2.5 h-2.5 rounded-full inline-block ${
-                    !imsStatus ? 'bg-nms-text-dim/40' :
-                    imsStatus.imsEnabled ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
-                  }`} />
-                  <p className="text-2xl font-semibold font-display">
-                    {!imsStatus ? '…' : imsStatus.imsEnabled ? 'Active' : imsStatus.installed ? 'Stopped' : 'Not Installed'}
+            {/* Top row split in half: IMS service health (left, unchanged) +
+                VoWiFi service health/session counts (right, new) — same
+                overall card height as before, just two contents sharing the
+                row's grid slot instead of one. VoWiFi's counts come straight
+                from VectorCore ePDG's own admin API (active_clients/
+                active_ike_sas — no "total ever seen" cumulative counter
+                exists there, unlike IMS's persisted call-stats monitor, so
+                "Total" here means "IKE SAs right now", which runs at or
+                above active_clients since it also counts in-progress/
+                half-open attempts). */}
+            <div className="grid grid-cols-2 divide-x divide-nms-border">
+              <div className="flex items-start justify-between p-4">
+                <div>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">IMS Status</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className={`w-2.5 h-2.5 rounded-full inline-block ${
+                      !imsStatus ? 'bg-nms-text-dim/40' :
+                      imsStatus.imsEnabled ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
+                    }`} />
+                    <p className="text-2xl font-semibold font-display">
+                      {!imsStatus ? '…' : imsStatus.imsEnabled ? 'Active' : imsStatus.installed ? 'Stopped' : 'Not Installed'}
+                    </p>
+                  </div>
+                  <p className="text-xs text-nms-text-dim mt-1">
+                    {imsStatus?.ipsecSaCount ?? 0} IPsec SAs
                   </p>
                 </div>
-                <p className="text-xs text-nms-text-dim mt-1">
-                  {imsStatus?.ipsecSaCount ?? 0} IPsec SAs
-                </p>
+                <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                  <PhoneCall className="w-5 h-5 text-nms-accent" />
+                </div>
               </div>
-              <div className="p-2.5 rounded-lg bg-nms-accent/10">
-                <PhoneCall className="w-5 h-5 text-nms-accent" />
+              <div className="flex items-start justify-between p-4">
+                <div>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">VoWiFi Status</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className={`w-2.5 h-2.5 rounded-full inline-block ${
+                      !vowifiStatus ? 'bg-nms-text-dim/40' :
+                      vowifiStatus.services?.['vowifi-vectorcore-epdg'] ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.7)]' : 'bg-red-500'
+                    }`} />
+                    <p className="text-2xl font-semibold font-display">
+                      {vowifiStats?.active_clients ?? 0}
+                    </p>
+                  </div>
+                  <p className="text-xs text-nms-text-dim mt-1">
+                    Active <span className="ml-1 text-nms-accent">{vowifiStats?.active_ike_sas ?? 0} Total</span>
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-lg bg-nms-accent/10">
+                  <Wifi className="w-5 h-5 text-nms-accent" />
+                </div>
               </div>
             </div>
             {/* Registered vs Active UEs — split per subscriber count vs

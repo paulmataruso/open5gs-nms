@@ -190,6 +190,28 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
 
   return (
     <div className="space-y-4">
+      {status?.configStale && (
+        <div className="nms-card border-blue-500/30 bg-blue-500/10 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-blue-200 leading-relaxed">
+              <span className="font-semibold text-blue-400">Configuration out of date.</span>{' '}
+              This deployment was last configured by
+              {status.configuredWithVersion ? ` config-gen v${status.configuredWithVersion}` : ' an older version'},
+              but this server generates v{status.currentConfigGenVersion}. Click Configure to redeploy with any
+              fixes shipped since then.
+            </p>
+          </div>
+          <button
+            onClick={handleConfigure}
+            disabled={!!busy}
+            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
+          >
+            Configure
+          </button>
+        </div>
+      )}
+
       {status?.buildStale && (
         <div className="nms-card border-amber-500/40 bg-amber-500/5 flex items-start gap-3">
           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
@@ -381,10 +403,10 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { label: 'Clients', value: stats.clients },
-            { label: 'IKE SAs', value: stats.ike_sas },
-            { label: 'CHILD SAs', value: stats.child_sas },
-            { label: 'Bearers', value: stats.bearers },
+            { label: 'Clients', value: stats.active_clients },
+            { label: 'IKE SAs', value: stats.active_ike_sas },
+            { label: 'CHILD SAs', value: stats.active_child_sas },
+            { label: 'Bearers', value: stats.active_bearers },
           ].map(({ label, value }) => (
             <div key={label} className="nms-card text-center">
               <p className="text-2xl font-semibold text-nms-text">{value}</p>

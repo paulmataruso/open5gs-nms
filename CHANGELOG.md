@@ -4,6 +4,81 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.46] - 2026-08-09
+
+### Fixed — VoWiFi: real SIP signaling now works end-to-end for the first time
+
+Root-caused a bug that made every single uplink SIP/GTP-U packet from a
+real VoWiFi UE vanish silently, even after full IKEv2/EAP-AKA' attach and a
+correct S2b GTP-U session establishment: vendored VectorCore ePDG's
+TC-BPF uplink program tries to `bpf_redirect_neigh()` the encapsulated
+frame toward the ePDG's own downlink-receive interface — but this
+deployment always runs the ePDG and UPF/PGW colocated on the same host
+(dummy interfaces), and `bpf_redirect_neigh()` fundamentally cannot resolve
+a real L2 neighbor for a locally-owned destination, regardless of which
+interface is named as the target (confirmed by also trying the real
+physical NIC — same failure, via a genuine ARP timeout instead). Fixed by
+bypassing the in-kernel redirect for uplink entirely: the TC-BPF program
+now hands the selected TEID + raw inner packet to userspace via a
+`BPF_MAP_TYPE_RINGBUF`, and a new Go goroutine delivers each one with a
+plain UDP `sendto()` on the ePDG's existing GTP-U control socket — the same
+ordinary local-delivery path every other process on the host already uses
+successfully. Verified live: a real phone completed a full REGISTER → 401
+Challenge → REGISTER → 200 OK → SUBSCRIBE → NOTIFY exchange end to end for
+the first time ever against this ePDG, WiFi Calling shows Active on the
+device, and a real iPhone-to-iPhone VoWiFi call works with two-way audio.
+(VoWiFi-to-VoLTE calling still has an open issue — connects with audio but
+drops after a few seconds on an `rtpengine` receive-queue overflow — not
+yet resolved, tracked for a future session.)
+
+Also fixed, found during the same investigation: VectorCore ePDG's
+half-open IKE SA reaper called the low-level SA-map delete directly instead
+of the full session teardown path, leaking permanent zombie
+"EAPAuthenticated" entries into the admin API's client list every time a
+half-open attach attempt timed out (one real deployment showed 4 entries
+for the same IMSI, 3 of them zombies).
+
+Both fixes are baked into `POST /api/vowifi/install` (`vowifi-build.ts`,
+`VECTORCORE_PATCH_REV` bumped to 7) so they survive a reinstall, and were
+verified through the real install API against a truly clean checkout, not
+just a manual live patch.
+
+### Fixed — VoWiFi install script: six real patch-application bugs, never caught until now
+
+While baking the above in, ran the actual install script end-to-end for
+what appears to be the first time since several existing patches (NAT-T
+source port, `detectNAT()` SPI fix, the AAA `Authorization`/`same_apn`
+Erlang patches) were originally added — and found all of them were silently
+broken. Root cause: this script is generated from a TypeScript template
+literal, and JavaScript string/template-literal parsing silently drops a
+backslash in front of any character that isn't a recognized escape
+sequence — so `\/`, `\*`, `\[`, `\]` written into the source to escape sed/
+grep regex metacharacters were never actually reaching the generated bash
+script as escaped, breaking sed's delimiter counting in one case (a hard
+syntax error, `sed: -e expression #1, char 23: unknown option to 's'`) and
+silently corrupting grep's pattern matching in the other five (patches
+would apply but the very next verification step would then fail to detect
+that they'd applied, aborting the whole install). Fixed by removing the
+backslashes that don't survive JS parsing anyway and switching every
+affected `grep -q` to `grep -qF` (fixed-string matching, sidesteps the
+whole class of bug since no regex escaping is needed at all). A `\.`
+(literal-dot) case in several older patches turned out to be harmless by
+coincidence — an unescaped `.` regex wildcard still matches a real literal
+dot — so those were left as-is. Confirmed fixed via three full end-to-end
+`POST /api/vowifi/install` runs against a genuinely clean checkout, the
+last one completing successfully through both the ePDG and AAA builds.
+
+### Added — VoWiFi: "Configuration out of date" banner
+
+VoWiFi's Configure step (`epdg.yaml`/`aaa.config`/systemd unit generation)
+had no staleness tracking at all — only Install did. Added a
+`VOWIFI_CONFIG_GEN_VERSION` counter and `configuredWithVersion`/
+`configStale` fields (`GET /api/vowifi/status`), mirroring the existing
+IMS page's `configStale` pattern: an amber-adjacent blue banner on the
+VoWiFi page prompts a re-Configure whenever the generation logic changes
+after a deployment was last configured, reusing the same already-loaded
+form state so the operator doesn't need to re-enter anything.
+
 ## [v2.0-beta_0.45] - 2026-08-06
 
 ### Fixed — Open5GS SMF: real core-network bug causing "IMS won't create the bearer"

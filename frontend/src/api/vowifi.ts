@@ -22,6 +22,9 @@ export interface VowifiStatus {
   installError: string | null;
   configured: boolean;
   configuredAt: string | null;
+  configuredWithVersion: number | null;
+  currentConfigGenVersion: number;
+  configStale: boolean;
   epdgIp: string | null;
   epdgInterfaceMode: 'dummy' | 'existing' | null;
   aaaListenIp: string | null;
@@ -65,10 +68,10 @@ export interface VectorcoreClient {
 }
 
 export interface VectorcoreStats {
-  clients: number;
-  ike_sas: number;
-  child_sas: number;
-  bearers: number;
+  active_clients: number;
+  active_ike_sas: number;
+  active_child_sas: number;
+  active_bearers: number;
 }
 
 export const vowifiApi = {

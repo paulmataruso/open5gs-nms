@@ -12,6 +12,16 @@ import {
   VECTORCORE_EPDG_COMMIT, VECTORCORE_AAA_COMMIT, VECTORCORE_PATCH_REV,
 } from '../../application/use-cases/vowifi-build';
 
+// Bumped whenever configureVowifi()'s generated output changes (epdg.yaml/
+// aaa.config templates, systemd unit templates, DNS zone handling, cert
+// generation, ...) — independent of VECTORCORE_PATCH_REV (source patches,
+// applied at Install time) since Install and Configure are independent
+// actions with independent staleness, same reasoning ims-controller.ts's
+// configStale/installStale split already uses. Lets the /status endpoint's
+// configStale check detect "this deployment was configured by an older
+// version of this logic" without forcing a reinstall for unrelated changes.
+export const VOWIFI_CONFIG_GEN_VERSION = 1;
+
 // ─── Host paths ─────────────────────────────────────────────────────────────
 const HOST_STATE_FILE     = '/proc/1/root/etc/open5gs-nms/.vowifi-state.json';
 const HOST_HSS_CONF       = '/proc/1/root/etc/freeDiameter/hss.conf';
@@ -78,6 +88,7 @@ export interface VowifiState {
   installError: string | null;
   configured: boolean;
   configuredAt: string | null;
+  configuredWithVersion: number | null;
   epdgIp: string | null;
   epdgInterfaceMode: 'dummy' | 'existing' | null;
   // vectorcore-aaa's own Diameter listen IP (loopback-only) — replaces the archived
@@ -97,7 +108,7 @@ export interface VowifiState {
 function defaultState(): VowifiState {
   return {
     installStatus: 'idle', installStartedAt: null, installCompletedAt: null, installError: null,
-    configured: false, configuredAt: null,
+    configured: false, configuredAt: null, configuredWithVersion: null,
     epdgIp: null, epdgInterfaceMode: null, aaaListenIp: null, aaaFqdn: null,
     smfConfHadBackup: false, hssConfHadBackup: false,
     builtWithVectorcoreEpdgCommit: null, builtWithVectorcoreAaaCommit: null, builtWithVectorcorePatchRev: null,
@@ -160,6 +171,34 @@ function readFreeDiameterListenOn(confPath: string, fallback: string): string {
 function realmFromIdentity(identity: string): string {
   const idx = identity.indexOf('.');
   return idx >= 0 ? identity.slice(idx + 1) : 'localdomain';
+}
+
+// Live fallbacks for the Setup form's ePDG IP / AAA Listen IP pre-fill and the
+// /status endpoint, for a deployment configured before epdgIp/aaaListenIp
+// tracking existed (or configured outside this NMS entirely) — same reasoning
+// as the derivedAaaFqdn fallback below: the real ground truth is what's
+// actually in epdg.yaml, not what this NMS instance remembers. Exported:
+// swu-emulator-controller.ts's readVowifiEpdgIp() reuses this exact same
+// derivation instead of duplicating it — same underlying gap (the SWu-IKEv2
+// test emulator was gated on state.configured too, so it would fail with
+// "VoWiFi is not configured yet" against a deployment configured before this
+// tracking existed, exactly like the Setup page was).
+export function readEpdgListenAddr(): string | null {
+  try {
+    const raw = fs.readFileSync(HOST_EPDG_YAML, 'utf-8');
+    return raw.match(/^\s*listen_addr:\s*(\S+)\s*$/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readEpdgSwmPeerAddr(): string | null {
+  try {
+    const raw = fs.readFileSync(HOST_EPDG_YAML, 'utf-8');
+    return raw.match(/^\s*peer_addr:\s*(\S+)\s*$/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function readMccMnc(): { mcc: string; mnc: string } {
@@ -803,6 +842,7 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
 
   const newState: VowifiState = {
     ...state, configured: true, configuredAt: new Date().toISOString(),
+    configuredWithVersion: VOWIFI_CONFIG_GEN_VERSION,
     epdgIp, epdgInterfaceMode: interfaceMode, aaaListenIp, aaaFqdn, smfConfHadBackup, hssConfHadBackup,
   };
   saveState(newState);
@@ -832,18 +872,40 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
       let activeClients = 0;
       if (svcActive(epdgRes)) {
         activeClients = await nsenter('curl', ['-fsS', `http://127.0.0.1:${ADMIN_API_PORT}/api/v1/stats`], 5000)
-          .then(r => JSON.parse(r.stdout)?.clients ?? 0).catch(() => 0);
+          .then(r => JSON.parse(r.stdout)?.active_clients ?? 0).catch(() => 0);
       }
 
+      // Prefer the tracked aaaFqdn from a Configure run through this NMS, but
+      // fall back to deriving it fresh from SMF's own freeDiameter Identity —
+      // the same derivation configureVowifi() itself uses — so this check
+      // still reflects reality on a deployment that was configured before
+      // configuredWithVersion tracking existed, or any other reason state.aaaFqdn
+      // never got persisted. Real ground truth is what's actually in smf.conf,
+      // not what this NMS instance remembers clicking through.
       const smfConfExists = fs.existsSync(HOST_SMF_CONF);
-      const smfConnectPeerPresent = state.aaaFqdn
-        ? smfConfExists && fs.readFileSync(HOST_SMF_CONF, 'utf-8').includes(`"${state.aaaFqdn}"`)
+      const derivedAaaFqdn = state.aaaFqdn ?? (smfConfExists
+        ? `aaa.${realmFromIdentity(readFreeDiameterIdentity(HOST_SMF_CONF, 'smf.localdomain'))}`
+        : null);
+      const smfConnectPeerPresent = derivedAaaFqdn
+        ? smfConfExists && fs.readFileSync(HOST_SMF_CONF, 'utf-8').includes(`"${derivedAaaFqdn}"`)
         : false;
+
+      // Same live-fallback reasoning as derivedAaaFqdn above, for the Setup
+      // form's ePDG IP / AAA Listen IP pre-fill — without this, a deployment
+      // configured before this tracking existed shows the generic placeholder
+      // defaults instead of what's actually running, which risks a Configure
+      // click silently repointing a working deployment at the wrong addresses.
+      const derivedEpdgIp = state.epdgIp ?? readEpdgListenAddr();
+      const derivedAaaListenIp = state.aaaListenIp ?? readEpdgSwmPeerAddr();
+      const derivedEpdgInterfaceMode = state.epdgInterfaceMode ?? (dummyInterfaceUp ? 'dummy' : 'existing');
 
       const buildStale = installedOnDisk &&
         (state.builtWithVectorcoreEpdgCommit !== VECTORCORE_EPDG_COMMIT ||
          state.builtWithVectorcoreAaaCommit !== VECTORCORE_AAA_COMMIT ||
          state.builtWithVectorcorePatchRev !== VECTORCORE_PATCH_REV);
+
+      const configStale = state.configured &&
+        state.configuredWithVersion !== VOWIFI_CONFIG_GEN_VERSION;
 
       res.json({
         success: true,
@@ -861,10 +923,13 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
         installError: state.installError,
         configured: state.configured,
         configuredAt: state.configuredAt,
-        epdgIp: state.epdgIp,
-        epdgInterfaceMode: state.epdgInterfaceMode,
-        aaaListenIp: state.aaaListenIp,
-        aaaFqdn: state.aaaFqdn,
+        configuredWithVersion: state.configuredWithVersion,
+        currentConfigGenVersion: VOWIFI_CONFIG_GEN_VERSION,
+        configStale,
+        epdgIp: derivedEpdgIp,
+        epdgInterfaceMode: derivedEpdgInterfaceMode,
+        aaaListenIp: derivedAaaListenIp,
+        aaaFqdn: derivedAaaFqdn,
         smfConnectPeerPresent,
         dummyInterfaceUp,
         activeClients,

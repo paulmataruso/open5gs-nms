@@ -7,6 +7,8 @@ This project makes use of the following third-party software. We are grateful to
 
 ---
 
+<img src="https://github.com/osmocom.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## pysim / suci-keytool.py
 
 **Copyright (C) 2024 Harald Welte <laforge@osmocom.org>**
@@ -20,6 +22,8 @@ The full GPL-2.0 license text is available at: https://www.gnu.org/licenses/old-
 
 ---
 
+<img src="https://github.com/osmocom.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## pyosmocom
 
 **Copyright (C) 2009-2024 Osmocom contributors**
@@ -30,6 +34,8 @@ The full GPL-2.0 license text is available at: https://www.gnu.org/licenses/old-
 - **Usage:** Python utility library required by suci-keytool.py. Provides the `osmocom.utils` module used for byte/hex conversion.
 
 ---
+
+<img src="https://github.com/open5gs.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## Open5GS
 
@@ -44,6 +50,8 @@ The full AGPL-3.0 license text is available at: https://www.gnu.org/licenses/agp
 
 ---
 
+<img src="https://github.com/vectorcore-mobile.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## VectorCore ePDG, VectorCore AAA, VectorCore MMSC
 
 **Copyright (C) Stacy Vinson ([svinson1121](https://github.com/svinson1121)) and the [VectorCore Mobile](https://github.com/vectorcore-mobile) project**
@@ -57,6 +65,8 @@ The full AGPL-3.0 license text is available at: https://www.gnu.org/licenses/agp
 
 ---
 
+<img src="https://github.com/herlesupreeth.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## docker_open5gs (reference)
 
 **Copyright (C) Supreeth Herle and contributors**
@@ -66,6 +76,8 @@ The full AGPL-3.0 license text is available at: https://www.gnu.org/licenses/agp
 - **Usage:** Used as architectural reference for Docker-based Open5GS deployments. No code from this project is directly bundled in the NMS.
 
 ---
+
+<img src="https://github.com/clientIO.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## JointJS
 
@@ -80,6 +92,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 
 ---
 
+<img src="https://github.com/facebook.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## React
 
 **Copyright (C) Meta Platforms, Inc. and affiliates**
@@ -89,6 +103,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 - **Usage:** Frontend UI library.
 
 ---
+
+<img src="https://github.com/vitejs.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## Vite
 
@@ -100,6 +116,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 
 ---
 
+<img src="https://github.com/tailwindlabs.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## Tailwind CSS
 
 **Copyright (C) Tailwind Labs, Inc.**
@@ -109,6 +127,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 - **Usage:** Utility-first CSS framework used for frontend styling.
 
 ---
+
+<img src="https://github.com/expressjs.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## Express
 
@@ -120,6 +140,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 
 ---
 
+<img src="https://github.com/mongodb.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## MongoDB
 
 **Copyright (C) MongoDB, Inc.**
@@ -129,6 +151,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 - **Usage:** Database used to store Open5GS subscriber data. Not bundled — must be installed separately on the host system or run as a Docker container.
 
 ---
+
+<img src="https://github.com/prometheus.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## Prometheus
 
@@ -140,6 +164,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 
 ---
 
+<img src="https://github.com/grafana.png" width="28" height="28" align="left" style="margin-right: 8px;">
+
 ## Grafana
 
 **Copyright (C) Grafana Labs**
@@ -149,6 +175,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 - **Usage:** Metrics visualization and dashboarding for Open5GS monitoring. Runs as an optional Docker container alongside the NMS.
 
 ---
+
+<img src="https://github.com/genieacs.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## GenieACS
 
@@ -163,6 +191,8 @@ The full MPL-2.0 license text is available at: https://www.mozilla.org/en-US/MPL
 The full AGPL-3.0 license text is available at: https://www.gnu.org/licenses/agpl-3.0.html
 
 ---
+
+<img src="https://github.com/Legrandin.png" width="28" height="28" align="left" style="margin-right: 8px;">
 
 ## pycryptodomex
 
