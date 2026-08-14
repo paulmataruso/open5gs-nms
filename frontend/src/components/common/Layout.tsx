@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp,
+  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
@@ -15,7 +15,7 @@ interface LayoutProps {
   onTabChange: (tab: string) => void;
 }
 
-const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<any>; beta?: boolean }> = [
+const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<any> }> = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
   { id: 'topology', label: 'Topology', icon: Network },
   { id: 'ran', label: 'RAN Network', icon: Radio },
@@ -34,8 +34,9 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'bind', label: 'DNS (BIND9)', icon: Globe },
   ...(FEATURES.sms ? [{ id: 'sms', label: FEATURES.mms ? 'SMS/MMS' : 'SMS', icon: MessageSquare }] : []),
   ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
-  ...(FEATURES.pstn ? [{ id: 'pstn', label: 'PSTN Gateway', icon: PhoneCall, beta: true }] : []),
+  ...(FEATURES.pstn ? [{ id: 'pstn', label: 'PSTN Gateway', icon: PhoneCall }] : []),
   ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),
+  ...(FEATURES.secgw ? [{ id: 'secgw', label: 'SecGW', icon: ShieldCheck }] : []),
   ...(FEATURES.validation ? [{ id: 'validation', label: 'UE/Core Validation', icon: FlaskConical }] : []),
   ...(FEATURES.pcap ? [{ id: 'pcap', label: 'Packet Capture', icon: Radar }] : []),
   { id: 'users',   label: 'User Management', icon: UserCog },
@@ -77,10 +78,7 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
             >
               <item.icon className="w-4 h-4 shrink-0" />
               {!collapsed && (
-                <span className="font-display flex-1 truncate">{item.label}</span>
-              )}
-              {!collapsed && item.beta && (
-                <span className="text-[9px] bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded px-1 py-0.5 font-semibold leading-none">BETA</span>
+                <span className="font-display flex-1 truncate text-left">{item.label}</span>
               )}
             </button>
           ))}

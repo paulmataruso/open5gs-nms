@@ -1232,7 +1232,7 @@ export function SMSPage() {
               <button
                 onClick={handleSetSmsWorkerInterval}
                 disabled={intervalActing || !intervalInput}
-                className="nms-btn-secondary text-sm px-3 py-1.5"
+                className="nms-btn-primary text-sm px-3 py-1.5"
               >
                 Set
               </button>

@@ -52,6 +52,9 @@
   .nms-label {
     @apply block text-xs font-medium text-nms-text-dim uppercase tracking-wider mb-1;
   }
+  .nms-checkbox {
+    @apply w-4 h-4 rounded border-nms-border bg-nms-bg accent-nms-accent cursor-pointer;
+  }
   .status-dot {
     @apply w-2.5 h-2.5 rounded-full;
   }

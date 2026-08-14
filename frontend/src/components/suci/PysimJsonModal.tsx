@@ -136,7 +136,7 @@ export function PysimJsonModal({ keys, onClose }: PysimJsonModalProps): JSX.Elem
                 </label>
                 <button
                   onClick={() => copy(prettyJson, 'pretty')}
-                  className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover transition-colors"
+                  className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim transition-colors"
                 >
                   {copiedPretty ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {copiedPretty ? 'Copied!' : 'Copy'}
@@ -156,7 +156,7 @@ export function PysimJsonModal({ keys, onClose }: PysimJsonModalProps): JSX.Elem
                 </label>
                 <button
                   onClick={() => copy(onelineJson, 'oneline')}
-                  className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover transition-colors"
+                  className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim transition-colors"
                 >
                   {copiedOneline ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {copiedOneline ? 'Copied!' : 'Copy'}

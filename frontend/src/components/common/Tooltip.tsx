@@ -82,15 +82,15 @@ export function Tooltip({
   const getArrowClasses = () => {
     switch (adjustedPosition) {
       case 'top':
-        return 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-nms-surface-1';
+        return 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-nms-surface-2';
       case 'bottom':
-        return 'bottom-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-t-transparent border-b-nms-surface-1';
+        return 'bottom-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-t-transparent border-b-nms-surface-2';
       case 'left':
-        return 'left-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-r-transparent border-l-nms-surface-1';
+        return 'left-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-r-transparent border-l-nms-surface-2';
       case 'right':
-        return 'right-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-l-transparent border-r-nms-surface-1';
+        return 'right-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-l-transparent border-r-nms-surface-2';
       default:
-        return 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-nms-surface-1';
+        return 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-nms-surface-2';
     }
   };
 
@@ -108,7 +108,7 @@ export function Tooltip({
         <div
           ref={tooltipRef}
           className={clsx(
-            'absolute z-50 px-3 py-2 text-xs leading-relaxed text-nms-text bg-nms-surface-1 border border-nms-border rounded-lg shadow-lg',
+            'absolute z-50 px-3 py-2 text-xs leading-relaxed text-nms-text bg-nms-surface-2 border border-nms-border rounded-lg shadow-lg',
             'animate-fade-in pointer-events-none whitespace-normal',
             getPositionClasses()
           )}

@@ -125,7 +125,22 @@ export type AuditAction =
   | 'mms_start'
   | 'mms_stop'
   | 'mms_restart'
-  | 'mms_sync_subscribers';
+  | 'mms_sync_subscribers'
+  | 'secgw_install'
+  | 'secgw_uninstall'
+  | 'secgw_configure'
+  | 'secgw_start'
+  | 'secgw_stop'
+  | 'secgw_restart'
+  | 'secgw_radio_add'
+  | 'secgw_radio_remove'
+  | 'secgw_radio_reissue_cert'
+  | 'secgw_radio_test_tunnel'
+  | 'secgw_radio_bundle_download'
+  | 'secgw_radio_edit'
+  | 'secgw_radio_delete'
+  | 'secgw_config_save'
+  | 'secgw_dns_record_add';
 
 export interface AuditLogEntry {
   id: string;

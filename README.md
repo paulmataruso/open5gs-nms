@@ -54,6 +54,14 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Prometheus Targets](docs/screenshots/metrics-prometheus-targets.png)
 
+### Traffic History
+- **GTP U-Plane throughput over time** — aggregate across all subscribers per DNN, or filtered down to a single subscriber
+- **Configurable resolution** — 5 minute, 15 minute, or 1 hour buckets, plus a flexible time-range picker
+- **Live latest-rate readout** — current Up/Down Mbps shown alongside the chart
+- **Built on the existing Prometheus, not a second time-series store** — reuses the already-deployed Prometheus stack's own `rate()` computation over raw cumulative byte counters exposed by the backend's own `/metrics` endpoint, so retention matches whatever Prometheus is already configured for
+
+![Traffic History](docs/screenshots/traffic-history.png)
+
 ### Configuration Management
 - **Dual Editor Modes** - Form-based editor with 150+ contextual tooltips OR Monaco YAML editor
 - **All 17 Network Functions** - Complete coverage: NRF, SCP, AMF, SMF, UPF, AUSF, UDM, UDR, PCF, NSSF, BSF, SEPP (5G) + MME, HSS, PCRF, SGW-C, SGW-U (4G)
@@ -177,6 +185,29 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Sercomm 5G NR Provisioning](docs/screenshots/sercomm-nr-provisioning.png)
 
+### Security Gateway (SecGW) *(Alpha — Experimental)*
+
+> ⚠️ **This module is in alpha.** Real IPsec tunnels are confirmed working end-to-end for both Baicells and Nokia radios simultaneously — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat, correlated by timestamp). Per-radio IPsec configuration on the radio's own page is manual — there is no automatic TR-069 push in this version.
+
+- **Terminates IPsec from real RAN backhaul** — decrypts S1-MME/S1-U (4G) and N2/N3 (5G) traffic at the edge and forwards it in plaintext to the existing core NFs, the same "decrypt at the edge" pattern this project's VoWiFi ePDG already uses. Built on strongSwan/`swanctl`, source-built with a small patch so it coexists with VoWiFi's own IKEv2 daemon on the same host
+- **Vendor-aware Radios tab** — separate Baicells and Nokia sub-tabs, since the two vendors' IPsec models are fundamentally different: Baicells negotiates a virtual IP dynamically via IKEv2 Configuration Payload, while Nokia has no CP support at all and instead uses static tunnel endpoints plus one or more explicit "Protect" traffic-selector policies
+- **Per-radio dedicated pool addresses** — every radio gets its own unique address, never a shared range, avoiding kernel XFRM policy collisions between radios
+- **Additional Protected Destinations** — extend a radio's tunnel to reach more than the core NF pair (e.g. the internal BIND DNS server), for radios whose own IPsec page can't do a plaintext bypass for that traffic
+- **Full connection-info sheet per radio** — downloadable bundle (cert/PSK plus a plain-language cheat sheet) with the exact values to enter on the radio's own IPsec page, using that vendor's own field names and terminology
+- **Live Sessions view** — real-time IKE/CHILD SA status, traffic selectors, and byte counters per radio, parsed straight from `swanctl --list-sas`
+- **Additive by design** — adding a radio never touches its existing plaintext path; the operator manually re-points the radio at the gateway only after verifying the tunnel with the built-in Test Tunnel button
+- `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in)
+
+![SecGW Setup](docs/screenshots/secgw-setup.png)
+
+![SecGW Baicells Radios](docs/screenshots/secgw-baicells-radios.png)
+
+![SecGW Nokia Radios](docs/screenshots/secgw-nokia-radios.png)
+
+![SecGW Nokia Radio Details](docs/screenshots/secgw-nokia-radio-details.png)
+
+![SecGW Live Sessions](docs/screenshots/secgw-live-sessions.png)
+
 ### SUCI Key Management (5G Privacy)
 - **Keypair Generation** — Create X25519 (Profile A) or secp256r1 (Profile B) home network keys
 - **Public Key Display** — Hex format ready for eSIM provisioning
@@ -285,6 +316,21 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - Requires a combined EPS/IMSI attach from the UE
 
 ![SMS over SGs](docs/screenshots/sms-config.png)
+
+### MMS *(Beta)*
+
+> ⚠️ **This module is in beta.** Real end-to-end MMS confirmed working on a real UE. `ENABLE_MMS_MODULE` defaults **disabled** (opt-in).
+
+- **VectorCore MMSC** ([vectorcore-mobile](https://github.com/vectorcore-mobile)) — built from source (Go toolchain + embedded web UI) and installed as a host service with one click; delivery notifications ride on the existing SMS (SGs) SMPP interface, so IMS/SMS must already be configured
+- **Direct links to VectorCore's own admin UI and JSON API** — this page doesn't reimplement them, it links straight out
+- **Subscriber sync** — pushes MSISDNs from the Open5GS MongoDB into VectorCore so it knows which numbers can send/receive MMS
+- **iPhone MMS Settings Profile generator** — iOS hides the manual APN/MMSC settings screen on most SIMs; generates a ready-to-install `.mobileconfig` with the correct MMSC URL pre-filled
+- **Real upstream bugs found and patched** — VectorCore's MM1 request-path logging defaulted too quiet to diagnose delivery issues, and real phones send MMS PDUs with no usable `From` field; fixed with a small compiled-Go reverse proxy (`mm1-msisdn-proxy.go`, its own systemd unit, built during every Configure) that resolves the sender's MSISDN from the UE's Framed-Routing IP and injects the `X-MSISDN` header VectorCore expects
+- Lives as a second tab on the SMS/MMS page, not a separate nav entry
+
+![MMS Setup](docs/screenshots/mms-setup.png)
+
+![MMS iPhone Settings Profile](docs/screenshots/mms-iphone-profile.png)
 
 ### VoWiFi *(Alpha — Experimental)*
 
@@ -588,39 +634,33 @@ For detailed development instructions, see **[docs/development.md](docs/developm
 
 See **[CHANGELOG.md](CHANGELOG.md)** for a complete version history.
 
-### Latest Release: v2.0-beta_0.9 (2026-07-16)
+### Latest Release: v2.0-beta_0.47 (2026-08-14)
 
-**🆕 New Modules: SEPP/N32 Roaming, DNS/FQDN Migration Wizard, VoWiFi, Framed Routing, eSIM Generator**
-- **SEPP / 5G Roaming (N32)** — the 17th core NF now gets a full Config tab: home SEPP config, optional TLS/mutual-TLS with in-UI cert generation, and a "Generate Visited PLMN Config" export for the other operator
-- **DNS (BIND9) / FQDN Migration Wizard** — phased, reversible migration of the whole core from hardcoded IPs to 3GPP FQDN/DNS addressing, plus a BIND9 zone management page
-- **VoWiFi** *(alpha, highly experimental)* — osmo-epdg + strongSwan ePDG, proven working end-to-end against a test IKEv2/EAP-AKA emulator; real handsets unconfirmed
-- **Framed Routing** — per-session IPv4/IPv6 subnets routed behind a UE, with optional static host route management, overlap/duplicate warnings, and a registry view
-- **eSIM Generator** — generates real eSIM activation codes via the Simlessly RSP API from the Subscribers page
+**🆕 New Module: Security Gateway (SecGW)**
+- IPsec termination for real RAN backhaul (S1-MME/S1-U, N2/N3) — confirmed live for
+  both Baicells and Nokia radios simultaneously, real S1AP/GTP-U traffic verified
+  flowing through the tunnel via packet capture
+- Vendor-split Radios tab (Baicells / Nokia), since the two vendors' IPsec models are
+  fundamentally different — Baicells negotiates a virtual IP dynamically via IKEv2
+  Configuration Payload, Nokia uses static tunnel endpoints and explicit traffic
+  selectors with no CP support at all
+- Per-radio dedicated pool addresses, an "Additional Protected Destinations" field for
+  radios needing to reach more than the core NF pair, and downloadable connection-info
+  bundles that use each vendor's own field names and terminology
+- `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in)
 
-**🆕 Also since v2.0-beta_0.7: IMS/VoLTE, SMS over SGs, UE Validation, Subscriber Groups, Sercomm 5G NR**
-- **IMS / VoLTE** *(alpha, not production-ready)* — full IMS core integration (Kamailio P/I/S-CSCF, PyHSS, BIND9, RTPEngine); server-side signaling verified with Linphone over Early-IMS auth, but real-phone VoLTE is unconfirmed and will likely need manual configuration
-- **SMS over SGs** — Osmocom STP/HLR/MSC stack wired to the MME's SGs interface for CS-fallback SMS, no IMS required
-- **UE Validation** — spin up simulated 4G (srsRAN) or 5G (UERANSIM) test UEs against your live core to validate attach/PDU/paging end-to-end without a physical radio
-- **Subscriber Groups** — organize subscribers into named, colored groups on the Subscriber page
-- **Sercomm 5G NR** — new "Sercomm 5G" Auto-Config tab for full SCE5164-B48 gNB provisioning
+**🛠️ Fixes**
+- VoWiFi's Setup tab no longer shows a first-run "Run Install" prompt once already
+  installed, matching the fix already applied to SecGW's own Setup tab — audited every
+  other install-flow page in the app and confirmed none of the others had this bug
+- A phantom `nms-btn-secondary` CSS class (referenced in 5 places, never actually
+  defined) meant those buttons rendered with no styling at all — fixed, along with
+  three more of the same class of bug (`nms-accent-hover`, `nms-surface-1`,
+  `nms-text-secondary`, all referenced but undefined Tailwind color tokens) and a
+  missing `nms-checkbox` style that had left every checkbox in the app as an unstyled
+  native browser checkbox
 
-**🛠️ FRR / L3 Routing**
-- **Reinstall (Source)** — migrates FRR from the Ubuntu apt package (8.4.4, long-standing eigrpd assertion-crash bugs) to a from-source build, fixing a real recurring issue where crash-looping briefly withdrew/relearned routes and caused intermittent S1AP/N2 drops across every connected radio
-- **eigrpd crash-guard patch** — a hand-built patch on top of the from-source FRR build closing a long-standing upstream bug ([FRRouting/frr#943](https://github.com/FRRouting/frr/issues/943)) that could crash `eigrpd` entirely and drop every connected radio — see [docs/frr-eigrpd-crash-guard-patch.md](docs/frr-eigrpd-crash-guard-patch.md)
-- FRR log-level selector (8 syslog severities) and a `frr.log` file, now wired in as a 4th Unified Logs source
-- TUN Interfaces and Dummy Interfaces moved under the L3 Routing page as sub-tabs
-
-**📜 Real-Time Logging**
-- **Syslog Forwarding** — forwards all Open5GS/GenieACS/FRR logs to a remote syslog server (e.g. Graylog) via rsyslog, with automatic AppArmor and file-permission fixes so it works out of the box
-- **Major Events view** — filtered timeline of just the meaningful transitions (radio connect/disconnect, attach/detach, register/deregister, PDU session up/down), filterable by event type/radio/IMSI, with a zoomable log-context viewer
-- Log source switching now auto-selects that source's services
-
-**⚠️ Known Issues**
-- Subscriber Groups' mutating routes are missing `requireAdmin` (any authenticated user, not just admins, can currently manage groups)
-- The backend's Docker socket mount changed from read-only to read-write — pending confirmation this is intentional
-- SEPP and VoWiFi logs are not yet wired into Unified Logs / Major Events (still 16 NF streams there, not 17)
-
-See **[CHANGELOG.md](CHANGELOG.md)** for the full history, including v2.0-beta_0.4–0.6 (security hardening, FRR route-filter fixes, TUN persistence, nav reorganization).
+See **[CHANGELOG.md](CHANGELOG.md)** for the full history.
 
 ---
 

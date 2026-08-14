@@ -318,7 +318,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="nms-label mb-0">Our Public Certificate (share with visited operator)</label>
-                  <button onClick={copyCert} className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover">
+                  <button onClick={copyCert} className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim">
                     {copiedCert ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                     {copiedCert ? 'Copied!' : 'Copy'}
                   </button>
@@ -435,11 +435,11 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
             <div className="flex items-center justify-between mb-2">
               <label className="nms-label mb-0">Generated sepp.yaml (for the visited operator)</label>
               <div className="flex items-center gap-3">
-                <button onClick={copyGeneratedYaml} className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover">
+                <button onClick={copyGeneratedYaml} className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim">
                   {copiedYaml ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {copiedYaml ? 'Copied!' : 'Copy'}
                 </button>
-                <button onClick={downloadGeneratedYaml} className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover">
+                <button onClick={downloadGeneratedYaml} className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim">
                   <Download className="w-3.5 h-3.5" /> Download
                 </button>
               </div>

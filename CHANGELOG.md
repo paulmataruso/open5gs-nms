@@ -4,6 +4,97 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.47] - 2026-08-14
+
+### Added — Security Gateway (SecGW): new optional module for radio-backhaul IPsec
+
+New optional module (`ENABLE_SECGW_MODULE`, defaults **disabled**) that terminates
+IPsec tunnels from radios and forwards decrypted S1-MME/S1-U (4G) traffic to the
+existing core NFs — architecturally the same "decrypt at the edge, plaintext inside"
+pattern VoWiFi's ePDG already uses, built on strongSwan/`swanctl` (source-built via
+`secgw-build.ts`, with a small patch so it can coexist with VoWiFi's own IKEv2 daemon
+on UDP 500/4500 — see `SECGW_BIND_ADDR`). Confirmed live: 3 Baicells eNBs and 1 Nokia
+AirScale radio all connected simultaneously, real S1AP/GTP-U traffic verified flowing
+through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME,
+correlated by timestamp, port 36412).
+
+Real bugs found and fixed along the way:
+- **Shared pool CIDR across radios silently collided on one kernel XFRM policy
+  slot** — whichever radio negotiated last stole the policy from the others, who then
+  showed ESTABLISHED in swanctl but had no real traffic path. Fixed with per-radio
+  dedicated single-address pools (`allocatePoolAddress()`).
+- **That same pool-collision fix, when applied live to already-connected radios by
+  hand-editing conf.d files directly, was never reflected back into
+  `.secgw-state.json`** — so the app's own "already used" bookkeeping for new radios
+  saw stale/empty `poolAddress` fields and happily handed out an address already in
+  live use, nearly repeating the same outage for a newly-added Nokia radio. Fixed with
+  `reconcilePoolAddressFromDisk()` — on load, any radio missing `poolAddress` gets it
+  recovered from its live conf.d file's `pools{}` block (ground truth) instead of
+  staying null.
+- **Nokia has no IKEv2 Configuration Payload (CP) support at all** — confirmed live
+  by reading the radio's own IPsec page directly, not assumed. It only exposes static
+  tunnel endpoints + traffic selectors as one or more standalone "Protect" policies,
+  with no virtual-IP/CP concept anywhere on the page. The Nokia config generator had
+  been built as a copy of Baicells' CP+pool-address model, which meant `remote_ts`
+  was set to an address the radio would never actually request — CHILD_SA negotiation
+  could never have succeeded. Fixed by deriving Nokia's `remote_ts`/`remote_addrs`/IKE
+  identity from the radio's own real IP (`localIpAddress`) instead, and dropping the
+  `pools{}` offer entirely for Nokia connections.
+- **Nokia's only identity field ("Peer IKE identity") describes what identity it
+  expects FROM the gateway, not what it presents as its own** — with no separate
+  field to set a custom local ID, Nokia defaults to presenting its own tunnel-endpoint
+  IP (the common IKEv2 fallback per RFC 7296 when no local ID is configured). The
+  gateway's `remote.id`/PSK lookup was expecting the synthetic
+  `radio-xxx.secgw.<realm>` string used for Baicells — fixed to expect the radio's
+  real IP instead, and to lock `remote_addrs` to that same known-static address rather
+  than `%any` (Nokia's IP is known upfront, unlike Baicells which may be NATed).
+- **Nokia's own PSK complexity rule rejected the auto-generated PSK** — the generator
+  produced a plain lowercase hex string; Nokia's page requires 8-128 chars, 2+ digits,
+  both cases, a non-alphanumeric character, no spaces/quotes, and no repeated
+  character back-to-back. Added a dedicated `generateNokiaPsk()` (rejection sampling,
+  verified against 50,000 generated samples) plus client-side validation so a
+  manually-typed PSK is caught before submit instead of only failing on the radio.
+- **Added `extraLocalCidrs`** — an "Additional Protected Destinations" field (either
+  vendor) for radios that need to reach something beyond the auto-derived core NF
+  pair through their tunnel, e.g. the BIND DNS server for a Nokia radio whose own
+  IPsec page couldn't do a plaintext "Bypass" policy for DNS at all and needed it
+  added as a real "Protect" entry instead.
+
+Frontend: Radios tab is split into separate Baicells/Nokia sub-tabs since the two
+vendors' IPsec models and field sets are fundamentally different (`RadioFormModal`
+branches on vendor); Nokia's Add/Edit form uses the exact field names/spelling the
+radio's own page uses (not renamed/abbreviated — e.g. "IKE association max lifetime",
+not "IKE SA lifetime"); the radio Details panel shows every one of Nokia's ~19 IPsec
+settings as a table with the value to enter on the radio, not a partial summary.
+Dashboard gained a SecGW Tunnels stat card (active/down/total) replacing the old WS
+Connections card.
+
+Also fixed the same "always shows the first-run Install prompt, even when already
+installed" bug on the VoWiFi page that SecGW's Setup tab had already been fixed for —
+audited every other install-flow page (IMS, SMS, MMS, PSTN, Time Server/chrony, BIND9,
+UE Validation/swu-emulator, Syslog Forwarding) and confirmed none of the others had it.
+
+### Fixed — `nms-btn-secondary` and other phantom CSS classes silently rendered unstyled
+
+`nms-btn-secondary` was used on 5 buttons across the frontend (VoWiFi/SecGW's
+Configure buttons, a modal Cancel button, AutoConfig's Preview button, SMS's interval
+Set button) but was **never actually defined** in `index.css` (only `nms-btn-primary`/
+`nms-btn-danger`/`nms-btn-ghost` exist) — every one of those buttons rendered with no
+color or box styling at all. A full audit of every `nms-*` class/token used anywhere
+in the frontend against what's actually defined in `index.css` and
+`tailwind.config.js` turned up three more of the same bug: `nms-accent-hover`,
+`nms-surface-1`, and `nms-text-secondary` were referenced as Tailwind color tokens in
+20+ places but never defined in `tailwind.config.js`'s `colors`, and `nms-checkbox`
+was used on 11+ checkboxes across `SubscriberPage.tsx`/`SeppEditor.tsx`/others with no
+CSS rule at all, meaning every checkbox in the app was an unstyled native browser
+checkbox. Fixed each usage to point at the real, defined equivalent
+(`nms-accent-dim`, `nms-surface-2`, `nms-text-dim`) and added a real `.nms-checkbox`
+rule. If you add a new `nms-*`-prefixed class or color token, grep both `index.css`
+and `tailwind.config.js` first to confirm it actually exists — Tailwind silently
+generates nothing for an undefined arbitrary/custom class, it doesn't error.
+
+---
+
 ## [v2.0-beta_0.46] - 2026-08-09
 
 ### Fixed — VoWiFi: real SIP signaling now works end-to-end for the first time

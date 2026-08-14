@@ -277,7 +277,7 @@ function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
             </div>
           ) : (
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-nms-surface-1 border-b border-nms-border">
+              <thead className="sticky top-0 bg-nms-surface-2 border-b border-nms-border">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Subnet</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Subscriber</th>
@@ -378,7 +378,7 @@ function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
             </div>
           ) : (
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-nms-surface-1 border-b border-nms-border">
+              <thead className="sticky top-0 bg-nms-surface-2 border-b border-nms-border">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IMSI</th>
                   <th className="text-right px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Actions</th>
@@ -2270,7 +2270,7 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                   {((sess.ipv4_framed_routes?.length ?? 0) > 0 || (sess.ipv6_framed_routes?.length ?? 0) > 0) && (
                     <div className="mb-3">
                       <label
-                        className="flex items-center gap-2 text-xs text-nms-text-secondary cursor-pointer"
+                        className="flex items-center gap-2 text-xs text-nms-text-dim cursor-pointer"
                         title="Adds/removes a local ip route on this host automatically. The rest of your network still needs its own route to this subnet — pointing at THIS Open5GS host's IP, never the UE's IP — either via a dynamic routing advertisement (e.g. EIGRP) or a manual static route on your core/edge router."
                       >
                         <input
@@ -2288,7 +2288,7 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                             host from the rest of your network — that's a separate step, done one of two ways:
                           </p>
                           <div>
-                            <span className="font-semibold text-nms-text-secondary">Option A — dynamic routing (e.g. EIGRP):</span> add
+                            <span className="font-semibold text-nms-text-dim">Option A — dynamic routing (e.g. EIGRP):</span> add
                             this to <code>frr.conf</code>'s <code>router eigrp 1</code> block yourself (not automated):
                             <div className="font-mono mt-1">
                               {[...(sess.ipv4_framed_routes ?? []), ...(sess.ipv6_framed_routes ?? [])].map(cidr => (
@@ -2297,7 +2297,7 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                             </div>
                           </div>
                           <div>
-                            <span className="font-semibold text-nms-text-secondary">Option B — manual static route:</span> on your
+                            <span className="font-semibold text-nms-text-dim">Option B — manual static route:</span> on your
                             core/edge router, point the route at <strong>this Open5GS host's own IP</strong> on the link
                             to that router — <strong>never the UE's IP</strong> (the UE isn't a direct L3 hop from outside
                             this host; this host is what forwards into the UE's tunnel). Example, if this host's IP toward

@@ -558,7 +558,7 @@ export const AutoConfigPage: React.FC = () => {
 
           {/* Actions */}
           <div className="flex gap-3">
-            <button onClick={handlePreview} disabled={loading} className="nms-btn-secondary flex-1">
+            <button onClick={handlePreview} disabled={loading} className="nms-btn-ghost flex-1">
               <AlertCircle className="w-4 h-4 inline mr-2" />Preview Config
             </button>
             <button onClick={handleApply} disabled={loading} className="nms-btn-primary flex-1">

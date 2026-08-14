@@ -361,7 +361,7 @@ export function EsimGeneratorModal({ subscriber, onClose }: EsimGeneratorModalPr
               )}
               {result.obj?.acLink && (
                 <div>
-                  <a href={result.obj.acLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-nms-accent hover:text-nms-accent-hover">
+                  <a href={result.obj.acLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-nms-accent hover:text-nms-accent-dim">
                     <ExternalLink className="w-3.5 h-3.5" /> Open AC Link
                   </a>
                   <a href={result.obj.acLink} target="_blank" rel="noreferrer" className="block mt-2">
@@ -378,7 +378,7 @@ export function EsimGeneratorModal({ subscriber, onClose }: EsimGeneratorModalPr
               <label className="text-xs font-semibold text-nms-text uppercase tracking-wider">Pretty JSON (human readable)</label>
               <button
                 onClick={() => copy(prettyJson, 'pretty')}
-                className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover transition-colors"
+                className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim transition-colors"
               >
                 {copiedPretty ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {copiedPretty ? 'Copied!' : 'Copy'}
@@ -395,7 +395,7 @@ export function EsimGeneratorModal({ subscriber, onClose }: EsimGeneratorModalPr
               <label className="text-xs font-semibold text-nms-text uppercase tracking-wider">Single-line</label>
               <button
                 onClick={() => copy(onelineJson, 'oneline')}
-                className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-hover transition-colors"
+                className="flex items-center gap-1.5 text-xs text-nms-accent hover:text-nms-accent-dim transition-colors"
               >
                 {copiedOneline ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {copiedOneline ? 'Copied!' : 'Copy'}

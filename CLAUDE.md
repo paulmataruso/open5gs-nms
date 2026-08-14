@@ -190,7 +190,26 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     bit-level RTP payload decode (real AMR-WB frames extracted from a packet
     capture and decoded with a real decoder) before finally finding this.
 
-## Feature inventory (as of v2.0-beta_0.29, 2026-07-28)
+15. **SecGW: every radio needs its own dedicated pool address, and Baicells vs
+    Nokia use fundamentally different IPsec models — don't assume one vendor's
+    approach applies to the other.** `allocatePoolAddress()` hands each radio a
+    unique single-address pool/traffic-selector — never a shared CIDR (a real
+    outage: shared selectors collide on one kernel XFRM policy slot, and
+    whichever radio negotiates last silently steals it from the others, who
+    then show ESTABLISHED in swanctl with no real traffic path). Baicells
+    negotiates that address dynamically via IKEv2 Configuration Payload (CP).
+    **Nokia has no CP support at all** (confirmed live 2026-08-14 by reading the
+    radio's own IPsec page directly) — it only offers static tunnel endpoints +
+    traffic selectors as one or more standalone "Protect" policies, so Nokia's
+    `remote_ts`/`remote_addrs`/IKE identity must be the radio's own real IP
+    (`localIpAddress`), never the pool/CP mechanism (see `resolveRemoteTs()`'s
+    comment for the full story). A Nokia radio needing to reach anything beyond
+    the auto-derived core NF pair (e.g. the BIND DNS server) needs it added via
+    `extraLocalCidrs` as a real "Protect" policy on the radio's side, matched by
+    widening this gateway's own `local_ts` — Nokia's "Bypass" IPsec action isn't
+    reliably usable for this, don't assume it is.
+
+## Feature inventory (as of v2.0-beta_0.47, 2026-08-14)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -213,6 +232,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | CBRS SAS server | stable | `sas-service.ts`, `sas-controller.ts` | `SASPage.tsx` |
 | GenieACS radio provisioning | stable | `genieacs-controller.ts` | `AutoConfigPage.tsx`, `FemtoConfigTab.tsx` |
 | Traffic History (aggregate + per-subscriber) | stable | `subscriber-ip-accounting.ts`, `prometheus-metrics.ts`, `traffic-history-controller.ts` | `TrafficHistoryPage.tsx` |
+| Security Gateway (SecGW) | alpha — real IPsec tunnels confirmed live for both radio vendors simultaneously: 3 Baicells eNBs (IKEv2 Configuration Payload/virtual-IP based) and 1 Nokia AirScale (static tunnel endpoints + traffic selectors, no CP) — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME, 2026-08-14). See architectural pattern #15 for why Baicells and Nokia are configured completely differently. `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in). | `secgw-controller.ts`, `secgw-build.ts` | `SecGWPage.tsx` |
 
 Full detail on any of these: `docs/features.md`.
 
@@ -283,6 +303,17 @@ Full detail on any of these: `docs/features.md`.
   dereg-clearing bug). Fixed live (2026-07-27) and baked into
   `POST /api/ims/install` the same way as the two bugs above. See memory:
   `ims-pyhss-none-domain-corruption`.
+- **Phantom `nms-*` classes/tokens silently render unstyled — Tailwind doesn't
+  error on an undefined custom class, it just generates nothing.** Found live
+  (2026-08-14): `nms-btn-secondary` was used on 5 buttons across the frontend
+  but was never defined in `index.css` (only `nms-btn-primary`/`nms-btn-danger`/
+  `nms-btn-ghost` exist) — every button using it rendered with zero color/box
+  styling. A full audit turned up the same class of bug three more times:
+  `nms-accent-hover`/`nms-surface-1`/`nms-text-secondary` used as Tailwind
+  color tokens in 20+ places but never defined in `tailwind.config.js`'s
+  `colors`, and `nms-checkbox` used on 11+ checkboxes with no CSS rule at all.
+  If you add a new `nms-*`-prefixed class or color token, grep both
+  `index.css` and `tailwind.config.js` first to confirm it actually exists.
 
 ## User / workflow conventions
 

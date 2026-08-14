@@ -132,6 +132,12 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
   }, []);
 
   const isInstalling = !!status && !['idle', 'complete', 'failed'].includes(status.installStatus);
+  // First-run vs. update-available vs. already-installed — the "1. Install" card only
+  // needs to look like an action item in the first two cases. Once installed and not
+  // stale, re-showing "Run Install" as the primary CTA every visit made it look like
+  // install was never done (same fix already applied to the SecGW page's Setup tab).
+  const neverInstalled = !status?.installedOnDisk;
+  const installNeedsAttention = neverInstalled || !!status?.buildStale;
 
   useEffect(() => {
     if (isInstalling) streamLog();
@@ -212,32 +218,42 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
         </div>
       )}
 
-      {status?.buildStale && (
-        <div className="nms-card border-amber-500/40 bg-amber-500/5 flex items-start gap-3">
-          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-          <p className="text-sm text-amber-300">
-            A newer VectorCore build (source patch or commit pin) is available. Re-run Install to pick it up.
+      {installNeedsAttention ? (
+        <div className="nms-card">
+          <h2 className="text-sm font-semibold text-nms-text mb-3">1. Install</h2>
+          {status?.buildStale && !neverInstalled && (
+            <p className="text-xs text-amber-400 mb-2 flex items-start gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              A newer VectorCore build (source patch or commit pin) is available — rebuild to pick it up.
+            </p>
+          )}
+          <p className="text-xs text-nms-text-dim mb-3">
+            Builds VectorCore ePDG (Go + BPF) and VectorCore AAA (Erlang) from source and installs
+            both to <span className="font-mono">/opt/vectorcore</span>. Takes a few minutes.
           </p>
+          <button className="nms-btn-primary" disabled={!!busy || isInstalling} onClick={handleInstall}>
+            {isInstalling ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+            {isInstalling ? `Installing (${status?.installStatus})...` : neverInstalled ? 'Run Install' : 'Rebuild'}
+          </button>
+          {(installLog || isInstalling) && <LogTerminal lines={installLog} />}
+          {status?.installStatus === 'failed' && status.installError && (
+            <p className="text-xs text-red-400 mt-2 flex items-start gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {status.installError}
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="nms-card !py-2.5 flex items-center justify-between">
+          <p className="text-xs text-nms-text-dim flex items-center gap-1.5">
+            <CheckCircle className="w-3.5 h-3.5 text-green-400 shrink-0" />
+            VectorCore installed (patch rev {status?.builtWithVectorcorePatchRev}).
+          </p>
+          <button onClick={handleInstall} disabled={!!busy || isInstalling} className="nms-btn-ghost text-[11px] flex items-center gap-1 px-2 py-1">
+            {busy === 'install' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Reinstall
+          </button>
         </div>
       )}
-
-      <div className="nms-card">
-        <h2 className="text-sm font-semibold text-nms-text mb-3">1. Install</h2>
-        <p className="text-xs text-nms-text-dim mb-3">
-          Builds VectorCore ePDG (Go + BPF) and VectorCore AAA (Erlang) from source and installs
-          both to <span className="font-mono">/opt/vectorcore</span>. Takes a few minutes.
-        </p>
-        <button className="nms-btn-primary" disabled={!!busy || isInstalling} onClick={handleInstall}>
-          {isInstalling ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          {isInstalling ? `Installing (${status?.installStatus})...` : 'Run Install'}
-        </button>
-        {(installLog || isInstalling) && <LogTerminal lines={installLog} />}
-        {status?.installStatus === 'failed' && status.installError && (
-          <p className="text-xs text-red-400 mt-2 flex items-start gap-1.5">
-            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {status.installError}
-          </p>
-        )}
-      </div>
+      {!installNeedsAttention && (installLog || isInstalling) && <LogTerminal lines={installLog} />}
 
       <div className="nms-card">
         <h2 className="text-sm font-semibold text-nms-text mb-3">2. Configure</h2>
@@ -258,7 +274,7 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
             </select>
           </div>
         </div>
-        <button className="nms-btn-secondary" disabled={!!busy || status?.installStatus !== 'complete'} onClick={handleConfigure}>
+        <button className="nms-btn-primary" disabled={!!busy || status?.installStatus !== 'complete'} onClick={handleConfigure}>
           {busy === 'configure' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Wifi className="w-4 h-4" />}
           Configure
         </button>

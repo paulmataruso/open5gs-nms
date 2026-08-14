@@ -179,7 +179,7 @@ export const ProvisionConfirmModal: React.FC<Props> = ({ deviceId, serial, tasks
             {allValid ? '✓ All tasks are valid JSON' : '⚠ Fix JSON errors before confirming'}
           </p>
           <div className="flex gap-3">
-            <button onClick={onClose} className="nms-btn-secondary text-sm">
+            <button onClick={onClose} className="nms-btn-ghost text-sm">
               Cancel
             </button>
             <button

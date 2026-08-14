@@ -73,6 +73,7 @@ import { createSmsRouter } from './interfaces/rest/sms-controller';
 import { createMmsRouter, MmsMsisdnMapRefresher } from './interfaces/rest/mms-controller';
 import { createImsRouter } from './interfaces/rest/ims-controller';
 import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
+import { createSecgwRouter } from './interfaces/rest/secgw-controller';
 import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controller';
 import { createPstnRouter } from './interfaces/rest/pstn-controller';
 import { createBindRouter } from './interfaces/rest/bind-controller';
@@ -401,6 +402,7 @@ async function main() {
   app.use('/api/mms',        createMmsRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/ims',        createImsRouter(subscriberRepo, logger, auditLogger, imsCallStatsMonitor));
   app.use('/api/vowifi',     createVowifiRouter(logger, auditLogger));
+  app.use('/api/secgw',      createSecgwRouter(logger, auditLogger));
   app.use('/api/pstn',       createPstnRouter(subscriberRepo, config.mongodbUri, logger, auditLogger));
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/bind', createBindRouter(logger, auditLogger));

@@ -46,7 +46,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
         <button
           type="button"
           onClick={addPlmn}
-          className="text-xs text-nms-accent hover:text-nms-accent-hover flex items-center gap-1 transition-colors"
+          className="text-xs text-nms-accent hover:text-nms-accent-dim flex items-center gap-1 transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
           Add PLMN

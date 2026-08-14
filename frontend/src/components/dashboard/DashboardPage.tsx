@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, Globe, PhoneCall, Phone, MessageSquare, Smartphone } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, ShieldCheck, Globe, PhoneCall, Phone, MessageSquare, Smartphone } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
-import { configApi, healthApi, serviceApi, interfaceApi } from '../../api';
+import { configApi, serviceApi, interfaceApi } from '../../api';
 import { sasApi } from '../../api/sas';
 import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
+import { secgwApi, type SecGwStatus } from '../../api/secgw';
 import { mmsApi } from '../../api/mms';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
@@ -122,7 +123,6 @@ export function DashboardPage(): JSX.Element {
   const fetchSubscribers = useSubscriberStore((s) => s.fetchSubscribers);
   const subscriberTotal = useSubscriberStore((s) => s.total);
   const [validation, setValidation] = useState<ValidationResult | null>(null);
-  const [health, setHealth] = useState<{ status: string; wsConnections: number } | null>(null);
   const [bulkActing, setBulkActing] = useState(false);
   const [chronyStatus, setChronyStatus] = useState<{ installed: boolean; active: boolean; refSource?: string; sysTimeOffset?: string } | null>(null);
   const [sasStats, setSasStats] = useState<{ activeGrants: number; authorizedGrants: number; registeredCbsds: number } | null>(null);
@@ -134,6 +134,7 @@ export function DashboardPage(): JSX.Element {
   const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
   const [vowifiStats, setVowifiStats] = useState<VectorcoreStats | null>(null);
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
+  const [secgwStatus, setSecgwStatus] = useState<SecGwStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [gtpBandwidth, setGtpBandwidth] = useState<{ upMbps: number; downMbps: number } | null>(null);
@@ -143,7 +144,6 @@ export function DashboardPage(): JSX.Element {
     fetchStatuses();
     fetchSubscribers();
     configApi.validate().then(setValidation).catch(() => {});
-    healthApi.check().then(setHealth).catch(() => {});
     // Fetch chrony status for dashboard widget
     const API = import.meta.env.VITE_API_URL || '/api';
     axios.get(`${API}/chrony/status`)
@@ -184,6 +184,9 @@ export function DashboardPage(): JSX.Element {
     // PSTN Gateway status — just need services.asterisk for the Network
     // Functions grid below (P/I/S-CSCF come from imsStatus.services above).
     pstnApi.getStatus().then(setPstnStatus).catch(() => {});
+    // Security Gateway status — service health + radio/tunnel counts for its
+    // own mini-card in the Network Functions grid below.
+    secgwApi.getStatus().then(setSecgwStatus).catch(() => {});
     // Primary PLMN — shown separately for AMF (5G) and MME (4G) since the two
     // are configured independently (kept in sync by the PLMN Migration Wizard,
     // but worth surfacing both in case they ever drift). Every entry in
@@ -237,7 +240,14 @@ export function DashboardPage(): JSX.Element {
     };
     fetchMmsStats();
     const mmsStatsInterval = setInterval(fetchMmsStats, 5000);
-    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(vowifiStatsInterval); clearInterval(mmsStatsInterval); };
+    // SecGW status — radioCount/activeTunnels are computed server-side in the
+    // same /status call, so no separate admin-proxy stats endpoint is needed
+    // (unlike VoWiFi's vowifiStats above) — just poll the one endpoint.
+    const fetchSecgwStatus = () => {
+      secgwApi.getStatus().then(setSecgwStatus).catch(() => {});
+    };
+    const secgwStatusInterval = setInterval(fetchSecgwStatus, 5000);
+    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(vowifiStatsInterval); clearInterval(mmsStatsInterval); clearInterval(secgwStatusInterval); };
   }, [fetchStatuses, fetchSubscribers]);
 
   const activeCount = statuses.filter((s) => s.active).length;
@@ -326,13 +336,29 @@ export function DashboardPage(): JSX.Element {
           subValue={errorCount === 0 ? 'No issues found' : 'Review required'}
           color={errorCount === 0 ? 'nms-green' : 'nms-red'}
         />
-        <StatCard
-          icon={Wifi}
-          label="WS Connections"
-          value={health?.wsConnections ?? 0}
-          subValue={health?.status === 'ok' ? 'Backend healthy' : 'Checking...'}
-          color="nms-accent"
-        />
+        <div className="nms-card animate-fade-in">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs text-nms-text-dim uppercase tracking-wider">SecGW Tunnels</p>
+              <div className="flex items-baseline gap-3 mt-1">
+                <span>
+                  <span className="text-2xl font-semibold font-display text-green-400">{secgwStatus?.activeTunnelCount ?? 0}</span>
+                  <span className="text-xs text-nms-text-dim ml-1">active</span>
+                </span>
+                <span>
+                  <span className="text-2xl font-semibold font-display text-red-400">
+                    {Math.max((secgwStatus?.radioCount ?? 0) - (secgwStatus?.activeTunnelCount ?? 0), 0)}
+                  </span>
+                  <span className="text-xs text-nms-text-dim ml-1">down</span>
+                </span>
+              </div>
+              <p className="text-xs text-nms-text-dim mt-1">{secgwStatus?.radioCount ?? 0} total radios seen</p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-nms-accent/10">
+              <ShieldCheck className="w-5 h-5 text-nms-accent" />
+            </div>
+          </div>
+        </div>
         {/* SAS Grants card — split: stats on top, mini spectrum map on bottom */}
         <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
           <div className="flex items-start justify-between p-4">
@@ -657,6 +683,11 @@ export function DashboardPage(): JSX.Element {
           <AddonServiceMiniCard name="I-CSCF" active={!!imsStatus?.services?.icscf} loading={!imsStatus} />
           <AddonServiceMiniCard name="S-CSCF" active={!!imsStatus?.services?.scscf} loading={!imsStatus} />
           <AddonServiceMiniCard name="ASTERISK" active={!!pstnStatus?.services?.asterisk} loading={!pstnStatus} />
+          <AddonServiceMiniCard
+            name="SECGW"
+            active={!!secgwStatus?.serviceActive}
+            loading={!secgwStatus}
+          />
         </div>
       </div>
 

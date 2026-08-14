@@ -20,6 +20,7 @@ import { SMSPage } from './pages/SMSPage';
 import { IMSPage } from './pages/IMSPage';
 import { PstnGatewayPage } from './pages/PstnGatewayPage';
 import { VoWiFiPage } from './pages/VoWiFiPage';
+import { SecGWPage } from './pages/SecGWPage';
 import { BindPage } from './pages/BindPage';
 import { ValidationPage } from './pages/ValidationPage';
 import { PcapPage } from './components/pcap/PcapPage';
@@ -88,6 +89,8 @@ function App(): JSX.Element {
         return FEATURES.pstn ? <PstnGatewayPage /> : <DashboardPage />;
       case 'vowifi':
         return FEATURES.vowifi ? <VoWiFiPage /> : <DashboardPage />;
+      case 'secgw':
+        return FEATURES.secgw ? <SecGWPage /> : <DashboardPage />;
       case 'validation':
         return FEATURES.validation ? <ValidationPage /> : <DashboardPage />;
       case 'pcap':

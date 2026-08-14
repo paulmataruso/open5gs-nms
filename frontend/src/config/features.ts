@@ -17,4 +17,8 @@ export const FEATURES = {
   // third-party binary (VectorCore MMSC) running as a host service, not just a
   // config toggle — defaults off until explicitly enabled.
   mms: import.meta.env.VITE_ENABLE_MMS === 'true',
+  // Same opt-in-by-default posture as pstn/mms — misconfiguring this module risks
+  // a live radio's real S1/N2 backhaul, a bigger blast radius than a broken lab
+  // feature, so it stays off until explicitly enabled.
+  secgw: import.meta.env.VITE_ENABLE_SECGW === 'true',
 };
