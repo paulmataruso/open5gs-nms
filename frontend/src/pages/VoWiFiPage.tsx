@@ -1,13 +1,34 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react';
 import Editor from '@monaco-editor/react';
 import {
   CheckCircle, XCircle, RefreshCw, RotateCw, Play, Square, Wifi,
-  AlertTriangle, AlertCircle, BookOpen, ChevronDown, Users, Activity,
+  AlertTriangle, AlertCircle, BookOpen, ChevronDown, Users, Activity, Info,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { vowifiApi } from '../api/vowifi';
-import type { VowifiStatus, VowifiConfigFile, VectorcoreClient, VectorcoreStats } from '../api/vowifi';
+import type {
+  VowifiStatus, VowifiConfigFile, VectorcoreStats, VectorcoreSession, VectorcoreClientDiag,
+  VectorcoreIpsecStats, VectorcoreGtpuStats, VectorcoreStatusInfo,
+} from '../api/vowifi';
+
+function bytesHuman(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function uptimeHuman(seconds: number): string {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const parts: string[] = [];
+  if (d) parts.push(`${d}d`);
+  if (d || h) parts.push(`${h}h`);
+  parts.push(`${m}m`);
+  return parts.join(' ');
+}
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
@@ -391,17 +412,88 @@ function ConfigFilesTab() {
 
 // ── Live Sessions tab — net-new capability vs. the archived backend ─────────────
 
+// Expanded per-client detail — fetched lazily (only when the operator actually clicks
+// Details, not eagerly for every session on every 5s poll) from VectorCore's own
+// /api/v1/clients/{imsi}/diag, which exposes real IKE/ESP SPIs and a full per-bearer
+// breakdown (EBI, QCI, TEIDs, traffic counters, last-packet timestamp) that the plain
+// /api/v1/clients summary endpoint doesn't have at all.
+function ClientDiagPanel({ diag }: { diag: VectorcoreClientDiag }) {
+  const bearers = [{ ...diag.default_bearer, kind: 'Default' }, ...(diag.dedicated_bearers ?? []).map(b => ({ ...b, kind: 'Dedicated' }))];
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+        <div>
+          <p className="text-nms-text-dim">IKE SPI (i / r)</p>
+          <p className="font-mono text-nms-text break-all">{diag.ike_spi_i} / {diag.ike_spi_r}</p>
+        </div>
+        <div>
+          <p className="text-nms-text-dim">ESP SPI (in / out)</p>
+          <p className="font-mono text-nms-text break-all">{diag.esp_spi_in} / {diag.esp_spi_out}</p>
+        </div>
+        <div>
+          <p className="text-nms-text-dim">PGW Control (S2b GTP-C)</p>
+          <p className="font-mono text-nms-text">{diag.pgw_control_ip}:{diag.pgw_control_teid}</p>
+        </div>
+        <div>
+          <p className="text-nms-text-dim">Last Activity</p>
+          <p className="font-mono text-nms-text">{new Date(diag.last_activity).toLocaleString()}</p>
+        </div>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-left text-nms-text-dim border-b border-nms-border/50">
+            <th className="pb-1.5 font-medium">Bearer</th>
+            <th className="pb-1.5 font-medium">EBI</th>
+            <th className="pb-1.5 font-medium">QCI</th>
+            <th className="pb-1.5 font-medium">Local TEID</th>
+            <th className="pb-1.5 font-medium">PGW TEID</th>
+            <th className="pb-1.5 font-medium">Uplink</th>
+            <th className="pb-1.5 font-medium">Downlink</th>
+            <th className="pb-1.5 font-medium">Last UL Packet</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bearers.map((b, idx) => (
+            <tr key={idx} className="border-b border-nms-border/30 last:border-0">
+              <td className="py-1 text-nms-text-dim">{b.kind}</td>
+              <td className="py-1 font-mono text-nms-text">{b.ebi}</td>
+              <td className="py-1 font-mono text-nms-text">{b.qci}</td>
+              <td className="py-1 font-mono text-nms-text-dim">{b.local_teid}</td>
+              <td className="py-1 font-mono text-nms-text-dim">{b.pgw_teid}</td>
+              <td className="py-1 font-mono text-nms-text-dim">{b.uplink_packets.toLocaleString()} pkts / {bytesHuman(b.uplink_bytes)}</td>
+              <td className="py-1 font-mono text-nms-text-dim">{b.downlink_packets.toLocaleString()} pkts / {bytesHuman(b.downlink_bytes)}</td>
+              <td className="py-1 font-mono text-nms-text-dim text-[10px]">{b.last_uplink_packet ? new Date(b.last_uplink_packet).toLocaleTimeString() : '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function LiveSessionsTab({ enabled }: { enabled: boolean }) {
-  const [clients, setClients] = useState<VectorcoreClient[]>([]);
+  const [sessions, setSessions] = useState<VectorcoreSession[]>([]);
   const [stats, setStats] = useState<VectorcoreStats | null>(null);
+  const [ipsecStats, setIpsecStats] = useState<VectorcoreIpsecStats | null>(null);
+  const [gtpuStats, setGtpuStats] = useState<VectorcoreGtpuStats | null>(null);
+  const [statusInfo, setStatusInfo] = useState<VectorcoreStatusInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expandedImsi, setExpandedImsi] = useState<string | null>(null);
+  const [diagCache, setDiagCache] = useState<Record<string, VectorcoreClientDiag>>({});
+  const [diagLoading, setDiagLoading] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!enabled) return;
     try {
-      const [c, s] = await Promise.all([vowifiApi.getClients(), vowifiApi.getStats()]);
-      setClients(c);
+      const [sess, s, ipsec, gtpu, info] = await Promise.all([
+        vowifiApi.getSessions(), vowifiApi.getStats(), vowifiApi.getIpsecStats(),
+        vowifiApi.getGtpuStats(), vowifiApi.getVectorcoreStatusInfo(),
+      ]);
+      setSessions(sess);
       setStats(s);
+      setIpsecStats(ipsec);
+      setGtpuStats(gtpu);
+      setStatusInfo(info);
       setError(null);
     } catch {
       setError('Admin API unreachable — is vectorcore-epdg running with api.enabled: true?');
@@ -414,8 +506,34 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
     return () => clearInterval(t);
   }, [load]);
 
+  const toggleDetails = async (imsi: string) => {
+    if (expandedImsi === imsi) { setExpandedImsi(null); return; }
+    setExpandedImsi(imsi);
+    if (!diagCache[imsi]) {
+      setDiagLoading(imsi);
+      try {
+        const diag = await vowifiApi.getClientDiag(imsi);
+        setDiagCache(prev => ({ ...prev, [imsi]: diag }));
+      } catch {
+        toast.error('Failed to load client diagnostics');
+      } finally {
+        setDiagLoading(null);
+      }
+    }
+  };
+
+  const droppedTotal = gtpuStats
+    ? gtpuStats.dropped_bad_teid + gtpuStats.dropped_bad_peer + gtpuStats.dropped_unsupported + gtpuStats.dropped_malformed
+    : 0;
+
   return (
     <div className="space-y-4">
+      {statusInfo && (
+        <p className="text-xs text-nms-text-dim">
+          VectorCore ePDG v{statusInfo.version} · built {new Date(statusInfo.build_date).toLocaleDateString()} · up {uptimeHuman(statusInfo.uptime_seconds)}
+        </p>
+      )}
+
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
@@ -431,14 +549,43 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
           ))}
         </div>
       )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {ipsecStats && (
+          <div className="nms-card">
+            <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">IPsec (ESP)</h3>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div><span className="text-nms-text-dim">Packets In:</span> <span className="font-mono text-nms-text">{ipsecStats.esp_packets_in.toLocaleString()}</span></div>
+              <div><span className="text-nms-text-dim">Packets Out:</span> <span className="font-mono text-nms-text">{ipsecStats.esp_packets_out.toLocaleString()}</span></div>
+              <div><span className="text-nms-text-dim">Bytes In:</span> <span className="font-mono text-nms-text">{bytesHuman(ipsecStats.esp_bytes_in)}</span></div>
+              <div><span className="text-nms-text-dim">Bytes Out:</span> <span className="font-mono text-nms-text">{bytesHuman(ipsecStats.esp_bytes_out)}</span></div>
+            </div>
+          </div>
+        )}
+        {gtpuStats && (
+          <div className="nms-card">
+            <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">GTP-U</h3>
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div><span className="text-nms-text-dim">Uplink RX / TX:</span> <span className="font-mono text-nms-text">{gtpuStats.uplink_rx_packets.toLocaleString()} / {gtpuStats.uplink_tx_packets.toLocaleString()}</span></div>
+              <div><span className="text-nms-text-dim">Downlink RX / TX:</span> <span className="font-mono text-nms-text">{gtpuStats.downlink_rx_packets.toLocaleString()} / {gtpuStats.downlink_tx_packets.toLocaleString()}</span></div>
+              <div><span className="text-nms-text-dim">Active Tunnels:</span> <span className="font-mono text-nms-text">{gtpuStats.active_tunnels}</span></div>
+              <div>
+                <span className="text-nms-text-dim">Dropped:</span>{' '}
+                <span className={clsx('font-mono', droppedTotal > 0 ? 'text-amber-400' : 'text-nms-text')}>{droppedTotal.toLocaleString()}</span>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="nms-card">
         <div className="flex items-center gap-2 mb-3">
           <Users className="w-4 h-4 text-nms-accent" />
           <h2 className="text-sm font-semibold text-nms-text">Attached Subscribers</h2>
         </div>
         {error && <p className="text-xs text-red-400 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> {error}</p>}
-        {!error && clients.length === 0 && <p className="text-xs text-nms-text-dim">No active sessions.</p>}
-        {clients.length > 0 && (
+        {!error && sessions.length === 0 && <p className="text-xs text-nms-text-dim">No active sessions.</p>}
+        {sessions.length > 0 && (
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-nms-text-dim border-b border-nms-border">
@@ -447,22 +594,43 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
                 <th className="pb-2 font-medium">Outer IP</th>
                 <th className="pb-2 font-medium">APN</th>
                 <th className="pb-2 font-medium">State</th>
+                <th className="pb-2 font-medium">S2b PGW / TEIDs (ctrl / data)</th>
+                <th className="pb-2 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {clients.map((c, idx) => (
-                <tr key={idx} className="border-b border-nms-border/50">
-                  <td className="py-1.5 font-mono text-nms-text">{c.imsi}</td>
-                  <td className="py-1.5 font-mono text-nms-text-dim">{c.ue_ip}</td>
-                  <td className="py-1.5 font-mono text-nms-text-dim">{c.outer_ip}</td>
-                  <td className="py-1.5 text-nms-text-dim">{c.apn}</td>
-                  <td className="py-1.5">
-                    <span className={clsx('px-2 py-0.5 rounded-full text-[10px] font-mono border',
-                      c.state === 'Active' ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-amber-400 bg-amber-500/10 border-amber-500/30')}>
-                      {c.state}
-                    </span>
-                  </td>
-                </tr>
+              {sessions.map(s => (
+                <Fragment key={s.imsi}>
+                  <tr className="border-b border-nms-border/50">
+                    <td className="py-1.5 font-mono text-nms-text">{s.imsi}</td>
+                    <td className="py-1.5 font-mono text-nms-text-dim">{s.ue_ip}</td>
+                    <td className="py-1.5 font-mono text-nms-text-dim">{s.outer_ip}</td>
+                    <td className="py-1.5 text-nms-text-dim">{s.apn}</td>
+                    <td className="py-1.5">
+                      <span className={clsx('px-2 py-0.5 rounded-full text-[10px] font-mono border',
+                        s.state === 'Active' ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-amber-400 bg-amber-500/10 border-amber-500/30')}>
+                        {s.state}
+                      </span>
+                    </td>
+                    <td className="py-1.5 font-mono text-nms-text-dim text-[11px]">{s.s2b.pgw} ({s.s2b.control_teid} / {s.s2b.data_teid})</td>
+                    <td className="py-1.5 text-right">
+                      <button onClick={() => toggleDetails(s.imsi)} className="nms-btn-ghost text-[11px] flex items-center gap-1 px-2 py-1 ml-auto">
+                        <Info className="w-3 h-3" /> {expandedImsi === s.imsi ? 'Hide' : 'Details'}
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedImsi === s.imsi && (
+                    <tr className="border-b border-nms-border/50 bg-nms-bg/30">
+                      <td colSpan={7} className="py-3 px-2">
+                        {diagLoading === s.imsi
+                          ? <p className="text-xs text-nms-text-dim">Loading...</p>
+                          : diagCache[s.imsi]
+                            ? <ClientDiagPanel diag={diagCache[s.imsi]} />
+                            : <p className="text-xs text-red-400">Failed to load diagnostics.</p>}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

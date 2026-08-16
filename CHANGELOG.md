@@ -4,6 +4,72 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.48] - 2026-08-16
+
+### Fixed — PSTN Gateway audio: full duplex confirmed working (both directions, both dialing methods)
+
+Real audio over the PSTN Gateway (Asterisk) was previously unconfirmed/broken —
+signaling worked end-to-end but no audio, or one-way audio, reached either party.
+Four real, independent bugs found and fixed via live packet capture, raw RTP byte
+decoding, and Asterisk's own internal diagnostics (`pjsip show channelstats`, RTCP
+Sender Reports). Confirmed working full duplex, both call directions, both the PSTN
+extension dialing method and normal MSISDN dialing, over VoWiFi.
+
+- **S-CSCF self-relay loop on ACK/CANCEL/BYE for any PSTN Gateway call**
+  (`kamailio_scscf.cfg`). A real phone's in-dialog requests for a PSTN Gateway call
+  arrive at S-CSCF with a self-referencing Request-URI and no usable Route header —
+  an artifact of how `loose_route()` unwinds once only proxy-owned Record-Route
+  entries remain, since the real remote target (Asterisk's Contact) was never
+  carried anywhere in the request. Blindly relaying that sent the message to
+  S-CSCF's own socket, which re-entered processing and repeated until Max-Forwards
+  was exhausted — the actual cause of "connects but no audio" (the SDP-bearing 200
+  OK's ACK hit this path) and of BYE failing with a 500 instead of reaching
+  Asterisk (hanging up one leg never tore down the other). Confirmed via packet
+  capture: a captured ACK growing by two new Via headers every loop iteration, 272
+  self-addressed packets per call. Fixed by saving the real PSTN target via
+  `$dlg_var(pstn_target)` in `route[PSTN]` and recovering it unconditionally right
+  after `loose_route()`, for any method, before existing dispatch logic runs.
+- **Dead rtpengine "learn Asterisk's session" guard**
+  (`kamailio_pcscf/route/rtp.cfg`). A guard added to prevent double-processing an
+  already-rewritten SDP (`$sdp(c:ip) != IPSEC_LISTEN_ADDR`) was silently always
+  false for every Asterisk reply, because `IPSEC_LISTEN_ADDR` and
+  `pjsip_pstn.conf`'s `external_media_address` happen to be the same IP for
+  unrelated reasons — so this branch, meant to let rtpengine learn Asterisk's real
+  address for the caller-facing leg, never ran on any PSTN Gateway call since the
+  day it was added. Confirmed live via `pjsip show channelstats`: Receive stuck at
+  0 for nearly a full second of continuous correct-address packet arrival. Fixed by
+  replacing the IP comparison with a `$dlg_var` per-dialog idempotency flag.
+- **`/etc/asterisk/rtp.conf` silently unreadable by the `asterisk` user**
+  (`pstn-controller.ts`, generalizes beyond PSTN). Writing a host config file from
+  inside this backend's container creates/overwrites it as `root:root` — every
+  *other* Asterisk config file ships `asterisk:asterisk`, so a root-owned
+  `rtp.conf` at its default `0640` mode was completely unreadable to the process
+  that needed it, and Asterisk silently fell back to every compiled-in default
+  instead of erroring. Confirmed live: `rtpstart`/`rtpend` reverted to the
+  compiled defaults 5000/31000 instead of the file's real 10000/20000 values.
+  Fixed by chowning to `asterisk:asterisk` immediately after every write, and by
+  setting `strictrtp=no` on this trunk (the caller's real audio was being
+  rejected by strict-RTP source validation, an inherent consequence of this
+  deployment's B2BUA topology, not a spoofing attempt — acceptable here since this
+  trunk has no public SIP exposure).
+- **Cross-leg RTP payload-type mismatch — audio arrives but is undecodable**
+  (`pstn-controller.ts`'s `pjsipPstnConf()`). The caller↔Asterisk and
+  Asterisk↔callee dialogs are two unrelated SDP negotiations that each
+  independently assign their own dynamic payload-type number to the same codec
+  (e.g. AMR as payload type 97 on one leg, 113 on the other). Confirmed via raw
+  RTP header byte decode: a caller's phone received real audio packets carrying
+  payload type 113, a value its own negotiation never defined — undecodable
+  despite arriving correctly on the wire, indistinguishable from "no audio" to a
+  real user even though every packet-count check looked healthy. Fixed with
+  `asymmetric_rtp_codec=yes` plus `codec_prefs_outgoing_offer=prefer:pending,
+  operation:intersect,keep:all,transcode:allow` on the `scscf_trunk` endpoint.
+
+See `PROJECT_STATE.md`'s newest Handoff Summary entry for the full technical
+writeup, including which diagnostic techniques actually distinguished a real fix
+from a false lead (raw packet counts alone were repeatedly misleading).
+
+---
+
 ## [v2.0-beta_0.47] - 2026-08-14
 
 ### Added — Security Gateway (SecGW): new optional module for radio-backhaul IPsec

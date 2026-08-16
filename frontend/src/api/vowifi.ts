@@ -74,6 +74,80 @@ export interface VectorcoreStats {
   active_bearers: number;
 }
 
+// GET /api/v1/sessions — richer than /api/v1/clients: real IKE/ESP SPIs and the S2b
+// GTP-C tunnel identifiers to the PGW (SMF), not just the coarse client summary.
+export interface VectorcoreSession {
+  imsi: string;
+  ue_ip: string;
+  outer_ip: string;
+  apn: string;
+  state: string;
+  ike_sa: { spi_i: string; spi_r: string };
+  child_sa: { esp_spi_in: string; esp_spi_out: string };
+  s2b: { pgw: string; control_teid: number; data_teid: number };
+}
+
+// GET /api/v1/clients/{imsi}/diag — per-bearer traffic counters + timestamps, fetched
+// lazily per client (Details button) rather than eagerly for every session on every poll.
+export interface VectorcoreBearer {
+  ebi: number;
+  local_teid: number;
+  pgw_teid: number;
+  qci: number;
+  uplink_packets: number;
+  uplink_bytes: number;
+  downlink_packets: number;
+  downlink_bytes: number;
+  last_uplink_packet: string | null;
+}
+export interface VectorcoreClientDiag {
+  imsi: string;
+  ue_ip: string;
+  outer_ip: string;
+  apn: string;
+  state: string;
+  ike_spi_i: string;
+  ike_spi_r: string;
+  esp_spi_in: string;
+  esp_spi_out: string;
+  pgw_control_ip: string;
+  pgw_control_teid: number;
+  default_bearer: VectorcoreBearer;
+  dedicated_bearers: VectorcoreBearer[] | null;
+  last_activity: string;
+}
+
+export interface VectorcoreIpsecStats {
+  active_ike_sas: number;
+  active_child_sas: number;
+  esp_packets_in: number;
+  esp_packets_out: number;
+  esp_bytes_in: number;
+  esp_bytes_out: number;
+}
+
+export interface VectorcoreGtpuStats {
+  uplink_rx_packets: number;
+  uplink_tx_packets: number;
+  downlink_rx_packets: number;
+  downlink_tx_packets: number;
+  dropped_bad_teid: number;
+  dropped_bad_peer: number;
+  dropped_unsupported: number;
+  dropped_malformed: number;
+  error_indications_sent: number;
+  error_indications_rate_limited: number;
+  active_tunnels: number;
+  active_bearers: number;
+}
+
+export interface VectorcoreStatusInfo {
+  version: string;
+  build_date: string;
+  uptime_seconds: number;
+  active_clients: number;
+}
+
 export const vowifiApi = {
   getStatus: async (): Promise<VowifiStatus> => { const { data } = await api.get('/status'); return data; },
 
@@ -101,6 +175,11 @@ export const vowifiApi = {
   // /admin/* route) — same pattern as the MMS admin-proxy panel.
   getClients: async (): Promise<VectorcoreClient[]> => { const { data } = await api.get('/admin/api/v1/clients'); return data ?? []; },
   getStats:   async (): Promise<VectorcoreStats> => { const { data } = await api.get('/admin/api/v1/stats'); return data; },
+  getSessions:    async (): Promise<VectorcoreSession[]> => { const { data } = await api.get('/admin/api/v1/sessions'); return data ?? []; },
+  getClientDiag:  async (imsi: string): Promise<VectorcoreClientDiag> => { const { data } = await api.get(`/admin/api/v1/clients/${imsi}/diag`); return data; },
+  getIpsecStats:  async (): Promise<VectorcoreIpsecStats> => { const { data } = await api.get('/admin/api/v1/stats/ipsec'); return data; },
+  getGtpuStats:   async (): Promise<VectorcoreGtpuStats> => { const { data } = await api.get('/admin/api/v1/stats/gtpu'); return data; },
+  getVectorcoreStatusInfo: async (): Promise<VectorcoreStatusInfo> => { const { data } = await api.get('/admin/api/v1/status'); return data; },
 
   uninstall: () => fetch('/api/vowifi/uninstall', { method: 'POST', credentials: 'include' }),
 };

@@ -44,6 +44,7 @@ const HOST_EXTENSIONS_INC = `${HOST_ASTERISK_DIR}/extensions_pstn.conf`;
 const HOST_MODULES_CONF   = `${HOST_ASTERISK_DIR}/modules.conf`;
 const HOST_PJSIP_CONF     = `${HOST_ASTERISK_DIR}/pjsip.conf`;
 const HOST_EXTENSIONS_CONF = `${HOST_ASTERISK_DIR}/extensions.conf`;
+const HOST_RTP_CONF       = `${HOST_ASTERISK_DIR}/rtp.conf`;
 const HOST_DISPATCHER_LIST = `${HOST_ROOT}/etc/kamailio_scscf/dispatcher.list`;
 
 // This project's convention: each IMS component gets its own dedicated
@@ -184,6 +185,36 @@ aors=scscf_trunk
 transport=transport-trunk
 direct_media=no
 trust_id_inbound=yes
+; Real bug found live (2026-08-15): confirmed via raw packet capture that a
+; PSTN Gateway call's two independent dialogs (caller<->Asterisk, Asterisk
+; <->callee) each negotiate their OWN dynamic RTP payload-type numbers for
+; the same codec (e.g. one leg negotiates AMR as payload type 97, the other
+; negotiates the SAME AMR as payload type 113 — both are valid, unrelated
+; SDP negotiations). When Asterisk bridges audio between the two, it must
+; rewrite each outgoing RTP packet's payload-type field to match whatever
+; number THAT destination leg actually negotiated. Confirmed via tshark that
+; without this it does not: a caller's phone received real audio packets
+; carrying payload type 113 — a value its own SDP negotiation never defined
+; (only 99/97/100) — so the audio, while arriving correctly on the wire, was
+; undecodable. asymmetric_rtp_codec=yes lets each leg keep its own
+; independent codec/payload-type identity instead of forcing one shared
+; assumption across both, which is exactly this scenario. Confirmed live
+; this alone did NOT fix it — the mismatch persisted byte-for-byte after
+; this was applied, so it's left in place as a real, correct setting for
+; this deployment but is not sufficient by itself.
+asymmetric_rtp_codec=yes
+; Same 2026-08-15 investigation, next attempt: default codec_prefs_outgoing_
+; offer is "operation:union" — when Asterisk builds its OWN offer for the
+; callee leg, union lets it independently offer every codec in this
+; endpoint's own allow= list (its own default numbering, e.g. AMR as
+; payload type 113) regardless of what the caller's leg already negotiated
+; (e.g. AMR as payload type 97) — two structurally unrelated SDP offers for
+; the "same" codec. Switching to "operation:intersect" constrains the
+; callee-leg offer to codecs already pending from the caller's leg, in the
+; hope that reusing the already-negotiated codec identity avoids Asterisk
+; re-deriving its own independent (and differently-numbered) offer for the
+; same format. Unverified — reverify PSTN Gateway audio after this lands.
+codec_prefs_outgoing_offer=prefer:pending,operation:intersect,keep:all,transcode:allow
 ; The callee leg's own offer (Asterisk -> a real UE) now carries a real,
 ; reachable address (external_media_address above) and passes through
 ; P-CSCF untouched — but the callee's OWN answer still gets rewritten onto
@@ -303,14 +334,81 @@ function disableChanSip(): void {
   }
 }
 
+// Real bug found live (2026-08-15): PSTN Gateway calls had one-way audio —
+// confirmed via a live RTCP capture that Asterisk was sending audio fine (a
+// Sender Report showing a real packet/octet count) but its own compound RTCP
+// packet had "Reception report count: 0", meaning it never received anything
+// to report on, even though the caller's real RTP was independently confirmed
+// (via tcpdump) arriving at the right destination address:port. Root cause:
+// Asterisk's own SDP offer to the caller's leg (built from the *original*
+// R-URI-facing offer, which advertises rtpengine's relay address/port, not
+// the real UE) sets its strict-RTP "expected source" to rtpengine's address —
+// but because this leg's reply-SDP is never itself rewritten by rtpengine
+// (see the external_media_address comment above — re-adding that processing
+// broke call signaling outright in three separate prior live attempts, so it
+// deliberately stays untouched), the caller's real audio always arrives from
+// a source address strict RTP was never told to expect. `probation` (4
+// frames) should normally let Asterisk re-learn a new source, but combined
+// with `rtp_symmetric`/`force_rport` on this trunk it never did in practice —
+// confirmed fixed live by disabling strict RTP entirely for this host.
+// Acceptable trade-off here specifically: this PSTN Gateway is internal-only
+// with no public SIP trunk (see CLAUDE.md's feature table), so the anti-
+// spoofing protection strict RTP provides isn't protecting an internet-facing
+// surface. `strictrtp` is a global rtp.conf setting, not a per-endpoint PJSIP
+// option, and has no live CLI toggle — it must be written to the config file
+// and picked up via a res_rtp_asterisk module reload (or full Asterisk
+// restart), so — like disableChanSip() above — this must run on every
+// Configure, not just once.
+async function ensureStrictRtpDisabled(): Promise<void> {
+  fs.mkdirSync(HOST_ASTERISK_DIR, { recursive: true });
+  let raw = fs.existsSync(HOST_RTP_CONF) ? fs.readFileSync(HOST_RTP_CONF, 'utf-8') : '[general]\n';
+  if (!/\[general\]/.test(raw)) raw = '[general]\n' + raw;
+  if (/^\s*;?\s*strictrtp\s*=/m.test(raw)) {
+    raw = raw.replace(/^\s*;?\s*strictrtp\s*=.*$/m, 'strictrtp=no');
+  } else {
+    raw = raw.replace(/\[general\]\n/, '[general]\nstrictrtp=no\n');
+  }
+  fs.writeFileSync(HOST_RTP_CONF, raw, 'utf-8');
+  // The real bug, found live (2026-08-15) after this fix appeared to silently
+  // do nothing across many restarts: fs.writeFileSync() from this container
+  // creates/overwrites the file as root:root — every OTHER file under
+  // /etc/asterisk ships owned asterisk:asterisk, and Asterisk itself runs as
+  // that unprivileged user, so a root-owned rtp.conf with the default 0640
+  // mode is completely unreadable to the process that needs it. Asterisk
+  // doesn't error on this — it silently falls back to every compiled-in
+  // default (confirmed live: rtpstart/rtpend reverted to 5000/31000 instead
+  // of this file's real values), which is a much harder failure to notice
+  // than an outright crash. Without this chown, strictrtp=no above is a
+  // complete no-op forever, no matter how many times Asterisk is restarted.
+  await nsenter('chown', ['asterisk:asterisk', HOST_RTP_CONF.replace(HOST_ROOT, '')]).catch(() => {});
+}
+
+// Real bug found live (2026-08-15): both of these used to `systemctl restart
+// kamailio-scscf` just to pick up a dispatcher.list change — S-CSCF's own usrloc
+// registrar is memory-only (db_mode=0, same limitation ims-controller.ts's
+// ulscscf.snapshot workaround documents), so restarting it wipes EVERY currently
+// registered subscriber network-wide (VoLTE and VoWiFi alike, not just PSTN),
+// until each phone's own periodic re-REGISTER timer eventually fires — confirmed
+// live via a real "PSTN gateway doesn't work" report that was actually this: an
+// operator added a PSTN extension, the restart silently deregistered two live
+// VoWiFi UEs, and a test call ~3.5 minutes later failed with "destination user
+// not found" for a completely unrelated reason. The dispatcher module has its
+// own RPC-based reload that re-reads dispatcher.list from disk without touching
+// the rest of the running process (verified live: same PID, same
+// ActiveEnterTimestamp, before and after) — use that instead, never restart the
+// whole service just to update the PSTN dispatcher target.
+async function reloadDispatcher(): Promise<void> {
+  await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'dispatcher.reload']);
+}
+
 async function writeDispatcherEntry(asteriskIp: string): Promise<void> {
   fs.writeFileSync(HOST_DISPATCHER_LIST, `1 sip:${asteriskIp}:${ASTERISK_PORT}\n`, 'utf-8');
-  await nsenter('systemctl', ['restart', 'kamailio-scscf']);
+  await reloadDispatcher();
 }
 
 async function clearDispatcherEntry(): Promise<void> {
   fs.writeFileSync(HOST_DISPATCHER_LIST, '# PSTN Gateway disabled — no entries\n', 'utf-8');
-  await nsenter('systemctl', ['restart', 'kamailio-scscf']);
+  await reloadDispatcher();
 }
 
 // ── Router ───────────────────────────────────────────────────────────────────
@@ -459,10 +557,12 @@ export function createPstnRouter(
 
       ensureIncludes();
       fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(asteriskIp, imsState.config.icscfIp, imsState.config.icscfPort, imsState.config.scscfIp, imsState.config.pcscfIp), 'utf-8');
+      await ensureStrictRtpDisabled();
       await regenerateDialplan(mongoUri);
 
       await nsenter('systemctl', ['enable', '--now', 'asterisk']);
       await nsenter('asterisk', ['-rx', 'module reload res_pjsip.so']).catch(() => {});
+      await nsenter('asterisk', ['-rx', 'module reload res_rtp_asterisk.so']).catch(() => {});
       await ensureNativeRtpBridgeSuspended();
       await writeDispatcherEntry(asteriskIp);
 
@@ -621,7 +721,7 @@ export function createPstnRouter(
     try {
       write('=== Removing S-CSCF dispatcher entry ===');
       await clearDispatcherEntry().catch(() => {});
-      write('Dispatcher cleared, kamailio-scscf restarted.');
+      write('Dispatcher cleared, S-CSCF dispatcher reloaded (no restart — live registrations untouched).');
 
       write('\n=== Stopping and disabling Asterisk ===');
       await nsenter('systemctl', ['disable', '--now', 'asterisk']).catch(() => {});
