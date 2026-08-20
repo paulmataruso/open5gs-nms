@@ -59,6 +59,7 @@ import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
 import { AutoAssignIPsUseCase } from './application/use-cases/auto-assign-ips-usecase';
 import { SyncPrometheusConfigUseCase } from './application/use-cases/sync-prometheus-config';
+import { SyncGenieacsProvisionsUseCase } from './application/use-cases/sync-genieacs-provisions';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
 import { SqliteRadioTagRepository } from './infrastructure/auth/sqlite-radio-tag-repository';
@@ -220,6 +221,15 @@ async function main() {
   } catch (err) {
     logger.warn({ err: String(err) }, 'Prometheus config sync on startup failed (non-fatal)');
   }
+
+  // Regenerate GenieACS's default/inform provisions on every startup, same
+  // reasoning as the Prometheus sync above — see sync-genieacs-provisions.ts
+  // for the full incident writeup (GenieACS's stock provisions assumed a
+  // TR-098 data model none of this deployment's radios actually use, which
+  // was perpetually faulting every Inform for all Baicells radios).
+  const syncGenieacsProvisionsUseCase = new SyncGenieacsProvisionsUseCase(config.genieacsNbiUrl, logger);
+  const genieacsSyncResult = await syncGenieacsProvisionsUseCase.execute();
+  logger.info({ result: genieacsSyncResult }, 'GenieACS provisions synced on startup');
 
   const applyConfigUseCase = new ApplyConfigUseCase(
     configRepo,

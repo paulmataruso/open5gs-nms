@@ -284,7 +284,7 @@ export const autoConfigApi = {
 };
 
 export { genieacsApi } from './genieacs';
-export type { BaicellsRadio, ProvisionInput, NbiTask, RadioBackup, SercommRadio, SercommProvisionInput } from './genieacs';
+export type { BaicellsRadio, ProvisionInput, NbiTask, RadioBackup, SercommRadio, SercommProvisionInput, NeighborFreqEntry, NeighborCellEntry, MmePoolEntry, MmePoolConfig } from './genieacs';
 
 // ── Sercomm NR (5G) ──
 export interface SercommNRDevice {
@@ -294,6 +294,7 @@ export interface SercommNRDevice {
   ip: string | null;
   mac: string | null;
   lastInform: string | null;
+  plmnMismatch: boolean;
   nrConfig: {
     plmn: string;
     gnbId: number;

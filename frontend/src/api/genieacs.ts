@@ -15,6 +15,12 @@ export interface BaicellsRadio {
   lastInform:   string | null;
   ip:           string;
   rfStatus:     'on' | 'off' | 'offline';
+  plmnMismatch: boolean;
+  // Populated whenever the radio's own PLMNList/MmePoolConfigParam tables
+  // have a duplicate entry (same PLMN enabled twice, or same PLMN+MME-IP
+  // pair populated twice) — real bug found live 2026-08-19, confuses the
+  // radio's own GUI and cell/PLMN broadcast, not just a stale-cache artifact.
+  duplicatePlmnEntries: string[];
   mcc:          string;
   mnc:          string;
   tac:          string;
@@ -54,6 +60,68 @@ export interface BaicellsRadio {
   sasMaxEIRP:          string;
   sasEirpCapability:   string;
   sasEnableMode:       string;
+  // LTE Freq/Cell neighbor tables — only rows with Enable=true on the device
+  // are included (an unconfigured slot 1-8 simply isn't in this array at all).
+  neighborFreqTable: NeighborFreqEntry[];
+  neighborCellTable: NeighborCellEntry[];
+  // MME Pool table (PLMN + MME IP pairs) — only populated slots (PLMNID not
+  // the device's blank sentinel "000000") are included, up to 16 rows.
+  mmePoolTable: MmePoolEntry[];
+  // MME Pool Config (X_COM_MmePool) — a DIFFERENT, singleton object: binds
+  // an MME pool LIST to a named IPsec tunnel. Not the same feature as
+  // mmePoolTable above despite the similar name.
+  mmePoolConfig: MmePoolConfig;
+}
+
+export interface MmePoolConfig {
+  enable: string;      // 'true' | 'false'
+  pool1List: string;   // '' means unset (device's own blank sentinel "|")
+  pool2List: string;
+  ipsecTunnelMap: string; // e.g. "tunnel1:LTE_POOL_MME_LIST1"
+  pool1Status: string;    // device-reported, read-only
+  pool2Status: string;    // device-reported, read-only
+}
+
+// MME Pool table — up to 16 rows, each bound to one of the radio's
+// MmePoolConfigParam.{index} instances. The same PLMN+MME-IP pair can never
+// appear in two rows at once (enforced server-side) — the same PLMN with a
+// different MME IP is a legitimate multi-MME pool and is allowed.
+export interface MmePoolEntry {
+  index: number; // 1-16
+  plmn: string;
+  mmeIp: string;
+  mmeStatus: string; // device-reported, read-only — not sent back on save
+}
+
+// Cell Neighbor Freq Table — up to 8 rows, each bound to one of the radio's
+// 8 InterFreq.Carrier.{index} instances. `index` is which of the 8 device
+// slots this row occupies — assigned once (on load, or on Add) and never
+// changed by editing the row's other fields.
+export interface NeighborFreqEntry {
+  index: number; // 1-8
+  earfcn: string;
+  qRxLevMin: string;
+  qOffsetRange: string;
+  reselectionTimer: string;
+  reselectionPrior: string;
+  reselectionThreshHigh: string;
+  reselectionThreshLow: string;
+  pMax: string;
+}
+
+// Cell Neighbor Cell Table — up to 8 rows, each bound to one of the radio's
+// 8 NeighborList.LTECell.{index} instances.
+export interface NeighborCellEntry {
+  index: number; // 1-8
+  plmn: string;
+  cellId: string;
+  earfcn: string;
+  pci: string;
+  qOffset: string;
+  cio: string;
+  tac: string;
+  enbType: string; // enum — only confirmed mapping so far: 1 = Home
+  x2Flag: string;  // enum — only confirmed mapping so far: 0 = SON
 }
 
 export interface ProvisionInput {
@@ -85,6 +153,7 @@ export interface SercommRadio {
   serial:        string;
   lastInform:    string | null;
   rfStatus:      'on' | 'off' | 'offline';
+  plmnMismatch:  boolean;
   ip:            string;
   mcc:           string;
   mnc:           string;
@@ -195,6 +264,20 @@ export const genieacsApi = {
 
   reboot: async (deviceId: string): Promise<{ success: boolean; message: string }> => {
     const { data } = await api.post(`/reboot/${encodeURIComponent(deviceId)}`);
+    return data;
+  },
+
+  saveMmePool: async (
+    deviceId: string,
+    entries: MmePoolEntry[],
+    originalEntries: MmePoolEntry[],
+  ): Promise<{ success: boolean; results: Array<{ index: number; ok: boolean; error?: string; skipped?: boolean }> }> => {
+    const { data } = await api.post(`/mme-pool/${encodeURIComponent(deviceId)}`, { entries, originalEntries });
+    return data;
+  },
+
+  saveMmePoolConfig: async (deviceId: string, cfg: MmePoolConfig): Promise<{ success: boolean; error?: string }> => {
+    const { data } = await api.post(`/mme-pool-config/${encodeURIComponent(deviceId)}`, cfg);
     return data;
   },
 

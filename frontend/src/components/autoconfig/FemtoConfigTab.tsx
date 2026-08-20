@@ -398,6 +398,15 @@ const SercommRadioRow: React.FC<{
           <RfDot status={radio.rfStatus} />
           <Radio className="w-4 h-4 text-nms-accent flex-shrink-0" />
           <span className="font-mono text-sm text-nms-text truncate">{radio.serial}</span>
+          {radio.plmnMismatch && (
+            <span
+              className="text-xs px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 flex items-center gap-1 flex-shrink-0"
+              title={`This radio broadcasts PLMN ${radio.mcc}-${radio.mnc}, which does not match the core network's configured PLMN. Phones will not attach here unless this is corrected.`}
+            >
+              <AlertCircle className="w-3 h-3" />
+              PLMN {radio.mcc}-{radio.mnc} ≠ core
+            </span>
+          )}
           <span className="flex-1" />
           {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
           {radio.ip && (

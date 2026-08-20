@@ -3,6 +3,7 @@ import Editor from '@monaco-editor/react';
 import {
   CheckCircle, XCircle, RefreshCw, RotateCw, Play, Square, Wifi,
   AlertTriangle, AlertCircle, BookOpen, ChevronDown, Users, Activity, Info,
+  FileText,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -197,24 +198,6 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
     }
   };
 
-  const handleAction = async (action: 'start' | 'stop' | 'restart') => {
-    setBusy(action);
-    try {
-      const fn = action === 'start' ? vowifiApi.start : action === 'stop' ? vowifiApi.stop : vowifiApi.restart;
-      const result = await fn();
-      if (result.ok) {
-        toast.success(`${action[0].toUpperCase()}${action.slice(1)}ed`);
-        refresh();
-      } else {
-        toast.error(result.error ?? `${action} failed`);
-      }
-    } catch (err) {
-      toast.error(`${action} failed: ${String(err)}`);
-    } finally {
-      setBusy(null);
-    }
-  };
-
   return (
     <div className="space-y-4">
       {status?.configStale && (
@@ -304,27 +287,6 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
             Configured {status.configuredAt ? new Date(status.configuredAt).toLocaleString() : ''} — aaaFqdn: <span className="font-mono">{status.aaaFqdn}</span>
           </p>
         )}
-      </div>
-
-      <div className="nms-card">
-        <h2 className="text-sm font-semibold text-nms-text mb-3">3. Service Control</h2>
-        <div className="flex flex-wrap items-center gap-3 mb-3">
-          <SvcBadge label="vectorcore-epdg" active={!!status?.services['vowifi-vectorcore-epdg']} />
-          <SvcBadge label="vectorcore-aaa" active={!!status?.services['vowifi-vectorcore-aaa']} />
-          {status && <SvcBadge label={`dummy-epdg ${status.dummyInterfaceUp ? 'up' : 'down'}`} active={status.dummyInterfaceUp} />}
-          {status && <SvcBadge label={`SMF peer ${status.smfConnectPeerPresent ? 'present' : 'missing'}`} active={status.smfConnectPeerPresent} />}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <button onClick={() => handleAction('start')} disabled={!!busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
-            <Play className="w-3 h-3" /> Start
-          </button>
-          <button onClick={() => handleAction('stop')} disabled={!!busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
-            <Square className="w-3 h-3" /> Stop
-          </button>
-          <button onClick={() => handleAction('restart')} disabled={!!busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
-            <RotateCw className="w-3 h-3" /> Restart
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -645,6 +607,7 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
 export function VoWiFiPage() {
   const [status, setStatus] = useState<VowifiStatus | null>(null);
   const [tab, setTab] = useState<'setup' | 'sessions' | 'configs'>('setup');
+  const [svcBusy, setSvcBusy] = useState<string | null>(null);
 
   const refresh = useCallback(() => { vowifiApi.getStatus().then(setStatus).catch(() => {}); }, []);
 
@@ -654,35 +617,85 @@ export function VoWiFiPage() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  const handleServiceAction = async (action: 'start' | 'stop' | 'restart') => {
+    setSvcBusy(action);
+    try {
+      const fn = action === 'start' ? vowifiApi.start : action === 'stop' ? vowifiApi.stop : vowifiApi.restart;
+      const result = await fn();
+      if (result.ok) {
+        toast.success(`${action[0].toUpperCase()}${action.slice(1)}ed`);
+        refresh();
+      } else {
+        toast.error(result.error ?? `${action} failed`);
+      }
+    } catch (err) {
+      toast.error(`${action} failed: ${String(err)}`);
+    } finally {
+      setSvcBusy(null);
+    }
+  };
+
+  const TABS: { id: typeof tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'setup',    label: 'Setup',         icon: <Wifi className="w-4 h-4" /> },
+    { id: 'sessions', label: 'Live Sessions', icon: <Activity className="w-4 h-4" /> },
+    { id: 'configs',  label: 'Config Files',  icon: <FileText className="w-4 h-4" /> },
+  ];
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <RadioTowerIcon />
-          <h1 className="text-lg font-semibold text-nms-text">VoWiFi (ePDG)</h1>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">alpha</span>
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold font-display text-nms-text">VoWiFi (ePDG)</h1>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/30">alpha</span>
+          </div>
+          <p className="text-sm text-nms-text-dim mt-1">VectorCore ePDG/AAA — VoWiFi call termination</p>
         </div>
+
+        {status?.installedOnDisk && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <SvcBadge label="vectorcore-epdg" active={!!status?.services['vowifi-vectorcore-epdg']} />
+            <SvcBadge label="vectorcore-aaa" active={!!status?.services['vowifi-vectorcore-aaa']} />
+            {status && <SvcBadge label={`dummy-epdg ${status.dummyInterfaceUp ? 'up' : 'down'}`} active={status.dummyInterfaceUp} />}
+            {status && <SvcBadge label={`SMF peer ${status.smfConnectPeerPresent ? 'present' : 'missing'}`} active={status.smfConnectPeerPresent} />}
+
+            <div className="h-5 w-px bg-nms-border" />
+
+            <button onClick={() => handleServiceAction('start')} disabled={!!svcBusy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Play className="w-3 h-3" /> Start
+            </button>
+            <button onClick={() => handleServiceAction('stop')} disabled={!!svcBusy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Square className="w-3 h-3" /> Stop
+            </button>
+            <button onClick={() => handleServiceAction('restart')} disabled={!!svcBusy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <RotateCw className="w-3 h-3" /> Restart
+            </button>
+          </div>
+        )}
       </div>
 
       <OverviewCard />
 
-      <div className="flex gap-1 border-b border-nms-border">
-        {([
-          ['setup', 'Setup'],
-          ['sessions', 'Live Sessions'],
-          ['configs', 'Config Files'],
-        ] as const).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={clsx(
-              'px-4 py-2 text-sm font-medium border-b-2 -mb-px',
-              tab === key ? 'border-nms-accent text-nms-accent' : 'border-transparent text-nms-text-dim hover:text-nms-text',
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      {/* Tabs */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          {TABS.map(tabDef => (
+            <button
+              key={tabDef.id}
+              onClick={() => setTab(tabDef.id)}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+                tab === tabDef.id
+                  ? 'bg-nms-accent text-white shadow-sm'
+                  : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+              )}
+            >
+              {tabDef.icon}
+              {tabDef.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === 'setup' && <SetupTab status={status} refresh={refresh} />}
@@ -690,8 +703,4 @@ export function VoWiFiPage() {
       {tab === 'configs' && <ConfigFilesTab />}
     </div>
   );
-}
-
-function RadioTowerIcon() {
-  return <Activity className="w-5 h-5 text-nms-accent" />;
 }

@@ -3,10 +3,11 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, LogOut, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp,
+  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
+import { UserMenu } from './UserMenu';
 import { FEATURES } from '../../config/features';
 
 interface LayoutProps {
@@ -22,6 +23,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
+  { id: 'radio-config', label: 'Radio Provisioning', icon: RadioTower },
   { id: 'subscribers', label: 'Subscribers', icon: Users },
   { id: 'suci', label: 'SUCI Keys', icon: Key },
   { id: 'backup', label: 'Backup & Restore', icon: Database },
@@ -44,7 +46,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
 
 export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.Element {
   const [collapsed, setCollapsed] = useState(false);
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
 
   return (
     <div className="flex h-screen overflow-hidden bg-nms-bg">
@@ -85,32 +87,8 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
 
         </nav>
 
-        {/* User + Logout */}
-        <div className="border-t border-nms-border px-2 py-2">
-          <div className={clsx(
-            'flex items-center gap-2 px-2 py-2 rounded-md',
-            collapsed ? 'justify-center' : '',
-          )}>
-            <div className="w-7 h-7 rounded-full bg-nms-accent/20 border border-nms-accent/30 flex items-center justify-center shrink-0">
-              <span className="text-xs font-semibold text-nms-accent">
-                {user?.username?.[0]?.toUpperCase() ?? '?'}
-              </span>
-            </div>
-            {!collapsed && (
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium text-nms-text truncate">{user?.username}</div>
-                <div className="text-[10px] text-nms-text-dim uppercase tracking-wider">{user?.role}</div>
-              </div>
-            )}
-            <button
-              onClick={logout}
-              title="Sign out"
-              className="text-nms-text-dim hover:text-nms-red transition-colors shrink-0"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
+        {/* User + Theme + Logout */}
+        <UserMenu collapsed={collapsed} />
 
         {/* Collapse toggle */}
         <button

@@ -4,6 +4,129 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.49] - 2026-08-20
+
+### Added — Baicells radios: PLMN mismatch + duplicate-broadcast detection (all radio types)
+
+A radio can broadcast a PLMN that doesn't match the core network's configured
+PLMN — found live on two production Baicells radios that had reverted to a
+leftover PLMN (311-435) from before this deployment's migration to 001-01,
+which would silently block real phones from ever attaching. `GET /api/genieacs
+/devices` (Baicells), `/devices/sercomm` (Sercomm 4G), and Sercomm NR's device
+list now each read the core's real PLMN straight from `mme.yaml` (the same
+source `plmn-migration-usecase.ts` already treats as authoritative) and flag
+`plmnMismatch` when a radio's broadcast PLMN differs — shown as a red badge on
+the radio card in the UI.
+
+A second, related bug found live the same day: a radio can have the *same*
+PLMN independently enabled in two different `PLMNList` slots at once, or the
+same PLMN+MME-IP pair populated in two different `MmePoolConfigParam` slots —
+both invisible to any check that only ever reads slot 1 (all this project's
+PLMN handling did before now), and both visibly duplicated on the radio's own
+native GUI with no warning. New `duplicatePlmnEntries` scan (slots 1-6 of both
+tables) catches this and shows an amber badge.
+
+Also fixed live: Baicells `rfStatus` was computed from `X_COM_RadioEnable`,
+a parameter already known (and documented) to get permanently stuck rejecting
+every write except a no-op on this firmware — meaning it never reflected the
+radio's real RF state. Switched to `RFTxStatus`, the device's own real
+operational-state parameter.
+
+### Added — Baicells MME Pool Table (PLMN + MME IP pairs, up to 16 rows)
+
+Full read/write editor for the `MmePoolConfigParam` object table, reachable
+from each radio's expanded card on the Baicells Provisioning tab. Unlike the
+LTE Freq/Cell neighbor tables (see below), live writes to this object are
+confirmed fault-free on real hardware, so this one supports Add/Remove/Save,
+not just read-only display. Hard gate enforced both client- and server-side,
+per explicit requirement: the exact same PLMN+MME-IP combination can never
+appear in two rows — the same PLMN with a *different* MME IP (multi-MME
+redundancy) remains allowed. A removed row is cleared back to the device's own
+observed blank state (`PLMNID="000000"`, `MMEIp1="0.0.0.0"`) rather than
+deleted outright, matching the same disable-not-delete constraint already
+established for the neighbor tables. Saves diff against the caller-supplied
+prior state and only write the rows that actually changed.
+
+### Added — Baicells MME Pool Config (IPsec tunnel binding)
+
+A second, genuinely different object (`X_COM_MmePool`, a singleton, not a
+table) that binds an MME pool list to a named IPsec tunnel — confirmed live
+format `"<tunnelName>:LTE_POOL_MME_LIST<n>"`, comma-separated for more than
+one pool. New Enable toggle, Pool 1/2 List fields (with live connection
+status), and tunnel-map field, editable alongside the MME Pool Table on the
+same radio card.
+
+### Fixed — Baicells `/refresh` never actually read the PLMN/MME-pool tables
+
+`POST /api/genieacs/refresh/:deviceId`'s `getParameterValues` list never
+included `PLMNList`, `MmePoolConfigParam`, or `X_COM_MmePool` — only the
+`/devices` GET route's passive cache-read projection did. In practice this
+meant the new features above only ever showed real data for a radio someone
+had manually forced a live read against; every other radio read back blank
+indefinitely, even after clicking Refresh, since nothing was ever asking the
+device for it. Confirmed live (multiple `MmePoolConfigParam` instances read
+in one `getParameterValues` call, no fault) that this table doesn't have the
+same multi-instance fragility Carrier/LTECell do, so a plain bulk read across
+several slots is safe here.
+
+### Changed — Baicells LTE Freq/Cell neighbor tables: read-only, write path removed
+
+Every write attempt against `Carrier.{n}`/`LTECell.{n}` on real hardware hit
+GenieACS-internal session limits — `too_many_commits` (a configurable
+GenieACS-side iteration cap, default 32, raised to 1024 with zero effect on
+this table specifically) and then `too_many_rpcs` (a hardcoded 255-RPC-per-
+session ceiling) — regardless of how few fields were sent, even a single
+2-field write to one instance. Tracing this down also fixed a real,
+independent root cause: `too_many_commits` was never a device limitation at
+all, it's a GenieACS safety guard meant to stop runaway provisioning scripts,
+and something was inflating the counter before any of this project's writes
+even reached the device — confirmed by raising the GenieACS config value
+(`cwmp.maxCommitIterations`) directly in its own MongoDB `config` collection,
+which measurably changed the failure mode (from an ~100ms instant fault to a
+real, hours-long series of genuine device round-trips before hitting the next
+wall). That fix is real and stays. But since field count turned out not to
+explain the RPC count either, this points at something structural in how
+GenieACS reconciles this specific object tree with this device — the same
+object tree where `deleteObject` and `getParameterNames` also failed outright
+earlier in the same investigation. Given that, the neighbor tables are now
+read-only by design rather than continuing to fight a GenieACS-side limit;
+see `PROJECT_STATE.md` (2026-08-17/19) for the full investigation before
+attempting to reintroduce a write path.
+
+### Fixed — GenieACS default/inform provisions assumed the wrong TR-069 data model
+
+GenieACS ships two built-in provision scripts ("default" and "inform", stored
+in its own MongoDB, not in this repo) that unconditionally declare TR-098
+`InternetGatewayDevice.*` paths on every connected device. This deployment's
+entire radio fleet (Baicells, Sercomm 4G/5G, Nokia) is TR-181-only, confirmed
+live by inspecting each device's own reported data model — none have an
+`InternetGatewayDevice` root at all. Baicells (BaiBLQ firmware) hard-faults
+the entire GetParameterNames/Values RPC batch if even one requested path
+doesn't exist, so this was perpetually faulting on every single Inform for
+all 3 Baicells radios. New `SyncGenieacsProvisionsUseCase` regenerates both
+scripts on every backend startup (mirrors `SyncPrometheusConfigUseCase`'s
+pattern) — GenieACS's own provisions collection lives outside this project's
+git tree, so unlike everything else here it wouldn't survive a GenieACS
+reinstall/reset without this.
+
+### Changed — Page layout convention rolled out across the app
+
+The centered pill-style tab bar + header-mounted service-control pattern
+(already standard on `AutoConfigPage.tsx`) is now applied to IMS, FRR/L3
+Routing, SAS, Metrics, SecGW, VoWiFi, and PSTN Gateway pages — replacing the
+older left-aligned underline-tab style and, on SecGW/VoWiFi/PSTN Gateway,
+moving Start/Stop/Restart out of a body card into the page header. A real bug
+this surfaced: those buttons were gated on `configured` rather than
+`installedOnDisk`/`installed`, so VoWiFi's controls vanished while the
+service was genuinely running but not yet (re)configured — fixed on all three
+pages. Radio Auto-Config is now its own dedicated nav section
+(`RadioProvisioningPage.tsx`), split out of the old combined Auto Config page.
+Added a dark-theme switcher (several themes) under a username-click menu in
+the main navbar (`ThemeContext.tsx`, `UserMenu.tsx`). See `PROJECT_STATE.md`'s
+Engineering Decision Log for the full rationale and per-page breakdown.
+
+---
+
 ## [v2.0-beta_0.48] - 2026-08-16
 
 ### Fixed — PSTN Gateway audio: full duplex confirmed working (both directions, both dialing methods)

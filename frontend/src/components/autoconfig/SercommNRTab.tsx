@@ -636,6 +636,15 @@ const NRRadioRow: React.FC<{
         <RfDot status={rfStatus} />
         <Radio className="w-4 h-4 text-nms-accent flex-shrink-0" />
         <span className="font-mono text-sm text-nms-text truncate">{device.serial}</span>
+        {device.plmnMismatch && (
+          <span
+            className="text-xs px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 flex items-center gap-1 flex-shrink-0"
+            title={`This gNB broadcasts PLMN ${device.nrConfig.plmn.slice(0, 3)}-${device.nrConfig.plmn.slice(3)}, which does not match the core network's configured PLMN. UEs will not attach here unless this is corrected.`}
+          >
+            <AlertCircle className="w-3 h-3" />
+            PLMN {device.nrConfig.plmn.slice(0, 3)}-{device.nrConfig.plmn.slice(3)} ≠ core
+          </span>
+        )}
         <span className="flex-1" />
         {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
         {device.mac && (

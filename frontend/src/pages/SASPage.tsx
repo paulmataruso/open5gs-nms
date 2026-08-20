@@ -1989,18 +1989,24 @@ export function SASPage() {
 
       {/* Tabs */}
       <div className="flex justify-center">
-        <div className="flex flex-wrap gap-1 bg-nms-surface rounded-lg p-1">
-        {(['dashboard', 'config', 'policy', 'api'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={clsx(
-              'px-3 py-1.5 rounded-md text-sm font-medium transition-all',
-              tab === t
-                ? 'bg-nms-accent/10 text-nms-accent border border-nms-accent/20'
-                : 'text-nms-text-dim hover:text-nms-text',
-            )}>
-            {TAB_LABELS[t]}
-          </button>
-        ))}
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          {([
+            { id: 'dashboard', Icon: Activity    },
+            { id: 'config',    Icon: Settings    },
+            { id: 'policy',    Icon: Radio       },
+            { id: 'api',       Icon: ScrollText  },
+          ] as const).map(({ id, Icon }) => (
+            <button key={id} onClick={() => setTab(id)}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+                tab === id
+                  ? 'bg-nms-accent text-white shadow-sm'
+                  : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+              )}>
+              <Icon className="w-4 h-4" />
+              {TAB_LABELS[id]}
+            </button>
+          ))}
         </div>
       </div>
 

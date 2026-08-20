@@ -1338,23 +1338,26 @@ export function FRRPage() {
         </div>
       )}
 
-      {/* Page tabs */}
-      <div className="flex border-b border-nms-border">
-        {([
-          { id: 'routing', label: 'L3 Routing',        Icon: GitBranch },
-          { id: 'tun',     label: 'TUN Interfaces',    Icon: Layers    },
-          { id: 'dummy',   label: 'Dummy Interfaces',  Icon: Radio     },
-          { id: 'build',   label: 'Reinstall (Source)', Icon: Wrench   },
-        ] as const).map(({ id, label, Icon }) => (
-          <button key={id} onClick={() => setPageTab(id)}
-            className={clsx('flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
-              pageTab === id
-                ? 'border-nms-accent text-nms-accent'
-                : 'border-transparent text-nms-text-dim hover:text-nms-text'
-            )}>
-            <Icon className="w-4 h-4" /> {label}
-          </button>
-        ))}
+      {/* Tabs */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          {([
+            { id: 'routing', label: 'L3 Routing',        Icon: GitBranch },
+            { id: 'tun',     label: 'TUN Interfaces',    Icon: Layers    },
+            { id: 'dummy',   label: 'Dummy Interfaces',  Icon: Radio     },
+            { id: 'build',   label: 'Reinstall (Source)', Icon: Wrench   },
+          ] as const).map(({ id, label, Icon }) => (
+            <button key={id} onClick={() => setPageTab(id)}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+                pageTab === id
+                  ? 'bg-nms-accent text-white shadow-sm'
+                  : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+              )}>
+              <Icon className="w-4 h-4" /> {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {pageTab === 'tun'   && <TunInterfacePage />}

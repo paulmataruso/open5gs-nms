@@ -4,17 +4,23 @@ export default {
   theme: {
     extend: {
       colors: {
-        'nms-bg': '#0a0e1a',
-        'nms-surface': '#111827',
-        'nms-surface-2': '#1a2236',
-        'nms-border': '#1e293b',
-        'nms-accent': '#06b6d4',
-        'nms-accent-dim': '#0891b2',
-        'nms-green': '#10b981',
-        'nms-red': '#ef4444',
-        'nms-amber': '#f59e0b',
-        'nms-text': '#e2e8f0',
-        'nms-text-dim': '#94a3b8',
+        // Themeable tokens — sourced from CSS custom properties set per-theme in
+        // index.css (see [data-theme="..."] blocks), swapped at runtime by
+        // ThemeContext. The rgb(var(...) / <alpha-value>) form (not a plain var())
+        // is required so existing `bg-nms-accent/20`-style opacity modifiers
+        // throughout the app keep working — Tailwind only knows how to apply an
+        // alpha channel to a color when it's expressed this way.
+        'nms-bg': 'rgb(var(--nms-bg-rgb) / <alpha-value>)',
+        'nms-surface': 'rgb(var(--nms-surface-rgb) / <alpha-value>)',
+        'nms-surface-2': 'rgb(var(--nms-surface-2-rgb) / <alpha-value>)',
+        'nms-border': 'rgb(var(--nms-border-rgb) / <alpha-value>)',
+        'nms-accent': 'rgb(var(--nms-accent-rgb) / <alpha-value>)',
+        'nms-accent-dim': 'rgb(var(--nms-accent-dim-rgb) / <alpha-value>)',
+        'nms-green': 'rgb(var(--nms-green-rgb) / <alpha-value>)',
+        'nms-red': 'rgb(var(--nms-red-rgb) / <alpha-value>)',
+        'nms-amber': 'rgb(var(--nms-amber-rgb) / <alpha-value>)',
+        'nms-text': 'rgb(var(--nms-text-rgb) / <alpha-value>)',
+        'nms-text-dim': 'rgb(var(--nms-text-dim-rgb) / <alpha-value>)',
       },
       fontFamily: {
         sans: ['JetBrains Mono', 'SF Mono', 'Fira Code', 'monospace'],

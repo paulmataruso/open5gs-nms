@@ -236,6 +236,7 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
 }
 
 export function PstnGatewayPage() {
+  const [tab, setTab] = useState<'setup' | 'extensions'>('setup');
   const [status, setStatus] = useState<PstnStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
@@ -491,100 +492,140 @@ export function PstnGatewayPage() {
         </div>
       )}
 
-      <OverviewCard />
-
-      <div className={`nms-card ${!installed ? 'border-amber-500/30 bg-amber-500/5' : allUp ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
-        <div className="flex items-start justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3">
-            {!installed
-              ? <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
-              : allUp
-                ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
-                : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
-            }
-            <div>
-              <p className="text-sm font-semibold">
-                {!installed ? 'Asterisk not installed' : allUp ? 'All services running' : 'Services partially stopped'}
-              </p>
-              <p className="text-xs text-nms-text-dim mt-0.5">
-                Dispatcher wired: {status?.dispatcherWired ? 'yes' : 'no'} ·{' '}
-                AMR codec: {status?.codecAmrLoaded ? 'loaded' : 'not loaded'} ·{' '}
-                Extensions: {status?.extensionCount ?? 0}
-              </p>
-            </div>
-          </div>
-          {installed && svcs && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <SvcBadge label="asterisk" active={svcs.asterisk} />
-              <SvcBadge label="kamailio-scscf" active={svcs['kamailio-scscf']} />
-            </div>
-          )}
+      {/* Tabs */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          {([
+            { id: 'setup',      label: 'Setup',      icon: <Settings className="w-4 h-4" /> },
+            { id: 'extensions', label: 'Extensions', icon: <PhoneCall className="w-4 h-4" /> },
+          ] as const).map(tabDef => (
+            <button
+              key={tabDef.id}
+              onClick={() => setTab(tabDef.id)}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+                tab === tabDef.id
+                  ? 'bg-nms-accent text-white shadow-sm'
+                  : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+              )}
+            >
+              {tabDef.icon}
+              {tabDef.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {!installed && (
-        <div className="nms-card">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
-                <Terminal className="w-4 h-4 text-nms-accent" /> Install Asterisk
+      {tab === 'setup' && (
+        <>
+          <OverviewCard />
+
+          <div className={`nms-card ${!installed ? 'border-amber-500/30 bg-amber-500/5' : allUp ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
+            <div className="flex items-start justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                {!installed
+                  ? <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+                  : allUp
+                    ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
+                    : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
+                }
+                <div>
+                  <p className="text-sm font-semibold">
+                    {!installed ? 'Asterisk not installed' : allUp ? 'All services running' : 'Services partially stopped'}
+                  </p>
+                  <p className="text-xs text-nms-text-dim mt-0.5">
+                    Dispatcher wired: {status?.dispatcherWired ? 'yes' : 'no'} ·{' '}
+                    AMR codec: {status?.codecAmrLoaded ? 'loaded' : 'not loaded'} ·{' '}
+                    Extensions: {status?.extensionCount ?? 0}
+                  </p>
+                </div>
+              </div>
+              {installed && svcs && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <SvcBadge label="asterisk" active={svcs.asterisk} />
+                  <SvcBadge label="kamailio-scscf" active={svcs['kamailio-scscf']} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {!installed && (
+            <div className="nms-card">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+                    <Terminal className="w-4 h-4 text-nms-accent" /> Install Asterisk
+                  </h2>
+                  <p className="text-xs text-nms-text-dim mt-1">
+                    Installs <span className="font-mono">asterisk asterisk-modules</span> on the host via apt,
+                    disables the deprecated chan_sip module, and verifies AMR-WB codec support. Requires IMS to
+                    already be installed — PSTN Gateway is built entirely on top of IMS's Kamailio signaling chain.
+                  </p>
+                </div>
+                <button onClick={handleInstall} disabled={acting || !status?.imsInstalled} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
+                  <Terminal className="w-4 h-4" /> {acting ? 'Installing…' : 'Install Asterisk'}
+                </button>
+              </div>
+              {!status?.imsInstalled && (
+                <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+                  IMS is not installed yet — install IMS on the IMS page first.
+                </p>
+              )}
+              {streamLog && <LogTerminal lines={streamLog} />}
+            </div>
+          )}
+
+          {installed && (
+            <div className="nms-card">
+              <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+                <Settings className="w-4 h-4 text-nms-accent" /> Configure
               </h2>
+              <p className="text-xs text-nms-text-dim mb-4">
+                Wires Asterisk into S-CSCF's dispatcher for PSTN-bound calls. Requires IMS to already be configured.
+              </p>
+              {!status?.imsConfigured && (
+                <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 mb-4">
+                  IMS is not configured yet — configure IMS first.
+                </p>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                <div>
+                  <label className="nms-label">Asterisk trunk IP</label>
+                  <input value={asteriskIp} onChange={e => setAsteriskIp(e.target.value)}
+                    placeholder="127.0.1.4" className="nms-input font-mono text-xs mt-1" />
+                  <p className="text-xs text-nms-text-dim mt-1">A dedicated loopback alias, following this project's per-component convention</p>
+                </div>
+              </div>
+              <button onClick={handleConfigure} disabled={acting || !status?.imsConfigured} className="nms-btn-primary flex items-center gap-2 text-sm">
+                <Settings className="w-4 h-4" /> {acting ? 'Configuring…' : 'Configure'}
+              </button>
+            </div>
+          )}
+
+          {!installed && !streamLog && (
+            <div className="nms-card border-dashed border-nms-border text-center py-10">
+              <Phone className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
+              <p className="text-sm text-nms-text-dim">Asterisk is not installed on this host.</p>
               <p className="text-xs text-nms-text-dim mt-1">
-                Installs <span className="font-mono">asterisk asterisk-modules</span> on the host via apt,
-                disables the deprecated chan_sip module, and verifies AMR-WB codec support. Requires IMS to
-                already be installed — PSTN Gateway is built entirely on top of IMS's Kamailio signaling chain.
+                Click <strong>Install Asterisk</strong> above to get started.
               </p>
             </div>
-            <button onClick={handleInstall} disabled={acting || !status?.imsInstalled} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
-              <Terminal className="w-4 h-4" /> {acting ? 'Installing…' : 'Install Asterisk'}
-            </button>
-          </div>
-          {!status?.imsInstalled && (
-            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
-              IMS is not installed yet — install IMS on the IMS page first.
-            </p>
           )}
-          {streamLog && <LogTerminal lines={streamLog} />}
-        </div>
+        </>
       )}
 
-      {installed && (
-        <div className="nms-card">
-          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
-            <Settings className="w-4 h-4 text-nms-accent" /> Configure
-          </h2>
-          <p className="text-xs text-nms-text-dim mb-4">
-            Wires Asterisk into S-CSCF's dispatcher for PSTN-bound calls. Requires IMS to already be configured.
-          </p>
-          {!status?.imsConfigured && (
-            <p className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2 mb-4">
-              IMS is not configured yet — configure IMS first.
-            </p>
-          )}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-            <div>
-              <label className="nms-label">Asterisk trunk IP</label>
-              <input value={asteriskIp} onChange={e => setAsteriskIp(e.target.value)}
-                placeholder="127.0.1.4" className="nms-input font-mono text-xs mt-1" />
-              <p className="text-xs text-nms-text-dim mt-1">A dedicated loopback alias, following this project's per-component convention</p>
+      {tab === 'extensions' && (
+        installed
+          ? <ExtensionsCard imsConfigured={!!status?.imsConfigured} />
+          : (
+            <div className="nms-card border-dashed border-nms-border text-center py-10">
+              <PhoneCall className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
+              <p className="text-sm text-nms-text-dim">Asterisk is not installed yet.</p>
+              <p className="text-xs text-nms-text-dim mt-1">
+                Install it from the <strong>Setup</strong> tab before assigning extensions.
+              </p>
             </div>
-          </div>
-          <button onClick={handleConfigure} disabled={acting || !status?.imsConfigured} className="nms-btn-primary flex items-center gap-2 text-sm">
-            <Settings className="w-4 h-4" /> {acting ? 'Configuring…' : 'Configure'}
-          </button>
-        </div>
-      )}
-
-      {installed && <ExtensionsCard imsConfigured={!!status?.imsConfigured} />}
-
-      {!installed && !streamLog && (
-        <div className="nms-card border-dashed border-nms-border text-center py-10">
-          <Phone className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
-          <p className="text-sm text-nms-text-dim">Asterisk is not installed on this host.</p>
-          <p className="text-xs text-nms-text-dim mt-1">
-            Click <strong>Install Asterisk</strong> above to get started.
-          </p>
-        </div>
+          )
       )}
     </div>
   );

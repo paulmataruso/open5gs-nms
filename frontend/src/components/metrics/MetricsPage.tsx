@@ -330,16 +330,16 @@ export function MetricsPage(): JSX.Element {
         </div>
       </div>
 
-      {/* ── Mode toggle ──────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3">
-        <div className="inline-flex rounded-lg bg-nms-surface border border-nms-border p-1">
+      {/* ── Tabs ─────────────────────────────────────────────────────────── */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
           <button
             onClick={() => handleModeSwitch('table')}
             className={clsx(
-              'flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all',
+              'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
               editMode === 'table'
-                ? 'bg-nms-accent/10 text-nms-accent'
-                : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2',
+                ? 'bg-nms-accent text-white shadow-sm'
+                : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
             )}
           >
             <Table2 className="w-4 h-4" />
@@ -348,22 +348,16 @@ export function MetricsPage(): JSX.Element {
           <button
             onClick={() => handleModeSwitch('scrape')}
             className={clsx(
-              'flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-all',
+              'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
               editMode === 'scrape'
-                ? 'bg-nms-accent/10 text-nms-accent'
-                : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2',
+                ? 'bg-nms-accent text-white shadow-sm'
+                : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
             )}
           >
             <FileCode2 className="w-4 h-4" />
             Scrape Config Editor
           </button>
         </div>
-        <span className="text-xs text-nms-text-dim">
-          {editMode === 'table'
-            ? 'Edit each NF address and port individually'
-            : 'Edit the Prometheus scrape config directly'
-          }
-        </span>
       </div>
 
       {/* ── Mode-specific info banner ─────────────────────────────────────── */}

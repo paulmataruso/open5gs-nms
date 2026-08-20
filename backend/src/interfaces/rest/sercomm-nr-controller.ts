@@ -1,11 +1,25 @@
 import { Router, Request, Response } from 'express';
+import * as fs from 'fs';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { backupDeviceById } from './radio-backup';
+import { parseMccMncFromMmeYaml, isPlmnMismatch } from '../../domain/services/read-plmn';
 
 const GNB = 'Device.Services.FAPService.1.X_00C002_gNB';
 const SAS = 'Device.Services.SAS';
+const HOST_MME_YAML = '/proc/1/root/etc/open5gs/mme.yaml';
+
+// This project treats PLMN as one global value shared across the whole core
+// (4G and 5G both read from mme.yaml — see plmn-migration-usecase.ts), so
+// the same core mcc/mnc is the right comparison for the 5G gNB too.
+function readCoreMccMnc(): { mcc: string; mnc: string } {
+  try {
+    return parseMccMncFromMmeYaml(fs.readFileSync(HOST_MME_YAML, 'utf-8'));
+  } catch {
+    return { mcc: '001', mnc: '01' };
+  }
+}
 
 function getVal(obj: Record<string, any>, dotPath: string): string {
   const parts = dotPath.split('.');
@@ -21,8 +35,11 @@ function encodeId(deviceId: string): string {
   return encodeURIComponent(deviceId);
 }
 
-function toNRDevice(d: Record<string, any>) {
+function toNRDevice(d: Record<string, any>, coreMcc: string, coreMnc: string) {
   const plmn      = getVal(d, `${GNB}.CU.GNBCUFunction.NRCellCU.1.plmnIdList.1.PLMNID`);
+  const plmnMcc   = plmn.length >= 3 ? plmn.slice(0, 3) : '';
+  const plmnMnc   = plmn.length >  3 ? plmn.slice(3)    : '';
+  const plmnMismatch = isPlmnMismatch(plmnMcc, plmnMnc, coreMcc, coreMnc);
   const gnbId     = getVal(d, `${GNB}.CU.GNBCUFunction.gNBId`);
   const tac       = getVal(d, `${GNB}.CU.GNBCUFunction.NRCellCU.1.TAC`);
   const amfIp     = getVal(d, `${GNB}.CU.GNBCUFunction.EP_NgC.remoteAddress.ipv4Address`);
@@ -103,6 +120,7 @@ function toNRDevice(d: Record<string, any>) {
     ip:         ip || null,
     mac:        mac || null,
     lastInform,
+    plmnMismatch,
     nrConfig: {
       plmn,
       gnbId:      gnbId ? Number(gnbId) : 1,
@@ -268,7 +286,8 @@ export function createSercommNRRouter(
         return svc?.X_00C002_gNB != null;
       });
 
-      res.json({ success: true, devices: nr.map(toNRDevice) });
+      const { mcc: coreMcc, mnc: coreMnc } = readCoreMccMnc();
+      res.json({ success: true, devices: nr.map(d => toNRDevice(d, coreMcc, coreMnc)) });
     } catch (err) {
       logger.error({ err: String(err) }, 'sercomm-nr: failed to list devices');
       res.status(502).json({ success: false, error: String(err), devices: [] });

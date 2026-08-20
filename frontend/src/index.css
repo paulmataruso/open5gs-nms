@@ -2,10 +2,92 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Theme tokens — each block below is one selectable dark theme. Values are
+ * space-separated RGB triplets (not hex) because tailwind.config.js wires
+ * these up via rgb(var(...) / <alpha-value>), which is what lets the existing
+ * `bg-nms-accent/20`-style opacity modifiers across the app keep working.
+ * `--nms-green-rgb` / `--nms-red-rgb` / `--nms-amber-rgb` are deliberately the
+ * same across every theme — they carry operational meaning (good/bad/warning)
+ * in an NMS UI and shouldn't shift with the operator's cosmetic preference.
+ * ThemeContext sets data-theme on <html>; :root is the fallback/default
+ * (Cyan Slate) so nothing breaks before JS applies a stored preference.
+ */
+:root,
+[data-theme="cyan"] {
+  --nms-bg-rgb: 10 14 26;
+  --nms-surface-rgb: 17 24 39;
+  --nms-surface-2-rgb: 26 34 54;
+  --nms-border-rgb: 30 41 59;
+  --nms-accent-rgb: 6 182 212;
+  --nms-accent-dim-rgb: 8 145 178;
+  --nms-text-rgb: 226 232 240;
+  --nms-text-dim-rgb: 148 163 184;
+  --nms-green-rgb: 16 185 129;
+  --nms-red-rgb: 239 68 68;
+  --nms-amber-rgb: 245 158 11;
+}
+
+[data-theme="violet"] {
+  --nms-bg-rgb: 11 10 26;
+  --nms-surface-rgb: 20 18 31;
+  --nms-surface-2-rgb: 30 27 46;
+  --nms-border-rgb: 42 38 64;
+  --nms-accent-rgb: 139 92 246;
+  --nms-accent-dim-rgb: 124 58 237;
+  --nms-text-rgb: 237 233 254;
+  --nms-text-dim-rgb: 162 155 196;
+  --nms-green-rgb: 16 185 129;
+  --nms-red-rgb: 239 68 68;
+  --nms-amber-rgb: 245 158 11;
+}
+
+[data-theme="emerald"] {
+  --nms-bg-rgb: 6 18 12;
+  --nms-surface-rgb: 13 31 22;
+  --nms-surface-2-rgb: 20 43 31;
+  --nms-border-rgb: 28 58 41;
+  --nms-accent-rgb: 16 185 129;
+  --nms-accent-dim-rgb: 5 150 105;
+  --nms-text-rgb: 209 250 229;
+  --nms-text-dim-rgb: 134 169 150;
+  --nms-green-rgb: 16 185 129;
+  --nms-red-rgb: 239 68 68;
+  --nms-amber-rgb: 245 158 11;
+}
+
+[data-theme="amber"] {
+  --nms-bg-rgb: 18 14 8;
+  --nms-surface-rgb: 28 21 13;
+  --nms-surface-2-rgb: 38 28 17;
+  --nms-border-rgb: 58 44 26;
+  --nms-accent-rgb: 245 158 11;
+  --nms-accent-dim-rgb: 217 119 6;
+  --nms-text-rgb: 254 243 199;
+  --nms-text-dim-rgb: 184 163 126;
+  --nms-green-rgb: 16 185 129;
+  --nms-red-rgb: 239 68 68;
+  --nms-amber-rgb: 245 158 11;
+}
+
+[data-theme="rose"] {
+  --nms-bg-rgb: 18 7 10;
+  --nms-surface-rgb: 28 15 19;
+  --nms-surface-2-rgb: 41 22 32;
+  --nms-border-rgb: 61 31 42;
+  --nms-accent-rgb: 244 63 94;
+  --nms-accent-dim-rgb: 225 29 72;
+  --nms-text-rgb: 255 228 230;
+  --nms-text-dim-rgb: 185 141 149;
+  --nms-green-rgb: 16 185 129;
+  --nms-red-rgb: 239 68 68;
+  --nms-amber-rgb: 245 158 11;
+}
+
 @layer base {
   * {
     scrollbar-width: thin;
-    scrollbar-color: #1e293b transparent;
+    scrollbar-color: rgb(var(--nms-border-rgb)) transparent;
   }
   *::-webkit-scrollbar {
     width: 6px;
@@ -15,7 +97,7 @@
     background: transparent;
   }
   *::-webkit-scrollbar-thumb {
-    background-color: #1e293b;
+    background-color: rgb(var(--nms-border-rgb));
     border-radius: 3px;
   }
   body {
@@ -75,7 +157,7 @@
 }
 
 .react-flow__background {
-  background-color: #0a0e1a !important;
+  background-color: rgb(var(--nms-bg-rgb)) !important;
 }
 
 /* Tooltip animations */

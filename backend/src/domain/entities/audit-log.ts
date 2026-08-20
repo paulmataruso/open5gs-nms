@@ -15,6 +15,8 @@ export type AuditAction =
   | 'system_command'
   | 'restore_defaults'
   | 'radio_provision'
+  | 'radio_mme_pool'
+  | 'radio_mme_pool_config'
   | 'radio_reboot'
   | 'radio_reboot_all'
   | 'radio_rf_enable'

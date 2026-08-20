@@ -325,9 +325,29 @@ Full detail on any of these: `docs/features.md`.
 - **Never factory-reset, wipe, or perform any other destructive action on a radio or
   device without explicit confirmation first** — this destroys all device config and
   requires full re-provisioning. Stop and ask before queuing anything like this.
-- **UI layout convention**: page title top-left, action buttons top-right, full-width
-  cards (no `max-w`/centering wrappers) — follow existing pages like
-  `TunInterfacePage.tsx` as the reference.
+- **UI layout convention (standard as of 2026-08-16 — apply to every new page)**:
+  outer wrapper `p-6 space-y-6`; header is `flex items-center justify-between
+  flex-wrap gap-3` with a title (`h1.text-2xl.font-semibold.font-display`) +
+  subtitle (`p.text-sm.text-nms-text-dim.mt-1`) block on the left, and — for any
+  page that owns a module lifecycle (install/configure/start/stop/restart) —
+  status badges + action buttons on the right (never buried in a body card).
+  When a page has more than one logical section, use a **centered pill-style
+  tab bar**: `flex justify-center` wrapping `flex gap-1 p-1 bg-nms-surface-2
+  rounded-lg border border-nms-border`, each tab `flex items-center gap-2 px-4
+  py-2 rounded-md text-sm font-medium transition-all` with an icon, active
+  `bg-nms-accent text-white shadow-sm` / inactive `text-nms-text-dim
+  hover:text-nms-text hover:bg-nms-surface` — not the older left-aligned
+  underline-tab style. Full-width cards throughout (no `max-w`/centering
+  wrappers on card content itself). Reference implementations: `AutoConfigPage.
+  tsx`, `SecGWPage.tsx`, `VoWiFiPage.tsx`, `IMSPage.tsx`, `PstnGatewayPage.tsx`,
+  `FRRPage.tsx`, `SASPage.tsx`, `MetricsPage.tsx`. Gotcha: gate header
+  service-control visibility on "is this module installed" (`installedOnDisk`/
+  `installed`), never on "is it fully configured" — a real bug (VoWiFi's Start/
+  Stop/Restart buttons vanishing while the service was actively running,
+  because they were gated on `configured` instead) came from getting this
+  wrong. Full rationale and a per-page shape breakdown: PROJECT_STATE.md's
+  Engineering Decision Log, "centered pill-style tab nav + header-mounted
+  service control" entry.
 - **Only commit when explicitly asked.** This project has gone through periods of
   large uncommitted work by design (user wanted a clean-host test before committing) —
   don't assume "the fix works" means "commit it."

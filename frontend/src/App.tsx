@@ -10,6 +10,7 @@ import { SubscriberPage } from './components/subscribers/SubscriberPage';
 import { BackupPage } from './pages/BackupPage';
 import { LogsPage } from './pages/LogsPage';
 import { AutoConfigPage } from './pages/AutoConfigPage';
+import { RadioProvisioningPage } from './pages/RadioProvisioningPage';
 import { SuciManagementPage } from './components/suci/SuciManagementPage';
 import { UserManagementPage } from './components/users/UserManagementPage';
 import { MetricsPage } from './components/metrics/MetricsPage';
@@ -67,6 +68,8 @@ function App(): JSX.Element {
         return <LogsPage />;
       case 'auto-config':
         return <AutoConfigPage />;
+      case 'radio-config':
+        return <RadioProvisioningPage />;
       case 'suci':
         return <SuciManagementPage />;
       case 'metrics':

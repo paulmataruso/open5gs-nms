@@ -5,6 +5,7 @@ import {
   RotateCw, Settings, Users, Network, Power, BookOpen, ChevronDown,
   Play, Square, Globe, Shield, Database, Terminal, Trash2, Plus, X,
   AlertTriangle, AlertCircle, Pencil, Phone, Radio,
+  Activity, FileText,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -1395,22 +1396,29 @@ export function IMSPage() {
         </div>
       )}
 
-      {/* Tab bar */}
-      <div className="flex gap-1 border-b border-nms-border">
-        {(['overview', 'live', 'configs'] as const).map(tab => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={clsx(
-              'px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors',
-              activeTab === tab
-                ? 'border-nms-accent text-nms-accent'
-                : 'border-transparent text-nms-text-dim hover:text-nms-text',
-            )}
-          >
-            {tab === 'overview' ? 'Overview' : tab === 'live' ? 'Live Status' : 'Config Files'}
-          </button>
-        ))}
+      {/* Tabs */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          {([
+            { id: 'overview', label: 'Overview',    icon: <Settings className="w-4 h-4" /> },
+            { id: 'live',     label: 'Live Status',  icon: <Activity className="w-4 h-4" /> },
+            { id: 'configs',  label: 'Config Files', icon: <FileText className="w-4 h-4" /> },
+          ] as const).map(tabDef => (
+            <button
+              key={tabDef.id}
+              onClick={() => setActiveTab(tabDef.id)}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+                activeTab === tabDef.id
+                  ? 'bg-nms-accent text-white shadow-sm'
+                  : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+              )}
+            >
+              {tabDef.icon}
+              {tabDef.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {activeTab === 'overview' ? (

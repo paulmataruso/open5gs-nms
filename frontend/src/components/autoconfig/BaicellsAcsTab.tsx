@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, RefreshCw, Send, ChevronDown, ChevronUp,
   AlertCircle, Clock, ExternalLink, RotateCw, Wifi, WifiOff,
-  Satellite, Users, Signal, Copy, Check,
+  Satellite, Users, Signal, Copy, Check, Network, Plus, Trash2, Save,
 } from 'lucide-react';
-import { genieacsApi, radioTagsApi, BaicellsRadio, ProvisionInput, NbiTask } from '../../api';
+import { genieacsApi, radioTagsApi, BaicellsRadio, ProvisionInput, NbiTask, NeighborFreqEntry, NeighborCellEntry, MmePoolEntry, MmePoolConfig } from '../../api';
 import { sasApi } from '../../api/sas';
 import { useTopologyStore } from '../../stores';
 import { ProvisionConfirmModal } from './ProvisionConfirmModal';
@@ -311,6 +311,211 @@ function S1Chips({ ip }: { ip: string }) {
   );
 }
 
+// ─── LTE Freq/Cell neighbor tables — READ-ONLY. Every write attempt against
+// this device's Carrier/LTECell object model hit GenieACS-internal session
+// limits (`too_many_commits`, then `too_many_rpcs` once that was fixed)
+// regardless of field count — the same object tree where `deleteObject` and
+// `getParameterNames` also failed outright. Deliberately no edit/save UI
+// here; see PROJECT_STATE.md (2026-08-17/19) before reintroducing one.
+const NeighborFreqTable: React.FC<{ rows: NeighborFreqEntry[] }> = ({ rows }) => (
+  <div>
+    <p className="text-xs font-semibold text-nms-text flex items-center gap-2 mb-2">
+      <Network className="w-3.5 h-3.5 text-nms-accent" />
+      Cell Neighbor Freq Table
+      <span className="text-nms-text-dim font-normal">({rows.length}/8)</span>
+    </p>
+    {rows.length === 0 ? (
+      <p className="text-xs text-nms-text-dim italic">No neighbor frequencies configured.</p>
+    ) : (
+      <div className="overflow-x-auto border border-nms-border rounded-lg">
+        <table className="text-xs">
+          <thead className="bg-nms-surface text-nms-text-dim">
+            <tr>
+              {['#', 'EARFCN', 'Q-RxLevMin', 'Q-OffsetRange', 'Resel. Timer', 'Resel. Prior', 'Thresh High', 'Thresh Low', 'P-Max'].map(h => (
+                <th key={h} className="text-left px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.index} className="border-t border-nms-border font-mono">
+                <td className="px-2 py-1 text-nms-text-dim">{r.index}</td>
+                <td className="px-2 py-1">{r.earfcn}</td>
+                <td className="px-2 py-1">{r.qRxLevMin}</td>
+                <td className="px-2 py-1">{r.qOffsetRange}</td>
+                <td className="px-2 py-1">{r.reselectionTimer}</td>
+                <td className="px-2 py-1">{r.reselectionPrior}</td>
+                <td className="px-2 py-1">{r.reselectionThreshHigh}</td>
+                <td className="px-2 py-1">{r.reselectionThreshLow}</td>
+                <td className="px-2 py-1">{r.pMax}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+);
+
+const NeighborCellTable: React.FC<{ rows: NeighborCellEntry[] }> = ({ rows }) => (
+  <div>
+    <p className="text-xs font-semibold text-nms-text flex items-center gap-2 mb-2">
+      <Network className="w-3.5 h-3.5 text-nms-accent" />
+      Cell Neighbor Cell Table
+      <span className="text-nms-text-dim font-normal">({rows.length}/8)</span>
+    </p>
+    {rows.length === 0 ? (
+      <p className="text-xs text-nms-text-dim italic">No neighbor cells configured.</p>
+    ) : (
+      <div className="overflow-x-auto border border-nms-border rounded-lg">
+        <table className="text-xs">
+          <thead className="bg-nms-surface text-nms-text-dim">
+            <tr>
+              {['#', 'PLMN', 'Cell ID', 'EARFCN', 'PCI', 'QOffset', 'CIO', 'TAC', 'eNB Type', 'X2 Flag'].map(h => (
+                <th key={h} className="text-left px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.index} className="border-t border-nms-border font-mono">
+                <td className="px-2 py-1 text-nms-text-dim">{r.index}</td>
+                <td className="px-2 py-1">{r.plmn}</td>
+                <td className="px-2 py-1">{r.cellId}</td>
+                <td className="px-2 py-1">{r.earfcn}</td>
+                <td className="px-2 py-1">{r.pci}</td>
+                <td className="px-2 py-1">{r.qOffset}</td>
+                <td className="px-2 py-1">{r.cio}</td>
+                <td className="px-2 py-1">{r.tac}</td>
+                <td className="px-2 py-1">{r.enbType === '1' ? 'Home' : r.enbType === '0' ? 'Macro' : r.enbType}</td>
+                <td className="px-2 py-1">{r.x2Flag === '0' ? 'SON' : r.x2Flag === '1' ? 'Manual' : r.x2Flag}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+);
+
+// ─── MME Pool table — editable. Unlike the neighbor tables, live writes to
+// this object are confirmed working (2026-08-19, zero faults on real
+// hardware), so this one supports Add/Remove/Save. The one hard rule (user's
+// explicit requirement, 2026-08-19): the SAME PLMN + MME IP pair can never
+// appear in two rows — the same PLMN with a DIFFERENT MME IP is a legitimate
+// multi-MME pool and stays allowed. Enforced here for fast feedback and
+// again server-side as the real gate (never trust client-side validation
+// alone for a write that reaches real hardware).
+function nextFreeMmePoolIndex(rows: MmePoolEntry[]): number | null {
+  for (let i = 1; i <= 16; i++) if (!rows.some(r => r.index === i)) return i;
+  return null;
+}
+
+function validateMmePoolTable(rows: MmePoolEntry[]): string[] {
+  const errors: string[] = [];
+  const seen = new Map<string, number>();
+  for (const r of rows) {
+    const label = `Row #${r.index}`;
+    if (!/^\d{5,6}$/.test(r.plmn)) errors.push(`${label}: PLMN must be 5-6 digits`);
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(r.mmeIp) || !r.mmeIp.split('.').every(o => Number(o) <= 255)) {
+      errors.push(`${label}: MME IP must be a valid IPv4 address`);
+    }
+    const combo = `${r.plmn}|${r.mmeIp}`;
+    const first = seen.get(combo);
+    if (first !== undefined) {
+      errors.push(`${label}: PLMN ${r.plmn} + MME IP ${r.mmeIp} already used in row #${first} — the same PLMN+MME-IP combination cannot be added twice`);
+    } else {
+      seen.set(combo, r.index);
+    }
+  }
+  return errors;
+}
+
+const MmePoolTable: React.FC<{ rows: MmePoolEntry[]; onChange: (rows: MmePoolEntry[]) => void }> = ({ rows, onChange }) => {
+  const update = (index: number, field: 'plmn' | 'mmeIp', value: string) =>
+    onChange(rows.map(r => (r.index === index ? { ...r, [field]: value } : r)));
+  const remove = (index: number) => onChange(rows.filter(r => r.index !== index));
+  const add = () => {
+    const idx = nextFreeMmePoolIndex(rows);
+    if (idx == null) return;
+    onChange([...rows, { index: idx, plmn: '', mmeIp: '', mmeStatus: '' }].sort((a, b) => a.index - b.index));
+  };
+  const duplicateCombos = new Set(
+    validateMmePoolTable(rows)
+      .filter(e => e.includes('already used'))
+      .map(e => e.match(/Row #(\d+)/)?.[1])
+      .filter(Boolean),
+  );
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-xs font-semibold text-nms-text flex items-center gap-2">
+          <Network className="w-3.5 h-3.5 text-nms-accent" />
+          MME Pool Table
+          <span className="text-nms-text-dim font-normal">({rows.length}/16)</span>
+        </p>
+        <button type="button" onClick={add} disabled={rows.length >= 16}
+          className="text-xs px-2 py-1 rounded border border-nms-accent/40 text-nms-accent hover:bg-nms-accent/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1">
+          <Plus className="w-3 h-3" /> Add Row
+        </button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-xs text-nms-text-dim italic">No MME pool entries configured.</p>
+      ) : (
+        <div className="overflow-x-auto border border-nms-border rounded-lg">
+          <table className="text-xs">
+            <thead className="bg-nms-surface text-nms-text-dim">
+              <tr>
+                {['#', 'PLMN', 'MME IP', 'Status', ''].map(h => (
+                  <th key={h} className="text-left px-2 py-1.5 font-medium whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => {
+                const isDup = duplicateCombos.has(String(r.index));
+                return (
+                  <tr key={r.index} className="border-t border-nms-border">
+                    <td className="px-2 py-1 text-nms-text-dim font-mono">{r.index}</td>
+                    <td className="px-1 py-1">
+                      <input
+                        className={clsx('nms-input font-mono text-xs px-1.5 py-1 w-24', isDup && 'border-red-500/60 text-red-400')}
+                        value={r.plmn}
+                        placeholder="00101"
+                        onChange={e => update(r.index, 'plmn', e.target.value)}
+                      />
+                    </td>
+                    <td className="px-1 py-1">
+                      <input
+                        className={clsx('nms-input font-mono text-xs px-1.5 py-1 w-32', isDup && 'border-red-500/60 text-red-400')}
+                        value={r.mmeIp}
+                        placeholder="10.0.1.175"
+                        onChange={e => update(r.index, 'mmeIp', e.target.value)}
+                      />
+                    </td>
+                    <td className="px-2 py-1 text-nms-text-dim">{r.mmeStatus === '1' ? 'Connected' : r.mmeStatus === '0' ? 'Not connected' : '—'}</td>
+                    <td className="px-1 py-1">
+                      <button type="button" onClick={() => remove(r.index)} className="p-1 rounded hover:bg-red-500/10 text-nms-text-dim hover:text-red-400 transition-colors" title="Clear this entry on save">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {duplicateCombos.size > 0 && (
+            <p className="text-[11px] text-red-400 px-2 py-1.5 border-t border-nms-border bg-nms-surface">
+              ⚠ The same PLMN+MME-IP combination cannot appear in more than one row — fix or remove the duplicate before saving.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── Single radio row ─────────────────────────────────────────────────────────
 const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname?: string; cbsds: CbsdWithGrants[] }> = ({ radio, onRefresh, nickname, cbsds }) => {
   const [expanded, setExpanded]   = useState(false);
@@ -320,6 +525,10 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
   const [rfBusy, setRfBusy]         = useState(false);
   const [previewTasks, setPreviewTasks] = useState<NbiTask[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [mmePoolTable, setMmePoolTable] = useState<MmePoolEntry[]>(radio.mmePoolTable);
+  const [savingMmePool, setSavingMmePool] = useState(false);
+  const [mmePoolConfig, setMmePoolConfig] = useState<MmePoolConfig>(radio.mmePoolConfig);
+  const [savingMmePoolConfig, setSavingMmePoolConfig] = useState(false);
 
   // Only resync from the radio's ACS-reported state while the card is collapsed.
   // While expanded, the user may be mid-edit — a background poll landing every
@@ -327,9 +536,56 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
   // which reads whatever was last synced while collapsed) still picks up
   // fresh data, and an explicit Refresh always re-syncs regardless (see
   // handleRefresh below), so the data is never more than one poll cycle stale.
+  // Same rule applies to the MME pool table/config below.
   useEffect(() => {
-    if (!expanded) setForm(radioToForm(radio));
+    if (!expanded) {
+      setForm(radioToForm(radio));
+      setMmePoolTable(radio.mmePoolTable);
+      setMmePoolConfig(radio.mmePoolConfig);
+    }
   }, [radio, expanded]);
+
+  const handleSaveMmePool = async () => {
+    const validationErrors = validateMmePoolTable(mmePoolTable);
+    if (validationErrors.length > 0) {
+      toast.error(`${validationErrors.length} field(s) invalid:\n${validationErrors.slice(0, 4).join('\n')}${validationErrors.length > 4 ? `\n…and ${validationErrors.length - 4} more` : ''}`, { duration: 6000 });
+      return;
+    }
+    setSavingMmePool(true);
+    try {
+      const result = await genieacsApi.saveMmePool(radio.id, mmePoolTable, radio.mmePoolTable);
+      const failedCount = result.results.filter(r => !r.ok).length;
+      const writtenCount = result.results.filter(r => !r.skipped).length;
+      if (result.success) {
+        toast.success(`MME pool table saved — ${writtenCount} slot(s) written, ${result.results.length - writtenCount} unchanged.`);
+      } else {
+        toast.error(`MME pool partially saved — ${failedCount} row write(s) failed. Check and retry.`);
+      }
+      setTimeout(onRefresh, 10000);
+    } catch (err: any) {
+      toast.error(`Save failed: ${err?.response?.data?.error ?? err?.message ?? 'Unknown error'}`);
+    } finally {
+      setSavingMmePool(false);
+    }
+  };
+
+  const handleSaveMmePoolConfig = async () => {
+    if (mmePoolConfig.ipsecTunnelMap && !/^\w+:LTE_POOL_MME_LIST\d+(,\w+:LTE_POOL_MME_LIST\d+)*$/.test(mmePoolConfig.ipsecTunnelMap)) {
+      toast.error('IPsec tunnel map must look like "tunnel1:LTE_POOL_MME_LIST1" (comma-separated if binding more than one pool)');
+      return;
+    }
+    setSavingMmePoolConfig(true);
+    try {
+      const result = await genieacsApi.saveMmePoolConfig(radio.id, mmePoolConfig);
+      if (result.success) toast.success('MME Pool Config saved.');
+      else toast.error(`Save failed: ${result.error ?? 'unknown error'}`);
+      setTimeout(onRefresh, 10000);
+    } catch (err: any) {
+      toast.error(`Save failed: ${err?.response?.data?.error ?? err?.message ?? 'Unknown error'}`);
+    } finally {
+      setSavingMmePoolConfig(false);
+    }
+  };
 
   const set = (key: keyof RadioForm) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -461,6 +717,24 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
           <RfDot status={radio.rfStatus} />
           <Radio className="w-4 h-4 text-nms-accent flex-shrink-0" />
           <span className="font-mono text-sm text-nms-text truncate">{radio.serial}</span>
+          {radio.plmnMismatch && (
+            <span
+              className="text-xs px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/30 flex items-center gap-1 flex-shrink-0"
+              title={`This radio broadcasts PLMN ${radio.mcc}-${radio.mnc}, which does not match the core network's configured PLMN. Phones will not attach here unless this is corrected.`}
+            >
+              <AlertCircle className="w-3 h-3" />
+              PLMN {radio.mcc}-{radio.mnc} ≠ core
+            </span>
+          )}
+          {radio.duplicatePlmnEntries.length > 0 && (
+            <span
+              className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1 flex-shrink-0"
+              title={radio.duplicatePlmnEntries.join('\n')}
+            >
+              <AlertCircle className="w-3 h-3" />
+              Duplicate PLMN entry
+            </span>
+          )}
           <span className="flex-1" />
           {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
           {radio.ip && (
@@ -816,6 +1090,106 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
 
                 </div>
               )}
+            </div>
+
+            {/* LTE Freq/Cell neighbor tables — read-only, see component comment for why */}
+            <div className="bg-nms-surface rounded-lg border border-nms-border p-3 space-y-4">
+              <NeighborFreqTable rows={radio.neighborFreqTable} />
+              <NeighborCellTable rows={radio.neighborCellTable} />
+              <p className="text-[11px] text-nms-text-dim">
+                Read-only — writes to these tables aren't supported on this radio/firmware (GenieACS
+                session limits block every commit regardless of size). Edit on the radio's own web UI,
+                then hit Refresh here to pick up the change.
+              </p>
+            </div>
+
+            {/* MME Pool table — editable, unlike the neighbor tables above */}
+            <div className="bg-nms-surface rounded-lg border border-nms-border p-3 space-y-4">
+              <MmePoolTable rows={mmePoolTable} onChange={setMmePoolTable} />
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] text-nms-text-dim max-w-md">
+                  The same PLMN + MME IP combination can't be used in two rows — the same PLMN with a
+                  different MME IP (multi-MME redundancy) is fine. Removing a row clears that slot back
+                  to the device's own blank state.
+                </p>
+                <button
+                  onClick={handleSaveMmePool}
+                  disabled={savingMmePool}
+                  className="nms-btn-primary flex items-center gap-2 text-sm shrink-0"
+                >
+                  {savingMmePool
+                    ? <><RefreshCw className="w-4 h-4 animate-spin" />Saving…</>
+                    : <><Save className="w-4 h-4" />Save MME Pool Table</>
+                  }
+                </button>
+              </div>
+            </div>
+
+            {/* MME Pool Config — a DIFFERENT, singleton object: binds an MME
+                pool list to a named IPsec tunnel. Not the same feature as the
+                MME Pool table above despite the similar name. */}
+            <div className="bg-nms-surface rounded-lg border border-nms-border p-3 space-y-3">
+              <p className="text-xs font-semibold text-nms-text flex items-center gap-2">
+                <Network className="w-3.5 h-3.5 text-nms-accent" />
+                MME Pool Config (IPsec Tunnel Binding)
+              </p>
+              <label className="flex items-center gap-2 text-xs text-nms-text">
+                <input
+                  type="checkbox"
+                  checked={mmePoolConfig.enable === 'true'}
+                  onChange={e => setMmePoolConfig(c => ({ ...c, enable: e.target.checked ? 'true' : 'false' }))}
+                />
+                Enable
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] text-nms-text-dim block mb-1">
+                    MME Pool 1 List {mmePoolConfig.pool1Status && <span className="text-nms-text-dim">({mmePoolConfig.pool1Status === '1' ? 'Connected' : 'Not connected'})</span>}
+                  </label>
+                  <input
+                    className="nms-input font-mono text-xs px-1.5 py-1 w-full"
+                    value={mmePoolConfig.pool1List}
+                    placeholder="10.0.1.175"
+                    onChange={e => setMmePoolConfig(c => ({ ...c, pool1List: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-nms-text-dim block mb-1">
+                    MME Pool 2 List {mmePoolConfig.pool2Status && <span className="text-nms-text-dim">({mmePoolConfig.pool2Status === '1' ? 'Connected' : 'Not connected'})</span>}
+                  </label>
+                  <input
+                    className="nms-input font-mono text-xs px-1.5 py-1 w-full"
+                    value={mmePoolConfig.pool2List}
+                    placeholder="(unset)"
+                    onChange={e => setMmePoolConfig(c => ({ ...c, pool2List: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] text-nms-text-dim block mb-1">IPsec Tunnel Map</label>
+                <input
+                  className="nms-input font-mono text-xs px-1.5 py-1 w-full"
+                  value={mmePoolConfig.ipsecTunnelMap}
+                  placeholder="tunnel1:LTE_POOL_MME_LIST1"
+                  onChange={e => setMmePoolConfig(c => ({ ...c, ipsecTunnelMap: e.target.value }))}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] text-nms-text-dim max-w-md">
+                  Binds MME Pool 1/2 List to a named IPsec tunnel, e.g. "tunnel1:LTE_POOL_MME_LIST1"
+                  — comma-separate to bind more than one pool. Leave a pool list blank to unset it.
+                </p>
+                <button
+                  onClick={handleSaveMmePoolConfig}
+                  disabled={savingMmePoolConfig}
+                  className="nms-btn-primary flex items-center gap-2 text-sm shrink-0"
+                >
+                  {savingMmePoolConfig
+                    ? <><RefreshCw className="w-4 h-4 animate-spin" />Saving…</>
+                    : <><Save className="w-4 h-4" />Save MME Pool Config</>
+                  }
+                </button>
+              </div>
             </div>
 
             {/* Action buttons */}
