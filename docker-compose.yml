@@ -116,7 +116,7 @@ services:
         - VITE_ENABLE_PSTN=${ENABLE_PSTN_MODULE:-false}
         - VITE_ENABLE_MMS=${ENABLE_MMS_MODULE:-false}
         - VITE_ENABLE_SECGW=${ENABLE_SECGW_MODULE:-false}
-        - VITE_ENABLE_RF_PLANNING=${ENABLE_RF_PLANNING_MODULE:-true}
+        - VITE_ENABLE_RF_PLANNING=${ENABLE_RF_PLANNING_MODULE:-false}
     container_name: open5gs-nms-frontend
     restart: unless-stopped
     network_mode: host

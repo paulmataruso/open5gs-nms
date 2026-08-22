@@ -21,8 +21,7 @@ export const FEATURES = {
   // a live radio's real S1/N2 backhaul, a bigger blast radius than a broken lab
   // feature, so it stays off until explicitly enabled.
   secgw: import.meta.env.VITE_ENABLE_SECGW === 'true',
-  // Default-on like sms/ims/etc, not opt-in like pstn/mms/secgw — this is a
-  // pure calculator (no install/configure lifecycle, no real-world blast
-  // radius from a bug or misconfiguration).
-  rfPlanning: import.meta.env.VITE_ENABLE_RF_PLANNING !== 'false',
+  // Opt-in like pstn/mms/secgw (not default-on like sms/ims) — not yet meant for
+  // general/public deployments, only for hosts that explicitly enable it.
+  rfPlanning: import.meta.env.VITE_ENABLE_RF_PLANNING === 'true',
 };
