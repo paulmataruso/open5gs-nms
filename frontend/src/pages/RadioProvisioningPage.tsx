@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Radio, RadioTower } from 'lucide-react';
+import { Radio, RadioTower, Calculator } from 'lucide-react';
 import { FemtoConfigTab } from '../components/autoconfig/FemtoConfigTab';
 import { BaicellsAcsTab } from '../components/autoconfig/BaicellsAcsTab';
 import { SercommNRTab } from '../components/autoconfig/SercommNRTab';
 import { clsx } from 'clsx';
+import { FEATURES } from '../config/features';
 
 type Tab = 'femto' | 'sercomm-nr' | 'baicells';
 
@@ -13,7 +14,11 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: 'baicells',   label: 'Baicells Provisioning', icon: <Radio className="w-4 h-4" /> },
 ];
 
-export const RadioProvisioningPage: React.FC = () => {
+interface RadioProvisioningPageProps {
+  onNavigate?: (tab: string) => void;
+}
+
+export const RadioProvisioningPage: React.FC<RadioProvisioningPageProps> = ({ onNavigate }) => {
   const [activeTab, setActiveTab] = useState<Tab>('femto');
 
   return (
@@ -27,6 +32,12 @@ export const RadioProvisioningPage: React.FC = () => {
           </h1>
           <p className="text-sm text-nms-text-dim mt-1">TR-069/ACS provisioning for Sercomm and Baicells radios</p>
         </div>
+        {FEATURES.rfPlanning && (
+          <button onClick={() => onNavigate?.('rf-planning')} className="nms-btn-ghost flex items-center gap-2 border border-nms-border">
+            <Calculator className="w-4 h-4" />
+            RF Planning
+          </button>
+        )}
       </div>
 
       {/* Tabs */}

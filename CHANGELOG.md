@@ -4,6 +4,76 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.50] - 2026-08-22
+
+### Added — RF Planning Tool (Phases 1-3)
+
+New "RF Planning" nav item (Calculator icon), default-on like the other pure-calculator
+features. Built in three sequential parts:
+
+1. **Terrain-aware propagation** — real elevation data (self-hosted SRTM1 `.hgt` tiles,
+   fetched on demand from the public Mapzen/Tilezen S3 bucket and cached on-disk, with a
+   graceful flat-earth fallback if a tile can't be fetched), ITU-R P.526 knife-edge
+   diffraction via the Deygout multi-edge method, and Hata/COST-231-Hata empirical
+   propagation models as alternatives to free-space path loss. A `Close-In` model was
+   added afterward for deployments outside Hata/COST-231-Hata's valid height/frequency
+   ranges (e.g. a low, ~4m/20ft CBRS tower at 3.5GHz).
+2. **Multi-site projects** — persisted sites (MongoDB, `rf_planning_projects`), reusable
+   across sessions, plus a "reverse planning" comparison mode: required TX power for
+   every saved site against the same drawn coverage polygon.
+3. **Interference/SINR, field-survey calibration, PDF reports** — multi-sector SINR
+   grids with a serving-site overlay, a project-scoped table of real signal-strength
+   measurements with a transparent mean-offset calibration adjustment, and PDF exports
+   (`pdfkit`) of link-budget/coverage/interference/calibration results.
+
+### Added — Speed Test Server (Traffic History)
+
+A "Speed Test Server" header link on the Traffic History page opens a config box that
+starts/stops a temporary OpenSpeedTest container directly on the core, bound to any host
+IP/port (e.g. a DNN gateway like `10.45.0.1`) so a UE can run a real throughput test
+against the network with no NAT/public internet involved. Grew out of a live diagnostic
+session — kept as a standing tool rather than a one-off.
+
+### Fixed — Open5GS MME: duplicate Release Access Bearers Request on SGs/CSFB TAU
+
+Diagnosed live from a real report ("lose internet, but the connection never drops") using
+trace-level core logs during an active reproduction. Root cause: `sgsap_handle_lu_reject()`
+(`src/mme/sgsap-handler.c`) fires a Release Access Bearers Request twice for the same TAU
+when the EPS-Bearer-Context-Status IE is present with `active_flag=0` — once via
+`mme_send_tau_accept_and_check_release()`, then again via a redundant, unconditional
+re-check of the identical condition further down the same function. When a UE's follow-up
+Service Request (e.g. LTE/NR reselection) landed in the few-hundred-microsecond gap
+between the two transactions, the S1 context rebuild could orphan whichever response
+arrived second — SGW-C answered both correctly, but MME could no longer match the
+response to a live context, so its own transaction timeout fired ~7s later and forcibly
+tore down the whole session (killing data connectivity on a UE whose RRC/NAS looked
+fine). Fixed by removing the redundant call. Shipped as a new, self-contained
+build-from-source-and-patch step (`mme-dup-release-access-bearers-patch.ts`, matching the
+existing `smf-late-csr-patch.ts` pattern) that runs automatically, non-blocking, on every
+backend startup — not gated behind any optional module's Install flow, since MME is a
+core, always-on NF. Idempotent via a commit+revision marker file, so it applies to fresh
+installs on first boot and to existing deployments on their next backend redeploy.
+
+### Fixed — Framed routing installed static routes on the wrong `dev` for custom-named DNNs (#28)
+
+`resolveDnnDevMap()` in `subscriber-management.ts` read `dnn` off `upf.yaml`'s session
+list — a field Open5GS's real UPF config schema doesn't define at all (only this
+project's own UPF editor writes it, as a convenience annotation, so it can legitimately
+be absent). When absent, every framed route silently fell back to the hardcoded default
+device (`ogstun`), regardless of which DNN the subscriber's session actually used — not
+just non-functional but a real cross-DNN mis-routing/isolation concern on deployments
+with multiple DNNs on separate named TUN devices. Reported with a full root-cause
+analysis and suggested fix by @megaumnick. Fixed by joining `smf.yaml` (the authoritative
+source Open5GS itself depends on) against `upf.yaml` by `dnn` first, falling back to a
+`subnet` join (exact match, then IPv4 CIDR-overlap for a differently-declared prefix
+length — confirmed live that SMF and UPF don't always agree on prefix length for the same
+DNN) when `upf.yaml` has no `dnn` at all, with a warning logged instead of a silent
+fallback when nothing matches. The identical fragile pattern was also found and fixed in
+`auto-assign-ips-usecase.ts`'s IMS session pool detection. 9 new regression tests cover
+both, including the issue's own 4-DNN/4-custom-device reproduction.
+
+---
+
 ## [v2.0-beta_0.49] - 2026-08-20
 
 ### Added — Baicells radios: PLMN mismatch + duplicate-broadcast detection (all radio types)

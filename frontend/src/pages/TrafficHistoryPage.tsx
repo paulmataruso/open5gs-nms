@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { TrendingUp, RefreshCw } from 'lucide-react';
+import { TrendingUp, RefreshCw, Gauge } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { trafficHistoryApi, type TrafficHistorySubscriber } from '../api';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
+import { SpeedTestServerModal } from '../components/trafficHistory/SpeedTestServerModal';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
@@ -34,6 +35,7 @@ export function TrafficHistoryPage() {
   const [subscribers, setSubscribers] = useState<TrafficHistorySubscriber[]>([]);
   const [points, setPoints] = useState<ChartPoint[]>([]);
   const [loading, setLoading] = useState(true);
+  const [speedTestModalOpen, setSpeedTestModalOpen] = useState(false);
 
   // Resolves the current selection to a concrete {from, to} — relative ranges
   // are re-anchored to "now" every time this runs, absolute ranges are fixed.
@@ -125,8 +127,18 @@ export function TrafficHistoryPage() {
           <button onClick={load} className="nms-btn-ghost flex items-center gap-2" title="Refresh">
             <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
           </button>
+          <button
+            onClick={() => setSpeedTestModalOpen(true)}
+            className="nms-btn-ghost flex items-center gap-2"
+            title="Speed Test Server"
+          >
+            <Gauge className="w-4 h-4" />
+            Speed Test Server
+          </button>
         </div>
       </div>
+
+      {speedTestModalOpen && <SpeedTestServerModal onClose={() => setSpeedTestModalOpen(false)} />}
 
       {/* Filters */}
       <div className="nms-card flex flex-wrap items-end gap-4">

@@ -26,6 +26,7 @@ import { BindPage } from './pages/BindPage';
 import { ValidationPage } from './pages/ValidationPage';
 import { PcapPage } from './components/pcap/PcapPage';
 import { TrafficHistoryPage } from './pages/TrafficHistoryPage';
+import { RfPlanningPage } from './pages/RfPlanningPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { FEATURES } from './config/features';
@@ -69,7 +70,9 @@ function App(): JSX.Element {
       case 'auto-config':
         return <AutoConfigPage />;
       case 'radio-config':
-        return <RadioProvisioningPage />;
+        return <RadioProvisioningPage onNavigate={setActiveTab} />;
+      case 'rf-planning':
+        return FEATURES.rfPlanning ? <RfPlanningPage /> : <DashboardPage />;
       case 'suci':
         return <SuciManagementPage />;
       case 'metrics':

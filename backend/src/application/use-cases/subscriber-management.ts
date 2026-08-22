@@ -35,12 +35,44 @@ export class SubscriberManagementUseCase {
     return map;
   }
 
+  // upf.yaml's own `dnn:` key (used below as the primary match) is a convenience
+  // annotation this project's UpfEditor writes — not part of Open5GS's real UPF
+  // config schema — so it can legitimately be absent (hand-edited upf.yaml, or one
+  // predating this NMS). smf.yaml's `dnn` is the one Open5GS itself actually depends
+  // on, so it's the authoritative source; when upf.yaml lacks `dnn` we fall back to
+  // joining by `subnet` instead. That join can't assume an exact string match either
+  // — confirmed on a real deployment that SMF and UPF don't always declare identical
+  // prefix lengths for the same DNN (SMF's "internet" pool 10.45.0.0/16 vs UPF's
+  // narrower 10.45.0.0/24) — so IPv4 falls back further to a CIDR-overlap check.
   private async resolveDnnDevMap(): Promise<Map<string, string>> {
-    const upf = await this.configRepo.loadUpf();
-    const sessions = ((upf as any).session ?? []) as any[];
+    const [smf, upf] = await Promise.all([this.configRepo.loadSmf(), this.configRepo.loadUpf()]);
+    const smfSessions = ((smf as any).session ?? []) as any[];
+    const upfSessions = ((upf as any).session ?? []) as any[];
+
     const map = new Map<string, string>();
-    for (const s of sessions) {
-      if (s?.dnn) map.set(s.dnn, s.dev || 'ogstun');
+    for (const smfSess of smfSessions) {
+      if (!smfSess?.dnn) continue;
+
+      let dev = upfSessions.find((u) => u?.dnn === smfSess.dnn)?.dev;
+
+      if (!dev && smfSess.subnet) {
+        const isV4 = !String(smfSess.subnet).includes(':');
+        const bySubnet = upfSessions.find((u) => u?.subnet === smfSess.subnet)
+          ?? (isV4
+            ? upfSessions.find((u) => u?.subnet && !String(u.subnet).includes(':')
+              && ipv4CidrOverlaps(u.subnet, smfSess.subnet))
+            : undefined);
+        dev = bySubnet?.dev;
+      }
+
+      if (dev) {
+        map.set(smfSess.dnn, dev);
+      } else {
+        this.logger.warn(
+          { dnn: smfSess.dnn, subnet: smfSess.subnet },
+          'No matching UPF session found for SMF DNN (by dnn or subnet) — static routes for this DNN will fall back to the default device',
+        );
+      }
     }
     return map;
   }

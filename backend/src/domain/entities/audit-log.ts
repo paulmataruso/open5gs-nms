@@ -81,6 +81,8 @@ export type AuditAction =
   | 'syslog_install'
   | 'syslog_configure'
   | 'syslog_disable'
+  | 'speedtest_start'
+  | 'speedtest_stop'
   | 'vowifi_install'
   | 'vowifi_configure'
   | 'vowifi_start'

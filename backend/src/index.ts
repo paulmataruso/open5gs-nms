@@ -14,6 +14,7 @@ import { LoadConfigUseCase } from './application/use-cases/load-config';
 import { ConfigMapper } from './application/use-cases/config-mapper';
 import { ValidateConfigUseCase } from './application/use-cases/validate-config';
 import { ApplyConfigUseCase } from './application/use-cases/apply-config';
+import { buildMmeDupReleaseAccessBearersPatchScript } from './application/use-cases/mme-dup-release-access-bearers-patch';
 import { ServiceMonitorUseCase } from './application/use-cases/service-monitor';
 import { SubscriberManagementUseCase } from './application/use-cases/subscriber-management';
 import { TopologyUseCase } from './application/use-cases/topology';
@@ -44,6 +45,10 @@ import { createPcapRouter } from './interfaces/rest/pcap-controller';
 import { EsimGeneratorUseCase } from './application/use-cases/esim-generator';
 import { createEsimRouter } from './interfaces/rest/esim-controller';
 import { createFemtoRouter } from './interfaces/rest/femto-controller';
+import { createRfPlanningRouter } from './interfaces/rest/rf-planning-controller';
+import { createRfPlanningProjectsRouter } from './interfaces/rest/rf-planning-projects-controller';
+import { createRfPlanningReportsRouter } from './interfaces/rest/rf-planning-reports-controller';
+import { MongoRfPlanningProjectRepository } from './infrastructure/mongodb/mongo-rf-project-repository';
 import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller';
 import { createServiceRouter } from './interfaces/rest/service-controller';
 import { createSubscriberRouter } from './interfaces/rest/subscriber-controller';
@@ -68,6 +73,7 @@ import { createLogDownloadRouter } from './interfaces/rest/log-download-controll
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
 import { createChronyRouter } from './interfaces/rest/chrony-controller';
 import { createSyslogRouter } from './interfaces/rest/syslog-controller';
+import { createSpeedtestRouter } from './interfaces/rest/speedtest-controller';
 import { createFrrRouter } from './interfaces/rest/frr-controller';
 import { createFrrSourceBuildRouter } from './interfaces/rest/frr-source-build-controller';
 import { createSmsRouter } from './interfaces/rest/sms-controller';
@@ -83,6 +89,7 @@ import { createVolteValidationRouter } from './interfaces/rest/volte-validation-
 import { ImsTestNumberManager, createImsTestNumberRouter } from './interfaces/rest/ims-test-number-controller';
 import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validation-controller';
 import * as http from 'http';
+import { spawn } from 'child_process';
 import { SasService } from './domain/sas/sas-service';
 import { createSasProtocolRouter, createSasAdminRouter } from './interfaces/rest/sas-controller';
 import { createSercommNRRouter } from './interfaces/rest/sercomm-nr-controller';
@@ -117,6 +124,7 @@ async function main() {
   const hostExecutor = new LocalHostExecutor(logger, config.systemctlPath);
   const configRepo = new YamlConfigRepository(hostExecutor, config.configPath, logger);
   const subscriberRepo = new MongoSubscriberRepository(config.mongodbUri, logger);
+  const rfPlanningProjectRepo = new MongoRfPlanningProjectRepository(config.mongodbUri, logger);
   const auditLogger = new FileAuditLogger(config.logDir, logger);
 
   // Initialize audit logger
@@ -125,6 +133,7 @@ async function main() {
 
   // Connect to MongoDB
   await subscriberRepo.connect();
+  await rfPlanningProjectRepo.connect();
   logger.info('MongoDB connected');
 
   // ── Traffic History ──
@@ -394,6 +403,9 @@ async function main() {
   app.use('/api/pcap', createPcapRouter(pcapUseCase, auditLogger, logger));
   app.use('/api/esim', createEsimRouter(esimGeneratorUseCase, auditLogger, logger));
   app.use('/api/femto', createFemtoRouter(logger));
+  app.use('/api/rf-planning', createRfPlanningRouter(logger));
+  app.use('/api/rf-planning/projects', createRfPlanningProjectsRouter(rfPlanningProjectRepo, logger));
+  app.use('/api/rf-planning/projects', createRfPlanningReportsRouter(rfPlanningProjectRepo, logger));
   app.use('/api/femto/nr', createSercommNRRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
   app.use('/api/tun-interfaces', createTunRouter(tunUseCase, logger));
@@ -406,6 +418,7 @@ async function main() {
   app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/chrony',   createChronyRouter(logger, auditLogger));
   app.use('/api/syslog',   createSyslogRouter(logger, auditLogger));
+  app.use('/api/speedtest', createSpeedtestRouter(logger, auditLogger));
   app.use('/api/frr/source-build', createFrrSourceBuildRouter(logger, auditLogger));
   app.use('/api/frr',      createFrrRouter(logger, auditLogger));
   app.use('/api/sms',        createSmsRouter(subscriberRepo, logger, auditLogger));
@@ -451,6 +464,50 @@ async function main() {
   const httpServer = app.listen(config.port, () => {
     logger.info({ port: config.port }, 'HTTP server started');
   });
+
+  // Fire-and-forget: build+install the MME duplicate-release-access-bearers
+  // patch (see mme-dup-release-access-bearers-patch.ts for the full root
+  // cause) on every backend startup. MME is a core, always-on NF — not an
+  // optional module with its own Install button — so this is the one place
+  // guaranteed to run on both a fresh install (first boot) and an existing
+  // deployment (its next backend restart, already this project's standard
+  // "redeploy backend" step) without requiring a manual trigger anywhere in
+  // the UI. Non-blocking: never delays HTTP readiness. The script itself is
+  // idempotent (marker-file short-circuit), so every startup after the
+  // first is an instant no-op.
+  {
+    const mmePatchLogger = logger.child({ task: 'mme-dup-release-access-bearers-patch' });
+    mmePatchLogger.info('Checking Open5GS MME duplicate-release-access-bearers patch');
+    const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--',
+      'bash', '-c', buildMmeDupReleaseAccessBearersPatchScript()], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const logLine = (line: string) => { if (line.trim()) mmePatchLogger.info(line.trim()); };
+    let stdoutBuf = '';
+    child.stdout.on('data', (d: Buffer) => {
+      stdoutBuf += d.toString();
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop() ?? '';
+      lines.forEach(logLine);
+    });
+    let stderrBuf = '';
+    child.stderr.on('data', (d: Buffer) => {
+      stderrBuf += d.toString();
+      const lines = stderrBuf.split('\n');
+      stderrBuf = lines.pop() ?? '';
+      lines.forEach(logLine);
+    });
+    child.on('close', (code) => {
+      if (stdoutBuf.trim()) logLine(stdoutBuf);
+      if (stderrBuf.trim()) logLine(stderrBuf);
+      if (code === 0) {
+        mmePatchLogger.info('MME patch check complete');
+      } else {
+        mmePatchLogger.warn({ exitCode: code }, 'MME patch check exited non-zero — see log lines above, will retry on next backend restart');
+      }
+    });
+    child.on('error', (err) => {
+      mmePatchLogger.warn({ err: String(err) }, 'Failed to spawn MME patch check');
+    });
+  }
 
   // SAS proxy on port 8899 — Sercomm NR radios send HTTP/1.1 without Host header,
   // which nginx 1.31 rejects before location matching. This separate server uses
@@ -513,6 +570,7 @@ async function main() {
     mmsMsisdnMapRefresher.stop();
     await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
+    await rfPlanningProjectRepo.disconnect();
     httpServer.close();
     sasProxyServer.close();
     wss.close();

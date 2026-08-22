@@ -1,5 +1,6 @@
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import { ipv4CidrOverlaps } from '../../domain/services/ip-utils';
 import pino from 'pino';
 
 export interface AutoAssignIPsResult {
@@ -45,9 +46,11 @@ export class AutoAssignIPsUseCase {
   ) {}
 
   async getPoolInfo(): Promise<IPPoolInfo> {
-    const upfConfig = await this.configRepo.loadUpf();
+    const [upfConfig, smfConfig] = await Promise.all([this.configRepo.loadUpf(), this.configRepo.loadSmf()]);
     const rawYaml = (upfConfig as any).rawYaml;
     const sessions: any[] = rawYaml?.upf?.session ?? [];
+    const smfRawYaml = (smfConfig as any).rawYaml;
+    const smfSessions: any[] = smfRawYaml?.smf?.session ?? [];
 
     // Primary internet session: first IPv4 session without a DNN restriction (or dnn=internet)
     const internetSession = sessions.find((s: any) =>
@@ -59,11 +62,34 @@ export class AutoAssignIPsUseCase {
     const gatewayIp = (internetSession.gateway as string) ?? null;
     const { startIp, endIp } = this.parseSubnet(ipPool);
 
-    // IMS session: session with dnn=ims
+    // IMS session: a UPF session tagged dnn=ims. upf.yaml's own dnn field is a
+    // convenience annotation this NMS's UpfEditor writes — not part of Open5GS's real
+    // UPF schema — so it can legitimately be absent (e.g. hand-edited upf.yaml). Fall
+    // back to joining against smf.yaml's session list by subnet (exact match, then
+    // IPv4 CIDR overlap for a differently-declared prefix length) the same way
+    // resolveDnnDevMap() in subscriber-management.ts does for framed routing —
+    // otherwise a upf.yaml missing dnn silently reports "no IMS session configured"
+    // even when one exists.
     const IMS_APNS = ['ims', 'IMS'];
-    const imsUpfSession = sessions.find((s: any) =>
+    let imsUpfSession = sessions.find((s: any) =>
       s.subnet && !s.subnet.includes(':') && IMS_APNS.includes(s.dnn)
     );
+    if (!imsUpfSession) {
+      const imsSmfSession = smfSessions.find((s: any) =>
+        s?.subnet && !String(s.subnet).includes(':') && IMS_APNS.includes(s.dnn)
+      );
+      if (imsSmfSession?.subnet) {
+        imsUpfSession = sessions.find((s: any) => s?.subnet === imsSmfSession.subnet)
+          ?? sessions.find((s: any) => s?.subnet && !String(s.subnet).includes(':')
+            && ipv4CidrOverlaps(s.subnet, imsSmfSession.subnet));
+        if (!imsUpfSession) {
+          this.logger.warn(
+            { subnet: imsSmfSession.subnet },
+            'smf.yaml has an IMS DNN but no matching UPF session (by dnn or subnet) — IMS IP pool info unavailable',
+          );
+        }
+      }
+    }
 
     const allSubscribers = await this.subscriberRepo.findAllFull();
 
