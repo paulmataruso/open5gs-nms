@@ -7,7 +7,8 @@ import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
 import { secgwApi, type SecGwStatus } from '../../api/secgw';
-import { mmsApi } from '../../api/mms';
+import { mmsApi, type MmsStatus } from '../../api/mms';
+import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorcoreSmsc';
 import type { ValidationResult, ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -83,12 +84,29 @@ function StatCard({
   );
 }
 
+// Same underlying service list ServicesPage.tsx groups under its "Osmocom"
+// section header (osmo-stp/osmo-hlr/osmo-msc, the SMS-over-SGs stack) shows
+// up here too, unfiltered — this grid renders every entry the backend
+// reports, not just the core-17. Every core-17 NF (plus sepp1) really is
+// Open5GS's own software; mongodb and the osmo-* trio are not, and were
+// previously both getting the blanket "Open5GS" fallback below, mislabeling
+// real Osmocom services as this project's own code.
+const SERVICES_OSMO = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
+function vendorLabel(serviceName: string): string {
+  if (serviceName === 'mongodb') return 'MongoDB';
+  if (SERVICES_OSMO.includes(serviceName)) return 'Osmocom';
+  return 'Open5GS';
+}
+
 function ServiceMiniCard({ status }: { status: ServiceStatus }): JSX.Element {
   return (
     <div className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-nms-bg/50 min-w-0">
       <div className="flex items-center gap-2 min-w-0">
         <div className={status.active ? 'status-dot-active' : 'status-dot-inactive'} />
-        <span className="text-xs font-medium truncate">{status.name.toUpperCase()}</span>
+        <div className="min-w-0">
+          <span className="text-xs font-medium truncate block">{status.name.toUpperCase()}</span>
+          <span className="text-[9px] text-nms-text-dim uppercase tracking-wide block">{vendorLabel(status.name)}</span>
+        </div>
       </div>
       <span className={`text-xs shrink-0 ${status.active ? 'text-nms-green' : 'text-nms-red'}`}>
         {status.state}
@@ -103,12 +121,18 @@ function ServiceMiniCard({ status }: { status: ServiceStatus }): JSX.Element {
 // ServiceStatus prop without an awkward cast. This is a lighter twin fed
 // straight from imsApi/pstnApi's own /status responses, which already
 // compute exactly the booleans needed (ims-controller.ts, pstn-controller.ts).
-function AddonServiceMiniCard({ name, active, loading }: { name: string; active: boolean; loading: boolean }): JSX.Element {
+// vendor is required (not inferred) since, unlike the core-17 NFs, these
+// names don't map to a single project 1:1 — e.g. MMSC and MM1 PROXY sit
+// right next to each other but are VectorCore vs. this project's own code.
+function AddonServiceMiniCard({ name, vendor, active, loading }: { name: string; vendor: string; active: boolean; loading: boolean }): JSX.Element {
   return (
     <div className="flex items-center justify-between gap-2 py-1.5 px-2.5 rounded-md bg-nms-bg/50 min-w-0">
       <div className="flex items-center gap-2 min-w-0">
         <div className={loading ? 'status-dot-inactive opacity-40' : active ? 'status-dot-active' : 'status-dot-inactive'} />
-        <span className="text-xs font-medium truncate">{name}</span>
+        <div className="min-w-0">
+          <span className="text-xs font-medium truncate block">{name}</span>
+          <span className="text-[9px] text-nms-text-dim uppercase tracking-wide block">{vendor}</span>
+        </div>
       </div>
       <span className={`text-xs shrink-0 ${loading ? 'text-nms-text-dim' : active ? 'text-nms-green' : 'text-nms-red'}`}>
         {loading ? '…' : active ? 'active' : 'inactive'}
@@ -135,6 +159,8 @@ export function DashboardPage(): JSX.Element {
   const [vowifiStats, setVowifiStats] = useState<VectorcoreStats | null>(null);
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
   const [secgwStatus, setSecgwStatus] = useState<SecGwStatus | null>(null);
+  const [mmsStatus, setMmsStatus] = useState<MmsStatus | null>(null);
+  const [vectorcoreSmscStatus, setVectorcoreSmscStatus] = useState<VectorcoreSmscStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [mmePlmn, setMmePlmn] = useState<{ mcc: string; mnc: string } | null>(null);
   const [gtpBandwidth, setGtpBandwidth] = useState<{ upMbps: number; downMbps: number } | null>(null);
@@ -187,6 +213,14 @@ export function DashboardPage(): JSX.Element {
     // Security Gateway status — service health + radio/tunnel counts for its
     // own mini-card in the Network Functions grid below.
     secgwApi.getStatus().then(setSecgwStatus).catch(() => {});
+    // MMS (VectorCore MMSC + MM1 MSISDN proxy) status — services.serviceActive/
+    // proxyActive for the Network Functions grid below (message-count stats
+    // already come from mmsApi.getAdmin() above, this is just service health).
+    mmsApi.getStatus().then(setMmsStatus).catch(() => {});
+    // VectorCore SMSC status — one of the three SMS Delivery Mode options
+    // (see ims-controller.ts's smsDeliveryMode) — for its own mini-card in
+    // the Network Functions grid below.
+    vectorcoreSmscApi.getStatus().then(setVectorcoreSmscStatus).catch(() => {});
     // Primary PLMN — shown separately for AMF (5G) and MME (4G) since the two
     // are configured independently (kept in sync by the PLMN Migration Wizard,
     // but worth surfacing both in case they ever drift). Every entry in
@@ -679,15 +713,21 @@ export function DashboardPage(): JSX.Element {
               Loading service statuses...
             </div>
           )}
-          <AddonServiceMiniCard name="P-CSCF" active={!!imsStatus?.services?.pcscf} loading={!imsStatus} />
-          <AddonServiceMiniCard name="I-CSCF" active={!!imsStatus?.services?.icscf} loading={!imsStatus} />
-          <AddonServiceMiniCard name="S-CSCF" active={!!imsStatus?.services?.scscf} loading={!imsStatus} />
-          <AddonServiceMiniCard name="ASTERISK" active={!!pstnStatus?.services?.asterisk} loading={!pstnStatus} />
+          <AddonServiceMiniCard name="P-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.pcscf} loading={!imsStatus} />
+          <AddonServiceMiniCard name="I-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.icscf} loading={!imsStatus} />
+          <AddonServiceMiniCard name="S-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.scscf} loading={!imsStatus} />
+          <AddonServiceMiniCard name="ASTERISK" vendor="Asterisk" active={!!pstnStatus?.services?.asterisk} loading={!pstnStatus} />
           <AddonServiceMiniCard
             name="SECGW"
+            vendor="strongSwan"
             active={!!secgwStatus?.serviceActive}
             loading={!secgwStatus}
           />
+          <AddonServiceMiniCard name="EPDG" vendor="VectorCore" active={!!vowifiStatus?.services?.['vowifi-vectorcore-epdg']} loading={!vowifiStatus} />
+          <AddonServiceMiniCard name="AAA" vendor="VectorCore" active={!!vowifiStatus?.services?.['vowifi-vectorcore-aaa']} loading={!vowifiStatus} />
+          <AddonServiceMiniCard name="MMSC" vendor="VectorCore" active={!!mmsStatus?.serviceActive} loading={!mmsStatus} />
+          <AddonServiceMiniCard name="MM1 PROXY" vendor="Open5GS NMS" active={!!mmsStatus?.proxyActive} loading={!mmsStatus} />
+          <AddonServiceMiniCard name="SMSC" vendor="VectorCore" active={!!vectorcoreSmscStatus?.serviceActive} loading={!vectorcoreSmscStatus} />
         </div>
       </div>
 

@@ -293,9 +293,16 @@ export const RfPlanningPage: React.FC = () => {
           <h1 className="text-2xl font-semibold font-display text-nms-text flex items-center gap-2">
             <Radar className="w-6 h-6 text-nms-accent" />
             RF Planning
+            <span
+              className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/30"
+              title="Actively being built out — expect rough edges, incomplete phases, and possible breaking changes between releases"
+            >
+              Alpha
+            </span>
           </h1>
           <p className="text-sm text-nms-text-dim mt-1">
-            Deterministic link-budget and site-geometry calculations — every result traces back to a sourced equation
+            Deterministic link-budget and site-geometry calculations — every result traces back to a sourced equation.
+            This module is in early, active development.
           </p>
         </div>
       </div>

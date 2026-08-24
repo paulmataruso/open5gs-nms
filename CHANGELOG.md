@@ -4,6 +4,123 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.51] - 2026-08-24
+
+### Added — TWAMP (RFC 5357 network performance testing)
+
+New opt-in module (`ENABLE_TWAMP_MODULE`, default off) for real backhaul RTT/jitter/
+one-way-delay/packet-loss testing against radio/backhaul TWAMP reflectors (confirmed
+live against a real Nokia AirScale radio). Client and optional reflector/server, both
+compiled from a thin Go wrapper around `github.com/ncode/twamp` at Install time:
+
+- **Client**: on-demand and background-polled tests against any number of targets, full
+  TWAMP-Control (TCP) and a hand-rolled TWAMP-Light (RFC 5357 Appendix I, connectionless
+  UDP) implementation — the library only supports the former, but a real Nokia AirScale
+  radio's reflector speaks only the latter (confirmed via packet capture). Bind-IP
+  support via a source patch to the vendored library (no `LocalAddr` option upstream) —
+  needed since this host is multi-homed across several RAN-facing subnets.
+- **Reflector/server**: optional always-on service (own systemd unit) accepting inbound
+  tests from a radio acting as the client, same dual-protocol support.
+- **History tab**: every real test result (background poll and on-demand) is persisted
+  to a new `nms_twamp_history` MongoDB collection with a user-configurable TTL retention
+  index (default 30 days, 1–365 range) — deliberately Mongo-backed rather than
+  Prometheus-backed like Traffic History, since this needed per-feature configurable
+  retention that a single shared Prometheus instance's global retention setting can't
+  give. Sortable worst-to-best-RTT summary table across all targets, per-target
+  drill-down graph (auto-bucketed server-side so a 30-day view stays fast), and a min/
+  max/average summary table for the selected time range under the graph.
+- Reflector-side Prometheus metrics — previously only available when the Full/TCP
+  protocol was enabled (the vendored library's own metrics endpoint never started
+  otherwise, so a Light-only reflector's "Raw Metrics" tab was permanently empty).
+  `twamp-server.go` now always starts its metrics endpoint and registers Light-protocol
+  counters (active peers, packets reflected) alongside it; merged into the backend's own
+  `/metrics` (already scraped by Prometheus) with a link out to Grafana.
+- Targets tab redesigned from a card grid to a table.
+
+### Fixed — TWAMP: Connected Clients table empty for Light-mode peers, Full protocol silently ignoring "disabled"
+
+Two real bugs found via a live packet capture while investigating why the Connected
+Clients table showed nothing despite a real Nokia radio actively testing against the
+reflector. (1) The table only ever queried `ss -tn` for TCP peers — TWAMP-Light is
+connectionless UDP, so a Light-only reflector (this deployment's actual config) could
+never show a connected client no matter how much real traffic was flowing. Fixed by
+having the Light reflector track its own recently-seen senders in-memory, exposed via a
+small internal endpoint and merged into `/server/connections`. (2) The systemd unit
+built boolean flags as `-full-enabled false` (space-separated) — Go's `flag` package
+doesn't bind a following token as a bool flag's value, so this silently parsed as
+`-full-enabled=true` and then aborted flag parsing on the stray `false` token entirely.
+The saved config said Full was disabled; the server ran it anyway. Fixed to `-flag=value`
+syntax for both boolean flags.
+
+### Added — APN Profiles (#28-#30)
+
+New "APN Profiles" page: per-DNN profile management (subnet/gateway for IPv4 and IPv6,
+QoS/ARP defaults) built on a shared DNN↔device resolver (`dnn-dev-resolver.ts`,
+extracted from the Framed Routing fix already shipped in v0.50 (#28), now also fixing
+the TUN Interface page — custom-named UPF devices, not just `ogstun`/`ogstun<N>`-pattern
+names, are now recognized instead of being invisible entirely (#29)). Profiles can
+optionally split a DNN's pool into a static range (never touched by automation) and a
+dynamic range — when set, Auto-Assign IPs clamps to the dynamic range only, even under
+an explicit override, so statically-reserved addresses can never be handed out
+automatically (#30). Subscriber page's DNN/APN fields (per-session form and Bulk Tools)
+are now a dropdown of every known DNN — persisted profiles and derived/not-yet-saved
+ones alike — with a "Custom" option, falling back to the original free-text input
+unchanged on zero-profile deployments.
+
+### Added — VectorCore SMSC (3rd SMS delivery mode)
+
+New opt-in module (`ENABLE_VECTORCORE_SMSC_MODULE`, default off) adding VectorCore SMSC
+as a third SMS delivery mode alongside SMS-over-IMS and SMS-over-SGs, shown as its own
+tab on the SMS/MMS page. Kamailio S-CSCF gained a new `ROUTE_SMS_TO_VECTORCORE` mode
+(mutually exclusive with the existing `BLOCK_IMS_SMS` mode) relaying SIP MESSAGE to
+VectorCore's SIP/3GPP-ISC listener.
+
+### Fixed — VectorCore MMSC/SMSC systemd unit naming collision
+
+VectorCore MMSC's own upstream repo ships its systemd packaging file under
+`systemd/vectorcore-smsc.service` — a real upstream naming inconsistency (the file's own
+contents are correct, only the filename is misleading) — which collided head-on with the
+actual, separate VectorCore SMSC project once both were deployed on the same host, since
+both wanted the same unit name. Fixed by installing the MMSC's unit under
+`vectorcore-mmsc.service` instead — a pure destination-filename rename, the unit's
+content is still installed byte-for-byte as shipped.
+
+### Added — Dashboard / Services vendor labels
+
+Every NF/service card across the Dashboard and Services pages now shows a small
+software-vendor label (Open5GS, Osmocom, Kamailio, Asterisk, strongSwan, VectorCore,
+"Open5GS NMS" for this project's own code) so an operator can tell at a glance which
+underlying project is actually running each function. Added VectorCore SMSC status
+cards and "Manage in →" links to every Services page card that lacked one.
+
+### Fixed — Dashboard mislabeling real Osmocom services as "Open5GS"
+
+The Dashboard's "Network Functions" grid renders every service the backend reports, not
+just the core-17 — including `osmo-stp`/`osmo-hlr`/`osmo-msc` (the SMS-over-SGs stack)
+whenever that's installed, since it shares the same status list the Services page
+already correctly groups under its own "Osmocom" section. The Dashboard's vendor-label
+helper blanket-labeled anything that wasn't literally `mongodb` as "Open5GS", so those
+three real Osmocom services were mislabeled. Fixed to recognize them explicitly.
+
+### Fixed — SecGW: persisted PKI status displayed as live tunnel connectivity
+
+`SecGwRadio.status` is a one-way PKI/provisioning lifecycle latch (pending → active once
+a credential has ever established a tunnel; → revoked on removal) — confirmed live that
+a Nokia radio physically powered off still showed status "active" (correctly latched
+from an earlier connection) while `swanctl --list-sas` had already dropped it via DPD.
+Real-time tunnel liveness (`tunnelActive`) is now always recomputed fresh from `swanctl`
+on every status call, never persisted. Also added a per-radio `enabled` admin toggle,
+independent of both PKI status and live tunnel state — disabling unloads the radio's
+swanctl connection and tears down any live SA without touching its certificate/PSK, so
+it can be re-enabled later without re-provisioning.
+
+### Changed — RF Planning Tool is now opt-in
+
+`ENABLE_RF_PLANNING_MODULE` (default off) — previously always-on like the other pure-
+calculator features, this module is still in early, active development (only Phase 1 of
+a planned multi-phase tool), so it's opt-in like the other alpha-stage modules. Clearly
+marked "Alpha" in the UI.
+
 ## [v2.0-beta_0.50] - 2026-08-22
 
 ### Added — RF Planning Tool (Phases 1-3)

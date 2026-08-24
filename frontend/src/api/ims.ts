@@ -29,7 +29,7 @@ export interface ImsStatus {
   configStale: boolean;
   installedWithVersion?: string;
   installStale: boolean;
-  smsDeliveryMode: 'sgs' | 'ims';
+  smsDeliveryMode: 'sgs' | 'ims' | 'vectorcore';
   smsWorkerIntervalSeconds: number;
 }
 
@@ -111,7 +111,7 @@ export const imsApi = {
   enable:          async ()                             => { const { data } = await api.post('/enable');            return data; },
   disable:         async ()                             => { const { data } = await api.post('/disable');           return data; },
   restart:         async ()                             => { const { data } = await api.post('/restart');           return data; },
-  setSmsDeliveryMode: async (mode: 'sgs' | 'ims')       => { const { data } = await api.post('/sms-delivery-mode', { mode }); return data; },
+  setSmsDeliveryMode: async (mode: 'sgs' | 'ims' | 'vectorcore') => { const { data } = await api.post('/sms-delivery-mode', { mode }); return data; },
   setSmsWorkerInterval: async (seconds: number)         => { const { data } = await api.post('/sms-worker-interval', { seconds }); return data; },
   install:         () => fetch('/api/ims/install', {
     method: 'POST', credentials: 'include',

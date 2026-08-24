@@ -60,6 +60,10 @@ COPY src/config/defaults ./dist/config/defaults
 # Copy IMS Kamailio main-config templates (P/I/S-CSCF routing scripts) into dist
 COPY src/config/ims-templates ./dist/config/ims-templates
 
+# Copy the TWAMP client wrapper source (written to the host and compiled at
+# Install time — see twamp-controller.ts) into dist
+COPY src/config/twamp-templates ./dist/config/twamp-templates
+
 RUN mkdir -p /var/log/open5gs-nms && mkdir -p /app/data
 
 ENV NODE_ENV=production

@@ -261,7 +261,24 @@ export interface SecGwRadio {
   certIssuedAt: string | null;
   certExpiresAt: string | null;
   certSerial: string | null;
+  // `status` is a one-way PKI/provisioning lifecycle latch (pending -> active once a
+  // credential has ever been used to establish a tunnel; -> revoked on removal) — it
+  // is NOT live connectivity and must never be read as "is the tunnel up right now".
+  // Confirmed live 2026-08-23: a Nokia radio physically powered off still showed
+  // status "active" here (correctly latched from an earlier successful connection)
+  // while `swanctl --list-sas` had already correctly dropped it via DPD (dpd_delay=30s,
+  // dpd_action=clear — DPD itself was working fine, the persisted field just isn't a
+  // live signal and was being displayed as if it were one). Real-time tunnel state is
+  // `tunnelActive` on the /radios and /status responses instead — always recomputed
+  // fresh from swanctl, never persisted. `enabled` below is the third, independent
+  // axis: an explicit admin on/off toggle, orthogonal to both.
   status: SecGwRadioStatus;
+  // Administrative on/off — independent of both `status` (PKI lifecycle) and live
+  // tunnel state. Disabling unloads the radio's swanctl connection and tears down any
+  // live SA without touching its certificate/PSK, so it can be re-enabled later without
+  // re-provisioning. Defaults true (backfillRadioDefaults) for every radio added before
+  // this field existed — nothing already deployed silently goes dark on upgrade.
+  enabled: boolean;
 
   // ── Nokia-only fields (added 2026-08-14) — all null/default for Baicells radios.
   // Several of these are informational only: they describe a setting on the RADIO's
@@ -323,6 +340,7 @@ function defaultState(): SecGwState {
 function backfillRadioDefaults(radio: Partial<SecGwRadio>): SecGwRadio {
   return {
     vendor: 'baicells',
+    enabled: true,
     ikeSaMode: 'initiator_responder',
     ikeReauthEnabled: false,
     pfsEnabled: true,
@@ -1110,6 +1128,21 @@ function parseListSas(raw: string): SecGwSession[] {
   return sessions;
 }
 
+// Real-time tunnel liveness, recomputed fresh from swanctl on every call — never
+// persisted, never latched. This is the ONLY correct source for "is this radio's
+// tunnel actually up right now" (see the SecGwRadio.status field comment for why
+// the persisted PKI-lifecycle status must not be used for this). Returns an empty
+// set (not an error) if the service isn't active or swanctl can't be reached —
+// callers already treat "not in the set" as "not live", which is the right default.
+async function getLiveRadioIds(): Promise<Set<string>> {
+  const serviceActive = await nsenter('systemctl', ['is-active', SERVICE_NAME])
+    .then(r => r.stdout.trim() === 'active').catch(() => false);
+  if (!serviceActive) return new Set();
+  const sessions = await nsenter('swanctl', ['--list-sas'], 10000)
+    .then(r => parseListSas(r.stdout)).catch(() => [] as SecGwSession[]);
+  return new Set(sessions.filter(s => s.established).map(s => s.radioId));
+}
+
 // ─── Configure (extracted for reuse the same way vowifi-controller.ts exports
 // configureVowifi() for the PLMN Migration Wizard) ────────────────────────────
 export class SecGwConfigureError extends Error {
@@ -1413,8 +1446,14 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     }
   });
 
-  router.get('/radios', (_req: Request, res: Response) => {
-    res.json({ success: true, radios: loadState().radios });
+  router.get('/radios', async (_req: Request, res: Response) => {
+    try {
+      const liveRadioIds = await getLiveRadioIds();
+      const radios = loadState().radios.map(r => ({ ...r, tunnelActive: liveRadioIds.has(r.id) }));
+      res.json({ success: true, radios });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
   });
 
   router.post('/radios', requireAdmin, async (req: Request, res: Response) => {
@@ -1537,7 +1576,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
         id, name, vendor, radioType, genieacsDeviceId, manualIdentifier, peerIdentity, destination,
         localTs, extraLocalCidrs, remoteTs, poolAddress, authMode, psk,
         ikeEncryption, ikeIntegrity, ikeDhGroup, espEncryption, espIntegrity, espDhGroup,
-        certIssuedAt, certExpiresAt, certSerial, status: 'pending',
+        certIssuedAt, certExpiresAt, certSerial, status: 'pending', enabled: true,
         ikeSaMode, ikeReauthEnabled, pfsEnabled, pfsDhGroup, antiReplayEnabled, antiReplayWindowSize,
         dpdDelaySeconds, ikeSaLifetimeSeconds, childSaLifetimeSeconds, localIpAddress,
       };
@@ -1718,6 +1757,74 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
       res.json({ success: true, radio });
     } catch (err) {
       await auditLogger.log({ action: 'secgw_radio_edit', user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // Administrative disable — independent of revoke: unloads this radio's swanctl
+  // connection and tears down any live SA, but keeps its certificate/PSK and
+  // conf.d generation inputs intact so /enable can bring it straight back without
+  // re-provisioning. Same unload sequence DELETE /radios/:id already uses (remove
+  // the conf.d file, --load-all, --terminate the IKE_SA), just without the
+  // cert-revoke/status='revoked' step.
+  router.post('/radios/:id/disable', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const state = loadState();
+      const radio = state.radios.find(r => r.id === req.params.id);
+      if (!radio) { res.status(404).json({ success: false, error: 'Radio not found' }); return; }
+      if (radio.status === 'revoked') { res.status(409).json({ success: false, error: 'Radio is revoked' }); return; }
+
+      const confPath = `${HOST_SWANCTL_CONFD_DIR}/${radio.id}.conf`;
+      if (fs.existsSync(confPath)) fs.unlinkSync(confPath);
+      await nsenter('swanctl', ['--load-all'], 15000).catch(() => {});
+      await nsenter('swanctl', ['--terminate', '--ike', `secgw-${radio.id}`], 10000).catch(() => {});
+
+      radio.enabled = false;
+      saveState(state);
+      await auditLogger.log({ action: 'secgw_radio_disable', user, details: `id=${radio.id} name=${radio.name}`, success: true });
+      res.json({ success: true, radio });
+    } catch (err) {
+      await auditLogger.log({ action: 'secgw_radio_disable', user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // Re-enable — regenerates the same conf.d file from the radio's already-stored
+  // settings (identical to what add/edit would generate) and loads it, so the
+  // radio can reconnect without touching its certificate/PSK.
+  router.post('/radios/:id/enable', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const state = loadState();
+      const radio = state.radios.find(r => r.id === req.params.id);
+      if (!radio) { res.status(404).json({ success: false, error: 'Radio not found' }); return; }
+      if (radio.status === 'revoked') { res.status(409).json({ success: false, error: 'Radio is revoked' }); return; }
+      if (!state.gatewayIp || !state.gatewayFqdn) { res.status(409).json({ success: false, error: 'SecGW is not configured' }); return; }
+
+      fs.mkdirSync(HOST_SWANCTL_CONFD_DIR, { recursive: true });
+      fs.writeFileSync(`${HOST_SWANCTL_CONFD_DIR}/${radio.id}.conf`, swanctlRadioConnConf({
+        radioId: radio.id, gatewayIp: state.gatewayIp, gatewayFqdn: state.gatewayFqdn,
+        peerIdentity: radio.peerIdentity, localTs: radio.localTs,
+        remoteTsAddress: radio.remoteTs.replace(/\/32$/, ''), poolAddress: radio.poolAddress,
+        vendor: radio.vendor, authMode: radio.authMode, psk: radio.psk,
+        ikeEncryption: radio.ikeEncryption, ikeIntegrity: radio.ikeIntegrity, ikeDhGroup: radio.ikeDhGroup,
+        espEncryption: radio.espEncryption, espIntegrity: radio.espIntegrity, espDhGroup: radio.espDhGroup,
+        ikeReauthEnabled: radio.ikeReauthEnabled, pfsEnabled: radio.pfsEnabled, pfsDhGroup: radio.pfsDhGroup,
+        dpdDelaySeconds: radio.dpdDelaySeconds, ikeSaLifetimeSeconds: radio.ikeSaLifetimeSeconds,
+        childSaLifetimeSeconds: radio.childSaLifetimeSeconds,
+      }), 'utf-8');
+      await nsenter('swanctl', ['--load-all'], 15000);
+
+      radio.enabled = true;
+      // A freshly re-loaded connection hasn't proven itself live yet — same
+      // reasoning PUT /radios/:id already applies after any config change.
+      radio.status = radio.status === 'active' ? 'pending' : radio.status;
+      saveState(state);
+      await auditLogger.log({ action: 'secgw_radio_enable', user, details: `id=${radio.id} name=${radio.name}`, success: true });
+      res.json({ success: true, radio });
+    } catch (err) {
+      await auditLogger.log({ action: 'secgw_radio_enable', user, details: String(err), success: false });
       res.status(500).json({ success: false, error: String(err) });
     }
   });

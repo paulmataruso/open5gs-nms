@@ -40,9 +40,22 @@ function toDatetimeLocalValue(d: Date): string {
 interface Props {
   value: TimeRangeValue;
   onChange: (range: TimeRangeValue) => void;
+  // Which edge of the trigger button the popover's own edge locks to.
+  // 'right' (default) anchors the popover's right edge to the button's
+  // right edge, so it opens extending LEFTWARD — correct when the button
+  // sits at the far right of the page (this component's original usage,
+  // TrafficHistoryPage's page header), where there's open space to the left
+  // and none to the right past the viewport edge. A button placed near the
+  // LEFT side of the page (e.g. inside a filter row right after the sidebar)
+  // needs 'left' instead — opens extending RIGHTWARD — otherwise the ~420px
+  // popover overflows past the left edge of the scrollable content area and
+  // gets clipped by its overflow-auto ancestor (looks like it's rendering
+  // "behind" whatever is to the left, e.g. the sidebar, even though it's
+  // actually just cut off, not a stacking/z-index issue).
+  align?: 'left' | 'right';
 }
 
-export function TimeRangePicker({ value, onChange }: Props) {
+export function TimeRangePicker({ value, onChange, align = 'right' }: Props) {
   const [open, setOpen] = useState(false);
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
@@ -100,7 +113,10 @@ export function TimeRangePicker({ value, onChange }: Props) {
       </button>
 
       {open && (
-        <div className="absolute z-50 mt-1 right-0 flex bg-nms-surface border border-nms-border rounded-lg shadow-xl overflow-hidden">
+        <div className={clsx(
+          'absolute z-50 mt-1 flex bg-nms-surface border border-nms-border rounded-lg shadow-xl overflow-hidden',
+          align === 'left' ? 'left-0' : 'right-0',
+        )}>
           <div className="w-52 max-h-96 overflow-y-auto border-r border-nms-border py-1">
             {QUICK_RANGES.map(qr => (
               <button

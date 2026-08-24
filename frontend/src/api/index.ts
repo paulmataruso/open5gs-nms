@@ -104,6 +104,11 @@ export interface TunInterface {
   managed: boolean;
   default: boolean;
   exists: boolean;
+  // Declared in upf.yaml's session list (ogstun-pattern or custom-named) — Open5GS
+  // UPF owns this device, distinct from `managed` (created via this page).
+  fromUpfConfig: boolean;
+  dnn: string | null;
+  subnet: string | null;
 }
 
 export const subscriberApi = {

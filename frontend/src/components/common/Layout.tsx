@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator,
+  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
@@ -25,6 +25,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
   { id: 'radio-config', label: 'Radio Provisioning', icon: RadioTower },
   ...(FEATURES.rfPlanning ? [{ id: 'rf-planning', label: 'RF Planning', icon: Calculator }] : []),
+  { id: 'apn-profiles', label: 'APN Profiles', icon: Layers },
   { id: 'subscribers', label: 'Subscribers', icon: Users },
   { id: 'suci', label: 'SUCI Keys', icon: Key },
   { id: 'backup', label: 'Backup & Restore', icon: Database },
@@ -40,6 +41,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   ...(FEATURES.pstn ? [{ id: 'pstn', label: 'PSTN Gateway', icon: PhoneCall }] : []),
   ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),
   ...(FEATURES.secgw ? [{ id: 'secgw', label: 'SecGW', icon: ShieldCheck }] : []),
+  ...(FEATURES.twamp ? [{ id: 'twamp', label: 'TWAMP', icon: Gauge }] : []),
   ...(FEATURES.validation ? [{ id: 'validation', label: 'UE/Core Validation', icon: FlaskConical }] : []),
   ...(FEATURES.pcap ? [{ id: 'pcap', label: 'Packet Capture', icon: Radar }] : []),
   { id: 'users',   label: 'User Management', icon: UserCog },

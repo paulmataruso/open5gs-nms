@@ -3,7 +3,7 @@ import {
   Plus, Pencil, Trash2, ArrowUp, ArrowDown, RefreshCw,
   AlertTriangle, Info, Network, CheckCircle, XCircle,
 } from 'lucide-react';
-import { tunApi, configApi, type TunInterface } from '../api';
+import { tunApi, type TunInterface } from '../api';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
@@ -87,35 +87,12 @@ export function TunInterfacePage() {
   const [actingOn,      setActingOn]      = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  // Map of TUN interface name -> { dnn, subnet } from UPF session config
-  const [devMap, setDevMap] = useState<Map<string, { dnn: string; subnet: string }>>(new Map());
-
   const load = useCallback(async () => {
     try {
-      const [tunData, configs] = await Promise.all([
-        tunApi.list(),
-        configApi.getAll().catch(() => null),
-      ]);
+      const tunData = await tunApi.list();
       setInterfaces(tunData.interfaces);
       setNetworkdActive(tunData.networkdActive);
       setNextName(tunData.nextName);
-
-      // Build dev -> { dnn, subnet } from UPF session pools
-      if (configs) {
-        const upfSessions: any[] = (configs.upf as any)?.upf?.session || [];
-        const map = new Map<string, { dnn: string; subnet: string }>();
-        for (const sess of upfSessions) {
-          if (sess.dev) {
-            map.set(sess.dev, { dnn: sess.dnn || '', subnet: sess.subnet || '' });
-          }
-        }
-        // ogstun (default) = first session pool with no dev field
-        const defaultSess = upfSessions.find(s => !s.dev);
-        if (defaultSess) {
-          map.set('ogstun', { dnn: defaultSess.dnn || 'internet', subnet: defaultSess.subnet || '' });
-        }
-        setDevMap(map);
-      }
     } catch {
       toast.error('Failed to load TUN interfaces');
     } finally {
@@ -257,26 +234,23 @@ export function TunInterfacePage() {
                       {iface.ip && iface.prefix ? `${iface.ip}/${iface.prefix}` : <span className="text-nms-text-dim">—</span>}
                     </td>
                     <td className="px-4 py-3">
-                      {(() => {
-                        const info = devMap.get(iface.name);
-                        if (!info) return <span className="text-xs text-nms-text-dim">Not configured in UPF</span>;
-                        return (
-                          <div>
-                            {info.dnn && (
-                              <span className="text-xs font-mono text-nms-accent font-semibold">{info.dnn}</span>
-                            )}
-                            {info.subnet && (
-                              <span className="text-xs font-mono text-nms-text-dim ml-2">{info.subnet}</span>
-                            )}
-                            {!info.dnn && !info.subnet && (
-                              <span className="text-xs text-nms-text-dim">Default pool</span>
-                            )}
-                          </div>
-                        );
-                      })()}
+                      {!iface.dnn && !iface.subnet ? (
+                        <span className="text-xs text-nms-text-dim">
+                          {iface.fromUpfConfig ? 'Default pool' : 'Not configured in UPF'}
+                        </span>
+                      ) : (
+                        <div>
+                          {iface.dnn && (
+                            <span className="text-xs font-mono text-nms-accent font-semibold">{iface.dnn}</span>
+                          )}
+                          {iface.subnet && (
+                            <span className="text-xs font-mono text-nms-text-dim ml-2">{iface.subnet}</span>
+                          )}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
-                      {iface.default || (!iface.managed && /^ogstun\d+$/.test(iface.name)) ? (
+                      {iface.default || (!iface.managed && iface.fromUpfConfig) ? (
                         <span className="text-xs bg-nms-surface-2 border border-nms-border text-nms-text-dim rounded px-2 py-0.5">Open5GS</span>
                       ) : iface.managed ? (
                         <span className="text-xs bg-nms-accent/10 border border-nms-accent/20 text-nms-accent rounded px-2 py-0.5">NMS (persistent)</span>

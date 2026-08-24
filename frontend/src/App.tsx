@@ -7,6 +7,7 @@ import { RANPage } from './components/ran/RANPage';
 import { ServicesPage } from './components/services/ServicesPage';
 import { ConfigPage } from './components/config/ConfigPage';
 import { SubscriberPage } from './components/subscribers/SubscriberPage';
+import { ApnProfilesPage } from './pages/ApnProfilesPage';
 import { BackupPage } from './pages/BackupPage';
 import { LogsPage } from './pages/LogsPage';
 import { AutoConfigPage } from './pages/AutoConfigPage';
@@ -22,6 +23,7 @@ import { IMSPage } from './pages/IMSPage';
 import { PstnGatewayPage } from './pages/PstnGatewayPage';
 import { VoWiFiPage } from './pages/VoWiFiPage';
 import { SecGWPage } from './pages/SecGWPage';
+import { TwampPage } from './pages/TwampPage';
 import { BindPage } from './pages/BindPage';
 import { ValidationPage } from './pages/ValidationPage';
 import { PcapPage } from './components/pcap/PcapPage';
@@ -61,6 +63,8 @@ function App(): JSX.Element {
         return <ServicesPage onNavigate={setActiveTab} />;
       case 'config':
         return <ConfigPage />;
+      case 'apn-profiles':
+        return <ApnProfilesPage />;
       case 'subscribers':
         return <SubscriberPage initialImsiToEdit={subscriberToEdit} />;
       case 'backup':
@@ -97,6 +101,8 @@ function App(): JSX.Element {
         return FEATURES.vowifi ? <VoWiFiPage /> : <DashboardPage />;
       case 'secgw':
         return FEATURES.secgw ? <SecGWPage /> : <DashboardPage />;
+      case 'twamp':
+        return FEATURES.twamp ? <TwampPage onNavigate={setActiveTab} /> : <DashboardPage />;
       case 'validation':
         return FEATURES.validation ? <ValidationPage /> : <DashboardPage />;
       case 'pcap':

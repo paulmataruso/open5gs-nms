@@ -233,6 +233,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | GenieACS radio provisioning | stable | `genieacs-controller.ts` | `AutoConfigPage.tsx`, `FemtoConfigTab.tsx` |
 | Traffic History (aggregate + per-subscriber) | stable | `subscriber-ip-accounting.ts`, `prometheus-metrics.ts`, `traffic-history-controller.ts` | `TrafficHistoryPage.tsx` |
 | Security Gateway (SecGW) | alpha — real IPsec tunnels confirmed live for both radio vendors simultaneously: 3 Baicells eNBs (IKEv2 Configuration Payload/virtual-IP based) and 1 Nokia AirScale (static tunnel endpoints + traffic selectors, no CP) — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME, 2026-08-14). See architectural pattern #15 for why Baicells and Nokia are configured completely differently. `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in). | `secgw-controller.ts`, `secgw-build.ts` | `SecGWPage.tsx` |
+| RF Planning | **alpha, actively being built out** — deterministic LTE link-budget/site-geometry engine (Phase 1 of a planned multi-phase tool, see memory: `rf_planning_tool_phase1_plan`); expect incomplete phases and possible breaking changes between releases. `ENABLE_RF_PLANNING_MODULE` defaults **disabled** (opt-in). | `rf-planning-controller.ts`, `rf-planning-projects-controller.ts`, `rf-planning-reports-controller.ts` | `RfPlanningPage.tsx` |
 
 Full detail on any of these: `docs/features.md`.
 

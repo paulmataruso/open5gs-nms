@@ -170,7 +170,17 @@ export interface SecGwRadio {
   certIssuedAt: string | null;
   certExpiresAt: string | null;
   certSerial: string | null;
+  // PKI/provisioning lifecycle latch (pending -> active once ever connected ->
+  // revoked) — NOT live connectivity. Use `tunnelActive` for that.
   status: SecGwRadioStatus;
+  // Administrative on/off, independent of both `status` and `tunnelActive`. Only
+  // present on GET /radios responses (not returned by the add/edit endpoints'
+  // echoed radio, though those do include it in practice — treat as always present).
+  enabled: boolean;
+  // Real-time tunnel liveness, recomputed fresh from swanctl on every GET /radios
+  // call — never persisted. Only present on GET /radios responses (not on the
+  // add/edit/enable/disable endpoints' echoed radio).
+  tunnelActive?: boolean;
   // ─── Nokia-only fields (undefined/null for Baicells radios) ───
   ikeSaMode: SecGwIkeSaMode | null;
   ikeReauthEnabled: boolean | null;
@@ -277,6 +287,14 @@ export const secgwApi = {
   },
   testTunnel: async (id: string): Promise<{ success: boolean; established: boolean; sessions: SecGwSession[] }> => {
     const { data } = await api.post(`/radios/${id}/test-tunnel`);
+    return data;
+  },
+  disableRadio: async (id: string): Promise<{ success: boolean; radio?: SecGwRadio; error?: string }> => {
+    const { data } = await api.post(`/radios/${id}/disable`);
+    return data;
+  },
+  enableRadio: async (id: string): Promise<{ success: boolean; radio?: SecGwRadio; error?: string }> => {
+    const { data } = await api.post(`/radios/${id}/enable`);
     return data;
   },
   downloadBundleUrl: (id: string) => `/api/secgw/radios/${id}/bundle`,

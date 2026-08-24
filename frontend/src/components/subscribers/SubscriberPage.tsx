@@ -5,10 +5,70 @@ import { EsimGeneratorModal } from './EsimGeneratorModal';
 import { useSubscriberStore, useSuciStore } from '../../stores';
 import { subscriberApi, subscriberGroupsApi } from '../../api';
 import type { SubscriberGroup } from '../../api';
+import { apnProfilesApi, type ApnProfileListEntry } from '../../api/apnProfiles';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Subscriber, SubscriberListItem, SubscriberSession, PccRule, FramedRouteEntry } from '../../types';
 import toast from 'react-hot-toast';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+
+const CUSTOM_DNN = '__custom__';
+
+// #30: DNN/APN picker shared by SubForm's per-session field and
+// BulkToolsDialog's custom-APN field. Renders exactly the original free-text
+// input, untouched, when no profiles exist yet (zero-profile deployments see
+// no behavior change). Otherwise a dropdown of every known DNN (persisted
+// profiles and derived/not-yet-saved ones alike — both are real, usable
+// DNNs) plus a literal "Custom" option that reveals the free-text input, so
+// an operator is never blocked from typing a DNN with no profile yet.
+function DnnSelect({
+  value, onChange, profiles, onProfileSelected,
+}: {
+  value: string;
+  onChange: (name: string) => void;
+  profiles: ApnProfileListEntry[];
+  onProfileSelected?: (profile: ApnProfileListEntry) => void;
+}): JSX.Element {
+  if (profiles.length === 0) {
+    return (
+      <input
+        className="nms-input font-mono text-sm w-full"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="internet"
+      />
+    );
+  }
+  const isKnown = profiles.some(p => p.dnn === value);
+  const selectValue = isKnown ? value : CUSTOM_DNN;
+  return (
+    <div className="space-y-1.5">
+      <select
+        className="nms-input font-mono text-sm w-full"
+        value={selectValue}
+        onChange={e => {
+          if (e.target.value === CUSTOM_DNN) { onChange(''); return; }
+          const profile = profiles.find(p => p.dnn === e.target.value);
+          onChange(e.target.value);
+          if (profile) onProfileSelected?.(profile);
+        }}
+      >
+        {profiles.map(p => (
+          <option key={p.dnn} value={p.dnn}>{p.dnn}{!p.persisted ? ' (not saved)' : ''}</option>
+        ))}
+        <option value={CUSTOM_DNN}>Custom / not listed…</option>
+      </select>
+      {selectValue === CUSTOM_DNN && (
+        <input
+          className="nms-input font-mono text-sm w-full"
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder="Enter DNN"
+          autoFocus
+        />
+      )}
+    </div>
+  );
+}
 
 const DEFAULT_SUB: Subscriber = {
   imsi: '', 
@@ -538,6 +598,8 @@ function BulkToolsDialog({
   const [addCustom, setAddCustom] = useState(true);
   const [apnName, setApnName]     = useState('internet');
   const [apnType, setApnType]     = useState(3);
+  const [apnProfiles, setApnProfiles] = useState<ApnProfileListEntry[]>([]);
+  useEffect(() => { apnProfilesApi.list().then(setApnProfiles).catch(() => {}); }, []);
   const [ulValue, setUlValue]     = useState(1);
   const [ulUnit, setUlUnit]       = useState(3);
   const [dlValue, setDlValue]     = useState(1);
@@ -688,7 +750,12 @@ function BulkToolsDialog({
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <label className="nms-label">APN Name (DNN)</label>
-                            <input className="nms-input" value={apnName} onChange={e => setApnName(e.target.value)} placeholder="internet" />
+                            <DnnSelect
+                              value={apnName}
+                              onChange={setApnName}
+                              profiles={apnProfiles}
+                              onProfileSelected={profile => { if (profile.persisted) setQosIndex(profile.qos.index); }}
+                            />
                           </div>
                           <div>
                             <label className="nms-label">Type</label>
@@ -1724,6 +1791,12 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
   const [saving, setSaving] = useState(false);
   const save = async () => { setSaving(true); try { await onSave(form); } finally { setSaving(false); } };
 
+  // #30: DNN dropdown, populated from APN Profiles — falls back to the
+  // original free-text entry untouched when no profiles are defined yet
+  // (zero-profile deployments see no behavior change at all).
+  const [apnProfiles, setApnProfiles] = useState<ApnProfileListEntry[]>([]);
+  useEffect(() => { apnProfilesApi.list().then(setApnProfiles).catch(() => {}); }, []);
+
   // Open5GS caps framed routes at 8 per address family per session
   // (OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN) — block Save client-side rather than
   // letting the operator find out only after the backend rejects it.
@@ -2061,11 +2134,13 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                   <div className="grid grid-cols-3 gap-3 mb-3">
                     <div>
                       <label className="nms-label">DNN/APN *</label>
-                      <input 
-                        className="nms-input font-mono text-sm"
+                      <DnnSelect
                         value={sess.name}
-                        onChange={e => updateSession(sliceIdx, sessIdx, { name: e.target.value })}
-                        placeholder="internet"
+                        onChange={name => updateSession(sliceIdx, sessIdx, { name })}
+                        profiles={apnProfiles}
+                        onProfileSelected={profile => {
+                          if (profile.persisted) updateSession(sliceIdx, sessIdx, { qos: profile.qos });
+                        }}
                       />
                     </div>
                     <div>
@@ -2193,7 +2268,16 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv4 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv4: e.target.value || undefined } })}
-                        placeholder="10.45.0.2"
+                        placeholder={(() => {
+                          // #30: hint the profile's static sub-range, if it has one — a
+                          // suggestion only, never a hard block (an operator may have
+                          // legitimate reasons to assign outside it, e.g. migrating an
+                          // existing subscriber).
+                          const profile = apnProfiles.find(p => p.dnn === sess.name);
+                          return profile?.persisted && profile.staticRangeStart
+                            ? `${profile.staticRangeStart} – ${profile.staticRangeEnd}`
+                            : '10.45.0.2';
+                        })()}
                       />
                     </div>
                     <div>

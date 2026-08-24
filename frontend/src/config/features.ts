@@ -17,6 +17,9 @@ export const FEATURES = {
   // third-party binary (VectorCore MMSC) running as a host service, not just a
   // config toggle — defaults off until explicitly enabled.
   mms: import.meta.env.VITE_ENABLE_MMS === 'true',
+  // Same opt-in-by-default posture as mms — also a from-source-built
+  // third-party binary (VectorCore SMSC) running as a host service.
+  vectorcoreSmsc: import.meta.env.VITE_ENABLE_VECTORCORE_SMSC === 'true',
   // Same opt-in-by-default posture as pstn/mms — misconfiguring this module risks
   // a live radio's real S1/N2 backhaul, a bigger blast radius than a broken lab
   // feature, so it stays off until explicitly enabled.
@@ -24,4 +27,7 @@ export const FEATURES = {
   // Opt-in like pstn/mms/secgw (not default-on like sms/ims) — not yet meant for
   // general/public deployments, only for hosts that explicitly enable it.
   rfPlanning: import.meta.env.VITE_ENABLE_RF_PLANNING === 'true',
+  // Opt-in like mms/secgw/vectorcoreSmsc — compiles a small Go program
+  // against a third-party module (github.com/ncode/twamp) at Install time.
+  twamp: import.meta.env.VITE_ENABLE_TWAMP === 'true',
 };

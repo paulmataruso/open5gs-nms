@@ -84,7 +84,20 @@ const VC_DATA   = `${VC_DIR}/data`;
 const VC_DB     = `${VC_DATA}/vectorcore-mmsc.db`;
 const VC_LOG      = `${VC_DIR}/log`;
 const VC_LOG_FILE = `${VC_LOG}/mmsc.log`;
-const SYSTEMD_UNIT      = 'vectorcore-smsc'; // real unit name shipped by the repo — installed as-is, not renamed
+// Upstream's own vectorcore-mmsc repo ships its systemd packaging file under
+// systemd/vectorcore-smsc.service — a real upstream naming inconsistency
+// (confirmed against the repo itself), not a mistake on our side; the file's
+// own internal content is correct (Description=VectorCore MMSC etc.), only
+// its filename is misleading. This used to get installed under that same
+// filename verbatim, which collided head-on with the real, separate
+// vectorcore-smsc project (an actual SMS Center — see
+// vectorcore-smsc-controller.ts) once that was also deployed on the same
+// host: both wanted /etc/systemd/system/vectorcore-smsc.service. Fixed by a
+// pure filename-level rename — content is still installed byte-for-byte as
+// shipped (no patching, same posture as before), only the destination name
+// changes, so this carries zero risk of the unit's actual behavior changing.
+const UPSTREAM_SYSTEMD_UNIT_FILENAME = 'vectorcore-smsc'; // matches the repo's own systemd/ dir — do not change
+const SYSTEMD_UNIT      = 'vectorcore-mmsc'; // our chosen, unambiguous destination/runtime unit name
 const SYSTEMD_UNIT_PATH = `/etc/systemd/system/${SYSTEMD_UNIT}.service`;
 
 const MM1_PORT  = 8002;
@@ -780,8 +793,8 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
         return res.end();
       }
 
-      write('\n=== Installing systemd unit (as shipped) ===');
-      await spawnStream(`cp ${VC_DIR}/systemd/${SYSTEMD_UNIT}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
+      write('\n=== Installing systemd unit (content as shipped, renamed to avoid colliding with the real vectorcore-smsc project) ===');
+      await spawnStream(`cp ${VC_DIR}/systemd/${UPSTREAM_SYSTEMD_UNIT_FILENAME}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
 
       // Record installedWithVersion (preserving any existing config state —
       // Install can run standalone before Configure on a fresh deploy, or
@@ -938,7 +951,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
       // external sqlite3 CLI write risks "database is locked" the same way
       // OsmoHLR's did — stop the service around the bulk write, same as SMS.
       //
-      // vectorcore-mm1-proxy.service has PartOf=vectorcore-smsc.service (so a
+      // vectorcore-mm1-proxy.service has PartOf=vectorcore-mmsc.service (so a
       // real Configure-triggered restart of VectorCore also bounces the
       // proxy) — but PartOf= only propagates stop/restart, never start.
       // Stopping SYSTEMD_UNIT here takes the proxy down as a side effect;
@@ -1007,7 +1020,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
     const user = (req as any).user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', SYSTEMD_UNIT]);
-      // vectorcore-mm1-proxy.service's PartOf=vectorcore-smsc.service only
+      // vectorcore-mm1-proxy.service's PartOf=vectorcore-mmsc.service only
       // propagates stop/restart, not start — a bare start here won't revive
       // the proxy if a prior Stop (or the sync-subscribers stop/start pair)
       // took it down. Ensure it's up too, same as configure/sync-subscribers

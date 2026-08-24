@@ -5,6 +5,9 @@ import {
 } from 'lucide-react';
 import { useServiceStore } from '../../stores';
 import { serviceApi } from '../../api';
+import { vowifiApi, type VowifiStatus } from '../../api/vowifi';
+import { mmsApi, type MmsStatus } from '../../api/mms';
+import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorcoreSmsc';
 import type { ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -43,7 +46,18 @@ function formatUptime(timestamp: string | null): string {
   }
 }
 
-function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
+// Where an operator actually manages each of these, beyond the inline
+// start/stop/restart this card already offers — the core-17 NFs' config
+// lives on the Config page, Osmocom's on the SMS page (SMS via SGs tab),
+// mongodb has no config page of its own but its backups are managed on
+// Backup.
+function serviceManageTarget(name: string): { label: string; target: string } {
+  if (SERVICES_OSMO.includes(name)) return { label: 'SMS', target: 'sms' };
+  if (name === 'mongodb') return { label: 'Backup', target: 'backup' };
+  return { label: 'Config', target: 'config' };
+}
+
+function ServiceCard({ status, onNavigate }: { status: ServiceStatus; onNavigate?: (tab: string) => void }): JSX.Element {
   const [acting, setActing] = useState(false);
   const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
 
@@ -148,6 +162,58 @@ function ServiceCard({ status }: { status: ServiceStatus }): JSX.Element {
           <RotateCw className="w-3.5 h-3.5" /> Restart
         </button>
       </div>
+
+      {(() => {
+        const { label, target } = serviceManageTarget(status.name);
+        return (
+          <button
+            onClick={() => onNavigate?.(target)}
+            className="text-xs text-nms-accent hover:underline pt-3 mt-3 border-t border-nms-border w-full text-left"
+          >
+            Manage in {label} →
+          </button>
+        );
+      })()}
+    </div>
+  );
+}
+
+// VectorCore's four systemd units (VoWiFi's ePDG+AAA, MMS's MMSC+MM1 proxy)
+// aren't in SERVICE_UNIT_MAP — they're only independently controllable as
+// pairs via VoWiFi/MMS's own module-level start/stop/restart (which acts on
+// both units in each pair together, not one at a time), so a per-card
+// start/stop/restart row here would misleadingly imply a control this page
+// can't actually offer independently. Read-only status + a link to the
+// module that actually owns lifecycle control, instead.
+function VectorCoreCard({
+  name, unitName, active, loading, module, navTarget, onNavigate,
+}: {
+  name: string; unitName: string; active: boolean; loading: boolean;
+  module: string; navTarget: string; onNavigate?: (tab: string) => void;
+}): JSX.Element {
+  return (
+    <div className="nms-card animate-fade-in">
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <div className={loading ? 'status-dot-inactive opacity-40' : active ? 'status-dot-active' : 'status-dot-inactive'} />
+          <div>
+            <h3 className="text-base font-semibold font-display">{name}</h3>
+            <p className="text-xs text-nms-text-dim font-mono">{unitName}</p>
+          </div>
+        </div>
+        <span className={`text-xs px-2 py-1 rounded-full ${
+          loading ? 'bg-nms-surface text-nms-text-dim' :
+          active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red'
+        }`}>
+          {loading ? '…' : active ? 'active' : 'inactive'}
+        </span>
+      </div>
+      <button
+        onClick={() => onNavigate?.(navTarget)}
+        className="text-xs text-nms-accent hover:underline pt-3 border-t border-nms-border w-full text-left"
+      >
+        Manage in {module} →
+      </button>
     </div>
   );
 }
@@ -169,6 +235,9 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
   const [acting5G, setActing5G] = useState(false);
   const [chrony, setChrony] = useState<{ installed: boolean; active: boolean; refSource?: string } | null>(null);
   const [chronyActing, setChronyActing] = useState(false);
+  const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
+  const [mmsStatus, setMmsStatus] = useState<MmsStatus | null>(null);
+  const [vectorcoreSmscStatus, setVectorcoreSmscStatus] = useState<VectorcoreSmscStatus | null>(null);
 
   const API = import.meta.env.VITE_API_URL || '/api';
 
@@ -178,7 +247,15 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       .catch(() => {});
   };
 
-  useEffect(() => { fetchChrony(); }, []);
+  useEffect(() => {
+    fetchChrony();
+    // VectorCore (VoWiFi ePDG/AAA, MMS MMSC/MM1 proxy) status for the
+    // VectorCore section below — see VectorCoreCard for why these are
+    // read-only here rather than independently start/stop/restart-able.
+    vowifiApi.getStatus().then(setVowifiStatus).catch(() => {});
+    mmsApi.getStatus().then(setMmsStatus).catch(() => {});
+    vectorcoreSmscApi.getStatus().then(setVectorcoreSmscStatus).catch(() => {});
+  }, []);
 
   const handleChronyAction = async (action: 'start' | 'stop' | 'restart') => {
     setChronyActing(true);
@@ -318,7 +395,7 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
         <div>
           <SectionHeader label="5G Core" color="text-blue-400" />
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {statuses.filter(s => SERVICES_5G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+            {statuses.filter(s => SERVICES_5G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
           </div>
         </div>
       )}
@@ -328,7 +405,7 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
         <div>
           <SectionHeader label="4G EPC" color="text-amber-400" />
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {statuses.filter(s => SERVICES_4G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+            {statuses.filter(s => SERVICES_4G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
           </div>
         </div>
       )}
@@ -338,7 +415,7 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
         <div>
           <SectionHeader label="Shared 4G + 5G" color="text-purple-400" />
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {statuses.filter(s => SERVICES_SHARED.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+            {statuses.filter(s => SERVICES_SHARED.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
           </div>
         </div>
       )}
@@ -395,9 +472,47 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
                 <RotateCw className="w-3.5 h-3.5" /> Restart
               </button>
             </div>
+            <button
+              onClick={() => onNavigate?.('time-server')}
+              className="text-xs text-nms-accent hover:underline pt-3 mt-3 border-t border-nms-border w-full text-left"
+            >
+              Manage in Time Server →
+            </button>
           </div>
 
-          {statuses.filter(s => SERVICES_OSMO.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} />)}
+          {statuses.filter(s => SERVICES_OSMO.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
+        </div>
+      </div>
+
+      {/* VectorCore */}
+      <div>
+        <SectionHeader label="VectorCore" color="text-pink-400" />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <VectorCoreCard
+            name="EPDG" unitName="vowifi-vectorcore-epdg" module="VoWiFi" navTarget="vowifi"
+            active={!!vowifiStatus?.services?.['vowifi-vectorcore-epdg']} loading={!vowifiStatus}
+            onNavigate={onNavigate}
+          />
+          <VectorCoreCard
+            name="AAA" unitName="vowifi-vectorcore-aaa" module="VoWiFi" navTarget="vowifi"
+            active={!!vowifiStatus?.services?.['vowifi-vectorcore-aaa']} loading={!vowifiStatus}
+            onNavigate={onNavigate}
+          />
+          <VectorCoreCard
+            name="MMSC" unitName="vectorcore-mmsc" module="SMS/MMS" navTarget="sms"
+            active={!!mmsStatus?.serviceActive} loading={!mmsStatus}
+            onNavigate={onNavigate}
+          />
+          <VectorCoreCard
+            name="MM1 PROXY" unitName="vectorcore-mm1-proxy" module="SMS/MMS" navTarget="sms"
+            active={!!mmsStatus?.proxyActive} loading={!mmsStatus}
+            onNavigate={onNavigate}
+          />
+          <VectorCoreCard
+            name="SMSC" unitName="vectorcore-smsc" module="SMS/MMS" navTarget="sms"
+            active={!!vectorcoreSmscStatus?.serviceActive} loading={!vectorcoreSmscStatus}
+            onNavigate={onNavigate}
+          />
         </div>
       </div>
     </div>

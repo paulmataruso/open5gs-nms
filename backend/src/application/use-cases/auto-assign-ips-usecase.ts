@@ -1,5 +1,6 @@
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import { IApnProfileRepository } from '../../domain/interfaces/apn-profile-repository';
 import { ipv4CidrOverlaps } from '../../domain/services/ip-utils';
 import pino from 'pino';
 
@@ -33,6 +34,16 @@ export interface IPPoolInfo {
   imsGatewayIp?: string | null;
   imsWithIp?: number;
   imsWithoutIp?: number;
+  // #30: when an ApnProfile exists for the resolved DNN with a defined
+  // dynamic sub-range, this is the range Auto-Assign actually draws from —
+  // distinct from ipPool/imsPool above, which always describe the whole
+  // pool. Undefined when no profile (or no dynamic range on it) exists —
+  // full backward compatibility, auto-assign uses the whole pool exactly
+  // as it always has.
+  dynamicRangeStart?: string;
+  dynamicRangeEnd?: string;
+  imsDynamicRangeStart?: string;
+  imsDynamicRangeEnd?: string;
 }
 
 /**
@@ -43,7 +54,37 @@ export class AutoAssignIPsUseCase {
     private readonly subscriberRepo: ISubscriberRepository,
     private readonly configRepo: IConfigRepository,
     private readonly logger: pino.Logger,
+    private readonly apnProfileRepo?: IApnProfileRepository,
   ) {}
+
+  // #30: a real, PERSISTED ApnProfile only — never the derived/discovered
+  // entries ApnProfileUseCase.list() also returns, since those don't carry
+  // a dynamic range at all (nothing to clamp to). Constructor param is
+  // optional so any test/caller that doesn't care about the static/dynamic
+  // split can keep constructing this class exactly as before #30.
+  private async findDynamicRange(dnn: string): Promise<{ start: string; end: string } | null> {
+    if (!this.apnProfileRepo) return null;
+    const profile = await this.apnProfileRepo.findByDnn(dnn).catch(() => null);
+    if (profile?.dynamicRangeStart && profile?.dynamicRangeEnd) {
+      return { start: profile.dynamicRangeStart, end: profile.dynamicRangeEnd };
+    }
+    return null;
+  }
+
+  // Clamps [startIp, endIp] to stay inside a profile's dynamic range when
+  // one exists — a hard ceiling auto-assign can never exceed even via an
+  // explicit override, so addresses in a defined static range are never at
+  // risk of being handed out automatically (the whole point of the split —
+  // only editing the profile itself can widen it).
+  private clampToDynamicRange(startIp: string, endIp: string, dynamic: { start: string; end: string } | null): { startIp: string; endIp: string } {
+    if (!dynamic) return { startIp, endIp };
+    const dynStartNum = this.ipToNumber(dynamic.start);
+    const dynEndNum = this.ipToNumber(dynamic.end);
+    return {
+      startIp: this.numberToIp(Math.max(this.ipToNumber(startIp), dynStartNum)),
+      endIp: this.numberToIp(Math.min(this.ipToNumber(endIp), dynEndNum)),
+    };
+  }
 
   async getPoolInfo(): Promise<IPPoolInfo> {
     const [upfConfig, smfConfig] = await Promise.all([this.configRepo.loadUpf(), this.configRepo.loadSmf()]);
@@ -112,6 +153,12 @@ export class AutoAssignIPsUseCase {
       withoutIp: allSubscribers.length - withIp,
     };
 
+    const internetDynamicRange = await this.findDynamicRange('internet');
+    if (internetDynamicRange) {
+      info.dynamicRangeStart = internetDynamicRange.start;
+      info.dynamicRangeEnd = internetDynamicRange.end;
+    }
+
     if (detectedImsApn !== undefined) {
       const imsWithIp = imsSubscribers.filter(s =>
         s.slice?.some(sl => sl.session?.some(sess => IMS_APNS.includes(sess.name) && sess.ue?.ipv4))
@@ -137,6 +184,12 @@ export class AutoAssignIPsUseCase {
       info.imsGatewayIp = imsGatewayIp;
       info.imsWithIp = imsWithIp;
       info.imsWithoutIp = imsSubscribers.length - imsWithIp;
+
+      const imsDynamicRange = await this.findDynamicRange(detectedImsApn);
+      if (imsDynamicRange) {
+        info.imsDynamicRangeStart = imsDynamicRange.start;
+        info.imsDynamicRangeEnd = imsDynamicRange.end;
+      }
     }
 
     return info;
@@ -162,11 +215,18 @@ export class AutoAssignIPsUseCase {
 
       // Step 2: Parse the subnet to get base IP and netmask
       const { baseIp, netmask, startIp: defaultStart, endIp: defaultEnd } = this.parseSubnet(ipPool);
-      const startIp = overrides?.startIp ?? defaultStart;
-      const endIp   = overrides?.endIp   ?? defaultEnd;
+      // #30: clamp to the "internet" profile's dynamic range when one is
+      // defined — a hard ceiling even over an explicit override, so a
+      // defined static range is never at risk of being auto-assigned into.
+      const internetDynamicRange = await this.findDynamicRange('internet');
+      const { startIp, endIp } = this.clampToDynamicRange(
+        overrides?.startIp ?? defaultStart,
+        overrides?.endIp ?? defaultEnd,
+        internetDynamicRange,
+      );
       const overwrite = overrides?.overwrite ?? false;
       const gatewayIPNum = gatewayIP ? this.ipToNumber(gatewayIP) : null;
-      this.logger.info({ baseIp, netmask, startIp, endIp, gatewayIP, overwrite }, 'Parsed IP pool');
+      this.logger.info({ baseIp, netmask, startIp, endIp, gatewayIP, overwrite, dynamicRange: internetDynamicRange }, 'Parsed IP pool');
 
       // Step 3: Get subscribers in scope — either every subscriber, or only the
       // caller-selected subset (so a bulk run never touches UEs the operator
@@ -263,7 +323,17 @@ export class AutoAssignIPsUseCase {
       // own independent occupied set since it's a separate pool/subnet.
       if (overrides?.imsStartIp && overrides?.imsEndIp) {
         const imsOverwrite = overrides.imsOverwrite ?? false;
-        const imsEndIpNum = this.ipToNumber(overrides.imsEndIp);
+        // #30: same dynamic-range clamp as the internet pool above, keyed
+        // off whichever DNN name the IMS subscribers actually use (matches
+        // getPoolInfo()'s own detectedImsApn — usually "ims", sometimes "IMS").
+        const imsProfileDnn = allSubscribersFull
+          .flatMap(s => s.slice?.flatMap(sl => sl.session ?? []) ?? [])
+          .find(sess => IMS_APNS.includes(sess.name))?.name ?? 'ims';
+        const imsDynamicRange = await this.findDynamicRange(imsProfileDnn);
+        const { startIp: imsStartIp, endIp: imsEndIp } = this.clampToDynamicRange(
+          overrides.imsStartIp, overrides.imsEndIp, imsDynamicRange,
+        );
+        const imsEndIpNum = this.ipToNumber(imsEndIp);
 
         const imsOccupied = new Set<number>();
         for (const s of allSubscribersFull) {
@@ -275,7 +345,7 @@ export class AutoAssignIPsUseCase {
           imsOccupied.add(this.ipToNumber(ip));
         }
 
-        let imsCursor = this.ipToNumber(overrides.imsStartIp);
+        let imsCursor = this.ipToNumber(imsStartIp);
         const nextFreeImsIp = (): number | null => {
           while (imsCursor <= imsEndIpNum) {
             if (imsOccupied.has(imsCursor)) { imsCursor++; continue; }

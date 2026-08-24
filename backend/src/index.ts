@@ -47,8 +47,11 @@ import { createEsimRouter } from './interfaces/rest/esim-controller';
 import { createFemtoRouter } from './interfaces/rest/femto-controller';
 import { createRfPlanningRouter } from './interfaces/rest/rf-planning-controller';
 import { createRfPlanningProjectsRouter } from './interfaces/rest/rf-planning-projects-controller';
+import { createApnProfileRouter } from './interfaces/rest/apn-profile-controller';
 import { createRfPlanningReportsRouter } from './interfaces/rest/rf-planning-reports-controller';
 import { MongoRfPlanningProjectRepository } from './infrastructure/mongodb/mongo-rf-project-repository';
+import { MongoApnProfileRepository } from './infrastructure/mongodb/mongo-apn-profile-repository';
+import { ApnProfileUseCase } from './application/use-cases/apn-profile-usecase';
 import { createAutoConfigRouter } from './interfaces/rest/auto-config-controller';
 import { createServiceRouter } from './interfaces/rest/service-controller';
 import { createSubscriberRouter } from './interfaces/rest/subscriber-controller';
@@ -78,6 +81,7 @@ import { createFrrRouter } from './interfaces/rest/frr-controller';
 import { createFrrSourceBuildRouter } from './interfaces/rest/frr-source-build-controller';
 import { createSmsRouter } from './interfaces/rest/sms-controller';
 import { createMmsRouter, MmsMsisdnMapRefresher } from './interfaces/rest/mms-controller';
+import { createVectorcoreSmscRouter } from './interfaces/rest/vectorcore-smsc-controller';
 import { createImsRouter } from './interfaces/rest/ims-controller';
 import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
 import { createSecgwRouter } from './interfaces/rest/secgw-controller';
@@ -97,6 +101,10 @@ import { createSubscriberGroupsRouter } from './interfaces/rest/subscriber-group
 import { SubscriberIpAccounting } from './application/use-cases/traffic-history/subscriber-ip-accounting';
 import { createTrafficMetricsRegistry } from './application/use-cases/traffic-history/prometheus-metrics';
 import { createTrafficHistoryRouter } from './interfaces/rest/traffic-history-controller';
+import * as promClient from 'prom-client';
+import { TwampMonitor } from './application/use-cases/twamp/twamp-monitor';
+import { createTwampMetricsRegistry } from './application/use-cases/twamp/twamp-metrics';
+import { createTwampRouter } from './interfaces/rest/twamp-controller';
 
 async function main() {
   // Load configuration
@@ -125,6 +133,7 @@ async function main() {
   const configRepo = new YamlConfigRepository(hostExecutor, config.configPath, logger);
   const subscriberRepo = new MongoSubscriberRepository(config.mongodbUri, logger);
   const rfPlanningProjectRepo = new MongoRfPlanningProjectRepository(config.mongodbUri, logger);
+  const apnProfileRepo = new MongoApnProfileRepository(config.mongodbUri, logger);
   const auditLogger = new FileAuditLogger(config.logDir, logger);
 
   // Initialize audit logger
@@ -134,7 +143,10 @@ async function main() {
   // Connect to MongoDB
   await subscriberRepo.connect();
   await rfPlanningProjectRepo.connect();
+  await apnProfileRepo.connect();
   logger.info('MongoDB connected');
+
+  const apnProfileUseCase = new ApnProfileUseCase(apnProfileRepo, configRepo, logger);
 
   // ── Traffic History ──
   // Per-subscriber nftables byte counters + a Prometheus exporter — storage,
@@ -150,6 +162,12 @@ async function main() {
   mmsMsisdnMapRefresher.start();
   const trafficMetricsGtpMonitor = new GtpBandwidthMonitor(hostExecutor, configRepo, logger);
   const trafficMetricsRegistry = createTrafficMetricsRegistry(trafficMetricsGtpMonitor, subscriberIpAccounting);
+
+  // TWAMP reflector testing (Nokia radios + any other configured target) —
+  // background poller caches the latest result per target; both the
+  // Prometheus exporter and GET /api/twamp/targets read from it.
+  const twampMonitor = new TwampMonitor(subscriberRepo.getDb(), hostExecutor, logger);
+  const twampMetricsRegistry = createTwampMetricsRegistry(twampMonitor, hostExecutor);
 
   // ── IMS call stats ──
   // Background sampler for the Dashboard's IMS Status card — live active-call
@@ -258,7 +276,7 @@ async function main() {
     auditLogger,
     logger,
   );
-  const tunUseCase = new TunManagementUseCase(hostExecutor, logger);
+  const tunUseCase = new TunManagementUseCase(hostExecutor, logger, configRepo);
   const subscriberManagementUseCase = new SubscriberManagementUseCase(
     subscriberRepo,
     auditLogger,
@@ -331,6 +349,7 @@ async function main() {
     subscriberRepo,
     configRepo,
     logger,
+    apnProfileRepo,
   );
 
   // Initialize log streaming WebSocket handler
@@ -375,8 +394,9 @@ async function main() {
   // never caught by the auth middleware below.
   app.get('/metrics', async (_req, res) => {
     try {
-      res.set('Content-Type', trafficMetricsRegistry.contentType);
-      res.send(await trafficMetricsRegistry.metrics());
+      const merged = promClient.Registry.merge([trafficMetricsRegistry, twampMetricsRegistry]);
+      res.set('Content-Type', merged.contentType);
+      res.send(await merged.metrics());
     } catch (err) {
       logger.error({ err: String(err) }, 'Failed to render /metrics');
       res.status(500).send('');
@@ -406,6 +426,7 @@ async function main() {
   app.use('/api/rf-planning', createRfPlanningRouter(logger));
   app.use('/api/rf-planning/projects', createRfPlanningProjectsRouter(rfPlanningProjectRepo, logger));
   app.use('/api/rf-planning/projects', createRfPlanningReportsRouter(rfPlanningProjectRepo, logger));
+  app.use('/api/apn-profiles', createApnProfileRouter(apnProfileUseCase, logger, auditLogger));
   app.use('/api/femto/nr', createSercommNRRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
   app.use('/api/tun-interfaces', createTunRouter(tunUseCase, logger));
@@ -423,6 +444,7 @@ async function main() {
   app.use('/api/frr',      createFrrRouter(logger, auditLogger));
   app.use('/api/sms',        createSmsRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/mms',        createMmsRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/vectorcore-smsc', createVectorcoreSmscRouter(logger, auditLogger));
   app.use('/api/ims',        createImsRouter(subscriberRepo, logger, auditLogger, imsCallStatsMonitor));
   app.use('/api/vowifi',     createVowifiRouter(logger, auditLogger));
   app.use('/api/secgw',      createSecgwRouter(logger, auditLogger));
@@ -437,6 +459,7 @@ async function main() {
   app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
   app.use('/api/traffic-history', createTrafficHistoryRouter(config.prometheusUrl, subscriberRepo, logger));
+  app.use('/api/twamp', createTwampRouter(subscriberRepo.getDb(), hostExecutor, twampMonitor, logger, auditLogger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
   // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below
@@ -571,6 +594,7 @@ async function main() {
     await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
     await rfPlanningProjectRepo.disconnect();
+    await apnProfileRepo.disconnect();
     httpServer.close();
     sasProxyServer.close();
     wss.close();

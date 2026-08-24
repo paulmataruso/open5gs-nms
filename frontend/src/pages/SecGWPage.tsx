@@ -43,12 +43,64 @@ function SvcBadge({ label, active }: { label: string; active: boolean }) {
 
 function RadioStatusBadge({ status }: { status: SecGwRadio['status'] }) {
   const cfg = {
-    pending: { label: 'Pending', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
-    active: { label: 'Active', cls: 'text-green-400 bg-green-500/10 border-green-500/30' },
+    pending: { label: 'Never Connected', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/30' },
+    active: { label: 'Provisioned', cls: 'text-blue-400 bg-blue-500/10 border-blue-500/30' },
     revoked: { label: 'Revoked', cls: 'text-red-400 bg-red-500/10 border-red-500/30' },
   }[status];
   return (
-    <span className={clsx('px-2 py-0.5 rounded-full text-[10px] font-mono border', cfg.cls)}>{cfg.label}</span>
+    <span
+      className={clsx('px-2 py-0.5 rounded-full text-[10px] font-mono border', cfg.cls)}
+      title="Certificate/PSK lifecycle — has this credential ever connected. NOT live tunnel status, see the Tunnel column."
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
+// Real-time tunnel liveness — recomputed fresh from swanctl on every poll, distinct
+// from RadioStatusBadge's PKI lifecycle status. Found live 2026-08-23: a physically
+// powered-off Nokia radio still showed RadioStatusBadge "Active" (correctly latched
+// from an earlier successful connection) while its tunnel had long since been torn
+// down by DPD — conflating the two into one badge made a dead radio look live.
+function TunnelStatusBadge({ active, enabled }: { active: boolean; enabled: boolean }) {
+  if (!enabled) {
+    return (
+      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono border text-nms-text-dim bg-nms-surface-2 border-nms-border">
+        — disabled
+      </span>
+    );
+  }
+  return (
+    <span className={clsx(
+      'px-2 py-0.5 rounded-full text-[10px] font-mono border flex items-center gap-1 w-fit',
+      active
+        ? 'text-green-400 bg-green-500/10 border-green-500/30'
+        : 'text-red-400 bg-red-500/10 border-red-500/30',
+    )}>
+      <span className={clsx('w-1.5 h-1.5 rounded-full', active ? 'bg-green-400 animate-pulse' : 'bg-red-500')} />
+      {active ? 'Up' : 'Down'}
+    </span>
+  );
+}
+
+// Administrative on/off — independent of both RadioStatusBadge and TunnelStatusBadge.
+// Clickable: toggles via secgw-controller.ts's /enable /disable endpoints, which
+// unload/reload the radio's swanctl connection without touching its credential.
+function EnabledToggleBadge({ enabled, busy, onToggle }: { enabled: boolean; busy: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      disabled={busy}
+      className={clsx(
+        'px-2 py-0.5 rounded-full text-[10px] font-mono border transition-colors',
+        enabled
+          ? 'text-nms-accent bg-nms-accent/10 border-nms-accent/30 hover:bg-nms-accent/20'
+          : 'text-nms-text-dim bg-nms-surface-2 border-nms-border hover:text-nms-text',
+      )}
+      title={enabled ? 'Click to disable — tears down the tunnel without revoking the credential' : 'Click to re-enable'}
+    >
+      {busy ? '…' : enabled ? 'Enabled' : 'Disabled'}
+    </button>
   );
 }
 
@@ -928,6 +980,19 @@ function RadiosTab({ vendor, configured, gatewayFqdn, gatewayIp }: { vendor: Sec
     }
   };
 
+  const toggleEnabled = async (id: string, currentlyEnabled: boolean) => {
+    setBusyId(id);
+    try {
+      const r = currentlyEnabled ? await secgwApi.disableRadio(id) : await secgwApi.enableRadio(id);
+      if (r.success) { toast.success(currentlyEnabled ? 'Radio disabled — tunnel torn down' : 'Radio enabled'); load(); }
+      else toast.error(r.error ?? `Failed to ${currentlyEnabled ? 'disable' : 'enable'}`);
+    } catch (err) {
+      toast.error(`Failed to ${currentlyEnabled ? 'disable' : 'enable'}: ${String(err)}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const rotateCredential = async (id: string) => {
     setBusyId(id);
     try {
@@ -996,6 +1061,8 @@ function RadiosTab({ vendor, configured, gatewayFqdn, gatewayIp }: { vendor: Sec
                 <th className="pb-2 font-medium">Type</th>
                 <th className="pb-2 font-medium">Auth</th>
                 <th className="pb-2 font-medium">Status</th>
+                <th className="pb-2 font-medium">Tunnel</th>
+                <th className="pb-2 font-medium">Enabled</th>
                 <th className="pb-2 font-medium">Cert Expires</th>
                 <th className="pb-2 font-medium text-right">Actions</th>
               </tr>
@@ -1008,6 +1075,18 @@ function RadiosTab({ vendor, configured, gatewayFqdn, gatewayIp }: { vendor: Sec
                     <td className="py-2 text-nms-text-dim uppercase">{r.radioType}</td>
                     <td className="py-2 text-nms-text-dim">{r.authMode === 'psk' ? 'PSK' : 'Cert'}</td>
                     <td className="py-2"><RadioStatusBadge status={r.status} /></td>
+                    <td className="py-2"><TunnelStatusBadge active={!!r.tunnelActive} enabled={r.enabled} /></td>
+                    <td className="py-2">
+                      {r.status === 'revoked' ? (
+                        <span className="text-nms-text-dim">—</span>
+                      ) : (
+                        <EnabledToggleBadge
+                          enabled={r.enabled}
+                          busy={busyId === r.id}
+                          onToggle={() => toggleEnabled(r.id, r.enabled)}
+                        />
+                      )}
+                    </td>
                     <td className="py-2 font-mono text-nms-text-dim">{r.certExpiresAt ? new Date(r.certExpiresAt).toLocaleDateString() : '—'}</td>
                     <td className="py-2">
                       <div className="flex items-center justify-end gap-1.5">

@@ -1,6 +1,8 @@
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
+import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { parseIpLinkAddr } from '../../infrastructure/network/ip-link-parser';
+import { resolveDnnDevPairs } from '../../domain/services/dnn-dev-resolver';
 
 export interface TunInterface {
   name: string;
@@ -10,6 +12,14 @@ export interface TunInterface {
   managed: boolean;
   default: boolean;
   exists: boolean;
+  // Declared in upf.yaml's session list (whether ogstun-pattern or custom-named) —
+  // Open5GS UPF creates/owns this device, distinct from `managed` (NMS-created via
+  // this page's own .netdev files) and from a genuinely manual, UPF-unaware
+  // interface. See #29: custom-named upf.yaml devices used to be invisible on this
+  // page entirely because only ogstun/ogstun<N>-pattern names were ever recognized.
+  fromUpfConfig: boolean;
+  dnn: string | null;
+  subnet: string | null;
 }
 
 export interface TunCreateInput { name: string; ip: string; prefix: number; }
@@ -62,6 +72,7 @@ export class TunManagementUseCase {
   constructor(
     private readonly hostExecutor: IHostExecutor,
     private readonly logger: pino.Logger,
+    private readonly configRepo: IConfigRepository,
   ) {}
 
   // ── ipNet: ip commands in PID 1's network namespace ────────────────────────
@@ -119,9 +130,29 @@ export class TunManagementUseCase {
       for (const n of out.split('\n').map(s => s.trim()).filter(Boolean)) managedNames.add(n);
     } catch {}
 
-    // Display: NMS-managed interfaces + any ogstun* present on the system
+    // upf.yaml's session[].dev is the authoritative list of devices Open5GS UPF
+    // actually uses — not just ogstun/ogstun<N>-pattern names (#29: a custom-named
+    // dev, e.g. `dev: ptt` for a non-default DNN, is just as real and just as
+    // Open5GS-owned as ogstun2, but was previously invisible on this page entirely).
+    const [smf, upf] = await Promise.all([
+      this.configRepo.loadSmf().catch(() => ({} as any)),
+      this.configRepo.loadUpf().catch(() => ({} as any)),
+    ]);
+    const smfSessions = ((smf as any).session ?? []) as any[];
+    const upfSessions = ((upf as any).session ?? []) as any[];
+    const upfConfigDevs = new Set<string>(upfSessions.map((s) => s?.dev || 'ogstun'));
+
+    // dev -> {dnn, subnet} for the "APN / Pool" column, sourced server-side from the
+    // same smf.yaml/upf.yaml join #28 already fixed once — see dnn-dev-resolver.ts.
+    const devInfo = new Map<string, { dnn: string; subnet: string | null }>();
+    for (const { dnn, dev, subnet } of resolveDnnDevPairs(smfSessions, upfSessions)) {
+      devInfo.set(dev, { dnn, subnet });
+    }
+
+    // Display: NMS-managed interfaces + any ogstun* present on the system + every
+    // dev declared in upf.yaml's own session config
     // (Open5GS UPF and the IMS configure step create ogstun2, ogstun3, etc. outside NMS)
-    const allNames = new Set<string>([...managedNames]);
+    const allNames = new Set<string>([...managedNames, ...upfConfigDevs]);
     for (const name of stateMap.keys()) {
       if (name === 'ogstun' || /^ogstun\d+$/.test(name)) allNames.add(name);
     }
@@ -136,6 +167,9 @@ export class TunManagementUseCase {
       managed: managedNames.has(name),
       default: name === 'ogstun',
       exists:  stateMap.has(name),
+      fromUpfConfig: upfConfigDevs.has(name),
+      dnn:     devInfo.get(name)?.dnn ?? null,
+      subnet:  devInfo.get(name)?.subnet ?? null,
     }));
   }
 
