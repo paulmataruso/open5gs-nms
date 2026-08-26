@@ -62,9 +62,11 @@ export type BackupCategory =
   | 'subscribers'
   | 'core-configs'
   | 'suci-keys'
+  | 'secgw-pki'
   | 'optional-modules'
   | 'l3-network'
-  | 'dns';
+  | 'dns'
+  | 'genieacs';
 
 export interface BackupCategoryInfo {
   id: BackupCategory;

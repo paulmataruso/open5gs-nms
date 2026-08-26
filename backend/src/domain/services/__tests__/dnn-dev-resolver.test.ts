@@ -1,7 +1,7 @@
 // Regression coverage for the smf.yaml<->upf.yaml dnn/dev join, extracted from
 // subscriber-management.ts's resolveDnnDevMap() (#28) once tun-management.ts (#29)
 // needed the identical join for a second, independent purpose.
-import { resolveDnnDevPairs } from '../dnn-dev-resolver';
+import { resolveDnnDevPairs, preferIPv4ByDev } from '../dnn-dev-resolver';
 
 describe('resolveDnnDevPairs', () => {
   test('matches by upf.yaml\'s own dnn field when present', () => {
@@ -60,5 +60,41 @@ describe('resolveDnnDevPairs', () => {
   test('empty inputs return an empty array without throwing', () => {
     expect(resolveDnnDevPairs([], [])).toEqual([]);
     expect(resolveDnnDevPairs(undefined as any, undefined as any)).toEqual([]);
+  });
+});
+
+// Regression coverage for a real reported bug (issue #29 follow-up, 2026-08-25):
+// a dual-stack DNN (one IPv4 + one IPv6 smf.yaml session, same upf.yaml dev)
+// resolves to TWO entries sharing the same dev — TUN Interfaces' "APN / Pool"
+// column used a plain last-write-wins Map keyed by dev, so which subnet won
+// depended on smf.yaml's session ordering, and could show the IPv6 subnet on
+// what's actually an IPv4 interface row.
+describe('preferIPv4ByDev', () => {
+  test('prefers the IPv4 entry when a dual-stack DNN shares one dev, regardless of input order', () => {
+    const ipv4First = [
+      { dnn: 'internet', dev: 'ogstun', subnet: '10.45.0.0/16' },
+      { dnn: 'internet', dev: 'ogstun', subnet: '2001:db8:cafe::/48' },
+    ];
+    const ipv6First = [
+      { dnn: 'internet', dev: 'ogstun', subnet: '2001:db8:cafe::/48' },
+      { dnn: 'internet', dev: 'ogstun', subnet: '10.45.0.0/16' },
+    ];
+    expect(preferIPv4ByDev(ipv4First).get('ogstun')?.subnet).toBe('10.45.0.0/16');
+    expect(preferIPv4ByDev(ipv6First).get('ogstun')?.subnet).toBe('10.45.0.0/16');
+  });
+
+  test('single-stack devs are unaffected', () => {
+    const items = [
+      { dnn: 'internet', dev: 'ogstun', subnet: '10.45.0.0/16' },
+      { dnn: 'ptt.example.com', dev: 'ptt', subnet: '198.51.100.0/24' },
+    ];
+    const byDev = preferIPv4ByDev(items);
+    expect(byDev.get('ogstun')?.dnn).toBe('internet');
+    expect(byDev.get('ptt')?.dnn).toBe('ptt.example.com');
+  });
+
+  test('falls back to "ogstun" for a missing/empty dev, matching resolveDnnDevPairs\' own default', () => {
+    const items = [{ dnn: 'internet', dev: '', subnet: '10.45.0.0/16' }];
+    expect(preferIPv4ByDev(items).get('ogstun')?.dnn).toBe('internet');
   });
 });

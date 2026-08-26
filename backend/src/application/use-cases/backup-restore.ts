@@ -20,19 +20,38 @@ export interface BackupSettings {
 
 // ── Full-backup categories ────────────────────────────────────────────────────
 // Each category is independently backed up into its own subdirectory of the
-// archive and independently selectable on restore. Deliberately excludes the
-// IMS database (PyHSS's own MariaDB — a separate system entirely, reinstalled
-// and resynced from Open5GS subscribers rather than restored) and the PSTN
-// gateway (Asterisk config — the user reinstalls this and resyncs subscribers
-// too; its `pstn_extensions` Mongo collection rides along inside the
-// `subscribers` category's dump but restoring it is harmless either way).
+// archive and independently selectable on restore.
+//
+// 2026-08-25 audit ("does this back up EVERYTHING needed to restore to a new
+// host, all modules") found and fixed two real gaps:
+//   1. `core-configs` silently dropped sepp1.yaml — the exact "stale 16 vs
+//      17 core NF list" drift CLAUDE.md warns about (SEPP was added as the
+//      17th core NF; this list was never updated). Fixed below.
+//   2. SecGW's own CA + per-radio IPsec certs/keys (`secgw-pki`) and
+//      GenieACS's device/preset/session inventory (`genieacs`, its own
+//      separate MongoDB database — not part of the `open5gs` db dump) had NO
+//      backup coverage at all. Both added as new first-class categories.
+//
+// Still deliberately excludes: the IMS database (PyHSS's own MariaDB — a
+// separate system entirely, reinstalled and resynced from Open5GS
+// subscribers rather than restored — `.ims-config.json`/`.ims-install.json`
+// now travel with `optional-modules` so Install→Configure→Sync reproduces it
+// exactly) and Asterisk's own installed binary (`pstn_extensions` rides
+// along in the `subscribers` dump, `.pstn-config.json` now travels with
+// `optional-modules` too — only the actual Asterisk package/install itself
+// needs redoing, same as every other module's own Install step). Also
+// excludes Prometheus/Grafana's own data (a pre-existing, separately-deployed
+// monitoring stack this project reuses, not part of open5gs-nms itself) and
+// migration-wizard progress state (see EXTRA_BACKUP_FILES's own comment).
 export type BackupCategory =
   | 'subscribers'
   | 'core-configs'
   | 'suci-keys'
+  | 'secgw-pki'
   | 'optional-modules'
   | 'l3-network'
-  | 'dns';
+  | 'dns'
+  | 'genieacs';
 
 export interface BackupCategoryInfo {
   id: BackupCategory;
@@ -42,7 +61,12 @@ export interface BackupCategoryInfo {
   itemCount: number;
 }
 
-const CORE_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+// All 17 core NFs (matches yaml-config-repository.ts's own authoritative
+// list) — this used to say 16 and silently drop sepp1.yaml, the exact
+// "stale core-NF list" class of bug CLAUDE.md calls out by name. A restore
+// onto a new host with SEPP/N32 roaming configured would have come back up
+// with no sepp1.yaml at all.
+const CORE_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1'];
 
 // SUCI/SUPI concealment home-network private keys — referenced by *path* from
 // udm.yaml's `hnet:` block, never embedded in it. Losing this directory
@@ -67,6 +91,19 @@ const HOST_NETPLAN = '/proc/1/root/etc/netplan/60-open5gs-managed.yaml';
 // "IP configs" request but squarely part of it in any normal reading.
 const HOST_BIND_DIR = '/proc/1/root/etc/bind';
 const HOST_BIND_ZONES_DIR = '/proc/1/root/etc/bind/zones';
+
+// SecGW's own CA + every issued per-radio IPsec cert/key — genuinely
+// irreplaceable material (same tier as SUCI keys, not just "config that's
+// annoying to retype"): secgw-controller.ts's own comment confirms the CA's
+// private key lives ONLY here, never copied into swanctl's own dir. Losing
+// this on restore means every live radio's IPsec tunnel breaks and needs a
+// brand new cert re-provisioned onto the physical radio by hand. Real nested
+// directory tree (ca.crt/ca.key/client-<id>.{crt,key}/revoked/ under pki/,
+// one subdirectory per radio under radios/) — needs a recursive tar copy,
+// not the flat single-file copy every other category uses.
+const SECGW_PKI_DIR = '/proc/1/root/etc/open5gs-nms/secgw/pki';
+const SECGW_RADIOS_DIR = '/proc/1/root/etc/open5gs-nms/secgw/radios';
+const SECGW_STATE_FILE = '/proc/1/root/etc/open5gs-nms/.secgw-state.json';
 
 export class BackupRestoreUseCase {
   constructor(
@@ -93,16 +130,19 @@ export class BackupRestoreUseCase {
       await this.hostExecutor.executeLocalCommand('mkdir', [
         '-p',
         `${tmpDir}/subscribers`, `${tmpDir}/core-configs`, `${tmpDir}/suci-keys`,
-        `${tmpDir}/optional-modules`, `${tmpDir}/l3-network`, `${tmpDir}/dns`,
+        `${tmpDir}/secgw-pki`, `${tmpDir}/optional-modules`, `${tmpDir}/l3-network`,
+        `${tmpDir}/dns`, `${tmpDir}/genieacs`,
       ]);
 
       const categories: Record<BackupCategory, BackupCategoryInfo> = {
-        subscribers: { id: 'subscribers', label: 'Subscribers & SAS', description: 'MongoDB `open5gs` database — subscribers (incl. APNs/IPs/security keys), SAS grants/CBSDs, subscriber groups', present: false, itemCount: 0 },
-        'core-configs': { id: 'core-configs', label: 'Core NF Configs', description: `${CORE_SERVICES.length} core Open5GS NF YAML files`, present: false, itemCount: 0 },
+        subscribers: { id: 'subscribers', label: 'Subscribers & SAS', description: 'MongoDB `open5gs` database — subscribers (incl. APNs/IPs/security keys), SAS grants/CBSDs, subscriber groups, APN profiles, RF Planning projects, TWAMP targets/history, users, audit log', present: false, itemCount: 0 },
+        'core-configs': { id: 'core-configs', label: 'Core NF Configs', description: `${CORE_SERVICES.length} core Open5GS NF YAML files (incl. SEPP)`, present: false, itemCount: 0 },
         'suci-keys': { id: 'suci-keys', label: 'SUCI Keys', description: 'SUCI/SUPI concealment home-network private/public keys (5G-AKA)', present: false, itemCount: 0 },
-        'optional-modules': { id: 'optional-modules', label: 'Optional Module Configs', description: 'SMS-over-SGs (Osmocom) and VoWiFi (VectorCore) configs', present: false, itemCount: 0 },
+        'secgw-pki': { id: 'secgw-pki', label: 'SecGW Certificates', description: "Security Gateway's own CA and every issued per-radio IPsec certificate/key — irreplaceable, not regenerable by re-running Configure", present: false, itemCount: 0 },
+        'optional-modules': { id: 'optional-modules', label: 'Optional Module Configs', description: 'IMS/VoLTE, SMS (SGs + VectorCore), MMS, PSTN Gateway, VoWiFi, TWAMP, FRR source-build state, chrony, syslog forwarding — every optional module\'s own settings', present: false, itemCount: 0 },
         'l3-network': { id: 'l3-network', label: 'L3 / IP Network Config', description: 'FRR (EIGRP) config and host interface addressing (netplan)', present: false, itemCount: 0 },
         dns: { id: 'dns', label: 'DNS / BIND', description: 'BIND9 named.conf + all FQDN zone files', present: false, itemCount: 0 },
+        genieacs: { id: 'genieacs', label: 'GenieACS (Radio Provisioning)', description: 'GenieACS\'s own MongoDB database — device inventory, presets, provisioning scripts, TR-069 session history (separate from the `open5gs` database)', present: false, itemCount: 0 },
       };
 
       // subscribers — MongoDB, scoped to the `open5gs` database only. The old
@@ -138,13 +178,39 @@ export class BackupRestoreUseCase {
             fs.copyFileSync(`${SUCI_KEY_DIR}/${f}`, `${tmpDir}/suci-keys/${f}`);
           }
           categories['suci-keys'].itemCount = keyFiles.length;
-          categories['suci-keys'].present = keyFiles.length > 0;
+    categories['suci-keys'].present = keyFiles.length > 0;
         }
       } catch (err) {
         this.logger.warn({ err: String(err) }, 'SUCI key directory not found or unreadable, skipping');
       }
 
-      // optional-modules (SMS-over-SGs / VoWiFi)
+      // secgw-pki — real recursive directory trees (not flat), plain `cp -r`
+      // into the archive's own subdirectory rather than walked file-by-file.
+      try {
+        for (const [hostDir, name] of [[SECGW_PKI_DIR, 'pki'], [SECGW_RADIOS_DIR, 'radios']] as const) {
+          if (!fs.existsSync(hostDir)) continue;
+          const cpResult = await this.hostExecutor.executeLocalCommand('cp', ['-r', hostDir, `${tmpDir}/secgw-pki/${name}`]);
+          if (cpResult.exitCode === 0) {
+            const countResult = await this.hostExecutor.executeLocalCommand('bash', ['-c', `find '${tmpDir}/secgw-pki/${name}' -type f | wc -l`]);
+            categories['secgw-pki'].itemCount += parseInt(countResult.stdout.trim(), 10) || 0;
+          } else {
+            this.logger.warn({ hostDir, stderr: cpResult.stderr }, 'Failed to copy SecGW PKI directory, skipping');
+          }
+        }
+        if (fs.existsSync(SECGW_STATE_FILE)) {
+          fs.copyFileSync(SECGW_STATE_FILE, `${tmpDir}/secgw-pki/.secgw-state.json`);
+          categories['secgw-pki'].itemCount++;
+        }
+        categories['secgw-pki'].present = categories['secgw-pki'].itemCount > 0;
+      } catch (err) {
+        this.logger.warn({ err: String(err) }, 'SecGW PKI directory not found or unreadable, skipping');
+      }
+
+      // optional-modules — every optional module's own NMS-side state file
+      // (IMS, SMS-over-SGs, MMS, PSTN, VectorCore SMSC, VoWiFi, TWAMP,
+      // FRR source-build, chrony, syslog forwarding) — see
+      // EXTRA_BACKUP_FILES's own comment for the full list and what's
+      // deliberately excluded.
       for (const filePath of EXTRA_BACKUP_FILES) {
         try {
           await this.hostExecutor.copyFile(`/proc/1/root${filePath}`, `${tmpDir}/optional-modules/${path.basename(filePath)}`);
@@ -190,10 +256,27 @@ export class BackupRestoreUseCase {
         this.logger.warn({ err: String(err) }, 'DNS/BIND config not found, skipping');
       }
 
+      // genieacs — its own separate MongoDB database (device inventory,
+      // presets, provisioning scripts, TR-069 session history), deliberately
+      // NOT part of the `subscribers` category's `--db open5gs` dump (see
+      // that block's own comment). Non-fatal if missing/empty — plenty of
+      // deployments never touch GenieACS-managed radios at all.
+      try {
+        const genieacsResult = await this.hostExecutor.executeLocalCommand('mongodump', ['--db', 'genieacs', '-o', `${tmpDir}/genieacs`]);
+        if (genieacsResult.exitCode === 0 && fs.existsSync(`${tmpDir}/genieacs/genieacs`)) {
+          categories.genieacs.present = true;
+          categories.genieacs.itemCount = fs.readdirSync(`${tmpDir}/genieacs/genieacs`).length;
+        } else {
+          this.logger.warn({ stderr: genieacsResult.stderr }, 'GenieACS database not found or empty, skipping');
+        }
+      } catch (err) {
+        this.logger.warn({ err: String(err) }, 'GenieACS mongodump failed, skipping');
+      }
+
       this.logger.info({ categories }, 'All backup categories collected');
 
       const manifest = JSON.stringify({
-        version: '2.0',
+        version: '2.1',
         createdAt: now.toISOString(),
         categories,
       }, null, 2);
@@ -302,9 +385,11 @@ export class BackupRestoreUseCase {
       { id: 'subscribers', label: 'Subscribers & SAS', description: 'MongoDB dump (legacy archive — may include extra databases)', present: has('mongodb'), itemCount: 0 },
       { id: 'core-configs', label: 'Core NF Configs', description: 'Core Open5GS NF YAML files', present: has('config'), itemCount: 0 },
       { id: 'suci-keys', label: 'SUCI Keys', description: 'Not present in this legacy archive', present: false, itemCount: 0 },
+      { id: 'secgw-pki', label: 'SecGW Certificates', description: 'Not present in this legacy archive', present: false, itemCount: 0 },
       { id: 'optional-modules', label: 'Optional Module Configs', description: 'SMS-over-SGs / VoWiFi configs (legacy archive — bundled with core configs)', present: has('config'), itemCount: 0 },
       { id: 'l3-network', label: 'L3 / IP Network Config', description: 'Not present in this legacy archive', present: false, itemCount: 0 },
       { id: 'dns', label: 'DNS / BIND', description: 'Not present in this legacy archive', present: false, itemCount: 0 },
+      { id: 'genieacs', label: 'GenieACS (Radio Provisioning)', description: 'Not present in this legacy archive', present: false, itemCount: 0 },
     ];
   }
 
@@ -325,7 +410,7 @@ export class BackupRestoreUseCase {
       // Default to everything for backward-compat (e.g. scripted/API use) —
       // the UI always passes an explicit selection after an inspect step.
       const isLegacy = !fs.existsSync(`${tmpDir}/manifest.json`) || !JSON.parse(await fs.promises.readFile(`${tmpDir}/manifest.json`, 'utf8')).categories;
-      const all: BackupCategory[] = ['subscribers', 'core-configs', 'suci-keys', 'optional-modules', 'l3-network', 'dns'];
+      const all: BackupCategory[] = ['subscribers', 'core-configs', 'suci-keys', 'secgw-pki', 'optional-modules', 'l3-network', 'dns', 'genieacs'];
       const wanted = new Set(selectedCategories && selectedCategories.length > 0 ? selectedCategories : all);
       const restored: BackupCategory[] = [];
 
@@ -375,6 +460,34 @@ export class BackupRestoreUseCase {
           }
         } catch (err) {
           this.logger.warn({ err: String(err) }, 'Failed to restore SUCI keys');
+        }
+      }
+
+      if (wanted.has('secgw-pki')) {
+        try {
+          let any = false;
+          for (const [dst, name] of [[SECGW_PKI_DIR, 'pki'], [SECGW_RADIOS_DIR, 'radios']] as const) {
+            const src = `${tmpDir}/secgw-pki/${name}`;
+            if (fs.existsSync(src)) {
+              fs.mkdirSync(path.dirname(dst), { recursive: true });
+              fs.rmSync(dst, { recursive: true, force: true });
+              const cpResult = await this.hostExecutor.executeLocalCommand('cp', ['-r', src, dst]);
+              if (cpResult.exitCode === 0) any = true;
+              else this.logger.warn({ dst, stderr: cpResult.stderr }, 'Failed to restore SecGW PKI directory');
+            }
+          }
+          const stateSrc = `${tmpDir}/secgw-pki/.secgw-state.json`;
+          if (fs.existsSync(stateSrc)) {
+            fs.mkdirSync(path.dirname(SECGW_STATE_FILE), { recursive: true });
+            fs.copyFileSync(stateSrc, SECGW_STATE_FILE);
+            any = true;
+          }
+          if (any) {
+            restored.push('secgw-pki');
+            this.logger.info('SecGW certificates restored');
+          }
+        } catch (err) {
+          this.logger.warn({ err: String(err) }, 'Failed to restore SecGW PKI');
         }
       }
 
@@ -431,6 +544,22 @@ export class BackupRestoreUseCase {
           if (any) restored.push('dns');
         } catch (err) {
           this.logger.warn({ err: String(err) }, 'Failed to restore DNS/BIND config');
+        }
+      }
+
+      if (wanted.has('genieacs')) {
+        try {
+          const dir = `${tmpDir}/genieacs/genieacs`;
+          if (fs.existsSync(dir)) {
+            const mongoResult = await this.hostExecutor.executeLocalCommand('mongorestore', ['--drop', '--db', 'genieacs', dir]);
+            if (mongoResult.exitCode !== 0) {
+              throw new Error(`mongorestore failed: ${mongoResult.stderr}`);
+            }
+            restored.push('genieacs');
+            this.logger.info('GenieACS (MongoDB) restored');
+          }
+        } catch (err) {
+          this.logger.warn({ err: String(err) }, 'Failed to restore GenieACS database');
         }
       }
 
@@ -673,7 +802,10 @@ export class BackupRestoreUseCase {
         throw new Error(`Backup not found: ${backupName}`);
       }
 
-      const services = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
+      // Reuse CORE_SERVICES (all 17, incl. sepp1) instead of a second local
+      // copy of this list — the exact drift that let core-configs backup
+      // silently miss sepp1.yaml for who knows how long.
+      const services = CORE_SERVICES;
       const files: Record<string, { current: string; backup: string; hasDiff: boolean }> = {};
 
       for (const service of services) {

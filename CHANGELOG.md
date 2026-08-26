@@ -4,6 +4,50 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.52] - 2026-08-26
+
+### Added — Full Backup now covers every module (audit)
+
+Full-system backup/restore audited end-to-end against the question "does this actually
+capture everything needed to stand this deployment up on a brand new host." Found and
+fixed a real bug: the `core-configs` category silently dropped `sepp1.yaml` (a stale
+16-vs-17 core-NF list — SEPP was added as the 17th core NF a while back and this list
+was never updated). Added two entirely missing categories: **SecGW Certificates**
+(Security Gateway's own CA and every issued per-radio IPsec certificate/key — genuinely
+irreplaceable material that had zero backup coverage) and **GenieACS** (its own
+separate MongoDB database — device inventory, presets, provisioning scripts, TR-069
+session history — previously excluded entirely). Expanded `optional-modules` coverage
+to include every module's own NMS-side settings file: IMS, MMS, PSTN, VectorCore SMSC,
+TWAMP, VoWiFi, swu-emulator, FRR source-build state, chrony, and syslog forwarding
+(previously only SMS-over-SGs and VoWiFi configs traveled with a backup). Verified live
+against this deployment's real data (not just a type-check) — all 8 categories,
+correct item counts, including the sepp1 fix and both new categories.
+
+### Fixed — TUN Interfaces page showed the wrong (IPv6) subnet for a dual-stack DNN's device (#29 follow-up)
+
+A device shared by a dual-stack DNN (one `smf.yaml` session for IPv4, one for IPv6,
+both pointing at the same `upf.yaml` `dev:`) could show the IPv6 subnet in the "APN /
+Pool" column even though the interface's live IP is IPv4 — `tun-management.ts`'s
+dev→{dnn,subnet} map was last-write-wins with no IPv4 preference, unlike the identical
+guard already present in `apn-profile-usecase.ts`'s sibling code. Extracted a shared
+`preferIPv4ByDev()` helper into `dnn-dev-resolver.ts`, used by both call sites. Verified
+live against this deployment's real dual-stack `internet` DNN.
+
+### Added — Automatic IPv6 /64 allocation for APN profiles (#30 follow-up)
+
+New IPv6 CIDR math module (BigInt-based — no IPv6 arithmetic existed anywhere in this
+codebase before now) plus a core-wide "IPv6 Pool" parent-prefix setting on the APN
+Profiles page. A new profile can auto-allocate the next unused `/64` (and its gateway)
+from that pool instead of requiring a hand-typed IPv6 subnet — the free slot is derived
+live from existing profiles' own `subnetV6` values rather than a separate counter, so
+deleting a profile naturally frees its `/64` back up. Also fixed a real functional gap
+found while building this: a profile's `subnetV6`/`gatewayV6` fields were previously
+display-only and never actually written to `smf.yaml`/`upf.yaml` at all — saving a
+profile now writes a real IPv4+IPv6 session pair, matching the dual-stack pattern this
+project's own live deployments already use by hand. 34 new unit tests, including one
+reproducing the exact real dual-stack `internet` DNN shape to confirm the IPv4 and IPv6
+sessions get patched independently and never cross-contaminate each other.
+
 ## [v2.0-beta_0.51] - 2026-08-24
 
 ### Added — TWAMP (RFC 5357 network performance testing)

@@ -3,8 +3,12 @@ import pino from 'pino';
 import { IApnProfileRepository } from '../../domain/interfaces/apn-profile-repository';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { ApnProfile, ApnProfileListEntry } from '../../domain/entities/apn-profile';
-import { resolveDnnDevPairs } from '../../domain/services/dnn-dev-resolver';
+import { resolveDnnDevPairs, preferIPv4ByDev } from '../../domain/services/dnn-dev-resolver';
 import { ipToNum, cidrRange } from '../../domain/services/ip-utils';
+import {
+  isValidIPv6Cidr, parseIPv6Cidr, ipv6SubnetAtOffset, ipv6ChildCount,
+  ipv6OffsetWithinParent, ipv6FirstUsableAddress,
+} from '../../domain/services/ip6-utils';
 
 export interface ApnProfileInput {
   dnn: string;
@@ -64,13 +68,10 @@ export class ApnProfileUseCase {
     // Prefer the IPv4 session for a given dev (a dual-stack DNN has two upf.yaml
     // sessions sharing the same dev) — profiles are IPv4-only by design, and a
     // naive last-write-wins map can end up pointing at the v6 session's gateway
-    // depending on which order the two happen to appear in the file.
-    const upfByDev = new Map<string, any>();
-    for (const s of upfSessions) {
-      const dev = s.dev || 'ogstun';
-      const isV4 = s.subnet && !String(s.subnet).includes(':');
-      if (!upfByDev.has(dev) || isV4) upfByDev.set(dev, s);
-    }
+    // depending on which order the two happen to appear in the file. Shared
+    // with tun-management.ts's identical need (#29 follow-up, 2026-08-25) —
+    // see preferIPv4ByDev's own comment.
+    const upfByDev = preferIPv4ByDev(upfSessions.map((s) => ({ ...s, dev: s?.dev || 'ogstun' })));
 
     const entries: ApnProfileListEntry[] = [
       ...profiles.map((p) => ({ ...p, persisted: true as const })),
@@ -86,6 +87,18 @@ export class ApnProfileUseCase {
   }
 
   async create(input: ApnProfileInput): Promise<ApnProfile> {
+    // #30 follow-up: auto-allocate IPv6 when the operator left it blank and
+    // a core-wide parent prefix is configured — explicit input always wins
+    // (never overwrite a value the caller actually provided), and a
+    // deployment that never sets a parent prefix sees no behavior change at
+    // all (stays IPv4-only, exactly as before this feature).
+    if (!input.subnetV6 && !input.gatewayV6) {
+      const auto = await this.allocateNextIPv6Subnet();
+      if (auto) {
+        input = { ...input, subnetV6: auto.subnet, gatewayV6: auto.gateway };
+      }
+    }
+
     this.validateInput(input);
     const existing = await this.apnProfileRepo.findByDnn(input.dnn);
     if (existing) throw new Error(`A profile for DNN "${input.dnn}" already exists`);
@@ -95,6 +108,52 @@ export class ApnProfileUseCase {
     await this.patchYamlConfigs(profile);
     await this.apnProfileRepo.create(profile);
     return profile;
+  }
+
+  // ── IPv6 pool (#30 follow-up) ───────────────────────────────────────────
+
+  async getIPv6ParentPrefix(): Promise<string | null> {
+    return this.apnProfileRepo.getIPv6ParentPrefix();
+  }
+
+  async setIPv6ParentPrefix(parentPrefix: string | null): Promise<void> {
+    if (parentPrefix === null || parentPrefix === '') {
+      await this.apnProfileRepo.setIPv6ParentPrefix('');
+      return;
+    }
+    if (!isValidIPv6Cidr(parentPrefix)) throw new Error(`Invalid IPv6 CIDR: ${parentPrefix}`);
+    const { prefix } = parseIPv6Cidr(parentPrefix);
+    if (prefix > 64) throw new Error(`Parent prefix /${prefix} is too specific to carve /64 profiles out of — use /64 or shorter (e.g. /48, /56)`);
+    await this.apnProfileRepo.setIPv6ParentPrefix(parentPrefix);
+  }
+
+  // Finds the lowest-numbered /64 not already in use by an existing
+  // profile's subnetV6 — derived live from current profiles each call
+  // rather than a separate persisted counter, so deleting a profile
+  // naturally frees its /64 back up with no extra bookkeeping, and this
+  // can't drift out of sync with what profiles actually hold. Returns null
+  // (not an error) when no parent prefix is configured, so callers that
+  // don't care about IPv6 (create()'s opportunistic auto-fill) can treat
+  // "not configured" as a no-op.
+  async allocateNextIPv6Subnet(): Promise<{ subnet: string; gateway: string } | null> {
+    const parentPrefix = await this.apnProfileRepo.getIPv6ParentPrefix();
+    if (!parentPrefix) return null;
+
+    const profiles = await this.apnProfileRepo.findAll();
+    const used = new Set<number>();
+    for (const p of profiles) {
+      if (!p.subnetV6) continue;
+      const offset = ipv6OffsetWithinParent(parentPrefix, p.subnetV6);
+      if (offset !== null) used.add(offset);
+    }
+
+    const total = ipv6ChildCount(parentPrefix, 64);
+    for (let offset = 0; offset < total; offset++) {
+      if (used.has(offset)) continue;
+      const subnet = ipv6SubnetAtOffset(parentPrefix, offset, 64);
+      return { subnet, gateway: ipv6FirstUsableAddress(subnet) };
+    }
+    throw new Error(`IPv6 pool ${parentPrefix} is exhausted — every /64 is already in use by an existing profile`);
   }
 
   async update(id: string, input: ApnProfileInput): Promise<ApnProfile> {
@@ -154,25 +213,49 @@ export class ApnProfileUseCase {
   // disk, so untouched fields survive). Finds by dnn for smf, by dev (then
   // dnn as a fallback) for upf; updates in place if found, pushes a new
   // entry otherwise.
+  //
+  // #30 follow-up: when the profile carries subnetV6/gatewayV6, ALSO writes
+  // a second session pair for it — same dnn (smf side) / same dev (upf
+  // side), IPv6 subnet+gateway — matching the real dual-stack pattern this
+  // project's own live deployments already use by hand (one v4 + one v6
+  // session sharing a dnn/dev). Previously these fields were display-only
+  // (see apn-profile.ts's own now-stale comment) and never actually reached
+  // either YAML file. The v6 session is matched by dnn/dev **and** an IPv6
+  // subnet (`includes(':')`) so it never collides with the v4 entry above.
   private async patchYamlConfigs(profile: ApnProfile): Promise<void> {
     const smf = await this.configRepo.loadSmf();
     const smfRaw = (smf as any).rawYaml;
     const smfSessions: any[] = smfRaw?.smf?.session ?? [];
-    const smfIdx = smfSessions.findIndex((s) => s?.dnn === profile.dnn);
+    const smfIdx = smfSessions.findIndex((s) => s?.dnn === profile.dnn && !String(s?.subnet ?? '').includes(':'));
     const smfEntry = { subnet: profile.subnet, gateway: profile.gateway, dnn: profile.dnn };
     if (smfIdx >= 0) smfSessions[smfIdx] = { ...smfSessions[smfIdx], ...smfEntry };
     else smfSessions.push(smfEntry);
+
+    if (profile.subnetV6 && profile.gatewayV6) {
+      const smfV6Idx = smfSessions.findIndex((s) => s?.dnn === profile.dnn && String(s?.subnet ?? '').includes(':'));
+      const smfV6Entry = { subnet: profile.subnetV6, gateway: profile.gatewayV6, dnn: profile.dnn };
+      if (smfV6Idx >= 0) smfSessions[smfV6Idx] = { ...smfSessions[smfV6Idx], ...smfV6Entry };
+      else smfSessions.push(smfV6Entry);
+    }
     if (smfRaw?.smf) smfRaw.smf.session = smfSessions;
     await this.configRepo.saveSmf({ ...(smf as any), rawYaml: smfRaw });
 
     const upf = await this.configRepo.loadUpf();
     const upfRaw = (upf as any).rawYaml;
     const upfSessions: any[] = upfRaw?.upf?.session ?? [];
-    let upfIdx = upfSessions.findIndex((s) => (s?.dev || 'ogstun') === profile.dev);
-    if (upfIdx < 0) upfIdx = upfSessions.findIndex((s) => s?.dnn === profile.dnn);
+    let upfIdx = upfSessions.findIndex((s) => (s?.dev || 'ogstun') === profile.dev && !String(s?.subnet ?? '').includes(':'));
+    if (upfIdx < 0) upfIdx = upfSessions.findIndex((s) => s?.dnn === profile.dnn && !String(s?.subnet ?? '').includes(':'));
     const upfEntry = { subnet: profile.subnet, gateway: profile.gateway, dev: profile.dev, dnn: profile.dnn };
     if (upfIdx >= 0) upfSessions[upfIdx] = { ...upfSessions[upfIdx], ...upfEntry };
     else upfSessions.push(upfEntry);
+
+    if (profile.subnetV6 && profile.gatewayV6) {
+      let upfV6Idx = upfSessions.findIndex((s) => (s?.dev || 'ogstun') === profile.dev && String(s?.subnet ?? '').includes(':'));
+      if (upfV6Idx < 0) upfV6Idx = upfSessions.findIndex((s) => s?.dnn === profile.dnn && String(s?.subnet ?? '').includes(':'));
+      const upfV6Entry = { subnet: profile.subnetV6, gateway: profile.gatewayV6, dev: profile.dev, dnn: profile.dnn };
+      if (upfV6Idx >= 0) upfSessions[upfV6Idx] = { ...upfSessions[upfV6Idx], ...upfV6Entry };
+      else upfSessions.push(upfV6Entry);
+    }
     if (upfRaw?.upf) upfRaw.upf.session = upfSessions;
     await this.configRepo.saveUpf({ ...(upf as any), rawYaml: upfRaw });
   }

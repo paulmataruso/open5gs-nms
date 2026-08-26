@@ -37,6 +37,54 @@ export function createApnProfileRouter(useCase: ApnProfileUseCase, logger: pino.
     }
   });
 
+  // ── IPv6 pool (#30 follow-up) ────────────────────────────────────────────
+  // Registered BEFORE the /:id routes below — Express matches in
+  // registration order, and PUT /:id would otherwise swallow PUT
+  // /ipv6-settings as an update for a profile literally named "ipv6-settings".
+  // GET is open like every other read-only config endpoint above; the
+  // setter mutates NMS-only Mongo state (not smf.yaml/upf.yaml directly —
+  // that only happens through create()/update() below), but still gets
+  // requireAdmin + an audit entry since it changes what future profiles
+  // auto-allocate into.
+
+  router.get('/ipv6-settings', async (_req: Request, res: Response) => {
+    try {
+      const parentPrefix = await useCase.getIPv6ParentPrefix();
+      res.json({ success: true, parentPrefix });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'apn-profiles: get ipv6 settings failed');
+      res.status(500).json({ success: false, error: 'Failed to load IPv6 pool settings' });
+    }
+  });
+
+  router.put('/ipv6-settings', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const { parentPrefix } = req.body as { parentPrefix?: string | null };
+      await useCase.setIPv6ParentPrefix(parentPrefix ?? null);
+      await auditLogger.log({ action: 'apn_profile_ipv6_settings_update', user, details: `parentPrefix=${parentPrefix || '(cleared)'}`, success: true });
+      res.json({ success: true, parentPrefix: parentPrefix || null });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await auditLogger.log({ action: 'apn_profile_ipv6_settings_update', user, details: message, success: false });
+      res.status(400).json({ success: false, error: message });
+    }
+  });
+
+  // Preview-only — does NOT reserve/persist anything (see
+  // allocateNextIPv6Subnet()'s own comment for why: it's derived live from
+  // existing profiles every call, so there's nothing to "release" if the
+  // operator previews but doesn't actually save a profile).
+  router.get('/ipv6-preview', requireAdmin, async (_req: Request, res: Response) => {
+    try {
+      const next = await useCase.allocateNextIPv6Subnet();
+      res.json({ success: true, next });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ success: false, error: message });
+    }
+  });
+
   router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {

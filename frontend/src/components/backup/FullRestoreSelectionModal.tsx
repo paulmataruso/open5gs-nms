@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, CheckSquare, Square, AlertTriangle, Database, FileCog, KeyRound, Puzzle, Network, Globe } from 'lucide-react';
+import { X, CheckSquare, Square, AlertTriangle, Database, FileCog, KeyRound, Puzzle, Network, Globe, ShieldCheck, RadioTower } from 'lucide-react';
 import { BackupCategory, BackupCategoryInfo } from '../../api/backup';
 
 interface FullRestoreSelectionModalProps {
@@ -10,19 +10,25 @@ interface FullRestoreSelectionModalProps {
   onConfirm: (uploadId: string, categories: BackupCategory[]) => Promise<void>;
 }
 
-// L3/network and DNS default OFF — a restore commonly happens onto a host
-// whose physical IP topology differs from the one the backup was taken on,
-// and silently overwriting frr.conf/netplan/BIND could break connectivity
-// to the box entirely. Everything else defaults ON.
-const DEFAULT_UNCHECKED: BackupCategory[] = ['l3-network', 'dns'];
+// L3/network, DNS, and GenieACS default OFF. L3/DNS: a restore commonly
+// happens onto a host whose physical IP topology differs from the one the
+// backup was taken on, and silently overwriting frr.conf/netplan/BIND could
+// break connectivity to the box entirely. GenieACS: a full separate-database
+// restore that overwrites live radio provisioning/session state — the same
+// "be deliberate about this one" posture, not because it's less important.
+// Everything else (including secgw-pki, despite also being irreplaceable
+// like suci-keys) defaults ON.
+const DEFAULT_UNCHECKED: BackupCategory[] = ['l3-network', 'dns', 'genieacs'];
 
 const ICONS: Record<BackupCategory, React.ReactNode> = {
   subscribers: <Database className="w-4 h-4" />,
   'core-configs': <FileCog className="w-4 h-4" />,
   'suci-keys': <KeyRound className="w-4 h-4" />,
+  'secgw-pki': <ShieldCheck className="w-4 h-4" />,
   'optional-modules': <Puzzle className="w-4 h-4" />,
   'l3-network': <Network className="w-4 h-4" />,
   dns: <Globe className="w-4 h-4" />,
+  genieacs: <RadioTower className="w-4 h-4" />,
 };
 
 export const FullRestoreSelectionModal: React.FC<FullRestoreSelectionModalProps> = ({

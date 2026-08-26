@@ -167,7 +167,8 @@ export type AuditAction =
   | 'apn_profile_create'
   | 'apn_profile_update'
   | 'apn_profile_delete'
-  | 'apn_profile_promote';
+  | 'apn_profile_promote'
+  | 'apn_profile_ipv6_settings_update';
 
 export interface AuditLogEntry {
   id: string;

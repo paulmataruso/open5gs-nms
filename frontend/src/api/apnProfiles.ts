@@ -56,10 +56,33 @@ export interface ApnProfileInput {
   dynamicRangeEnd: string | null;
 }
 
+export interface ApnIPv6Preview {
+  subnet: string;
+  gateway: string;
+}
+
 export const apnProfilesApi = {
   list: async (): Promise<ApnProfileListEntry[]> => {
     const { data } = await api.get('/');
     return data.profiles;
+  },
+  // #30 follow-up: a core-wide IPv6 "parent" prefix (e.g. a /48 or /56) new
+  // profiles auto-carve their own /64 out of. null until an operator sets
+  // one — this whole feature is opt-in, IPv4-only deployments are unaffected.
+  getIPv6Settings: async (): Promise<{ parentPrefix: string | null }> => {
+    const { data } = await api.get('/ipv6-settings');
+    return { parentPrefix: data.parentPrefix };
+  },
+  updateIPv6Settings: async (parentPrefix: string | null): Promise<{ parentPrefix: string | null }> => {
+    const { data } = await api.put('/ipv6-settings', { parentPrefix });
+    return { parentPrefix: data.parentPrefix };
+  },
+  // Preview-only, doesn't reserve anything — the actual allocation happens
+  // (and could shift, if another profile is saved in between) when the
+  // profile is actually created with a blank subnetV6.
+  previewNextIPv6Subnet: async (): Promise<ApnIPv6Preview | null> => {
+    const { data } = await api.get('/ipv6-preview');
+    return data.next;
   },
   create: async (input: ApnProfileInput): Promise<ApnProfile> => {
     const { data } = await api.post('/', input);

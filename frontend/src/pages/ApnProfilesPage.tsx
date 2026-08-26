@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Network, Plus, Pencil, Trash2, Save, RefreshCw, X, AlertTriangle } from 'lucide-react';
+import { Network, Plus, Pencil, Trash2, Save, RefreshCw, X, AlertTriangle, Wand2, Globe2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   apnProfilesApi, type ApnProfileListEntry, type ApnProfileInput, type ApnProfile,
@@ -27,6 +27,34 @@ function ProfileFormModal({
   } : DEFAULT_INPUT);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // #30 follow-up: whether a core-wide IPv6 pool is configured at all — only
+  // shows the "Auto-fill" button when there's actually something to fill
+  // from. Fetched once on open, not kept live — this is a cheap read and the
+  // form is short-lived.
+  const [ipv6PoolConfigured, setIpv6PoolConfigured] = useState(false);
+  const [autoFilling, setAutoFilling] = useState(false);
+
+  useEffect(() => {
+    apnProfilesApi.getIPv6Settings()
+      .then(s => setIpv6PoolConfigured(!!s.parentPrefix))
+      .catch(() => {});
+  }, []);
+
+  const autoFillIPv6 = async () => {
+    setAutoFilling(true);
+    try {
+      const next = await apnProfilesApi.previewNextIPv6Subnet();
+      if (!next) {
+        toast.error('No IPv6 pool configured');
+        return;
+      }
+      setForm(f => ({ ...f, subnetV6: next.subnet, gatewayV6: next.gateway }));
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to allocate an IPv6 subnet');
+    } finally {
+      setAutoFilling(false);
+    }
+  };
 
   const save = async () => {
     setError('');
@@ -105,18 +133,28 @@ function ProfileFormModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="nms-label mb-1">IPv6 Subnet (optional)</label>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="nms-label mb-0">IPv6 (optional)</label>
+              {ipv6PoolConfigured && (
+                <button
+                  type="button"
+                  onClick={autoFillIPv6}
+                  disabled={autoFilling}
+                  title="Fill in the next unused /64 from the configured IPv6 pool"
+                  className="nms-btn-ghost text-[11px] flex items-center gap-1 px-2 py-0.5"
+                >
+                  <Wand2 className="w-3 h-3" /> {autoFilling ? 'Allocating…' : 'Auto-fill from pool'}
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
               <input
                 className="nms-input w-full font-mono"
                 value={form.subnetV6 ?? ''}
                 onChange={e => setForm(f => ({ ...f, subnetV6: e.target.value || undefined }))}
-                placeholder="2001:db8:cafe::/48"
+                placeholder="2001:db8:cafe::/64"
               />
-            </div>
-            <div>
-              <label className="nms-label mb-1">Gateway v6 (optional)</label>
               <input
                 className="nms-input w-full font-mono"
                 value={form.gatewayV6 ?? ''}
@@ -228,6 +266,71 @@ function ProfileFormModal({
   );
 }
 
+// #30 follow-up: the core-wide IPv6 parent prefix new profiles auto-carve a
+// /64 out of. Compact, collapsed-by-default-feeling settings row rather than
+// a whole separate page — this is one field, and it's directly next to the
+// thing it affects.
+function Ipv6PoolCard() {
+  const [parentPrefix, setParentPrefix] = useState<string | null>(null);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const s = await apnProfilesApi.getIPv6Settings();
+      setParentPrefix(s.parentPrefix);
+      setInput(s.parentPrefix ?? '');
+    } catch {
+      // Non-fatal — the rest of the page (IPv4-only) works fine either way.
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const result = await apnProfilesApi.updateIPv6Settings(input.trim() || null);
+      setParentPrefix(result.parentPrefix);
+      toast.success(result.parentPrefix ? `IPv6 pool set to ${result.parentPrefix}` : 'IPv6 pool cleared');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to update IPv6 pool');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="nms-card flex items-center gap-3 flex-wrap">
+      <Globe2 className="w-4 h-4 text-nms-accent shrink-0" />
+      <div className="flex-1 min-w-[240px]">
+        <p className="text-xs font-semibold text-nms-text">IPv6 Pool</p>
+        <p className="text-[11px] text-nms-text-dim">
+          A core-wide parent prefix (e.g. a /48 or /56) — new profiles can auto-allocate the next unused /64 from it instead of a hand-typed subnet.
+        </p>
+      </div>
+      <input
+        className="nms-input font-mono text-xs w-56"
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        placeholder="2001:db8:cafe::/48 (none set)"
+      />
+      <button
+        onClick={save}
+        disabled={saving || input.trim() === (parentPrefix ?? '')}
+        className="nms-btn-ghost text-xs px-3 py-1.5"
+      >
+        {saving ? 'Saving…' : 'Save'}
+      </button>
+    </div>
+  );
+}
+
 export function ApnProfilesPage() {
   const [entries, setEntries] = useState<ApnProfileListEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -295,6 +398,8 @@ export function ApnProfilesPage() {
           </button>
         </div>
       </div>
+
+      <Ipv6PoolCard />
 
       <div className="nms-card p-0 overflow-hidden overflow-x-auto">
         {loading ? (

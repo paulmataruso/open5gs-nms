@@ -33,6 +33,31 @@ export const EXTRA_BACKUP_FILES = [
   '/etc/osmocom/osmo-epdg.config',
   '/etc/vectorcore/epdg/epdg.yaml',
   '/etc/vectorcore/aaa/aaa.config',
+  // Every other optional module's own NMS-side state file (2026-08-25 audit,
+  // "does the backup module really cover every module") — each of these is
+  // the SOURCE OF TRUTH a module's own Install/Configure flow reads back to
+  // decide what to (re)generate (Kamailio includes, systemd unit args,
+  // SMS-delivery-mode, retention settings, etc.) — losing one doesn't corrupt
+  // anything, but it does mean re-provisioning that module from scratch by
+  // hand instead of Install → Configure picking up exactly where it left off.
+  // Deliberately NOT included: idempotency/patch-applied marker files
+  // (mme-dup-release-access-bearers-patch.json, smf-late-csr-patch.json) —
+  // restoring those onto a different host/build could wrongly skip a patch
+  // that host's own files actually still need; and migration-WIZARD progress
+  // trackers (dns-migration, plmn-migration, frr-migration state) — those
+  // describe an in-progress one-time transition, not standing config, and
+  // restoring "still migrating" state onto a fresh host makes no sense.
+  '/etc/open5gs/.ims-config.json',
+  '/etc/open5gs/.ims-install.json',
+  '/etc/open5gs/.mms-config.json',
+  '/etc/open5gs/.pstn-config.json',
+  '/etc/open5gs/.vectorcore-smsc-config.json',
+  '/etc/open5gs/.twamp-config.json',
+  '/etc/open5gs-nms/.vowifi-state.json',
+  '/etc/open5gs-nms/.swu-emulator-state.json',
+  '/etc/open5gs-nms/frr-source-build-state.json',
+  '/etc/chrony/chrony.conf',
+  '/etc/rsyslog.d/71-open5gs-nms-forward.conf',
 ];
 
 // ── mme.yaml sgsap map: round-trip helpers ────────────────────────────────────

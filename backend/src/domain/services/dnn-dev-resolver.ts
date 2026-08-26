@@ -57,3 +57,23 @@ export function resolveDnnDevPairs(
 
   return entries;
 }
+
+// Dedup a list of {dev, subnet, ...} items down to one per dev, preferring the
+// IPv4 entry when a dev has both — a dual-stack DNN produces two entries
+// sharing the same dev (one IPv4 session, one IPv6), and a plain last-write-
+// wins Map depends on array/file ordering, which isn't guaranteed. Two
+// independent call sites (tun-management.ts's TUN Interfaces "APN / Pool"
+// column, apn-profile-usecase.ts's derived-profile gateway lookup) each
+// reimplemented this same rule against two different source shapes (resolved
+// DNN-dev pairs vs. raw upf.yaml sessions) — extracted here after the first
+// one shipped without it and showed a real IPv6-subnet-on-an-IPv4-row bug
+// (#29 follow-up, 2026-08-25).
+export function preferIPv4ByDev<T extends { dev: string; subnet?: string | null }>(items: T[]): Map<string, T> {
+  const byDev = new Map<string, T>();
+  for (const item of items) {
+    const dev = item.dev || 'ogstun';
+    const isV4 = item.subnet != null && !String(item.subnet).includes(':');
+    if (!byDev.has(dev) || isV4) byDev.set(dev, item);
+  }
+  return byDev;
+}

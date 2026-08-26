@@ -632,9 +632,47 @@ Forwards all Open5GS NF logs, GenieACS access logs, and the FRR log (19 files to
 
 ## Backup & Restore
 
-Automated backup system with selective restore capability.
+Two backup mechanisms live on the same page: a legacy config-only/MongoDB-only pair
+(kept for compatibility with older workflows) and a **Full Backup**, the recommended
+way to capture everything needed to restore this deployment onto a brand new host.
 
-### Backup Types
+### Full Backup (recommended — every module)
+
+One `.tar.gz` archive, one click, covering every optional module this project ships —
+audited 2026-08-25 specifically to make sure nothing was missing for a genuine
+new-host restore. Eight independently selectable categories:
+
+| Category | Contents |
+|---|---|
+| Subscribers & SAS | `mongodump --db open5gs` — subscribers (APNs/IPs/security keys), SAS grants/CBSDs, subscriber groups, APN profiles, RF Planning projects, TWAMP targets/history, users, audit log |
+| Core NF Configs | All 17 core NF YAML files (`/etc/open5gs/*.yaml`, including `sepp1.yaml`) |
+| SUCI Keys | 5G-AKA home-network private/public keys (`/etc/open5gs/hnet`) — irreplaceable, not regenerable |
+| SecGW Certificates | Security Gateway's own CA and every issued per-radio IPsec certificate/key — irreplaceable, not regenerable by re-running Configure |
+| Optional Module Configs | IMS/VoLTE, SMS (SGs + VectorCore), MMS, PSTN Gateway, VoWiFi, TWAMP, FRR source-build state, chrony, syslog forwarding — each module's own NMS-side settings file |
+| L3 / IP Network Config | FRR (EIGRP) config and host interface addressing (netplan) |
+| DNS / BIND | `named.conf` + every FQDN zone file |
+| GenieACS (Radio Provisioning) | GenieACS's own separate MongoDB database — device inventory, presets, provisioning scripts, TR-069 session history |
+
+Deliberately excluded: PyHSS's own MariaDB (IMS reinstall + Sync Subscribers rebuilds
+it from the restored `open5gs` database instead of restoring a second database engine)
+and Asterisk's installed package itself (same reasoning — `pstn_extensions` rides
+along in the Subscribers dump, and `.pstn-config.json` in Optional Module Configs is
+enough for Configure to regenerate its dialplan/trunk settings after a fresh PSTN
+Install). Also excluded: idempotency/patch-applied marker files (restoring those onto
+a different host could wrongly skip a patch that host's own files still need) and
+migration-wizard progress state (DNS/PLMN/FRR migration — describes an in-progress
+one-time transition, not standing config).
+
+On restore, each category is independently selectable (`Inspect` shows exactly what's
+in an archive and how many items per category before you commit to anything). L3/IP
+Network, DNS, and GenieACS default OFF on restore — the first two because a restore
+commonly happens onto a host whose physical network topology differs from the one the
+backup was taken on, and silently overwriting `frr.conf`/netplan/BIND could break
+connectivity to the box entirely; GenieACS because it's a full separate-database
+overwrite of live radio provisioning state. Everything else, including SecGW
+certificates, defaults ON.
+
+### Legacy Backup Types
 
 **Configuration Backups:**
 - All 17 configurable NF YAML files, plus `sepp2.yaml` (the visited-PLMN template file — not independently editable via the UI, but swept up in every full backup/restore cycle)
@@ -642,7 +680,7 @@ Automated backup system with selective restore capability.
 - Includes exact file permissions
 
 **MongoDB Backups:**
-- Complete subscriber database
+- `open5gs` database only (subscribers, SAS, groups, APN profiles, RF Planning, TWAMP, users, audit log)
 - Stored in `/etc/open5gs/backups/mongodb/YYYY-MM-DD-HHMM/`
 - Uses mongodump/mongorestore
 

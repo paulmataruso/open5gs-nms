@@ -2,7 +2,7 @@ import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { parseIpLinkAddr } from '../../infrastructure/network/ip-link-parser';
-import { resolveDnnDevPairs } from '../../domain/services/dnn-dev-resolver';
+import { resolveDnnDevPairs, preferIPv4ByDev } from '../../domain/services/dnn-dev-resolver';
 
 export interface TunInterface {
   name: string;
@@ -144,10 +144,11 @@ export class TunManagementUseCase {
 
     // dev -> {dnn, subnet} for the "APN / Pool" column, sourced server-side from the
     // same smf.yaml/upf.yaml join #28 already fixed once — see dnn-dev-resolver.ts.
-    const devInfo = new Map<string, { dnn: string; subnet: string | null }>();
-    for (const { dnn, dev, subnet } of resolveDnnDevPairs(smfSessions, upfSessions)) {
-      devInfo.set(dev, { dnn, subnet });
-    }
+    // preferIPv4ByDev matters here: a dual-stack DNN produces two entries sharing
+    // the same dev (one IPv4 session, one IPv6) — without the IPv4 preference this
+    // used to be last-write-wins by file order, so an IPv4 interface's row could
+    // show the IPv6 subnet instead (#29 follow-up, 2026-08-25).
+    const devInfo = preferIPv4ByDev(resolveDnnDevPairs(smfSessions, upfSessions));
 
     // Display: NMS-managed interfaces + any ogstun* present on the system + every
     // dev declared in upf.yaml's own session config
