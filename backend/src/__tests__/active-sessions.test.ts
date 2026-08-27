@@ -331,6 +331,53 @@ describe('getActive4GUEs', () => {
     expect(ues[0].ip).toBe('');
   });
 
+  // Real-world regression: a VoLTE-capable UE holds two concurrent 4G PDN
+  // connections at once — "internet" for data, "ims" for SIP registration.
+  // The old code only ever surfaced pdn[0] and silently dropped the rest,
+  // so the RAN page's UE tables showed "internet" only, with no sign the
+  // "ims" session even existed. Both must show under the SAME row (one UE,
+  // one IMSI) via `sessions[]`, not as two separate rows for the same UE.
+  test('UE with multiple PDN connections (VoLTE: internet + ims) shows both under one row', async () => {
+    const imsi = '999704281565023';
+    const ue = mmeUeInfo({ pdn: [{ apn: 'internet', ebi: 5 }, { apn: 'ims', ebi: 6 }] });
+    const smfSession = {
+      supi: `imsi-${imsi}`,
+      ue_activity: 'active',
+      pdu: [
+        { ipv4: '10.47.0.1', pdu_state: 'active', apn: 'internet' },
+        { ipv4: '10.46.0.5', pdu_state: 'active', apn: 'ims' },
+      ],
+    };
+    const ues = await makeUseCase([ue], [mmeEnbInfo()], [smfSession]).getActive4GUEs();
+
+    expect(ues).toHaveLength(1);
+    expect(ues[0].imsi).toBe(imsi);
+    // Primary session (index 0) still mirrors ip/apn for backward compat.
+    expect(ues[0].apn).toBe('internet');
+    expect(ues[0].ip).toBe('10.47.0.1');
+    expect(ues[0].sessions).toEqual([
+      { apn: 'internet', ip: '10.47.0.1' },
+      { apn: 'ims', ip: '10.46.0.5' },
+    ]);
+  });
+
+  test('re-fetching the same multi-PDN UE does not duplicate the row or its sessions', async () => {
+    const imsi = '999704281565023';
+    const ue = mmeUeInfo({ pdn: [{ apn: 'internet', ebi: 5 }, { apn: 'ims', ebi: 6 }] });
+    const smfSession = {
+      supi: `imsi-${imsi}`,
+      ue_activity: 'active',
+      pdu: [
+        { ipv4: '10.47.0.1', pdu_state: 'active', apn: 'internet' },
+        { ipv4: '10.46.0.5', pdu_state: 'active', apn: 'ims' },
+      ],
+    };
+    // Same UE reported twice by the raw MME API (defensive case)
+    const ues = await makeUseCase([ue, ue], [mmeEnbInfo()], [smfSession]).getActive4GUEs();
+    expect(ues).toHaveLength(1);
+    expect(ues[0].sessions).toHaveLength(2);
+  });
+
   test('Prometheus metrics fallback when MME API returns nothing', async () => {
     const prometheusText = [
       '# HELP enb_ue connected UEs',
@@ -430,6 +477,38 @@ describe('getActive5GUEs', () => {
       [gnb],
     ).getActive5GUEs();
     expect(ues).toHaveLength(1);
+  });
+
+  // Same real-world regression as 4G, but for a 5G UE with two concurrent
+  // PDU sessions (e.g. "internet" + "ims") to the same gNodeB — both must
+  // show under the SAME row (one UE, one IMSI) via `sessions[]`.
+  test('UE with multiple PDU sessions (internet + ims) shows both under one row', async () => {
+    const imsi = '999702959493689';
+    const gnbIp = '10.0.1.48';
+    const session = {
+      supi: `imsi-${imsi}`,
+      ue_activity: 'active',
+      pdu: [
+        {
+          ipv4: '10.45.0.2', dnn: 'internet', snssai: { sst: 1 }, pdu_state: 'active',
+          n3: { gnb: { teid: 1, addr: `[${gnbIp}]:2152` }, upf: { teid: 1001, addr: '[10.0.0.1]:2152' } },
+        },
+        {
+          ipv4: '10.46.0.9', dnn: 'ims', snssai: { sst: 1 }, pdu_state: 'active',
+          n3: { gnb: { teid: 2, addr: `[${gnbIp}]:2152` }, upf: { teid: 1002, addr: '[10.0.0.1]:2152' } },
+        },
+      ],
+    };
+    const ues = await makeUseCase([session], [amfUeInfo(imsi, 1)], [amfGnbInfo(1, gnbIp)]).getActive5GUEs();
+
+    expect(ues).toHaveLength(1);
+    expect(ues[0].imsi).toBe(imsi);
+    expect(ues[0].dnn).toBe('internet');
+    expect(ues[0].ip).toBe('10.45.0.2');
+    expect(ues[0].sessions).toEqual([
+      { apn: 'internet', ip: '10.45.0.2' },
+      { apn: 'ims', ip: '10.46.0.9' },
+    ]);
   });
 
   test('deduplicates by IMSI', async () => {

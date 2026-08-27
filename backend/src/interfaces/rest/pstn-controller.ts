@@ -63,7 +63,7 @@ interface PstnState {
   configuredWithVersion?: string;
 }
 
-function readPstnState(): PstnState | null {
+export function readPstnState(): PstnState | null {
   if (!fs.existsSync(HOST_PSTN_STATE)) return null;
   try { return JSON.parse(fs.readFileSync(HOST_PSTN_STATE, 'utf-8')); } catch { return null; }
 }
@@ -413,6 +413,116 @@ async function clearDispatcherEntry(): Promise<void> {
 
 // ── Router ───────────────────────────────────────────────────────────────────
 
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same install logic in-process — write() is the only side-channel.
+export async function installPstn(write: (s: string) => void): Promise<{ success: boolean; error?: string; codecAmrLoaded?: boolean }> {
+  try {
+      write('=== Installing Asterisk ===');
+      const exitCode: number = await new Promise((resolve) => {
+        const child = exec(`nsenter -t 1 -m -u -i -p -- bash -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y asterisk asterisk-modules'`);
+        child.stdout?.on('data', (d: Buffer) => write(d.toString()));
+        child.stderr?.on('data', (d: Buffer) => write(d.toString()));
+        child.on('close', (code) => resolve(code ?? 1));
+      });
+      if (exitCode !== 0) {
+        write(`\n❌ apt-get install failed (exit ${exitCode}).`);
+        return { success: false, error: `apt exit ${exitCode}` };
+      }
+
+      write('\n=== Disabling deprecated chan_sip (chan_pjsip only) ===');
+      disableChanSip();
+      await nsenter('systemctl', ['enable', '--now', 'asterisk']);
+      await new Promise(r => setTimeout(r, 2000));
+      await nsenter('asterisk', ['-rx', 'module unload chan_sip.so']).catch(() => {});
+      await ensureNativeRtpBridgeSuspended();
+      write('chan_sip disabled.');
+
+      write('\n=== Verifying AMR/AMR-WB codec support ===');
+      let codecOk = false;
+      try {
+        const { stdout } = await nsenter('asterisk', ['-rx', 'module show like codec_amr']);
+        codecOk = /Running/.test(stdout);
+      } catch { /* ignore */ }
+      if (codecOk) {
+        write('✅ codec_amr.so loaded and running — AMR-WB↔G.711 transcoding available.');
+      } else {
+        write('⚠️  codec_amr.so did not load. Real VoLTE calls (AMR-WB) will not be able to\n' +
+          '   transcode to the PSTN side. This host\'s asterisk-modules package should\n' +
+          '   include it — check `asterisk -rx "module show like amr"` manually.');
+      }
+
+      write('\n✅ Asterisk installed. Run Configure next.');
+      return { success: true, codecAmrLoaded: codecOk };
+    } catch (err) {
+      write(`\n❌ Install error: ${String(err)}`);
+      return { success: false, error: String(err) };
+    }
+}
+
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same configure logic in-process, always passing the last-saved
+// asteriskIp explicitly rather than falling back to DEFAULT_ASTERISK_IP — a
+// re-Configure with defaults would silently reset a real per-deployment value.
+export async function configurePstn(
+  input: { asteriskIp: string },
+  mongoUri: string,
+): Promise<{ success: boolean; error?: string; message?: string; asteriskIp?: string }> {
+  const asteriskIp = input.asteriskIp || DEFAULT_ASTERISK_IP;
+  try {
+      const imsState = readImsState();
+      if (!imsState) {
+        return { success: false, error: 'IMS is not configured yet — configure IMS first.' };
+      }
+
+      // Idempotent — matches the loopback-alias convention already used for
+      // every other IMS component (I-CSCF/S-CSCF each have their own).
+      await nsenter('ip', ['addr', 'add', `${asteriskIp}/8`, 'dev', 'lo']).catch(() => {});
+
+      ensureIncludes();
+      fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(asteriskIp, imsState.config.icscfIp, imsState.config.icscfPort, imsState.config.scscfIp, imsState.config.pcscfIp), 'utf-8');
+      await ensureStrictRtpDisabled();
+      await regenerateDialplan(mongoUri);
+
+      await nsenter('systemctl', ['enable', '--now', 'asterisk']);
+      await nsenter('asterisk', ['-rx', 'module reload res_pjsip.so']).catch(() => {});
+      await nsenter('asterisk', ['-rx', 'module reload res_rtp_asterisk.so']).catch(() => {});
+      await ensureNativeRtpBridgeSuspended();
+      await writeDispatcherEntry(asteriskIp);
+
+      writePstnState({ asteriskIp, configuredWithVersion: getAppVersion() });
+
+      return { success: true, message: 'Asterisk configured and wired into S-CSCF\'s dispatcher.', asteriskIp };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+}
+
+export interface PstnStalenessResult {
+  installed: boolean;
+  hasSavedConfig: boolean;
+  configStale: boolean;
+  configuredWithVersion?: string;
+  savedAsteriskIp?: string;
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
+// comparison GET /status already does. PSTN has no install-staleness concept
+// (installStale field doesn't exist for this module — see /status above).
+export async function getPstnStaleness(): Promise<PstnStalenessResult> {
+  const { stdout: whichOut } = await nsenter('which', ['asterisk']).catch(() => ({ stdout: '', stderr: '' }));
+  const installed = whichOut.trim().length > 0;
+  const state = readPstnState();
+  const appVersion = getAppVersion();
+  const configStale = !!state && state.configuredWithVersion !== appVersion;
+  return {
+    installed,
+    hasSavedConfig: !!state,
+    configStale,
+    configuredWithVersion: state?.configuredWithVersion,
+    savedAsteriskIp: state?.asteriskIp,
+  };
+}
+
 export function createPstnRouter(
   subscriberRepo: ISubscriberRepository,
   mongoUri: string,
@@ -494,87 +604,22 @@ export function createPstnRouter(
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-
-    try {
-      write('=== Installing Asterisk ===');
-      const exitCode: number = await new Promise((resolve) => {
-        const child = exec(`nsenter -t 1 -m -u -i -p -- bash -c 'DEBIAN_FRONTEND=noninteractive apt-get install -y asterisk asterisk-modules'`);
-        child.stdout?.on('data', (d: Buffer) => write(d.toString()));
-        child.stderr?.on('data', (d: Buffer) => write(d.toString()));
-        child.on('close', (code) => resolve(code ?? 1));
-      });
-      if (exitCode !== 0) {
-        write(`\n❌ apt-get install failed (exit ${exitCode}).`);
-        await auditLogger.log({ action: 'pstn_install', user, details: `apt exit ${exitCode}`, success: false });
-        return res.end();
-      }
-
-      write('\n=== Disabling deprecated chan_sip (chan_pjsip only) ===');
-      disableChanSip();
-      await nsenter('systemctl', ['enable', '--now', 'asterisk']);
-      await new Promise(r => setTimeout(r, 2000));
-      await nsenter('asterisk', ['-rx', 'module unload chan_sip.so']).catch(() => {});
-      await ensureNativeRtpBridgeSuspended();
-      write('chan_sip disabled.');
-
-      write('\n=== Verifying AMR/AMR-WB codec support ===');
-      let codecOk = false;
-      try {
-        const { stdout } = await nsenter('asterisk', ['-rx', 'module show like codec_amr']);
-        codecOk = /Running/.test(stdout);
-      } catch { /* ignore */ }
-      if (codecOk) {
-        write('✅ codec_amr.so loaded and running — AMR-WB↔G.711 transcoding available.');
-      } else {
-        write('⚠️  codec_amr.so did not load. Real VoLTE calls (AMR-WB) will not be able to\n' +
-          '   transcode to the PSTN side. This host\'s asterisk-modules package should\n' +
-          '   include it — check `asterisk -rx "module show like amr"` manually.');
-      }
-
-      await auditLogger.log({ action: 'pstn_install', user, details: `codecAmrLoaded=${codecOk}`, success: true });
-      write('\n✅ Asterisk installed. Run Configure next.');
-      res.end();
-    } catch (err) {
-      write(`\n❌ Install error: ${String(err)}`);
-      await auditLogger.log({ action: 'pstn_install', user, details: String(err), success: false });
-      res.end();
-    }
+    const result = await installPstn(write);
+    await auditLogger.log({ action: 'pstn_install', user, details: result.error ?? `codecAmrLoaded=${result.codecAmrLoaded}`, success: result.success });
+    res.end();
   });
 
   // POST /api/pstn/configure — body: { asteriskIp? }
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    try {
-      const imsState = readImsState();
-      if (!imsState) {
-        return res.status(400).json({ success: false, error: 'IMS is not configured yet — configure IMS first.' });
-      }
-      const asteriskIp = (req.body.asteriskIp as string) || DEFAULT_ASTERISK_IP;
-
-      // Idempotent — matches the loopback-alias convention already used for
-      // every other IMS component (I-CSCF/S-CSCF each have their own).
-      await nsenter('ip', ['addr', 'add', `${asteriskIp}/8`, 'dev', 'lo']).catch(() => {});
-
-      ensureIncludes();
-      fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(asteriskIp, imsState.config.icscfIp, imsState.config.icscfPort, imsState.config.scscfIp, imsState.config.pcscfIp), 'utf-8');
-      await ensureStrictRtpDisabled();
-      await regenerateDialplan(mongoUri);
-
-      await nsenter('systemctl', ['enable', '--now', 'asterisk']);
-      await nsenter('asterisk', ['-rx', 'module reload res_pjsip.so']).catch(() => {});
-      await nsenter('asterisk', ['-rx', 'module reload res_rtp_asterisk.so']).catch(() => {});
-      await ensureNativeRtpBridgeSuspended();
-      await writeDispatcherEntry(asteriskIp);
-
-      writePstnState({ asteriskIp, configuredWithVersion: getAppVersion() });
-
-      await auditLogger.log({ action: 'pstn_configure', user, details: `asteriskIp=${asteriskIp}`, success: true });
-      res.json({ success: true, message: 'Asterisk configured and wired into S-CSCF\'s dispatcher.', asteriskIp });
-    } catch (err) {
-      await auditLogger.log({ action: 'pstn_configure', user, details: String(err), success: false });
-      logger.error({ err: String(err) }, 'pstn configure error');
-      res.status(500).json({ success: false, error: String(err) });
+    const asteriskIp = (req.body.asteriskIp as string) || DEFAULT_ASTERISK_IP;
+    const result = await configurePstn({ asteriskIp }, mongoUri);
+    if (!result.success) {
+      await auditLogger.log({ action: 'pstn_configure', user, details: result.error ?? 'failed', success: false });
+      return res.status(400).json({ success: false, error: result.error });
     }
+    await auditLogger.log({ action: 'pstn_configure', user, details: `asteriskIp=${result.asteriskIp}`, success: true });
+    res.json({ success: true, message: result.message, asteriskIp: result.asteriskIp });
   });
 
   // GET /api/pstn/extensions — list mappings, joined with subscriber nickname/MSISDN

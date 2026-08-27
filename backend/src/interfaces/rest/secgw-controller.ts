@@ -1153,6 +1153,181 @@ export class SecGwConfigureError extends Error {
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same install logic in-process — write() is the only side-channel.
+export async function installSecgw(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const state = loadState();
+    if (state.installStatus === 'installing') {
+      return { success: false, error: 'An install is already in progress.' };
+    }
+
+    state.installStatus = 'installing';
+    state.installStartedAt = new Date().toISOString();
+    state.installError = null;
+    saveState(state);
+
+    write('=== Building strongSwan from source (patched socket-default, see secgw-build.ts) ===');
+    write('This installs its own binaries under /opt/strongswan — no dependency on the distro strongswan-swanctl/charon-systemd packages. Takes a few minutes.');
+
+    return new Promise((resolve) => {
+      const child = spawn(
+        'nsenter',
+        ['-t', '1', '-m', '-u', '-i', '-n', '-p', '--', 'bash', '-c', buildSecgwScript()],
+        { env: { ...process.env, DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket' } },
+      );
+
+      child.stdout.on('data', d => write(d.toString()));
+      child.stderr.on('data', d => write(d.toString()));
+
+      child.on('error', (err) => {
+        const s = loadState();
+        s.installStatus = 'failed';
+        s.installCompletedAt = new Date().toISOString();
+        s.installError = String(err);
+        saveState(s);
+        write(`\nERROR: ${String(err)}`);
+        resolve({ success: false, error: String(err) });
+      });
+
+      child.on('close', (code) => {
+        const s = loadState();
+        const builtOk = code === 0 && fs.existsSync(`/proc/1/root${SECGW_CHARON_BIN}`) && fs.existsSync(`/proc/1/root${SECGW_SWANCTL_BIN}`);
+        if (builtOk) {
+          s.installStatus = 'complete';
+          s.installCompletedAt = new Date().toISOString();
+          s.builtWithPatchRev = SECGW_PATCH_REV;
+          write('\n=== strongSwan built and installed successfully ===');
+        } else {
+          s.installStatus = 'failed';
+          s.installCompletedAt = new Date().toISOString();
+          s.installError = code === 0
+            ? 'Build finished but expected binaries were not found under /opt/strongswan.'
+            : `Build exited with code ${code}`;
+          write(`\n=== Install FAILED: ${s.installError} ===`);
+        }
+        saveState(s);
+        resolve({ success: builtOk, error: builtOk ? undefined : (s.installError ?? undefined) });
+      });
+    });
+}
+
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same configure logic in-process, always passing the last-saved gatewayIp/
+// interfaceMode/poolCidr explicitly rather than an empty body — re-running Configure with
+// defaults would silently reset real per-deployment values (DEFAULT_GATEWAY_IP/DEFAULT_POOL_CIDR).
+export async function configureSecgw(input: {
+  gatewayIp: string; interfaceMode: 'dummy' | 'existing'; poolCidr: string;
+}): Promise<{ success: boolean; error?: string; gatewayIp?: string; interfaceMode?: string; gatewayFqdn?: string; poolCidr?: string; bindZoneExists?: boolean; dnsRecordAdded?: boolean }> {
+  const gatewayIp = input.gatewayIp || DEFAULT_GATEWAY_IP;
+  const interfaceMode = input.interfaceMode === 'existing' ? 'existing' : 'dummy';
+  const poolCidr = input.poolCidr || DEFAULT_POOL_CIDR;
+  try {
+      const state = loadState();
+      if (state.installStatus !== 'complete') {
+        return { success: false, error: 'Run Install first — strongSwan is not installed yet.' };
+      }
+      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(gatewayIp)) {
+        return { success: false, error: 'Invalid gatewayIp' };
+      }
+      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(poolCidr)) {
+        return { success: false, error: 'Invalid poolCidr — expected CIDR notation, e.g. 10.0.1.200/29' };
+      }
+
+      // Gateway IP — same dummy-interface convention as every other module, but
+      // unlike VoWiFi's ePDG IP, this one MUST be reachable from real RAN radios
+      // behind the existing EIGRP-carried topology; the frontend Setup tab shows a
+      // manual frr.conf hint before Configure runs (this backend never touches
+      // frr.conf itself — CLAUDE.md gotcha #7).
+      if (interfaceMode === 'dummy') {
+        await createDummyInterface(DUMMY_IF_NAME, gatewayIp, 24, true);
+      } else {
+        const ipPresent = await nsenter('bash', ['-c', `ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx '${gatewayIp}' && echo yes || echo no`])
+          .then(r => r.stdout.trim() === 'yes').catch(() => false);
+        if (!ipPresent) {
+          return {
+            success: false,
+            error: `${gatewayIp} is not currently assigned to any interface on this host (checked with "ip addr show"). ` +
+              `In "use existing IP" mode you must bind it yourself first, then retry.`,
+          };
+        }
+      }
+
+      const realm = deriveRealm();
+      const gatewayFqdn = `secgw.${realm}`;
+
+      fs.mkdirSync(HOST_SECGW_PKI_DIR, { recursive: true });
+      fs.mkdirSync(HOST_SWANCTL_X509_DIR, { recursive: true });
+      fs.mkdirSync(HOST_SWANCTL_X509CA_DIR, { recursive: true });
+      fs.mkdirSync(HOST_SWANCTL_PRIVATE_DIR, { recursive: true });
+      fs.mkdirSync(HOST_SWANCTL_CONFD_DIR, { recursive: true });
+      await nsenter('bash', ['-c', secgwCaAndServerCertGenScript(gatewayFqdn)], 30000);
+
+      fs.writeFileSync(HOST_SWANCTL_CONF, baseSwanctlConf(), 'utf-8');
+      // Rewritten every Configure run — gatewayIp (baked in as SECGW_BIND_ADDR) can
+      // change on a reconfigure, so the unit can't just be written once at Install.
+      fs.writeFileSync(HOST_SYSTEMD_UNIT_PATH, secgwSystemdUnit(gatewayIp), 'utf-8');
+      await nsenter('systemctl', ['daemon-reload'], 20000).catch(() => {});
+      await nsenter('systemctl', ['enable', '--now', SERVICE_NAME], 20000).catch(() => {});
+      // Restart (not just start) in case the service was already running with a stale
+      // unit/SECGW_BIND_ADDR from a previous gatewayIp — enable --now is a no-op if
+      // already active, so this guarantees the new bind address actually takes effect.
+      await nsenter('systemctl', ['restart', SERVICE_NAME], 20000).catch(() => {});
+      await ensurePoolRoute(poolCidr, gatewayIp);
+      await nsenter('swanctl', ['--load-all'], 15000).catch(() => {});
+
+      const newState: SecGwState = {
+        ...state, configured: true, configuredAt: new Date().toISOString(),
+        configuredWithVersion: SECGW_CONFIG_GEN_VERSION,
+        gatewayIp, interfaceMode, gatewayFqdn, poolCidr,
+        caCreatedAt: state.caCreatedAt ?? new Date().toISOString(),
+      };
+      saveState(newState);
+
+      // Best-effort — BIND may not be installed / the DNS Migration Wizard may never
+      // have been run on this host yet, and that's fine: upsertSecgwDnsRecord() just
+      // reports zoneExists:false in that case rather than throwing, so Configure still
+      // succeeds. The Setup tab surfaces a retry action via POST /dns-record for later.
+      const dns = await upsertSecgwDnsRecord(gatewayIp);
+
+      return { success: true, gatewayIp, interfaceMode, gatewayFqdn, poolCidr, bindZoneExists: dns.zoneExists, dnsRecordAdded: dns.added };
+    } catch (err) {
+      return { success: false, error: String(err instanceof Error ? err.message : err) };
+    }
+}
+
+export interface SecgwStalenessResult {
+  installedOnDisk: boolean;
+  hasSavedConfig: boolean;
+  buildStale: boolean;
+  configStale: boolean;
+  builtWithPatchRev?: number;
+  configuredWithVersion?: number;
+  savedGatewayIp?: string;
+  savedInterfaceMode?: 'dummy' | 'existing';
+  savedPoolCidr?: string;
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
+// comparison GET /status already does, without the rest of that endpoint's work
+// (swanctl session listing, DNS status, etc).
+export function getSecgwStaleness(): SecgwStalenessResult {
+  const state = loadState();
+  const installedOnDisk = fs.existsSync(`/proc/1/root${SECGW_CHARON_BIN}`) && fs.existsSync(`/proc/1/root${SECGW_SWANCTL_BIN}`);
+  const buildStale = installedOnDisk && state.builtWithPatchRev !== SECGW_PATCH_REV;
+  const configStale = state.configured && state.configuredWithVersion !== SECGW_CONFIG_GEN_VERSION;
+  return {
+    installedOnDisk,
+    hasSavedConfig: state.configured,
+    buildStale,
+    configStale,
+    builtWithPatchRev: state.builtWithPatchRev ?? undefined,
+    configuredWithVersion: state.configuredWithVersion ?? undefined,
+    savedGatewayIp: state.gatewayIp ?? undefined,
+    savedInterfaceMode: state.interfaceMode ?? undefined,
+    savedPoolCidr: state.poolCidr ?? undefined,
+  };
+}
+
 export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
@@ -1235,8 +1410,8 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    const state = loadState();
-    if (state.installStatus === 'installing') {
+    const preState = loadState();
+    if (preState.installStatus === 'installing') {
       res.status(409).json({ success: false, error: 'An install is already in progress.' });
       return;
     }
@@ -1246,140 +1421,25 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-
-    state.installStatus = 'installing';
-    state.installStartedAt = new Date().toISOString();
-    state.installError = null;
-    saveState(state);
-
-    write('=== Building strongSwan from source (patched socket-default, see secgw-build.ts) ===');
-    write('This installs its own binaries under /opt/strongswan — no dependency on the distro strongswan-swanctl/charon-systemd packages. Takes a few minutes.');
-    const child = spawn(
-      'nsenter',
-      ['-t', '1', '-m', '-u', '-i', '-n', '-p', '--', 'bash', '-c', buildSecgwScript()],
-      { env: { ...process.env, DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket' } },
-    );
-
-    child.stdout.on('data', d => write(d.toString()));
-    child.stderr.on('data', d => write(d.toString()));
-
-    child.on('error', async (err) => {
-      const s = loadState();
-      s.installStatus = 'failed';
-      s.installCompletedAt = new Date().toISOString();
-      s.installError = String(err);
-      saveState(s);
-      write(`\nERROR: ${String(err)}`);
-      await auditLogger.log({ action: 'secgw_install', user, details: String(err), success: false });
-      res.end();
-    });
-
-    child.on('close', async (code) => {
-      const s = loadState();
-      const builtOk = code === 0 && fs.existsSync(`/proc/1/root${SECGW_CHARON_BIN}`) && fs.existsSync(`/proc/1/root${SECGW_SWANCTL_BIN}`);
-      if (builtOk) {
-        s.installStatus = 'complete';
-        s.installCompletedAt = new Date().toISOString();
-        s.builtWithPatchRev = SECGW_PATCH_REV;
-        write('\n=== strongSwan built and installed successfully ===');
-      } else {
-        s.installStatus = 'failed';
-        s.installCompletedAt = new Date().toISOString();
-        s.installError = code === 0
-          ? 'Build finished but expected binaries were not found under /opt/strongswan.'
-          : `Build exited with code ${code}`;
-        write(`\n=== Install FAILED: ${s.installError} ===`);
-      }
-      saveState(s);
-      await auditLogger.log({ action: 'secgw_install', user, details: `exitCode=${code} builtOk=${builtOk}`, success: builtOk });
-      res.end();
-    });
+    const result = await installSecgw(write);
+    await auditLogger.log({ action: 'secgw_install', user, details: result.error ?? 'success', success: result.success });
+    res.end();
   });
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    try {
-      const state = loadState();
-      if (state.installStatus !== 'complete') {
-        res.status(409).json({ success: false, error: 'Run Install first — strongSwan is not installed yet.' });
-        return;
-      }
-      const body = req.body ?? {};
-      const gatewayIp = typeof body.gatewayIp === 'string' && body.gatewayIp ? body.gatewayIp : DEFAULT_GATEWAY_IP;
-      const interfaceMode: 'dummy' | 'existing' = body.interfaceMode === 'existing' ? 'existing' : 'dummy';
-      const poolCidr = typeof body.poolCidr === 'string' && body.poolCidr ? body.poolCidr : DEFAULT_POOL_CIDR;
-      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(gatewayIp)) {
-        res.status(400).json({ success: false, error: 'Invalid gatewayIp' });
-        return;
-      }
-      if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(poolCidr)) {
-        res.status(400).json({ success: false, error: 'Invalid poolCidr — expected CIDR notation, e.g. 10.0.1.200/29' });
-        return;
-      }
-
-      // Gateway IP — same dummy-interface convention as every other module, but
-      // unlike VoWiFi's ePDG IP, this one MUST be reachable from real RAN radios
-      // behind the existing EIGRP-carried topology; the frontend Setup tab shows a
-      // manual frr.conf hint before Configure runs (this backend never touches
-      // frr.conf itself — CLAUDE.md gotcha #7).
-      if (interfaceMode === 'dummy') {
-        await createDummyInterface(DUMMY_IF_NAME, gatewayIp, 24, true);
-      } else {
-        const ipPresent = await nsenter('bash', ['-c', `ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx '${gatewayIp}' && echo yes || echo no`])
-          .then(r => r.stdout.trim() === 'yes').catch(() => false);
-        if (!ipPresent) {
-          res.status(400).json({
-            success: false,
-            error: `${gatewayIp} is not currently assigned to any interface on this host (checked with "ip addr show"). ` +
-              `In "use existing IP" mode you must bind it yourself first, then retry.`,
-          });
-          return;
-        }
-      }
-
-      const realm = deriveRealm();
-      const gatewayFqdn = `secgw.${realm}`;
-
-      fs.mkdirSync(HOST_SECGW_PKI_DIR, { recursive: true });
-      fs.mkdirSync(HOST_SWANCTL_X509_DIR, { recursive: true });
-      fs.mkdirSync(HOST_SWANCTL_X509CA_DIR, { recursive: true });
-      fs.mkdirSync(HOST_SWANCTL_PRIVATE_DIR, { recursive: true });
-      fs.mkdirSync(HOST_SWANCTL_CONFD_DIR, { recursive: true });
-      await nsenter('bash', ['-c', secgwCaAndServerCertGenScript(gatewayFqdn)], 30000);
-
-      fs.writeFileSync(HOST_SWANCTL_CONF, baseSwanctlConf(), 'utf-8');
-      // Rewritten every Configure run — gatewayIp (baked in as SECGW_BIND_ADDR) can
-      // change on a reconfigure, so the unit can't just be written once at Install.
-      fs.writeFileSync(HOST_SYSTEMD_UNIT_PATH, secgwSystemdUnit(gatewayIp), 'utf-8');
-      await nsenter('systemctl', ['daemon-reload'], 20000).catch(() => {});
-      await nsenter('systemctl', ['enable', '--now', SERVICE_NAME], 20000).catch(() => {});
-      // Restart (not just start) in case the service was already running with a stale
-      // unit/SECGW_BIND_ADDR from a previous gatewayIp — enable --now is a no-op if
-      // already active, so this guarantees the new bind address actually takes effect.
-      await nsenter('systemctl', ['restart', SERVICE_NAME], 20000).catch(() => {});
-      await ensurePoolRoute(poolCidr, gatewayIp);
-      await nsenter('swanctl', ['--load-all'], 15000).catch(() => {});
-
-      const newState: SecGwState = {
-        ...state, configured: true, configuredAt: new Date().toISOString(),
-        configuredWithVersion: SECGW_CONFIG_GEN_VERSION,
-        gatewayIp, interfaceMode, gatewayFqdn, poolCidr,
-        caCreatedAt: state.caCreatedAt ?? new Date().toISOString(),
-      };
-      saveState(newState);
-
-      // Best-effort — BIND may not be installed / the DNS Migration Wizard may never
-      // have been run on this host yet, and that's fine: upsertSecgwDnsRecord() just
-      // reports zoneExists:false in that case rather than throwing, so Configure still
-      // succeeds. The Setup tab surfaces a retry action via POST /dns-record for later.
-      const dns = await upsertSecgwDnsRecord(gatewayIp);
-
-      await auditLogger.log({ action: 'secgw_configure', user, details: `gatewayIp=${gatewayIp} interfaceMode=${interfaceMode} poolCidr=${poolCidr} dnsRecordAdded=${dns.added}`, success: true });
-      res.json({ success: true, gatewayIp, interfaceMode, gatewayFqdn, poolCidr, bindZoneExists: dns.zoneExists, dnsRecordAdded: dns.added });
-    } catch (err) {
-      await auditLogger.log({ action: 'secgw_configure', user, details: String(err), success: false });
-      res.status(500).json({ success: false, error: String(err instanceof Error ? err.message : err) });
+    const body = req.body ?? {};
+    const result = await configureSecgw({
+      gatewayIp: typeof body.gatewayIp === 'string' ? body.gatewayIp : '',
+      interfaceMode: body.interfaceMode === 'existing' ? 'existing' : 'dummy',
+      poolCidr: typeof body.poolCidr === 'string' ? body.poolCidr : '',
+    });
+    if (!result.success) {
+      await auditLogger.log({ action: 'secgw_configure', user, details: result.error ?? 'failed', success: false });
+      return res.status(400).json({ success: false, error: result.error });
     }
+    await auditLogger.log({ action: 'secgw_configure', user, details: `gatewayIp=${result.gatewayIp} interfaceMode=${result.interfaceMode} poolCidr=${result.poolCidr} dnsRecordAdded=${result.dnsRecordAdded}`, success: true });
+    res.json({ success: true, gatewayIp: result.gatewayIp, interfaceMode: result.interfaceMode, gatewayFqdn: result.gatewayFqdn, poolCidr: result.poolCidr, bindZoneExists: result.bindZoneExists, dnsRecordAdded: result.dnsRecordAdded });
   });
 
   // Retry hook for "add the secgw DNS record now" — for when BIND9 (and the internal

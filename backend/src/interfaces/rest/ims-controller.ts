@@ -2312,309 +2312,11 @@ async function getRegisteredUesWithActivity(): Promise<{
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
-export function createImsRouter(
-  subscriberRepo: ISubscriberRepository,
-  logger: pino.Logger,
-  auditLogger: IAuditLogger,
-  callStatsMonitor?: ImsCallStatsMonitor,
-): Router {
-  const router = Router();
-
-  // GET /api/ims/call-stats — instant, non-blocking read of the background
-  // sampler's last computed value (see call-stats-monitor.ts). Polled on a
-  // short interval by the Dashboard's IMS Status card.
-  router.get('/call-stats', (_req: Request, res: Response) => {
-    const latest = callStatsMonitor?.getLatest() ?? { activeCalls: 0, totalCallsPlaced: 0, totalSmsSent: 0, sampledAt: 0 };
-    res.json({ success: true, ...latest });
-  });
-
-  // GET /api/ims/status
-  router.get('/status', async (_req: Request, res: Response) => {
-    try {
-      const [whichRes, pcscfRes, icscfRes, scscfRes, smscRes, rtpRes, dnsRes, mariaRes,
-             pyhssDiamRes, pyhssHssRes, pyhssApiRes, redisRes] =
-        await Promise.allSettled([
-          nsenter('which', ['kamailio']),
-          nsenter('systemctl', ['is-active', 'kamailio-pcscf']),
-          nsenter('systemctl', ['is-active', 'kamailio-icscf']),
-          nsenter('systemctl', ['is-active', 'kamailio-scscf']),
-          nsenter('systemctl', ['is-active', 'kamailio-smsc']),
-          nsenter('systemctl', ['is-active', 'rtpengine-daemon']),
-          nsenter('systemctl', ['is-active', 'bind9']),
-          nsenter('systemctl', ['is-active', 'mariadb']),
-          nsenter('systemctl', ['is-active', 'pyhss-diameter']),
-          nsenter('systemctl', ['is-active', 'pyhss-hss']),
-          nsenter('systemctl', ['is-active', 'pyhss-api']),
-          nsenter('systemctl', ['is-active', 'redis-server']),
-        ]);
-
-      const installed = whichRes.status === 'fulfilled' && whichRes.value.stdout.trim().length > 0;
-      const pyhssInstalled = fs.existsSync('/proc/1/root/opt/pyhss');
-      const svcActive = (r: PromiseSettledResult<any>) =>
-        r.status === 'fulfilled' && r.value.stdout.trim() === 'active';
-
-      const hasSavedConfig = fs.existsSync(HOST_IMS_STATE);
-      let currentConfig: ImsConfigureInput | undefined;
-      let imsDomain: string | undefined;
-      let configuredWithVersion: string | undefined;
-      let smsDeliveryMode: 'sgs' | 'ims' | 'vectorcore' = 'ims';
-      let smsWorkerIntervalSeconds = 30;
-      if (hasSavedConfig) {
-        try {
-          const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
-          currentConfig = saved.config;
-          imsDomain = saved.imsDomain;
-          configuredWithVersion = saved.configuredWithVersion;
-          if (saved.smsDeliveryMode === 'sgs' || saved.smsDeliveryMode === 'vectorcore') smsDeliveryMode = saved.smsDeliveryMode;
-          if (typeof saved.smsWorkerIntervalSeconds === 'number' && saved.smsWorkerIntervalSeconds > 0) {
-            smsWorkerIntervalSeconds = saved.smsWorkerIntervalSeconds;
-          }
-        } catch { /* corrupt */ }
-      }
-      // Deployments configured before this field existed have no
-      // configuredWithVersion at all — treat that the same as "stale",
-      // since we genuinely don't know what template they're running.
-      const appVersion = getAppVersion();
-      const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
-
-      // Same pattern, for Install rather than Configure — see
-      // HOST_IMS_INSTALL_STATE's own comment for why these are tracked
-      // separately. A deployment that's `installed` but has never gone
-      // through a version that wrote this marker (i.e. every deployment
-      // installed before this tracking existed) is treated as stale too,
-      // same reasoning as configStale above — we don't know what install
-      // steps it actually got.
-      let installedWithVersion: string | undefined;
-      const hasInstallMarker = fs.existsSync(HOST_IMS_INSTALL_STATE);
-      if (hasInstallMarker) {
-        try {
-          installedWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8')).installedWithVersion;
-        } catch { /* corrupt */ }
-      }
-      const installStale = installed && installedWithVersion !== appVersion;
-
-      const services = {
-        pcscf:            svcActive(pcscfRes),
-        icscf:            svcActive(icscfRes),
-        scscf:            svcActive(scscfRes),
-        smsc:             svcActive(smscRes),
-        rtpengine:        svcActive(rtpRes),
-        bind9:            svcActive(dnsRes),
-        mariadb:          svcActive(mariaRes),
-        'pyhss-diameter': svcActive(pyhssDiamRes),
-        'pyhss-hss':      svcActive(pyhssHssRes),
-        'pyhss-api':      svcActive(pyhssApiRes),
-        redis:            svcActive(redisRes),
-      };
-
-      // Registered UE count (live S-CSCF registrar) + active IPsec SA count —
-      // both read directly from the running system, not from any DB, so they
-      // reflect what's actually happening right now: a provisioned subscriber
-      // isn't necessarily registered, and IPsec SAs get wiped by any P-CSCF
-      // restart until the phone re-registers — see memory:
-      // ims-ue-to-ue-calling-investigation.
-      let ipsecSaCount = 0;
-      const [ueRes, xfrmRes] = await Promise.allSettled([
-        services.scscf
-          ? getRegisteredUesWithActivity()
-          : Promise.reject(new Error('scscf not running')),
-        nsenter('ip', ['xfrm', 'state']),
-      ]);
-      const { registeredUes, registeredUesByType, activeUes } =
-        ueRes.status === 'fulfilled' ? ueRes.value : { registeredUes: 0, registeredUesByType: { iphone: 0, android: 0, other: 0 }, activeUes: 0 };
-      if (xfrmRes.status === 'fulfilled') {
-        ipsecSaCount = (xfrmRes.value.stdout.match(/^src /gm) ?? []).length;
-      }
-
-      const smfImsConfigured = fs.existsSync(HOST_SMF_YAML) &&
-        /dnn:\s*ims/.test(fs.readFileSync(HOST_SMF_YAML, 'utf-8'));
-
-      const dnsConfigured = fs.existsSync(HOST_BIND_ZONES_DIR) &&
-        fs.readdirSync(HOST_BIND_ZONES_DIR).some(f => f.includes('3gppnetwork'));
-
-      const imsEnabled = services.pcscf && services.icscf && services.scscf &&
-        services['pyhss-diameter'] && services['pyhss-hss'] && smfImsConfigured;
-
-      let imsSubscribers = 0;
-      if (services['pyhss-api']) {
-        try {
-          const list = await pyhssApiCall('GET', '/ims_subscriber/list');
-          imsSubscribers = Array.isArray(list) ? list.length : 0;
-        } catch { /* api not ready */ }
-      }
-
-      const allSubs = await subscriberRepo.findAll();
-      const open5gsSubscribers = allSubs.filter(s => s.msisdn && s.msisdn.length > 0).length;
-
-      res.json({
-        success: true,
-        installed,
-        pyhssInstalled,
-        hssBackend: 'pyhss',
-        services,
-        imsSubscribers,
-        open5gsSubscribers,
-        registeredUes,
-        registeredUesByType,
-        activeUes,
-        ipsecSaCount,
-        smfImsConfigured,
-        dnsConfigured,
-        imsEnabled,
-        hasSavedConfig,
-        imsDomain,
-        currentConfig,
-        appVersion,
-        configuredWithVersion,
-        configStale,
-        installedWithVersion,
-        installStale,
-        smsDeliveryMode,
-        smsWorkerIntervalSeconds,
-      });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'ims status error');
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // POST /api/ims/sms-delivery-mode — body: { mode: 'sgs' | 'ims' | 'vectorcore' }.
-  // Toggle shown on the SMS/MMS page (SMS tab) — see setSmsDeliveryMode() above.
-  router.post('/sms-delivery-mode', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
-    const { mode } = req.body as { mode?: string };
-    if (mode !== 'sgs' && mode !== 'ims' && mode !== 'vectorcore') {
-      return res.status(400).json({ success: false, error: "mode must be 'sgs', 'ims', or 'vectorcore'" });
-    }
-    try {
-      await setSmsDeliveryMode(mode);
-      await auditLogger.log({ action: 'ims_configure', user, details: `sms_delivery_mode=${mode}`, success: true });
-      res.json({ success: true, mode });
-    } catch (err) {
-      await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
-      logger.error({ err: String(err) }, 'ims sms-delivery-mode error');
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // POST /api/ims/sms-worker-interval — body: { seconds: number (1-300) }.
-  // Controls how often kamailio-smsc's store-and-forward queue is polled —
-  // see setSmsWorkerInterval() above.
-  router.post('/sms-worker-interval', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
-    const { seconds } = req.body as { seconds?: number };
-    if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-      return res.status(400).json({ success: false, error: 'seconds must be an integer between 1 and 300' });
-    }
-    try {
-      await setSmsWorkerInterval(seconds);
-      await auditLogger.log({ action: 'ims_configure', user, details: `sms_worker_interval_seconds=${seconds}`, success: true });
-      res.json({ success: true, seconds });
-    } catch (err) {
-      await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
-      logger.error({ err: String(err) }, 'ims sms-worker-interval error');
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // GET /api/ims/live — real-time IPsec SA / registration / active-call
-  // view for the IMS page's "Live Status" tab. Every field here is read
-  // directly off the running system (no DB) — S-CSCF's own registrar is
-  // db_mode=0/in-memory only, so `kamcmd ulscscf.snapshot` is the only way
-  // to see current registrations at all, and IPsec SA byte/packet counters
-  // are the same live signal used throughout this project's own VoLTE
-  // debugging history to tell "registered" from "actually exchanging
-  // traffic." Three independent nsenter calls — one slow/failed source
-  // (e.g. S-CSCF not running) shouldn't blank out the other two, so each
-  // is caught and defaulted separately rather than failing the whole
-  // request.
-  router.get('/live', async (_req: Request, res: Response) => {
-    try {
-      const [ipsecRes, snapshotRes, dlgRes] = await Promise.allSettled([
-        nsenter('ip', ['-s', 'xfrm', 'state']),
-        (async () => {
-          const snapFile = `/tmp/kamailio-scscf-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
-          await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.snapshot', snapFile]);
-          const hostSnapFile = `/proc/1/root${snapFile}`;
-          const content = fs.existsSync(hostSnapFile) ? fs.readFileSync(hostSnapFile, 'utf-8') : '';
-          await nsenter('rm', ['-f', snapFile]).catch(() => {});
-          return content;
-        })(),
-        nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'dlg2.list']),
-      ]);
-
-      const ipsecSas = ipsecRes.status === 'fulfilled' ? parseIpsecSaText(ipsecRes.value.stdout) : [];
-
-      // `ip xfrm state` is a single global kernel table shared by both
-      // P-CSCF's own SIP-signaling IPsec (Gm, TS 33.203) and VoWiFi's
-      // ePDG↔UE tunnel IPsec (SWu) — the kernel has no notion of which
-      // subsystem an SA belongs to, so classify by matching each SA's
-      // src/dst against each subsystem's own known bind address.
-      try {
-        const pcscfIp = readCurrentImsConfig()?.pcscfIp;
-        const epdgIp = loadVowifiState().epdgIp;
-        for (const sa of ipsecSas) {
-          if (pcscfIp && (sa.src === pcscfIp || sa.dst === pcscfIp)) sa.group = 'ims';
-          else if (epdgIp && (sa.src === epdgIp || sa.dst === epdgIp)) sa.group = 'vowifi';
-          else sa.group = 'other';
-        }
-      } catch (err) {
-        logger.warn({ err: String(err) }, 'ims live status: IPsec SA classification failed');
-        for (const sa of ipsecSas) sa.group = sa.group ?? 'other';
-      }
-
-      const registeredUsers = snapshotRes.status === 'fulfilled' ? parseRegisteredUsersSnapshot(snapshotRes.value) : [];
-
-      // Tag each registered row with its subscriber nickname, looked up by
-      // the IMSI already extracted from IMPI — best-effort, a lookup
-      // failure shouldn't blank out the registration data itself.
-      try {
-        const imsis = [...new Set(registeredUsers.map(u => u.imsi).filter((v): v is string => !!v))];
-        if (imsis.length > 0) {
-          const nicknames = await subscriberRepo.getNicknamesByImsi(imsis);
-          for (const u of registeredUsers) {
-            if (u.imsi && nicknames[u.imsi]) u.nickname = nicknames[u.imsi];
-          }
-        }
-      } catch (err) {
-        logger.warn({ err: String(err) }, 'ims live status: nickname lookup failed');
-      }
-
-      let activeDialogs: Record<string, unknown> = {};
-      if (dlgRes.status === 'fulfilled') {
-        try { activeDialogs = (parseKamcmdOutput(dlgRes.value.stdout).Dialogs as Record<string, unknown>) ?? {}; }
-        catch { /* leave empty on unexpected shape rather than 500 the whole endpoint */ }
-      }
-
-      res.json({
-        success: true,
-        ipsecSas,
-        registeredUsers,
-        activeDialogCount: Object.keys(activeDialogs).length,
-        activeDialogs,
-        errors: {
-          ipsec: ipsecRes.status === 'rejected' ? String(ipsecRes.reason) : null,
-          registrations: snapshotRes.status === 'rejected' ? String(snapshotRes.reason) : null,
-          dialogs: dlgRes.status === 'rejected' ? String(dlgRes.reason) : null,
-        },
-      });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'ims live status error');
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // POST /api/ims/install — streaming: packages + PyHSS install
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('X-Accel-Buffering', 'no');  // disable nginx proxy buffering
-    res.setHeader('Cache-Control', 'no-cache');
-    res.flushHeaders();
-
-    const write = (s: string) => { res.write(s); };
-
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts)
+// can invoke the same install logic in-process, without looping back over HTTP —
+// write() is the only side-channel, shared by both the streaming HTTP route below
+// and the orchestrator's own log capture.
+export async function installIms(write: (s: string) => void): Promise<{ success: boolean }> {
     // Helper: spawn a command via nsenter and stream output line-by-line
     const spawnStream = (bashScript: string): Promise<number> =>
       new Promise(resolve => {
@@ -3013,8 +2715,353 @@ export function createImsRouter(
       installedAt: new Date().toISOString(),
     }, null, 2), 'utf-8');
 
+  write('\n✅ IMS installation complete. Run Configure next.\n');
+  return { success: true };
+}
+
+export interface ImsStalenessResult {
+  installed: boolean;
+  hasSavedConfig: boolean;
+  installStale: boolean;
+  configStale: boolean;
+  installedWithVersion?: string;
+  configuredWithVersion?: string;
+}
+
+// Cheap, standalone version of the staleness-comparison logic already
+// computed inline by GET /status — used by the cross-module Fix-All
+// aggregator (module-fixall-usecase.ts) so it doesn't need to run every
+// other expensive check /status does (service health, registered UEs, etc).
+export async function getImsStaleness(): Promise<ImsStalenessResult> {
+  const whichRes = await nsenter('which', ['kamailio']).catch(() => null);
+  const installed = !!whichRes && whichRes.stdout.trim().length > 0;
+  const appVersion = getAppVersion();
+
+  const hasSavedConfig = fs.existsSync(HOST_IMS_STATE);
+  let configuredWithVersion: string | undefined;
+  if (hasSavedConfig) {
+    try {
+      configuredWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')).configuredWithVersion;
+    } catch { /* corrupt */ }
+  }
+  const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
+
+  let installedWithVersion: string | undefined;
+  const hasInstallMarker = fs.existsSync(HOST_IMS_INSTALL_STATE);
+  if (hasInstallMarker) {
+    try {
+      installedWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8')).installedWithVersion;
+    } catch { /* corrupt */ }
+  }
+  const installStale = installed && installedWithVersion !== appVersion;
+
+  return { installed, hasSavedConfig, installStale, configStale, installedWithVersion, configuredWithVersion };
+}
+
+export function createImsRouter(
+  subscriberRepo: ISubscriberRepository,
+  logger: pino.Logger,
+  auditLogger: IAuditLogger,
+  callStatsMonitor?: ImsCallStatsMonitor,
+): Router {
+  const router = Router();
+
+  // GET /api/ims/call-stats — instant, non-blocking read of the background
+  // sampler's last computed value (see call-stats-monitor.ts). Polled on a
+  // short interval by the Dashboard's IMS Status card.
+  router.get('/call-stats', (_req: Request, res: Response) => {
+    const latest = callStatsMonitor?.getLatest() ?? { activeCalls: 0, totalCallsPlaced: 0, totalSmsSent: 0, sampledAt: 0 };
+    res.json({ success: true, ...latest });
+  });
+
+  // GET /api/ims/status
+  router.get('/status', async (_req: Request, res: Response) => {
+    try {
+      const [whichRes, pcscfRes, icscfRes, scscfRes, smscRes, rtpRes, dnsRes, mariaRes,
+             pyhssDiamRes, pyhssHssRes, pyhssApiRes, redisRes] =
+        await Promise.allSettled([
+          nsenter('which', ['kamailio']),
+          nsenter('systemctl', ['is-active', 'kamailio-pcscf']),
+          nsenter('systemctl', ['is-active', 'kamailio-icscf']),
+          nsenter('systemctl', ['is-active', 'kamailio-scscf']),
+          nsenter('systemctl', ['is-active', 'kamailio-smsc']),
+          nsenter('systemctl', ['is-active', 'rtpengine-daemon']),
+          nsenter('systemctl', ['is-active', 'bind9']),
+          nsenter('systemctl', ['is-active', 'mariadb']),
+          nsenter('systemctl', ['is-active', 'pyhss-diameter']),
+          nsenter('systemctl', ['is-active', 'pyhss-hss']),
+          nsenter('systemctl', ['is-active', 'pyhss-api']),
+          nsenter('systemctl', ['is-active', 'redis-server']),
+        ]);
+
+      const installed = whichRes.status === 'fulfilled' && whichRes.value.stdout.trim().length > 0;
+      const pyhssInstalled = fs.existsSync('/proc/1/root/opt/pyhss');
+      const svcActive = (r: PromiseSettledResult<any>) =>
+        r.status === 'fulfilled' && r.value.stdout.trim() === 'active';
+
+      const hasSavedConfig = fs.existsSync(HOST_IMS_STATE);
+      let currentConfig: ImsConfigureInput | undefined;
+      let imsDomain: string | undefined;
+      let configuredWithVersion: string | undefined;
+      let smsDeliveryMode: 'sgs' | 'ims' | 'vectorcore' = 'ims';
+      let smsWorkerIntervalSeconds = 30;
+      if (hasSavedConfig) {
+        try {
+          const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+          currentConfig = saved.config;
+          imsDomain = saved.imsDomain;
+          configuredWithVersion = saved.configuredWithVersion;
+          if (saved.smsDeliveryMode === 'sgs' || saved.smsDeliveryMode === 'vectorcore') smsDeliveryMode = saved.smsDeliveryMode;
+          if (typeof saved.smsWorkerIntervalSeconds === 'number' && saved.smsWorkerIntervalSeconds > 0) {
+            smsWorkerIntervalSeconds = saved.smsWorkerIntervalSeconds;
+          }
+        } catch { /* corrupt */ }
+      }
+      // Deployments configured before this field existed have no
+      // configuredWithVersion at all — treat that the same as "stale",
+      // since we genuinely don't know what template they're running.
+      const appVersion = getAppVersion();
+      const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
+
+      // Same pattern, for Install rather than Configure — see
+      // HOST_IMS_INSTALL_STATE's own comment for why these are tracked
+      // separately. A deployment that's `installed` but has never gone
+      // through a version that wrote this marker (i.e. every deployment
+      // installed before this tracking existed) is treated as stale too,
+      // same reasoning as configStale above — we don't know what install
+      // steps it actually got.
+      let installedWithVersion: string | undefined;
+      const hasInstallMarker = fs.existsSync(HOST_IMS_INSTALL_STATE);
+      if (hasInstallMarker) {
+        try {
+          installedWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8')).installedWithVersion;
+        } catch { /* corrupt */ }
+      }
+      const installStale = installed && installedWithVersion !== appVersion;
+
+      const services = {
+        pcscf:            svcActive(pcscfRes),
+        icscf:            svcActive(icscfRes),
+        scscf:            svcActive(scscfRes),
+        smsc:             svcActive(smscRes),
+        rtpengine:        svcActive(rtpRes),
+        bind9:            svcActive(dnsRes),
+        mariadb:          svcActive(mariaRes),
+        'pyhss-diameter': svcActive(pyhssDiamRes),
+        'pyhss-hss':      svcActive(pyhssHssRes),
+        'pyhss-api':      svcActive(pyhssApiRes),
+        redis:            svcActive(redisRes),
+      };
+
+      // Registered UE count (live S-CSCF registrar) + active IPsec SA count —
+      // both read directly from the running system, not from any DB, so they
+      // reflect what's actually happening right now: a provisioned subscriber
+      // isn't necessarily registered, and IPsec SAs get wiped by any P-CSCF
+      // restart until the phone re-registers — see memory:
+      // ims-ue-to-ue-calling-investigation.
+      let ipsecSaCount = 0;
+      const [ueRes, xfrmRes] = await Promise.allSettled([
+        services.scscf
+          ? getRegisteredUesWithActivity()
+          : Promise.reject(new Error('scscf not running')),
+        nsenter('ip', ['xfrm', 'state']),
+      ]);
+      const { registeredUes, registeredUesByType, activeUes } =
+        ueRes.status === 'fulfilled' ? ueRes.value : { registeredUes: 0, registeredUesByType: { iphone: 0, android: 0, other: 0 }, activeUes: 0 };
+      if (xfrmRes.status === 'fulfilled') {
+        ipsecSaCount = (xfrmRes.value.stdout.match(/^src /gm) ?? []).length;
+      }
+
+      const smfImsConfigured = fs.existsSync(HOST_SMF_YAML) &&
+        /dnn:\s*ims/.test(fs.readFileSync(HOST_SMF_YAML, 'utf-8'));
+
+      const dnsConfigured = fs.existsSync(HOST_BIND_ZONES_DIR) &&
+        fs.readdirSync(HOST_BIND_ZONES_DIR).some(f => f.includes('3gppnetwork'));
+
+      const imsEnabled = services.pcscf && services.icscf && services.scscf &&
+        services['pyhss-diameter'] && services['pyhss-hss'] && smfImsConfigured;
+
+      let imsSubscribers = 0;
+      if (services['pyhss-api']) {
+        try {
+          const list = await pyhssApiCall('GET', '/ims_subscriber/list');
+          imsSubscribers = Array.isArray(list) ? list.length : 0;
+        } catch { /* api not ready */ }
+      }
+
+      const allSubs = await subscriberRepo.findAll();
+      const open5gsSubscribers = allSubs.filter(s => s.msisdn && s.msisdn.length > 0).length;
+
+      res.json({
+        success: true,
+        installed,
+        pyhssInstalled,
+        hssBackend: 'pyhss',
+        services,
+        imsSubscribers,
+        open5gsSubscribers,
+        registeredUes,
+        registeredUesByType,
+        activeUes,
+        ipsecSaCount,
+        smfImsConfigured,
+        dnsConfigured,
+        imsEnabled,
+        hasSavedConfig,
+        imsDomain,
+        currentConfig,
+        appVersion,
+        configuredWithVersion,
+        configStale,
+        installedWithVersion,
+        installStale,
+        smsDeliveryMode,
+        smsWorkerIntervalSeconds,
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'ims status error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/ims/sms-delivery-mode — body: { mode: 'sgs' | 'ims' | 'vectorcore' }.
+  // Toggle shown on the SMS/MMS page (SMS tab) — see setSmsDeliveryMode() above.
+  router.post('/sms-delivery-mode', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { mode } = req.body as { mode?: string };
+    if (mode !== 'sgs' && mode !== 'ims' && mode !== 'vectorcore') {
+      return res.status(400).json({ success: false, error: "mode must be 'sgs', 'ims', or 'vectorcore'" });
+    }
+    try {
+      await setSmsDeliveryMode(mode);
+      await auditLogger.log({ action: 'ims_configure', user, details: `sms_delivery_mode=${mode}`, success: true });
+      res.json({ success: true, mode });
+    } catch (err) {
+      await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
+      logger.error({ err: String(err) }, 'ims sms-delivery-mode error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/ims/sms-worker-interval — body: { seconds: number (1-300) }.
+  // Controls how often kamailio-smsc's store-and-forward queue is polled —
+  // see setSmsWorkerInterval() above.
+  router.post('/sms-worker-interval', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { seconds } = req.body as { seconds?: number };
+    if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+      return res.status(400).json({ success: false, error: 'seconds must be an integer between 1 and 300' });
+    }
+    try {
+      await setSmsWorkerInterval(seconds);
+      await auditLogger.log({ action: 'ims_configure', user, details: `sms_worker_interval_seconds=${seconds}`, success: true });
+      res.json({ success: true, seconds });
+    } catch (err) {
+      await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
+      logger.error({ err: String(err) }, 'ims sms-worker-interval error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // GET /api/ims/live — real-time IPsec SA / registration / active-call
+  // view for the IMS page's "Live Status" tab. Every field here is read
+  // directly off the running system (no DB) — S-CSCF's own registrar is
+  // db_mode=0/in-memory only, so `kamcmd ulscscf.snapshot` is the only way
+  // to see current registrations at all, and IPsec SA byte/packet counters
+  // are the same live signal used throughout this project's own VoLTE
+  // debugging history to tell "registered" from "actually exchanging
+  // traffic." Three independent nsenter calls — one slow/failed source
+  // (e.g. S-CSCF not running) shouldn't blank out the other two, so each
+  // is caught and defaulted separately rather than failing the whole
+  // request.
+  router.get('/live', async (_req: Request, res: Response) => {
+    try {
+      const [ipsecRes, snapshotRes, dlgRes] = await Promise.allSettled([
+        nsenter('ip', ['-s', 'xfrm', 'state']),
+        (async () => {
+          const snapFile = `/tmp/kamailio-scscf-snapshot-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+          await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.snapshot', snapFile]);
+          const hostSnapFile = `/proc/1/root${snapFile}`;
+          const content = fs.existsSync(hostSnapFile) ? fs.readFileSync(hostSnapFile, 'utf-8') : '';
+          await nsenter('rm', ['-f', snapFile]).catch(() => {});
+          return content;
+        })(),
+        nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'dlg2.list']),
+      ]);
+
+      const ipsecSas = ipsecRes.status === 'fulfilled' ? parseIpsecSaText(ipsecRes.value.stdout) : [];
+
+      // `ip xfrm state` is a single global kernel table shared by both
+      // P-CSCF's own SIP-signaling IPsec (Gm, TS 33.203) and VoWiFi's
+      // ePDG↔UE tunnel IPsec (SWu) — the kernel has no notion of which
+      // subsystem an SA belongs to, so classify by matching each SA's
+      // src/dst against each subsystem's own known bind address.
+      try {
+        const pcscfIp = readCurrentImsConfig()?.pcscfIp;
+        const epdgIp = loadVowifiState().epdgIp;
+        for (const sa of ipsecSas) {
+          if (pcscfIp && (sa.src === pcscfIp || sa.dst === pcscfIp)) sa.group = 'ims';
+          else if (epdgIp && (sa.src === epdgIp || sa.dst === epdgIp)) sa.group = 'vowifi';
+          else sa.group = 'other';
+        }
+      } catch (err) {
+        logger.warn({ err: String(err) }, 'ims live status: IPsec SA classification failed');
+        for (const sa of ipsecSas) sa.group = sa.group ?? 'other';
+      }
+
+      const registeredUsers = snapshotRes.status === 'fulfilled' ? parseRegisteredUsersSnapshot(snapshotRes.value) : [];
+
+      // Tag each registered row with its subscriber nickname, looked up by
+      // the IMSI already extracted from IMPI — best-effort, a lookup
+      // failure shouldn't blank out the registration data itself.
+      try {
+        const imsis = [...new Set(registeredUsers.map(u => u.imsi).filter((v): v is string => !!v))];
+        if (imsis.length > 0) {
+          const nicknames = await subscriberRepo.getNicknamesByImsi(imsis);
+          for (const u of registeredUsers) {
+            if (u.imsi && nicknames[u.imsi]) u.nickname = nicknames[u.imsi];
+          }
+        }
+      } catch (err) {
+        logger.warn({ err: String(err) }, 'ims live status: nickname lookup failed');
+      }
+
+      let activeDialogs: Record<string, unknown> = {};
+      if (dlgRes.status === 'fulfilled') {
+        try { activeDialogs = (parseKamcmdOutput(dlgRes.value.stdout).Dialogs as Record<string, unknown>) ?? {}; }
+        catch { /* leave empty on unexpected shape rather than 500 the whole endpoint */ }
+      }
+
+      res.json({
+        success: true,
+        ipsecSas,
+        registeredUsers,
+        activeDialogCount: Object.keys(activeDialogs).length,
+        activeDialogs,
+        errors: {
+          ipsec: ipsecRes.status === 'rejected' ? String(ipsecRes.reason) : null,
+          registrations: snapshotRes.status === 'rejected' ? String(snapshotRes.reason) : null,
+          dialogs: dlgRes.status === 'rejected' ? String(dlgRes.reason) : null,
+        },
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'ims live status error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/ims/install — streaming: packages + PyHSS install
+  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('X-Accel-Buffering', 'no');  // disable nginx proxy buffering
+    res.setHeader('Cache-Control', 'no-cache');
+    res.flushHeaders();
+
+    const write = (s: string) => { res.write(s); };
+    await installIms(write);
     await auditLogger.log({ action: 'ims_install', user, details: 'packages + pyhss', success: true });
-    write('\n✅ IMS installation complete. Run Configure next.\n');
     res.end();
   });
 

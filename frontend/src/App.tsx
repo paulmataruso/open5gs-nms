@@ -31,6 +31,7 @@ import { TrafficHistoryPage } from './pages/TrafficHistoryPage';
 import { RfPlanningPage } from './pages/RfPlanningPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
+import { StaleModulesModal } from './components/common/StaleModulesModal';
 import { FEATURES } from './config/features';
 
 function App(): JSX.Element {
@@ -120,6 +121,7 @@ function App(): JSX.Element {
         <Layout activeTab={activeTab} onTabChange={setActiveTab}>
           {renderPage()}
         </Layout>
+        <StaleModulesModal />
       </AuthGuard>
       <Toaster
         position="bottom-right"

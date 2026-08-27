@@ -198,3 +198,6 @@ export const useSubscriberStore = create<SubscriberState>((set, get) => ({
 
 // Export SUCI store
 export { useSuciStore } from './suci';
+
+// Export Stale Modules store
+export { useStaleModulesStore } from './staleModules';

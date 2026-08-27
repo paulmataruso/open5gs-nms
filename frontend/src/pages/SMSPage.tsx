@@ -1443,46 +1443,6 @@ function MmsTab({ onNavigate }: { onNavigate: (t: PageTab) => void }) {
         </div>
       )}
 
-      {/* Distinct from configStale below: Install rebuilds the actual
-          VectorCore binary from source (git pull + go build), Configure
-          only rewrites mmsc.yaml and restarts with whatever binary is
-          already on disk - a source-level fix (e.g. the PNG content-type
-          token patch, 2026-08-01) needs a real re-Install, Configure alone
-          can never pick it up. Amber (heavier/slower operation, briefly
-          stops the service) vs the lighter blue Configure banner below. */}
-      {status?.installStale && (
-        <div className="nms-card border-amber-500/30 bg-amber-500/5">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-amber-300">VectorCore build out of date</p>
-              <p className="text-xs text-nms-text-dim mt-0.5">
-                This deployment's VectorCore binary was built by an older version ({status.installedWithVersion ?? 'unknown'}, running {status.appVersion}) —
-                a source-level fix has shipped since then. Click Rebuild below (safe to re-run — reuses the existing clone, only rebuilds).
-              </p>
-            </div>
-            <button onClick={handleInstall} disabled={acting} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
-              <Terminal className="w-4 h-4" />
-              {acting ? 'Rebuilding…' : 'Rebuild'}
-            </button>
-          </div>
-          {streamLog && <LogTerminal lines={streamLog} />}
-        </div>
-      )}
-
-      {status?.configStale && (
-        <div className="nms-card border-blue-500/30 bg-blue-500/5 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-blue-300">Configuration out of date</p>
-            <p className="text-xs text-nms-text-dim mt-0.5">
-              This deployment was configured by an older version ({status.configuredWithVersion ?? 'unknown'}, running {status.appVersion}).
-              Click Configure below to regenerate with the current template.
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Status panel */}
       <div className={`nms-card ${!installed ? 'border-amber-500/30 bg-amber-500/5' : status?.healthy ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
         <div className="flex items-start justify-between flex-wrap gap-4">
@@ -1850,39 +1810,6 @@ function VectorcoreSmscTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDel
             {!uninstalling && <button onClick={() => setUninstallLog('')} className="nms-btn-ghost text-xs">Clear</button>}
           </div>
           <LogTerminal lines={uninstallLog} />
-        </div>
-      )}
-
-      {status?.installStale && (
-        <div className="nms-card border-amber-500/30 bg-amber-500/5">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-amber-300">VectorCore SMSC build out of date</p>
-              <p className="text-xs text-nms-text-dim mt-0.5">
-                This deployment's VectorCore SMSC binary was built by an older version ({status.installedWithVersion ?? 'unknown'}, running {status.appVersion}).
-                Click Rebuild below (safe to re-run — reuses the existing clone, only rebuilds).
-              </p>
-            </div>
-            <button onClick={handleInstall} disabled={acting} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
-              <Terminal className="w-4 h-4" />
-              {acting ? 'Rebuilding…' : 'Rebuild'}
-            </button>
-          </div>
-          {streamLog && <LogTerminal lines={streamLog} />}
-        </div>
-      )}
-
-      {status?.configStale && (
-        <div className="nms-card border-blue-500/30 bg-blue-500/5 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-blue-400 mt-0.5 shrink-0" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-blue-300">Configuration out of date</p>
-            <p className="text-xs text-nms-text-dim mt-0.5">
-              This deployment was configured by an older version ({status.configuredWithVersion ?? 'unknown'}, running {status.appVersion}).
-              Click Configure below to regenerate with the current template.
-            </p>
-          </div>
         </div>
       )}
 

@@ -396,12 +396,6 @@ function ServerSection({ onInstall, installActing, installStreamLog }: {
           </div>
         </div>
 
-        {status?.configStale && (
-          <p className="text-xs text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-3 py-2 mb-4">
-            Configured by an older version ({status.configuredWithVersion ?? 'unknown'}, running {status.appVersion}) — click Configure below to reapply with the current template.
-          </p>
-        )}
-
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
           <div>
             <label className="nms-label flex items-center gap-1.5"><Network className="w-3 h-3" /> Listen IP</label>
@@ -1142,24 +1136,6 @@ export function TwampPage({ onNavigate }: { onNavigate?: (tab: string) => void }
           </button>
         </div>
       </div>
-
-      {status?.installStale && (
-        <div className="nms-card border-amber-500/30 bg-amber-500/5">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-5 h-5 text-amber-400 mt-0.5 shrink-0" />
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-amber-300">twamp-client build out of date</p>
-              <p className="text-xs text-nms-text-dim mt-0.5">
-                Built by an older version ({status.installedWithVersion ?? 'unknown'}, running {status.appVersion}). Click Rebuild below.
-              </p>
-            </div>
-            <button onClick={handleInstall} disabled={acting} className="nms-btn-primary flex items-center gap-2 text-sm shrink-0">
-              <Terminal className="w-4 h-4" /> {acting ? 'Rebuilding…' : 'Rebuild'}
-            </button>
-          </div>
-          {streamLog && <LogTerminal lines={streamLog} />}
-        </div>
-      )}
 
       {/* Status panel */}
       <div className={`nms-card ${!installed ? 'border-amber-500/30 bg-amber-500/5' : 'border-green-500/30 bg-green-500/5'}`}>

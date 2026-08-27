@@ -1249,7 +1249,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   };
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
+    <div className="space-y-6">
 
       <div className="px-3 py-2 rounded-lg bg-nms-accent/5 border border-nms-accent/20 text-xs text-nms-text-dim">
         <p className="font-semibold text-nms-text mb-1">How band assignment works</p>
@@ -2348,7 +2348,7 @@ export function SASPage() {
 
       {/* ── Config ── */}
       {tab === 'config' && cfgForm && (
-        <div className="space-y-5 max-w-2xl mx-auto">
+        <div className="space-y-5">
           <div className="nms-card space-y-4">
             <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
               <Settings className="w-4 h-4 text-nms-accent" />

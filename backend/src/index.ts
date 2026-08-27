@@ -105,6 +105,8 @@ import * as promClient from 'prom-client';
 import { TwampMonitor } from './application/use-cases/twamp/twamp-monitor';
 import { createTwampMetricsRegistry } from './application/use-cases/twamp/twamp-metrics';
 import { createTwampRouter } from './interfaces/rest/twamp-controller';
+import { createModulesRouter } from './interfaces/rest/modules-controller';
+import { ModuleFixAllUseCase } from './application/use-cases/module-fixall-usecase';
 
 async function main() {
   // Load configuration
@@ -313,6 +315,13 @@ async function main() {
     auditLogger,
     logger,
   );
+  const moduleFixAllUseCase = new ModuleFixAllUseCase(
+    subscriberRepo,
+    hostExecutor,
+    config.mongodbUri,
+    logger,
+    auditLogger,
+  );
   const pcapUseCase = new PcapUseCase(hostExecutor, configRepo, logger);
   const esimGeneratorUseCase = new EsimGeneratorUseCase(
     config.simlesslyAccessKey,
@@ -460,6 +469,7 @@ async function main() {
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
   app.use('/api/traffic-history', createTrafficHistoryRouter(config.prometheusUrl, subscriberRepo, logger));
   app.use('/api/twamp', createTwampRouter(subscriberRepo.getDb(), hostExecutor, twampMonitor, logger, auditLogger));
+  app.use('/api/modules', createModulesRouter(moduleFixAllUseCase, logger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
   // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below

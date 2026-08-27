@@ -376,37 +376,9 @@ function SetupTab({ status, refresh }: { status: SecGwStatus | null; refresh: ()
 
   return (
     <div className="space-y-4">
-      {status?.configStale && (
-        <div className="nms-card border-blue-500/30 bg-blue-500/10 flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-blue-200 leading-relaxed">
-              <span className="font-semibold text-blue-400">Configuration out of date.</span>{' '}
-              This deployment was last configured by
-              {status.configuredWithVersion ? ` config-gen v${status.configuredWithVersion}` : ' an older version'},
-              but this server generates v{status.currentConfigGenVersion}. Click Configure to redeploy with any
-              fixes shipped since then.
-            </p>
-          </div>
-          <button
-            onClick={handleConfigure}
-            disabled={!!busy}
-            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
-          >
-            Configure
-          </button>
-        </div>
-      )}
-
       {installNeedsAttention ? (
         <div className="nms-card">
           <h2 className="text-sm font-semibold text-nms-text mb-3">1. Install</h2>
-          {status?.buildStale && !neverInstalled && (
-            <p className="text-xs text-amber-400 mb-2 flex items-start gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              A newer strongSwan build (source patch revision) is available — rebuild to pick it up.
-            </p>
-          )}
           <p className="text-xs text-nms-text-dim mb-3">
             Builds strongSwan from source (with a small patch so it can coexist with VoWiFi's
             own IKEv2 daemon on UDP 500/4500) and installs it to <span className="font-mono">/opt/strongswan</span>.

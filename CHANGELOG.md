@@ -4,6 +4,53 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.53] - 2026-08-27
+
+### Added — Centralized "Fix All" stale-module popup
+
+Replaced the 11 scattered per-module "install/config is out of date" banners (IMS, MMS,
+VectorCore SMSC, PSTN, TWAMP, SecGW, VoWiFi) with a single global popup that appears on
+login/page reload, lists every module currently out of date, and re-runs whatever
+Install/Configure steps are needed with one click. Each module's Install/Configure logic
+was extracted into a reusable `installX()`/`configureX()`/`getXStaleness()` function set,
+orchestrated by a new `ModuleFixAllUseCase` (same layering pattern as the existing PLMN
+Migration Wizard) in a fixed dependency order (IMS first — MMS/VectorCore SMSC/PSTN all
+require it — then VoWiFi/SecGW/TWAMP), skipping dependent modules with a clear reason if
+IMS's own fix fails rather than attempting a guaranteed cascade failure. Along the way,
+found and fixed a real, universal bug: every parameterized module's Configure handler
+defaulted missing input fields, so a naive re-Configure-with-empty-body would have
+silently reset real per-deployment values (gateway IPs, listen addresses) back to
+generic defaults — the orchestrator now always reads and reuses each module's own
+last-saved config explicitly. MMS's Configure has one edge case Fix-All can't resolve on
+its own (no safe default for its public IP) — surfaced to the operator with a clear
+"configure manually" note rather than silently skipped. Verified the aggregation check
+against real live staleness on this deployment (found 5 genuinely out-of-date modules);
+the actual Fix-All run itself was not executed live this session — do a real end-to-end
+run before fully trusting it.
+
+### Added — RAN page: multiple concurrent PDU/PDN sessions now shown on one UE row
+
+A UE with more than one concurrent session (the common VoLTE case — "internet" + "ims"
+on the same UE) used to render as two separate rows. `ActiveUE` now carries a
+`sessions[]` array (one entry per APN) and both the grouped-by-radio and flat table
+views stack every session under a single UE row. 41 new/updated regression tests.
+
+### Changed — Services page redesigned as a grouped table
+
+Replaced the card-grid layout with a table grouped by section (5G Core / 4G EPC /
+Shared / Osmocom / VectorCore / Tools), plus a new Tools → OpenSpeedTest row.
+
+### Removed — Pluggable-dataplane/eUPF effort fully rolled back
+
+A full effort to let the UPF/SGW backend be swapped at runtime (Open5GS-native vs.
+eUPF vs. VectorCore SGW) was designed, built, and live-tested (including real
+production traffic), but hit a real architectural blocker on this host (eUPF's
+XDP-based packet interception can't see host-internal SGW-U↔UPF traffic routed via
+loopback, and a second, unresolved gap kept decapsulated uplink traffic from reaching
+the real internet) and was fully rolled back at the user's direction — no trace of it
+remains in the codebase or on this host. See `PROJECT_STATE.md`'s Handoff Summary for
+the full postmortem.
+
 ## [v2.0-beta_0.52] - 2026-08-26
 
 ### Added — Full Backup now covers every module (audit)

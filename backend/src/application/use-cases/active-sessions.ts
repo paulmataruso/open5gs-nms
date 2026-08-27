@@ -17,12 +17,27 @@ import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { Open5gsApiClient, parsePeerIP } from './open5gs-api-client';
 
+// One PDU/PDN connection — a UE can hold several at once (e.g. "internet" +
+// "ims" for VoLTE registration/SIP signaling), each with its own IP.
+export interface UeApnSession {
+  apn: string;
+  ip: string;
+}
+
 export interface ActiveUE {
+  // Primary session's IP/APN — kept for backward compatibility with any
+  // single-value display. `sessions` below is the authoritative full list;
+  // ip/dnn/apn always mirror sessions[0].
   ip: string;
   imsi: string;
   cmState?: 'connected' | 'idle' | string;
   dnn?: string;
   apn?: string;
+  // Every concurrent PDU/PDN connection this UE currently holds, one entry
+  // per APN. Always has at least one entry (mirroring ip/dnn/apn above) —
+  // a UE with a second APN (e.g. VoLTE's "ims" alongside "internet") shows
+  // up here as a second entry on the SAME row, not as a second row.
+  sessions: UeApnSession[];
   sliceSst?: number;
   sliceSd?: string;
   securityEnc?: string;
@@ -80,7 +95,7 @@ export class ActiveSessionsUseCase {
         const dnns = Object.keys(upfCounts.dnnFlows);
         const primaryDnn = dnns[0] || 'internet';
         return Array.from({ length: ueCount }, () => ({
-          ip: '', imsi: '', dnn: primaryDnn, cmState: 'connected', metricsOnly: true,
+          ip: '', imsi: '', dnn: primaryDnn, sessions: [{ apn: primaryDnn, ip: '' }], cmState: 'connected', metricsOnly: true,
         }));
       }
 
@@ -107,57 +122,74 @@ export class ActiveSessionsUseCase {
       );
 
       const activeUEs: ActiveUE[] = [];
+      // Keyed by imsi — one row per UE. A UE can hold several concurrent
+      // PDU sessions to different DNNs at once (e.g. "internet" + "ims" for
+      // VoLTE); those are gathered into that UE's own `sessions[]` array
+      // below, not emitted as separate rows.
       const seenImsi = new Set<string>();
 
       for (const session of pduSessions) {
+        if (!session.supi) continue;
+        const imsi = session.supi.replace(/^imsi-/, '');
+        if (seenImsi.has(imsi)) continue;
+
+        // Gather every concurrent 5G PDU session (one per DNN) for this UE.
+        // 5G: must have an N3 block (GTP-U tunnel to gNodeB) to count.
+        const sessions: UeApnSession[] = [];
+        const seenDnn = new Set<string>();
         for (const pdu of session.pdu) {
-          // 5G: must have an N3 block (GTP-U tunnel to gNodeB)
           if (!pdu.n3 || !pdu.ipv4) continue;
-
-          const imsi = session.supi.replace(/^imsi-/, '');
-          if (seenImsi.has(imsi)) continue;
-          seenImsi.add(imsi);
-
-          const amfUe = amfByImsi.get(imsi);
-
-          // Resolve gNodeB IP from gnb_id (N2 SCTP control-plane IP)
-          const gnbId = amfUe?.gnb?.gnb_id;
-          const radioIp = gnbId !== undefined ? gnbIpById.get(gnbId) : undefined;
-
-          // Only skip if we have gNodeB data AND none are live
-          const hasGnbData = amfGnbs.length > 0;
-          if (hasGnbData && liveGnbIps.size === 0) {
-            this.logger.debug({ imsi }, '[5G Sessions] skipped — no live gNodeBs');
-            continue;
-          }
-          if (radioIp && liveGnbIps.size > 0 && !liveGnbIps.has(radioIp)) {
-            this.logger.debug({ imsi, radioIp }, '[5G Sessions] skipped — gNodeB not live');
-            continue;
-          }
-
-          // Fall back to N3 GTP-U gNB address when gnb_id → N2 IP lookup fails.
-          // For most small cells, the N2 SCTP and N3 GTP-U IPs are the same interface,
-          // so this fallback keeps UEs visible under their radio card when AMF UE info
-          // lacks gnb or gnb_id (e.g. some firmware versions, or after idle→active transition).
-          const displayRadioIp = radioIp ?? (pdu.n3?.gnb?.addr ? parsePeerIP(pdu.n3.gnb.addr) : undefined);
-
-          const ue: ActiveUE = {
-            ip:          pdu.ipv4,
-            imsi,
-            cmState:     amfUe?.cm_state,
-            dnn:         pdu.dnn,
-            sliceSst:    pdu.snssai?.sst,
-            sliceSd:     pdu.snssai?.sd,
-            securityEnc: amfUe?.security?.enc,
-            securityInt: amfUe?.security?.int,
-            ambrDownlink: amfUe?.ambr?.downlink,
-            ambrUplink:   amfUe?.ambr?.uplink,
-            radioIp:     displayRadioIp,
-          };
-
-          activeUEs.push(ue);
-          this.logger.info({ imsi, ip: pdu.ipv4, cm_state: amfUe?.cm_state }, '[5G Sessions] ✓ active UE');
+          const dnn = pdu.dnn ?? '';
+          if (seenDnn.has(dnn)) continue;
+          seenDnn.add(dnn);
+          sessions.push({ apn: dnn, ip: pdu.ipv4 });
         }
+        if (sessions.length === 0) continue; // no valid 5G PDU session at all
+
+        seenImsi.add(imsi);
+
+        const amfUe = amfByImsi.get(imsi);
+
+        // Resolve gNodeB IP from gnb_id (N2 SCTP control-plane IP)
+        const gnbId = amfUe?.gnb?.gnb_id;
+        const radioIp = gnbId !== undefined ? gnbIpById.get(gnbId) : undefined;
+
+        // Skip ONLY when we can positively show this UE's own gNodeB isn't
+        // live (i.e. we know its radioIp AND at least one other gNodeB IS
+        // live to compare against). If every known gNodeB has
+        // setup_success=false, that's not positive evidence any specific
+        // UE is gone — AMF still knows about it even if S1/N2 setup isn't
+        // fully confirmed — so those UEs must still show, not vanish.
+        if (radioIp && liveGnbIps.size > 0 && !liveGnbIps.has(radioIp)) {
+          this.logger.debug({ imsi, radioIp }, '[5G Sessions] skipped — gNodeB not live');
+          continue;
+        }
+
+        // Fall back to N3 GTP-U gNB address when gnb_id → N2 IP lookup fails.
+        // For most small cells, the N2 SCTP and N3 GTP-U IPs are the same interface,
+        // so this fallback keeps UEs visible under their radio card when AMF UE info
+        // lacks gnb or gnb_id (e.g. some firmware versions, or after idle→active transition).
+        const firstN3Addr = session.pdu.find(p => p.n3?.gnb?.addr)?.n3?.gnb?.addr;
+        const displayRadioIp = radioIp ?? (firstN3Addr ? parsePeerIP(firstN3Addr) : undefined);
+        const firstPduWithSlice = session.pdu.find(p => p.n3);
+
+        const ue: ActiveUE = {
+          ip:          sessions[0].ip,
+          imsi,
+          cmState:     amfUe?.cm_state,
+          dnn:         sessions[0].apn,
+          sessions,
+          sliceSst:    firstPduWithSlice?.snssai?.sst,
+          sliceSd:     firstPduWithSlice?.snssai?.sd,
+          securityEnc: amfUe?.security?.enc,
+          securityInt: amfUe?.security?.int,
+          ambrDownlink: amfUe?.ambr?.downlink,
+          ambrUplink:   amfUe?.ambr?.uplink,
+          radioIp:     displayRadioIp,
+        };
+
+        activeUEs.push(ue);
+        this.logger.info({ imsi, sessions, cm_state: amfUe?.cm_state }, '[5G Sessions] ✓ active UE');
       }
 
       this.logger.info({ count: activeUEs.length }, '[5G Sessions] complete');
@@ -211,7 +243,7 @@ export class ActiveSessionsUseCase {
 
         this.logger.info({ ueCount, mmeCounts }, '[4G Sessions] using Prometheus metrics fallback');
         const syntheticUEs: ActiveUE[] = Array.from({ length: ueCount }, () => ({
-          ip: '', imsi: '', apn: 'internet', cmState: 'connected', metricsOnly: true,
+          ip: '', imsi: '', apn: 'internet', sessions: [{ apn: 'internet', ip: '' }], cmState: 'connected', metricsOnly: true,
         }));
         this.logger.info({ count: syntheticUEs.length }, '[4G Sessions] metrics fallback complete');
         return syntheticUEs;
@@ -225,15 +257,18 @@ export class ActiveSessionsUseCase {
 
       const known5G = imsi5GSet ?? new Set(active5G.map((ue: ActiveUE) => ue.imsi));
 
-      // Build PDU IP lookup by IMSI (4G sessions have no n3 block)
-      const ipByImsi = new Map<string, string>();
+      // Build PDU IP lookup by (IMSI, APN) — not just IMSI (4G sessions have
+      // no n3 block). A UE can hold several concurrent 4G PDN connections at
+      // once (e.g. "internet" + "ims" for VoLTE), each with its own IP; the
+      // old imsi-only map only ever kept the first one it saw.
+      const ipByImsiApn = new Map<string, Map<string, string>>();
       for (const session of pduSessions) {
         if (!session.supi) continue;
         const imsi = String(session.supi).replace(/^imsi-/, '');
         for (const pdu of session.pdu) {
           if (pdu.ipv4 && !pdu.n3) {
-            ipByImsi.set(imsi, pdu.ipv4);
-            break;
+            if (!ipByImsiApn.has(imsi)) ipByImsiApn.set(imsi, new Map());
+            ipByImsiApn.get(imsi)!.set(pdu.apn ?? pdu.dnn ?? '', pdu.ipv4);
           }
         }
       }
@@ -252,6 +287,9 @@ export class ActiveSessionsUseCase {
       );
 
       const activeUEs: ActiveUE[] = [];
+      // Keyed by imsi — one row per UE, matching the 5G function. A UE's
+      // several concurrent 4G PDN connections (e.g. "internet" + "ims" for
+      // VoLTE) are gathered into that UE's own `sessions[]` array below.
       const seenImsi = new Set<string>();
 
       for (const mmeUe of mmeUes) {
@@ -265,6 +303,7 @@ export class ActiveSessionsUseCase {
           continue;
         }
         const imsi = String(rawId).replace(/^imsi-/, '');
+        if (seenImsi.has(imsi)) continue;
 
         // Deduplicate against 5G list
         if (known5G.has(imsi)) {
@@ -272,41 +311,54 @@ export class ActiveSessionsUseCase {
           continue;
         }
 
-        if (seenImsi.has(imsi)) continue;
-        seenImsi.add(imsi);
-
-        const ip  = ipByImsi.get(imsi) || '';
-        const apn = mmeUe.pdn?.[0]?.apn ?? '';
-
         // Resolve eNodeB IP from enb_id
         const enbId = mmeUe.enb?.enb_id;
         const radioIp = enbId !== undefined ? enbIpById.get(enbId) : undefined;
 
-        // Only skip UEs if we have eNodeB data AND none are live
-        // If liveEnbIps is empty but we have eNodeBs (all setup_success=false),
-        // still show UEs — the MME knows about them even if S1 isn't fully up
-        const hasEnbData = mmeEnbs.length > 0;
-        if (hasEnbData && liveEnbIps.size === 0) {
-          this.logger.debug({ imsi }, '[4G Sessions] skipped — no live eNodeBs');
-          continue;
-        }
+        // Skip ONLY when we can positively show this UE's own eNodeB isn't
+        // live (i.e. we know its radioIp AND at least one other eNodeB IS
+        // live to compare against). If every known eNodeB has
+        // setup_success=false, that's not positive evidence any specific UE
+        // is gone — MME still knows about it even if S1 isn't fully
+        // confirmed — so those UEs must still show, not vanish.
         if (radioIp && liveEnbIps.size > 0 && !liveEnbIps.has(radioIp)) {
           this.logger.debug({ imsi, radioIp }, '[4G Sessions] skipped — eNodeB not live');
           continue;
         }
 
+        seenImsi.add(imsi);
+
+        // Gather every concurrent 4G PDN connection (one per APN) for this
+        // UE, not just pdn[0] — a UE can hold several at once (e.g.
+        // "internet" + "ims" for VoLTE registration/SIP signaling); the old
+        // code only ever surfaced the first and silently dropped the rest.
+        // Falls back to a single apn-less session if the MME response has
+        // no pdn array at all, matching the previous behavior for that case.
+        const pdns = mmeUe.pdn && mmeUe.pdn.length > 0 ? mmeUe.pdn : [{ apn: '' }];
+        const apnIps = ipByImsiApn.get(imsi);
+        const sessions: UeApnSession[] = [];
+        const seenApn = new Set<string>();
+        for (const pdn of pdns) {
+          const apn = pdn.apn ?? '';
+          if (seenApn.has(apn)) continue;
+          seenApn.add(apn);
+          const ip = apnIps?.get(apn) ?? apnIps?.values().next().value ?? '';
+          sessions.push({ apn, ip });
+        }
+
         const ue: ActiveUE = {
-          ip,
+          ip:          sessions[0].ip,
           imsi,
           cmState:     mmeUe.cm_state,
-          apn,
+          apn:         sessions[0].apn,
+          sessions,
           ambrDownlink: mmeUe.ambr?.downlink,
           ambrUplink:   mmeUe.ambr?.uplink,
           radioIp,
         };
 
         activeUEs.push(ue);
-        this.logger.info({ imsi, ip, cm_state: mmeUe.cm_state }, '[4G Sessions] ✓ active UE');
+        this.logger.info({ imsi, sessions, cm_state: mmeUe.cm_state }, '[4G Sessions] ✓ active UE');
       }
 
       this.logger.info({ count: activeUEs.length }, '[4G Sessions] complete');

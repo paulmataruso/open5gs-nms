@@ -429,28 +429,6 @@ export function PstnGatewayPage() {
         </p>
       </div>
 
-      {status?.configStale && (
-        <div className="flex items-start justify-between gap-3 rounded-xl border border-blue-500/30 bg-blue-500/10 px-4 py-3">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-blue-200 leading-relaxed">
-              <span className="font-semibold text-blue-400">Configuration out of date.</span>{' '}
-              This deployment was last configured by
-              {status.configuredWithVersion ? ` v${status.configuredWithVersion}` : ' an older version'},
-              but this server is running v{status.appVersion}. Click Configure to redeploy with
-              any fixes shipped since then — this briefly restarts Asterisk.
-            </p>
-          </div>
-          <button
-            onClick={handleConfigure}
-            disabled={acting || !status?.imsConfigured}
-            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border text-blue-300 bg-blue-500/15 border-blue-500/30 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
-          >
-            Configure
-          </button>
-        </div>
-      )}
-
       {showUninstallConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-nms-surface border border-nms-border rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">

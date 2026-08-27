@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import {
-  Play, Square, RotateCw, HardDrive, Clock, Hash,
-  RefreshCcw, Power, PowerOff, Zap, Radio, Wifi, Container, AlertCircle,
+  Play, Square, RotateCw, Zap, Radio, Wifi, Container, AlertCircle,
+  Power, PowerOff, Gauge, Settings2,
 } from 'lucide-react';
 import { useServiceStore } from '../../stores';
 import { serviceApi } from '../../api';
 import { vowifiApi, type VowifiStatus } from '../../api/vowifi';
 import { mmsApi, type MmsStatus } from '../../api/mms';
 import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorcoreSmsc';
+import { SpeedTestServerModal } from '../trafficHistory/SpeedTestServerModal';
 import type { ServiceStatus } from '../../types';
 import axios from 'axios';
 import toast from 'react-hot-toast';
@@ -21,15 +22,15 @@ const SERVICES_4G     = ['mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 const SERVICES_SHARED = ['mongodb', 'smf', 'upf'];
 const SERVICES_OSMO   = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
 
-function formatBytes(bytes: number | null): string {
-  if (bytes === null || bytes === 0) return '—';
+function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || bytes === 0) return '—';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-function formatUptime(timestamp: string | null): string {
+function formatUptime(timestamp: string | null | undefined): string {
   if (!timestamp) return '—';
   try {
     const start = new Date(timestamp);
@@ -47,7 +48,7 @@ function formatUptime(timestamp: string | null): string {
 }
 
 // Where an operator actually manages each of these, beyond the inline
-// start/stop/restart this card already offers — the core-17 NFs' config
+// start/stop/restart this table already offers — the core-17 NFs' config
 // lives on the Config page, Osmocom's on the SMS page (SMS via SGs tab),
 // mongodb has no config page of its own but its backups are managed on
 // Backup.
@@ -57,163 +58,140 @@ function serviceManageTarget(name: string): { label: string; target: string } {
   return { label: 'Config', target: 'config' };
 }
 
-function ServiceCard({ status, onNavigate }: { status: ServiceStatus; onNavigate?: (tab: string) => void }): JSX.Element {
-  const [acting, setActing] = useState(false);
-  const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
+// ── Shared row shape ─────────────────────────────────────────────────────
+// One flexible row renderer for every kind of thing this page shows —
+// systemd-unit NFs with full detail (PID/uptime/mem/restarts + boot-enable),
+// Chrony and OpenSpeedTest with partial detail, and VectorCore's paired
+// units with only a status dot (their lifecycle is controlled elsewhere —
+// see the comment on VECTORCORE ROWS below for why). '—' fills in whatever
+// a given row's data source doesn't provide, rather than omitting columns
+// per-row, so the table stays a single consistent grid.
 
-  const doAction = async (action: 'start' | 'stop' | 'restart' | 'enable' | 'disable'): Promise<void> => {
-    setActing(true);
-    try {
-      const result = await serviceApi.action(status.name, action);
-      if (result.success) {
-        toast.success(`${status.name.toUpperCase()} ${action} successful`);
-        await fetchStatuses();
-      } else {
-        toast.error(result.message);
-      }
-    } catch (err) {
-      toast.error(`Failed to ${action} ${status.name}`);
-    } finally {
-      setActing(false);
-    }
-  };
+interface RowBadge { label: string; icon?: React.ReactNode; color: string }
 
+interface ServiceRowData {
+  key: string;
+  name: string;
+  unitName?: string;
+  badge?: RowBadge;
+  subtitle?: string; // e.g. chrony's sync source, speedtest's bind address
+  active: boolean | 'loading';
+  stateLabel?: string; // overrides the default active/inactive pill text
+  installed?: boolean; // false = "not installed" pill instead of active/inactive
+  enabled?: boolean; // undefined = no boot-enable control for this row
+  onToggleEnabled?: () => void;
+  pid?: number | null;
+  uptime?: string | null;
+  memoryBytes?: number | null;
+  restartCount?: number | null;
+  acting?: boolean;
+  onStart?: () => void;
+  onStop?: () => void;
+  onRestart?: () => void;
+  manageLabel?: string;
+  onManage?: () => void;
+  extraAction?: { icon: React.ReactNode; label: string; onClick: () => void };
+}
+
+function ServiceRow({ row }: { row: ServiceRowData }): JSX.Element {
+  const loading = row.active === 'loading';
+  const active = row.active === true;
   return (
-    <div className="nms-card animate-fade-in">
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <div className={status.active ? 'status-dot-active' : 'status-dot-inactive'} />
-          <div>
-            <h3 className="text-base font-semibold font-display flex items-center gap-2">
-              {status.name.toUpperCase()}
-              {status.source === 'docker' && (
-                <span className="inline-flex items-center gap-1 text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded px-1.5 py-0.5 font-semibold">
-                  <Container className="w-2.5 h-2.5" /> docker
+    <tr className="border-b border-nms-border/50 hover:bg-nms-surface-2/40 transition-colors">
+      <td className="px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <div className={loading ? 'status-dot-inactive opacity-40' : active ? 'status-dot-active' : 'status-dot-inactive'} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold font-display text-nms-text">{row.name}</span>
+              {row.badge && (
+                <span className={clsx('inline-flex items-center gap-1 text-[10px] rounded px-1.5 py-0.5 font-semibold border', row.badge.color)}>
+                  {row.badge.icon}{row.badge.label}
                 </span>
               )}
-            </h3>
-            <p className="text-xs text-nms-text-dim font-mono">{status.unitName}</p>
+            </div>
+            {row.unitName && <p className="text-xs text-nms-text-dim font-mono truncate">{row.unitName}</p>}
+            {row.subtitle && <p className="text-xs text-nms-text-dim truncate">{row.subtitle}</p>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span
-            className={`text-xs px-2 py-1 rounded-full ${
-              status.active
-                ? 'bg-nms-green/10 text-nms-green'
-                : 'bg-nms-red/10 text-nms-red'
-            }`}
-          >
-            {status.state}/{status.subState}
-          </span>
+      </td>
+      <td className="px-3 py-2.5">
+        <span className={clsx('text-xs px-2 py-1 rounded-full whitespace-nowrap',
+          loading ? 'bg-nms-surface text-nms-text-dim'
+            : row.installed === false ? 'bg-amber-500/10 text-amber-400'
+            : active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red')}>
+          {loading ? '…' : row.installed === false ? 'not installed' : (row.stateLabel ?? (active ? 'active' : 'inactive'))}
+        </span>
+      </td>
+      <td className="px-3 py-2.5 text-xs text-nms-text-dim font-mono">{row.pid ?? '—'}</td>
+      <td className="px-3 py-2.5 text-xs text-nms-text-dim font-mono whitespace-nowrap">{row.uptime ?? '—'}</td>
+      <td className="px-3 py-2.5 text-xs text-nms-text-dim font-mono whitespace-nowrap">{formatBytes(row.memoryBytes)}</td>
+      <td className="px-3 py-2.5 text-xs text-nms-text-dim font-mono">{row.restartCount ?? '—'}</td>
+      <td className="px-3 py-2.5">
+        {row.enabled !== undefined ? (
           <button
-            onClick={() => doAction(status.enabled ? 'disable' : 'enable')}
-            disabled={acting}
-            className={`text-xs px-2 py-1 rounded-full ${
-              status.enabled
-                ? 'bg-nms-accent/10 text-nms-accent'
-                : 'bg-gray-500/10 text-gray-500'
-            }`}
-            title={status.enabled ? 'Disable at boot' : 'Enable at boot'}
+            onClick={row.onToggleEnabled}
+            disabled={row.acting}
+            className={clsx('p-1 rounded-full', row.enabled ? 'bg-nms-accent/10 text-nms-accent' : 'bg-gray-500/10 text-gray-500')}
+            title={row.enabled ? 'Disable at boot' : 'Enable at boot'}
           >
-            {status.enabled ? <Power className="w-3 h-3" /> : <PowerOff className="w-3 h-3" />}
+            {row.enabled ? <Power className="w-3.5 h-3.5" /> : <PowerOff className="w-3.5 h-3.5" />}
           </button>
+        ) : <span className="text-xs text-nms-text-dim">—</span>}
+      </td>
+      <td className="px-3 py-2.5">
+        <div className="flex items-center justify-end gap-1.5 flex-wrap">
+          {row.onStart && (
+            <button onClick={row.onStart} disabled={row.acting || active} className="nms-btn-ghost text-xs flex items-center gap-1 px-2 py-1">
+              <Play className="w-3 h-3" /> Start
+            </button>
+          )}
+          {row.onStop && (
+            <button onClick={row.onStop} disabled={row.acting || !active} className="nms-btn-ghost text-xs flex items-center gap-1 px-2 py-1 text-red-400">
+              <Square className="w-3 h-3" /> Stop
+            </button>
+          )}
+          {row.onRestart && (
+            <button onClick={row.onRestart} disabled={row.acting} className="nms-btn-ghost text-xs flex items-center gap-1 px-2 py-1">
+              <RotateCw className="w-3 h-3" /> Restart
+            </button>
+          )}
+          {row.extraAction && (
+            <button onClick={row.extraAction.onClick} className="nms-btn-ghost text-xs flex items-center gap-1 px-2 py-1" title={row.extraAction.label}>
+              {row.extraAction.icon}
+            </button>
+          )}
+          {row.onManage && (
+            <button onClick={row.onManage} className="text-xs text-nms-accent hover:underline px-1">
+              {row.manageLabel ?? 'Manage'} →
+            </button>
+          )}
         </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 mb-4">
-        <div className="flex items-center gap-2 text-xs text-nms-text-dim">
-          <Hash className="w-3.5 h-3.5" />
-          <span>PID: {status.pid ?? '—'}</span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-nms-text-dim">
-          <Clock className="w-3.5 h-3.5" />
-          <span>Up: {formatUptime(status.uptime)}</span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-nms-text-dim">
-          <HardDrive className="w-3.5 h-3.5" />
-          <span>Mem: {formatBytes(status.memoryBytes)}</span>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-nms-text-dim">
-          <RefreshCcw className="w-3.5 h-3.5" />
-          <span>Restarts: {status.restartCount}</span>
-        </div>
-      </div>
-
-      <div className="flex gap-2 pt-3 border-t border-nms-border">
-        <button
-          onClick={() => doAction('start')}
-          disabled={acting || status.active}
-          className="nms-btn-ghost flex items-center gap-1.5 text-xs flex-1 justify-center"
-        >
-          <Play className="w-3.5 h-3.5" /> Start
-        </button>
-        <button
-          onClick={() => doAction('stop')}
-          disabled={acting || !status.active}
-          className="nms-btn-danger flex items-center gap-1.5 text-xs flex-1 justify-center"
-        >
-          <Square className="w-3.5 h-3.5" /> Stop
-        </button>
-        <button
-          onClick={() => doAction('restart')}
-          disabled={acting}
-          className="nms-btn-primary flex items-center gap-1.5 text-xs flex-1 justify-center"
-        >
-          <RotateCw className="w-3.5 h-3.5" /> Restart
-        </button>
-      </div>
-
-      {(() => {
-        const { label, target } = serviceManageTarget(status.name);
-        return (
-          <button
-            onClick={() => onNavigate?.(target)}
-            className="text-xs text-nms-accent hover:underline pt-3 mt-3 border-t border-nms-border w-full text-left"
-          >
-            Manage in {label} →
-          </button>
-        );
-      })()}
-    </div>
+      </td>
+    </tr>
   );
 }
 
-// VectorCore's four systemd units (VoWiFi's ePDG+AAA, MMS's MMSC+MM1 proxy)
-// aren't in SERVICE_UNIT_MAP — they're only independently controllable as
-// pairs via VoWiFi/MMS's own module-level start/stop/restart (which acts on
-// both units in each pair together, not one at a time), so a per-card
-// start/stop/restart row here would misleadingly imply a control this page
-// can't actually offer independently. Read-only status + a link to the
-// module that actually owns lifecycle control, instead.
-function VectorCoreCard({
-  name, unitName, active, loading, module, navTarget, onNavigate,
-}: {
-  name: string; unitName: string; active: boolean; loading: boolean;
-  module: string; navTarget: string; onNavigate?: (tab: string) => void;
-}): JSX.Element {
+function ServiceTable({ rows }: { rows: ServiceRowData[] }): JSX.Element {
   return (
-    <div className="nms-card animate-fade-in">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex items-center gap-3">
-          <div className={loading ? 'status-dot-inactive opacity-40' : active ? 'status-dot-active' : 'status-dot-inactive'} />
-          <div>
-            <h3 className="text-base font-semibold font-display">{name}</h3>
-            <p className="text-xs text-nms-text-dim font-mono">{unitName}</p>
-          </div>
-        </div>
-        <span className={`text-xs px-2 py-1 rounded-full ${
-          loading ? 'bg-nms-surface text-nms-text-dim' :
-          active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red'
-        }`}>
-          {loading ? '…' : active ? 'active' : 'inactive'}
-        </span>
-      </div>
-      <button
-        onClick={() => onNavigate?.(navTarget)}
-        className="text-xs text-nms-accent hover:underline pt-3 border-t border-nms-border w-full text-left"
-      >
-        Manage in {module} →
-      </button>
+    <div className="nms-card p-0 overflow-hidden overflow-x-auto">
+      <table className="w-full">
+        <thead>
+          <tr className="text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider bg-nms-surface-2 border-b border-nms-border">
+            <th className="px-3 py-2.5">Service</th>
+            <th className="px-3 py-2.5">Status</th>
+            <th className="px-3 py-2.5">PID</th>
+            <th className="px-3 py-2.5">Uptime</th>
+            <th className="px-3 py-2.5">Memory</th>
+            <th className="px-3 py-2.5">Restarts</th>
+            <th className="px-3 py-2.5">Boot</th>
+            <th className="px-3 py-2.5 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => <ServiceRow key={row.key} row={row} />)}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -227,17 +205,26 @@ function SectionHeader({ label, color }: { label: string; color: string }) {
   );
 }
 
+interface SpeedTestStatus {
+  running: boolean;
+  settings: { bindIp: string; httpPort: number; httpsPort: number; enableHttps: boolean };
+}
+
 export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => void }): JSX.Element {
   const statuses = useServiceStore((s) => s.statuses);
   const fetchStatuses = useServiceStore((s) => s.fetchStatuses);
   const [bulkActing, setBulkActing] = useState(false);
   const [acting4G, setActing4G] = useState(false);
   const [acting5G, setActing5G] = useState(false);
+  const [actingByName, setActingByName] = useState<Record<string, boolean>>({});
   const [chrony, setChrony] = useState<{ installed: boolean; active: boolean; refSource?: string } | null>(null);
   const [chronyActing, setChronyActing] = useState(false);
   const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
   const [mmsStatus, setMmsStatus] = useState<MmsStatus | null>(null);
   const [vectorcoreSmscStatus, setVectorcoreSmscStatus] = useState<VectorcoreSmscStatus | null>(null);
+  const [speedtest, setSpeedtest] = useState<SpeedTestStatus | null>(null);
+  const [speedtestActing, setSpeedtestActing] = useState(false);
+  const [showSpeedtestModal, setShowSpeedtestModal] = useState(false);
 
   const API = import.meta.env.VITE_API_URL || '/api';
 
@@ -247,11 +234,18 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       .catch(() => {});
   };
 
+  const fetchSpeedtest = () => {
+    axios.get(`${API}/speedtest/status`)
+      .then(r => setSpeedtest({ running: r.data.running, settings: r.data.settings }))
+      .catch(() => {});
+  };
+
   useEffect(() => {
     fetchChrony();
+    fetchSpeedtest();
     // VectorCore (VoWiFi ePDG/AAA, MMS MMSC/MM1 proxy) status for the
-    // VectorCore section below — see VectorCoreCard for why these are
-    // read-only here rather than independently start/stop/restart-able.
+    // VectorCore section below — see the VECTORCORE ROWS comment for why
+    // these are read-only here rather than independently start/stop/restart-able.
     vowifiApi.getStatus().then(setVowifiStatus).catch(() => {});
     mmsApi.getStatus().then(setMmsStatus).catch(() => {});
     vectorcoreSmscApi.getStatus().then(setVectorcoreSmscStatus).catch(() => {});
@@ -267,6 +261,32 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       toast.error(`Chrony ${action} failed: ${err?.response?.data?.error ?? err.message}`);
     } finally {
       setChronyActing(false);
+    }
+  };
+
+  // Quick start/stop from the table uses whatever settings were last saved
+  // (defaults to all-interfaces on first run) — the modal (via "Configure")
+  // is where an operator picks a specific bind IP, e.g. a DNN gateway.
+  const handleSpeedtestAction = async (action: 'start' | 'stop') => {
+    setSpeedtestActing(true);
+    try {
+      if (action === 'start') {
+        const { data } = await axios.post(`${API}/speedtest/start`, speedtest?.settings ?? {});
+        if (data.success) {
+          toast.success(`OpenSpeedTest started on ${data.settings.bindIp}:${data.settings.httpPort}`);
+          setSpeedtest({ running: true, settings: data.settings });
+        } else {
+          toast.error(data.error || 'Failed to start OpenSpeedTest');
+        }
+      } else {
+        await axios.post(`${API}/speedtest/stop`);
+        toast.success('OpenSpeedTest stopped');
+        setSpeedtest(s => s ? { ...s, running: false } : s);
+      }
+    } catch (err: any) {
+      toast.error(`OpenSpeedTest ${action} failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setSpeedtestActing(false);
     }
   };
 
@@ -309,8 +329,100 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
     }
   };
 
+  const doServiceAction = async (name: string, action: 'start' | 'stop' | 'restart' | 'enable' | 'disable'): Promise<void> => {
+    setActingByName(a => ({ ...a, [name]: true }));
+    try {
+      const result = await serviceApi.action(name, action);
+      if (result.success) {
+        toast.success(`${name.toUpperCase()} ${action} successful`);
+        await fetchStatuses();
+      } else {
+        toast.error(result.message);
+      }
+    } catch {
+      toast.error(`Failed to ${action} ${name}`);
+    } finally {
+      setActingByName(a => ({ ...a, [name]: false }));
+    }
+  };
+
+  // Systemd-unit-backed rows (core-17 NFs + Osmocom) — full detail, start/
+  // stop/restart, boot-enable toggle, and a link to wherever this service
+  // is actually configured.
+  const serviceRow = (s: ServiceStatus): ServiceRowData => {
+    const { label, target } = serviceManageTarget(s.name);
+    return {
+      key: s.name,
+      name: s.name.toUpperCase(),
+      unitName: s.unitName,
+      badge: s.source === 'docker' ? { label: 'docker', icon: <Container className="w-2.5 h-2.5" />, color: 'bg-blue-500/10 text-blue-400 border-blue-500/20' } : undefined,
+      active: s.active,
+      stateLabel: `${s.state}/${s.subState}`,
+      enabled: s.enabled,
+      onToggleEnabled: () => doServiceAction(s.name, s.enabled ? 'disable' : 'enable'),
+      pid: s.pid,
+      uptime: formatUptime(s.uptime),
+      memoryBytes: s.memoryBytes,
+      restartCount: s.restartCount,
+      acting: !!actingByName[s.name],
+      onStart: () => doServiceAction(s.name, 'start'),
+      onStop: () => doServiceAction(s.name, 'stop'),
+      onRestart: () => doServiceAction(s.name, 'restart'),
+      manageLabel: label,
+      onManage: () => onNavigate?.(target),
+    };
+  };
+
+  const chronyRow: ServiceRowData = {
+    key: 'chrony',
+    name: 'CHRONY',
+    unitName: 'chrony.service',
+    badge: { label: 'ntp', color: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20' },
+    subtitle: chrony?.refSource ? `Synced to: ${chrony.refSource}` : (chrony && !chrony.installed ? 'Not installed — click to install' : undefined),
+    active: !chrony ? 'loading' : chrony.active,
+    installed: chrony?.installed,
+    acting: chronyActing,
+    onStart: () => handleChronyAction('start'),
+    onStop: () => handleChronyAction('stop'),
+    onRestart: () => handleChronyAction('restart'),
+    manageLabel: 'Time Server',
+    onManage: () => onNavigate?.('time-server'),
+  };
+
+  // VECTORCORE ROWS — VectorCore's four systemd units (VoWiFi's ePDG+AAA,
+  // MMS's MMSC+MM1 proxy) aren't in SERVICE_UNIT_MAP — they're only
+  // independently controllable as pairs via VoWiFi/MMS's own module-level
+  // start/stop/restart (which acts on both units in each pair together, not
+  // one at a time), so per-row start/stop/restart here would misleadingly
+  // imply a control this page can't actually offer independently. Read-only
+  // status + a link to the module that actually owns lifecycle control.
+  const vectorCoreRow = (name: string, unitName: string, active: boolean, loading: boolean, module: string, navTarget: string): ServiceRowData => ({
+    key: unitName,
+    name,
+    unitName,
+    active: loading ? 'loading' : active,
+    manageLabel: module,
+    onManage: () => onNavigate?.(navTarget),
+  });
+
+  const speedtestRow: ServiceRowData = {
+    key: 'speedtest',
+    name: 'OPENSPEEDTEST',
+    badge: { label: 'tool', icon: <Gauge className="w-2.5 h-2.5" />, color: 'bg-pink-500/10 text-pink-400 border-pink-500/20' },
+    subtitle: speedtest?.running ? `${speedtest.settings.bindIp}:${speedtest.settings.httpPort}` : 'Temporary throughput-test container',
+    active: !speedtest ? 'loading' : speedtest.running,
+    acting: speedtestActing,
+    onStart: () => handleSpeedtestAction('start'),
+    onStop: () => handleSpeedtestAction('stop'),
+    extraAction: { icon: <Settings2 className="w-3 h-3" />, label: 'Configure bind IP / ports', onClick: () => setShowSpeedtestModal(true) },
+  };
+
   return (
     <div className="p-6 space-y-6">
+      {showSpeedtestModal && (
+        <SpeedTestServerModal onClose={() => { setShowSpeedtestModal(false); fetchSpeedtest(); }} />
+      )}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold font-display">Services</h1>
@@ -379,14 +491,10 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
 
       {/* Loading skeleton */}
       {statuses.length === 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {['NRF', 'AMF', 'SMF', 'UPF', 'AUSF'].map((name) => (
-            <div key={name} className="nms-card animate-pulse">
-              <div className="h-32 flex items-center justify-center text-nms-text-dim text-sm">
-                Loading {name}...
-              </div>
-            </div>
-          ))}
+        <div className="nms-card animate-pulse">
+          <div className="h-32 flex items-center justify-center text-nms-text-dim text-sm">
+            Loading services...
+          </div>
         </div>
       )}
 
@@ -394,9 +502,7 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       {statuses.some(s => SERVICES_5G.includes(s.name)) && (
         <div>
           <SectionHeader label="5G Core" color="text-blue-400" />
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {statuses.filter(s => SERVICES_5G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
-          </div>
+          <ServiceTable rows={statuses.filter(s => SERVICES_5G.includes(s.name)).map(serviceRow)} />
         </div>
       )}
 
@@ -404,9 +510,7 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       {statuses.some(s => SERVICES_4G.includes(s.name)) && (
         <div>
           <SectionHeader label="4G EPC" color="text-amber-400" />
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {statuses.filter(s => SERVICES_4G.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
-          </div>
+          <ServiceTable rows={statuses.filter(s => SERVICES_4G.includes(s.name)).map(serviceRow)} />
         </div>
       )}
 
@@ -414,106 +518,44 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       {statuses.some(s => SERVICES_SHARED.includes(s.name)) && (
         <div>
           <SectionHeader label="Shared 4G + 5G" color="text-purple-400" />
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {statuses.filter(s => SERVICES_SHARED.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
-          </div>
+          <ServiceTable rows={statuses.filter(s => SERVICES_SHARED.includes(s.name)).map(serviceRow)} />
         </div>
       )}
 
       {/* Osmocom + Chrony */}
       <div>
         <SectionHeader label="Osmocom" color="text-cyan-400" />
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {/* Chrony card */}
-          <div className="nms-card animate-fade-in">
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className={chrony?.active ? 'status-dot-active' : 'status-dot-inactive'} />
-                <div>
-                  <h3 className="text-base font-semibold font-display flex items-center gap-2">
-                    CHRONY
-                    <span className="inline-flex items-center gap-1 text-[10px] bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded px-1.5 py-0.5 font-semibold">
-                      <Clock className="w-2.5 h-2.5" /> ntp
-                    </span>
-                  </h3>
-                  <p className="text-xs text-nms-text-dim font-mono">chrony.service</p>
-                </div>
-              </div>
-              <span className={`text-xs px-2 py-1 rounded-full ${
-                !chrony ? 'bg-nms-surface text-nms-text-dim' :
-                !chrony.installed ? 'bg-amber-500/10 text-amber-400' :
-                chrony.active ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-red/10 text-nms-red'
-              }`}>
-                {!chrony ? '…' : !chrony.installed ? 'not installed' : chrony.active ? 'active/running' : 'inactive/dead'}
-              </span>
-            </div>
-            {!chrony?.installed && (
-              <div className="flex items-center gap-2 text-xs text-amber-400 mb-3 cursor-pointer hover:text-amber-300" onClick={() => onNavigate?.('time-server')}>
-                <AlertCircle className="w-3.5 h-3.5" />
-                Not installed — click to install
-              </div>
-            )}
-            {chrony?.refSource && (
-              <p className="text-xs text-nms-text-dim font-mono mb-3">
-                Synced to: <span className="text-nms-text">{chrony.refSource}</span>
-              </p>
-            )}
-            <div className="flex gap-2 pt-3 border-t border-nms-border">
-              <button onClick={() => handleChronyAction('start')} disabled={chronyActing || chrony?.active || !chrony?.installed}
-                className="nms-btn-ghost flex items-center gap-1.5 text-xs flex-1 justify-center">
-                <Play className="w-3.5 h-3.5" /> Start
-              </button>
-              <button onClick={() => handleChronyAction('stop')} disabled={chronyActing || !chrony?.active}
-                className="nms-btn-danger flex items-center gap-1.5 text-xs flex-1 justify-center">
-                <Square className="w-3.5 h-3.5" /> Stop
-              </button>
-              <button onClick={() => handleChronyAction('restart')} disabled={chronyActing || !chrony?.installed}
-                className="nms-btn-primary flex items-center gap-1.5 text-xs flex-1 justify-center">
-                <RotateCw className="w-3.5 h-3.5" /> Restart
-              </button>
-            </div>
-            <button
-              onClick={() => onNavigate?.('time-server')}
-              className="text-xs text-nms-accent hover:underline pt-3 mt-3 border-t border-nms-border w-full text-left"
-            >
-              Manage in Time Server →
-            </button>
-          </div>
-
-          {statuses.filter(s => SERVICES_OSMO.includes(s.name)).map(s => <ServiceCard key={s.name} status={s} onNavigate={onNavigate} />)}
-        </div>
+        <ServiceTable rows={[
+          chronyRow,
+          ...statuses.filter(s => SERVICES_OSMO.includes(s.name)).map(serviceRow),
+        ]} />
+        {!chrony?.installed && (
+          <button
+            onClick={() => onNavigate?.('time-server')}
+            className="flex items-center gap-2 text-xs text-amber-400 hover:text-amber-300 mt-2"
+          >
+            <AlertCircle className="w-3.5 h-3.5" />
+            Chrony not installed — click to install
+          </button>
+        )}
       </div>
 
       {/* VectorCore */}
       <div>
         <SectionHeader label="VectorCore" color="text-pink-400" />
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          <VectorCoreCard
-            name="EPDG" unitName="vowifi-vectorcore-epdg" module="VoWiFi" navTarget="vowifi"
-            active={!!vowifiStatus?.services?.['vowifi-vectorcore-epdg']} loading={!vowifiStatus}
-            onNavigate={onNavigate}
-          />
-          <VectorCoreCard
-            name="AAA" unitName="vowifi-vectorcore-aaa" module="VoWiFi" navTarget="vowifi"
-            active={!!vowifiStatus?.services?.['vowifi-vectorcore-aaa']} loading={!vowifiStatus}
-            onNavigate={onNavigate}
-          />
-          <VectorCoreCard
-            name="MMSC" unitName="vectorcore-mmsc" module="SMS/MMS" navTarget="sms"
-            active={!!mmsStatus?.serviceActive} loading={!mmsStatus}
-            onNavigate={onNavigate}
-          />
-          <VectorCoreCard
-            name="MM1 PROXY" unitName="vectorcore-mm1-proxy" module="SMS/MMS" navTarget="sms"
-            active={!!mmsStatus?.proxyActive} loading={!mmsStatus}
-            onNavigate={onNavigate}
-          />
-          <VectorCoreCard
-            name="SMSC" unitName="vectorcore-smsc" module="SMS/MMS" navTarget="sms"
-            active={!!vectorcoreSmscStatus?.serviceActive} loading={!vectorcoreSmscStatus}
-            onNavigate={onNavigate}
-          />
-        </div>
+        <ServiceTable rows={[
+          vectorCoreRow('EPDG', 'vowifi-vectorcore-epdg', !!vowifiStatus?.services?.['vowifi-vectorcore-epdg'], !vowifiStatus, 'VoWiFi', 'vowifi'),
+          vectorCoreRow('AAA', 'vowifi-vectorcore-aaa', !!vowifiStatus?.services?.['vowifi-vectorcore-aaa'], !vowifiStatus, 'VoWiFi', 'vowifi'),
+          vectorCoreRow('MMSC', 'vectorcore-mmsc', !!mmsStatus?.serviceActive, !mmsStatus, 'SMS/MMS', 'sms'),
+          vectorCoreRow('MM1 PROXY', 'vectorcore-mm1-proxy', !!mmsStatus?.proxyActive, !mmsStatus, 'SMS/MMS', 'sms'),
+          vectorCoreRow('SMSC', 'vectorcore-smsc', !!vectorcoreSmscStatus?.serviceActive, !vectorcoreSmscStatus, 'SMS/MMS', 'sms'),
+        ]} />
+      </div>
+
+      {/* Tools */}
+      <div>
+        <SectionHeader label="Tools" color="text-pink-400" />
+        <ServiceTable rows={[speedtestRow]} />
       </div>
     </div>
   );

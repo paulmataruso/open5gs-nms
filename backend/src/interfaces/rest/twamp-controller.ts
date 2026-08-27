@@ -107,6 +107,212 @@ function parsePrometheusText(text: string): ParsedMetric[] {
   return results;
 }
 
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same install logic in-process — write() is the only side-channel.
+export async function installTwamp(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const spawnStream = (bashScript: string): Promise<number> =>
+      new Promise(resolve => {
+        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
+        child.stdout.on('data', (d: Buffer) => write(d.toString()));
+        child.stderr.on('data', (d: Buffer) => write(d.toString()));
+        child.on('close', (code) => resolve(code ?? 1));
+      });
+
+    try {
+      write(`=== Ensuring Go ${GO_VERSION}+ toolchain ===`);
+      const goExit = await spawnStream(
+        `set -e\n` +
+        `NEED_GO=1\n` +
+        `if [ -x /usr/local/go/bin/go ]; then\n` +
+        `  CURVER=$(/usr/local/go/bin/go version | grep -oE 'go[0-9]+\\.[0-9]+(\\.[0-9]+)?' | sed 's/^go//')\n` +
+        `  TOPVER=$(printf '%s\\n%s\\n' "${GO_VERSION}" "$CURVER" | sort -V | tail -1)\n` +
+        `  if [ "$TOPVER" = "$CURVER" ]; then NEED_GO=0; fi\n` +
+        `fi\n` +
+        `if [ "$NEED_GO" = "1" ]; then\n` +
+        `  ARCH=$(uname -m)\n` +
+        `  case $ARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac\n` +
+        `  echo "Downloading go${GO_VERSION}.linux-$GOARCH.tar.gz..."\n` +
+        `  curl -fsSL -o /tmp/go-twamp.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-$GOARCH.tar.gz"\n` +
+        `  rm -rf /usr/local/go\n` +
+        `  tar -C /usr/local -xzf /tmp/go-twamp.tar.gz\n` +
+        `  rm -f /tmp/go-twamp.tar.gz\n` +
+        `  echo "Installed: $(/usr/local/go/bin/go version)"\n` +
+        `else\n` +
+        `  echo "Already have: $(/usr/local/go/bin/go version)"\n` +
+        `fi`
+      );
+      if (goExit !== 0) {
+        write(`\n❌ Go toolchain setup failed (exit ${goExit}).`);
+        return { success: false, error: `go setup exit ${goExit}` };
+      }
+
+      write('\n=== Writing twamp-client.go, twamp-server.go, and the bind-IP patch script ===');
+      fs.mkdirSync(`${HOST_ROOT}${TWAMP_DIR}`, { recursive: true });
+      fs.writeFileSync(`${HOST_ROOT}${TWAMP_SRC}`, fs.readFileSync(TWAMP_CLIENT_GO_TEMPLATE, 'utf-8'), 'utf-8');
+      fs.writeFileSync(`${HOST_ROOT}${TWAMP_SERVER_SRC}`, fs.readFileSync(TWAMP_SERVER_GO_TEMPLATE, 'utf-8'), 'utf-8');
+      fs.writeFileSync(`${HOST_ROOT}${TWAMP_DIR}/patch-bind-ip.py`, fs.readFileSync(TWAMP_PATCH_SCRIPT_TEMPLATE, 'utf-8'), 'utf-8');
+
+      write('\n=== Building (go mod init + go get + go mod vendor + patch + go build ×2) ===');
+      const buildExit = await spawnStream(
+        `set -e\n` +
+        `export PATH=/usr/local/go/bin:$PATH\n` +
+        `export GOCACHE=${TWAMP_DIR}/.gocache\n` +
+        `export GOMODCACHE=${TWAMP_DIR}/.gomodcache\n` +
+        `cd ${TWAMP_DIR}\n` +
+        `[ -f go.mod ] || go mod init twamp-client\n` +
+        `go get github.com/ncode/twamp@latest\n` +
+        // go get alone only records the direct dependency's go.sum entry —
+        // confirmed live: a bare `go build` right after it fails with
+        // "missing go.sum entry" for ncode/twamp's own transitive deps
+        // (golang.org/x/sys, golang.org/x/crypto, prometheus/client_golang).
+        // go mod tidy resolves the full graph (and, confirmed live, actually
+        // settles on a LOWER minimum-version set than a naive `go get
+        // @latest` alone triggers — it stayed on the already-installed
+        // GO_VERSION here rather than auto-downloading a newer toolchain
+        // mid-build, which is the whole reason this project pins Go
+        // versions rather than relying on that auto-download on a
+        // restricted-egress host).
+        `go mod tidy\n` +
+        // go mod vendor: the library's public API has no bind-IP option —
+        // see patch-bind-ip.py's own header comment for the full why. We
+        // need an editable local copy of the source to patch, hence vendor
+        // rather than building straight from the module cache.
+        `go mod vendor\n` +
+        `python3 patch-bind-ip.py\n` +
+        `go build -mod=vendor -o ${TWAMP_BIN} ${TWAMP_SRC}\n` +
+        `go build -mod=vendor -o ${TWAMP_SERVER_BIN} ${TWAMP_SERVER_SRC}`
+      );
+      if (buildExit !== 0) {
+        write(`\n❌ Build failed (exit ${buildExit}).`);
+        return { success: false, error: `build exit ${buildExit}` };
+      }
+
+      writeTwampState({ ...(readTwampState() ?? {}), installedWithVersion: getAppVersion() });
+      write('\n✅ twamp-client and twamp-server installed. Add a target below to start testing, or configure the reflector if you need it to accept inbound tests.');
+      return { success: true };
+    } catch (err) {
+      write(`\n❌ Install error: ${String(err)}`);
+      return { success: false, error: String(err) };
+    }
+}
+
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same server-configure logic in-process, always passing the last-saved
+// values explicitly rather than an empty body — re-running Configure with defaults
+// would silently reset real per-deployment values (e.g. back to 0.0.0.0:862, unauthenticated).
+export async function configureTwampServer(
+  input: {
+    listenIp?: string; listenPort?: number; enableFull?: boolean; enableLight?: boolean; modes?: TwampMode[];
+    secretKeyId?: string; secretValue?: string; allowCidrs?: string[];
+  },
+  hostExecutor: IHostExecutor,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isTwampServerInstalled()) {
+      return { success: false, error: 'twamp-server is not installed yet — run Install first.' };
+    }
+    const { listenIp, listenPort, enableFull, enableLight, modes, secretKeyId, secretValue, allowCidrs } = input;
+    const validModes: TwampMode[] = ['unauthenticated', 'authenticated', 'encrypted'];
+    const resolvedModes = Array.isArray(modes) ? modes.filter(m => validModes.includes(m)) : [];
+    if (resolvedModes.length === 0) resolvedModes.push('unauthenticated');
+    const resolvedListenIp = listenIp && listenIp.trim() ? listenIp.trim() : '0.0.0.0';
+    const resolvedPort = Number.isInteger(listenPort) && listenPort! > 0 ? listenPort! : 862;
+    // Default both on — an operator accepting inbound tests generally wants
+    // to answer whichever protocol variant the far end actually speaks,
+    // same reasoning as the per-target protocol choice on the client side.
+    const resolvedEnableFull = enableFull !== false;
+    const resolvedEnableLight = enableLight !== false;
+    if (!resolvedEnableFull && !resolvedEnableLight) {
+      return { success: false, error: 'At least one of full TWAMP-Control or TWAMP-Light must be enabled.' };
+    }
+
+    try {
+      const execArgsParts = [
+        '-listen', shellQuote(`${resolvedListenIp}:${resolvedPort}`),
+        // Go's flag package does NOT treat a following space-separated token
+        // as a bool flag's value (only non-bool flags consume the next
+        // arg) — `-full-enabled false` parses as `-full-enabled=true` and
+        // then aborts flag parsing entirely on the stray `false` token, so
+        // the intended value is silently ignored. Confirmed live 2026-08-24:
+        // a saved config with Full explicitly disabled still started the
+        // TCP full-protocol listener. Must use `=` syntax for bools.
+        `-full-enabled=${resolvedEnableFull}`,
+        `-light-enabled=${resolvedEnableLight}`,
+        '-modes', shellQuote(resolvedModes.join(',')),
+      ];
+      if (secretKeyId && secretValue) {
+        execArgsParts.push('-secrets', shellQuote(`${secretKeyId}:${secretValue}`));
+      }
+      const cleanCidrs = (allowCidrs ?? []).map(c => c.trim()).filter(Boolean);
+      if (cleanCidrs.length > 0) {
+        execArgsParts.push('-allow-cidrs', shellQuote(cleanCidrs.join(',')));
+      }
+
+      fs.writeFileSync(`${HOST_ROOT}${TWAMP_SERVER_UNIT_PATH}`, serverSystemdUnit(execArgsParts.join(' ')), 'utf-8');
+      await hostExecutor.executeCommand('systemctl', ['daemon-reload']);
+      await hostExecutor.executeCommand('systemctl', ['enable', '--now', TWAMP_SERVER_UNIT]);
+      // Config is baked into ExecStart, not hot-reloadable — a Configure
+      // re-run always restarts to pick up the new args, same reasoning as
+      // every other module's config-file-based restart-on-Configure.
+      await hostExecutor.executeCommand('systemctl', ['restart', TWAMP_SERVER_UNIT]);
+
+      const prevState = readTwampState() ?? {};
+      writeTwampState({
+        ...prevState,
+        server: {
+          configuredWithVersion: getAppVersion(),
+          listenIp: resolvedListenIp,
+          listenPort: resolvedPort,
+          enableFull: resolvedEnableFull,
+          enableLight: resolvedEnableLight,
+          modes: resolvedModes,
+          secretKeyId: secretKeyId || undefined,
+          secretValue: secretValue || undefined,
+          allowCidrs: cleanCidrs,
+        },
+      });
+
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+}
+
+export interface TwampClientStalenessResult {
+  installed: boolean;
+  installStale: boolean;
+  installedWithVersion?: string;
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator, client/install side.
+export function getTwampClientStaleness(): TwampClientStalenessResult {
+  const installed = isTwampInstalled();
+  const state = readTwampState();
+  const appVersion = getAppVersion();
+  const installStale = installed && state?.installedWithVersion !== appVersion;
+  return { installed, installStale, installedWithVersion: state?.installedWithVersion };
+}
+
+export interface TwampServerStalenessResult {
+  installed: boolean;
+  hasSavedConfig: boolean;
+  configStale: boolean;
+  configuredWithVersion?: string;
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator, server/reflector side.
+export function getTwampServerStaleness(): TwampServerStalenessResult {
+  const installed = isTwampServerInstalled();
+  const state = readTwampState();
+  const appVersion = getAppVersion();
+  const configStale = !!state?.server && state.server.configuredWithVersion !== appVersion;
+  return {
+    installed,
+    hasSavedConfig: !!state?.server,
+    configStale,
+    configuredWithVersion: state?.server?.configuredWithVersion,
+  };
+}
+
 export function createTwampRouter(
   db: Db,
   hostExecutor: IHostExecutor,
@@ -155,95 +361,9 @@ export function createTwampRouter(
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-
-    const spawnStream = (bashScript: string): Promise<number> =>
-      new Promise(resolve => {
-        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
-        child.stdout.on('data', (d: Buffer) => write(d.toString()));
-        child.stderr.on('data', (d: Buffer) => write(d.toString()));
-        child.on('close', (code) => resolve(code ?? 1));
-      });
-
-    try {
-      write(`=== Ensuring Go ${GO_VERSION}+ toolchain ===`);
-      const goExit = await spawnStream(
-        `set -e\n` +
-        `NEED_GO=1\n` +
-        `if [ -x /usr/local/go/bin/go ]; then\n` +
-        `  CURVER=$(/usr/local/go/bin/go version | grep -oE 'go[0-9]+\\.[0-9]+(\\.[0-9]+)?' | sed 's/^go//')\n` +
-        `  TOPVER=$(printf '%s\\n%s\\n' "${GO_VERSION}" "$CURVER" | sort -V | tail -1)\n` +
-        `  if [ "$TOPVER" = "$CURVER" ]; then NEED_GO=0; fi\n` +
-        `fi\n` +
-        `if [ "$NEED_GO" = "1" ]; then\n` +
-        `  ARCH=$(uname -m)\n` +
-        `  case $ARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac\n` +
-        `  echo "Downloading go${GO_VERSION}.linux-$GOARCH.tar.gz..."\n` +
-        `  curl -fsSL -o /tmp/go-twamp.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-$GOARCH.tar.gz"\n` +
-        `  rm -rf /usr/local/go\n` +
-        `  tar -C /usr/local -xzf /tmp/go-twamp.tar.gz\n` +
-        `  rm -f /tmp/go-twamp.tar.gz\n` +
-        `  echo "Installed: $(/usr/local/go/bin/go version)"\n` +
-        `else\n` +
-        `  echo "Already have: $(/usr/local/go/bin/go version)"\n` +
-        `fi`
-      );
-      if (goExit !== 0) {
-        write(`\n❌ Go toolchain setup failed (exit ${goExit}).`);
-        await auditLogger.log({ action: 'twamp_install', user, details: `go setup exit ${goExit}`, success: false });
-        return res.end();
-      }
-
-      write('\n=== Writing twamp-client.go, twamp-server.go, and the bind-IP patch script ===');
-      fs.mkdirSync(`${HOST_ROOT}${TWAMP_DIR}`, { recursive: true });
-      fs.writeFileSync(`${HOST_ROOT}${TWAMP_SRC}`, fs.readFileSync(TWAMP_CLIENT_GO_TEMPLATE, 'utf-8'), 'utf-8');
-      fs.writeFileSync(`${HOST_ROOT}${TWAMP_SERVER_SRC}`, fs.readFileSync(TWAMP_SERVER_GO_TEMPLATE, 'utf-8'), 'utf-8');
-      fs.writeFileSync(`${HOST_ROOT}${TWAMP_DIR}/patch-bind-ip.py`, fs.readFileSync(TWAMP_PATCH_SCRIPT_TEMPLATE, 'utf-8'), 'utf-8');
-
-      write('\n=== Building (go mod init + go get + go mod vendor + patch + go build ×2) ===');
-      const buildExit = await spawnStream(
-        `set -e\n` +
-        `export PATH=/usr/local/go/bin:$PATH\n` +
-        `export GOCACHE=${TWAMP_DIR}/.gocache\n` +
-        `export GOMODCACHE=${TWAMP_DIR}/.gomodcache\n` +
-        `cd ${TWAMP_DIR}\n` +
-        `[ -f go.mod ] || go mod init twamp-client\n` +
-        `go get github.com/ncode/twamp@latest\n` +
-        // go get alone only records the direct dependency's go.sum entry —
-        // confirmed live: a bare `go build` right after it fails with
-        // "missing go.sum entry" for ncode/twamp's own transitive deps
-        // (golang.org/x/sys, golang.org/x/crypto, prometheus/client_golang).
-        // go mod tidy resolves the full graph (and, confirmed live, actually
-        // settles on a LOWER minimum-version set than a naive `go get
-        // @latest` alone triggers — it stayed on the already-installed
-        // GO_VERSION here rather than auto-downloading a newer toolchain
-        // mid-build, which is the whole reason this project pins Go
-        // versions rather than relying on that auto-download on a
-        // restricted-egress host).
-        `go mod tidy\n` +
-        // go mod vendor: the library's public API has no bind-IP option —
-        // see patch-bind-ip.py's own header comment for the full why. We
-        // need an editable local copy of the source to patch, hence vendor
-        // rather than building straight from the module cache.
-        `go mod vendor\n` +
-        `python3 patch-bind-ip.py\n` +
-        `go build -mod=vendor -o ${TWAMP_BIN} ${TWAMP_SRC}\n` +
-        `go build -mod=vendor -o ${TWAMP_SERVER_BIN} ${TWAMP_SERVER_SRC}`
-      );
-      if (buildExit !== 0) {
-        write(`\n❌ Build failed (exit ${buildExit}).`);
-        await auditLogger.log({ action: 'twamp_install', user, details: `build exit ${buildExit}`, success: false });
-        return res.end();
-      }
-
-      writeTwampState({ ...(readTwampState() ?? {}), installedWithVersion: getAppVersion() });
-      await auditLogger.log({ action: 'twamp_install', user, details: 'success', success: true });
-      write('\n✅ twamp-client and twamp-server installed. Add a target below to start testing, or configure the reflector if you need it to accept inbound tests.');
-      res.end();
-    } catch (err) {
-      write(`\n❌ Install error: ${String(err)}`);
-      await auditLogger.log({ action: 'twamp_install', user, details: String(err), success: false });
-      res.end();
-    }
+    const result = await installTwamp(write);
+    await auditLogger.log({ action: 'twamp_install', user, details: result.error ?? 'success', success: result.success });
+    res.end();
   });
 
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
@@ -473,84 +593,14 @@ export function createTwampRouter(
 
   router.post('/server/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    if (!isTwampServerInstalled()) {
-      return res.status(400).json({ success: false, error: 'twamp-server is not installed yet — run Install first.' });
+    const result = await configureTwampServer(req.body, hostExecutor);
+    if (!result.success) {
+      logger.error({ error: result.error }, 'twamp server configure error');
+      await auditLogger.log({ action: 'twamp_server_configure', user, details: result.error ?? 'failed', success: false });
+      return res.status(400).json({ success: false, error: result.error });
     }
-    const { listenIp, listenPort, enableFull, enableLight, modes, secretKeyId, secretValue, allowCidrs } = req.body as {
-      listenIp?: string; listenPort?: number; enableFull?: boolean; enableLight?: boolean; modes?: TwampMode[];
-      secretKeyId?: string; secretValue?: string; allowCidrs?: string[];
-    };
-    const validModes: TwampMode[] = ['unauthenticated', 'authenticated', 'encrypted'];
-    const resolvedModes = Array.isArray(modes) ? modes.filter(m => validModes.includes(m)) : [];
-    if (resolvedModes.length === 0) resolvedModes.push('unauthenticated');
-    const resolvedListenIp = listenIp && listenIp.trim() ? listenIp.trim() : '0.0.0.0';
-    const resolvedPort = Number.isInteger(listenPort) && listenPort! > 0 ? listenPort! : 862;
-    // Default both on — an operator accepting inbound tests generally wants
-    // to answer whichever protocol variant the far end actually speaks,
-    // same reasoning as the per-target protocol choice on the client side.
-    const resolvedEnableFull = enableFull !== false;
-    const resolvedEnableLight = enableLight !== false;
-    if (!resolvedEnableFull && !resolvedEnableLight) {
-      return res.status(400).json({ success: false, error: 'At least one of full TWAMP-Control or TWAMP-Light must be enabled.' });
-    }
-
-    try {
-      const execArgsParts = [
-        '-listen', shellQuote(`${resolvedListenIp}:${resolvedPort}`),
-        // Go's flag package does NOT treat a following space-separated token
-        // as a bool flag's value (only non-bool flags consume the next
-        // arg) — `-full-enabled false` parses as `-full-enabled=true` and
-        // then aborts flag parsing entirely on the stray `false` token, so
-        // the intended value is silently ignored. Confirmed live 2026-08-24:
-        // a saved config with Full explicitly disabled still started the
-        // TCP full-protocol listener. Must use `=` syntax for bools.
-        `-full-enabled=${resolvedEnableFull}`,
-        `-light-enabled=${resolvedEnableLight}`,
-        '-modes', shellQuote(resolvedModes.join(',')),
-      ];
-      if (secretKeyId && secretValue) {
-        execArgsParts.push('-secrets', shellQuote(`${secretKeyId}:${secretValue}`));
-      }
-      const cleanCidrs = (allowCidrs ?? []).map(c => c.trim()).filter(Boolean);
-      if (cleanCidrs.length > 0) {
-        execArgsParts.push('-allow-cidrs', shellQuote(cleanCidrs.join(',')));
-      }
-
-      fs.writeFileSync(`${HOST_ROOT}${TWAMP_SERVER_UNIT_PATH}`, serverSystemdUnit(execArgsParts.join(' ')), 'utf-8');
-      await hostExecutor.executeCommand('systemctl', ['daemon-reload']);
-      await hostExecutor.executeCommand('systemctl', ['enable', '--now', TWAMP_SERVER_UNIT]);
-      // Config is baked into ExecStart, not hot-reloadable — a Configure
-      // re-run always restarts to pick up the new args, same reasoning as
-      // every other module's config-file-based restart-on-Configure.
-      await hostExecutor.executeCommand('systemctl', ['restart', TWAMP_SERVER_UNIT]);
-
-      const prevState = readTwampState() ?? {};
-      writeTwampState({
-        ...prevState,
-        server: {
-          configuredWithVersion: getAppVersion(),
-          listenIp: resolvedListenIp,
-          listenPort: resolvedPort,
-          enableFull: resolvedEnableFull,
-          enableLight: resolvedEnableLight,
-          modes: resolvedModes,
-          secretKeyId: secretKeyId || undefined,
-          secretValue: secretValue || undefined,
-          allowCidrs: cleanCidrs,
-        },
-      });
-
-      await auditLogger.log({
-        action: 'twamp_server_configure', user,
-        details: `listen=${resolvedListenIp}:${resolvedPort} full=${resolvedEnableFull} light=${resolvedEnableLight} modes=${resolvedModes.join(',')}`,
-        success: true,
-      });
-      res.json({ success: true });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'twamp server configure error');
-      await auditLogger.log({ action: 'twamp_server_configure', user, details: String(err), success: false });
-      res.status(500).json({ success: false, error: String(err) });
-    }
+    await auditLogger.log({ action: 'twamp_server_configure', user, details: 'configured', success: true });
+    res.json({ success: true });
   });
 
   router.post('/server/start', requireAdmin, async (req: Request, res: Response) => {

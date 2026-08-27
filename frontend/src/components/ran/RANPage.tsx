@@ -18,12 +18,22 @@ interface ConnectedRadio {
   plmn?: string;
 }
 
+interface UeApnSession {
+  apn: string;
+  ip: string;
+}
+
 interface ActiveUE {
+  // Primary session — mirrors sessions[0]. Kept for any place that only
+  // needs a single at-a-glance value.
   ip: string;
   imsi: string;
   cmState?: string;
   dnn?: string;
   apn?: string;
+  // Every concurrent PDU/PDN session this UE currently holds (one per
+  // APN — e.g. "internet" + "ims" for VoLTE). Always at least one entry.
+  sessions?: UeApnSession[];
   sliceSst?: number;
   sliceSd?: string;
   securityEnc?: string;
@@ -33,6 +43,14 @@ interface ActiveUE {
   radioIp?: string;
   metricsOnly?: boolean;
   nickname?: string;
+}
+
+// sessions[] is always populated by the backend now, but this guards
+// against an older cached API response / metrics-fallback edge case that
+// might not have it, so the UI never crashes on a missing array.
+function ueSessions(ue: ActiveUE): UeApnSession[] {
+  if (ue.sessions && ue.sessions.length > 0) return ue.sessions;
+  return [{ apn: ue.dnn || ue.apn || '', ip: ue.ip }];
 }
 
 function formatAmbr(bps?: number): string {
@@ -84,6 +102,7 @@ function RadioTagCell({ ip, nickname, isAdmin, onSave }: {
 // ── UE sub-row ────────────────────────────────────────────────────────────────
 
 function UESubRow({ ue, gen, onNavigate }: { ue: ActiveUE; gen: '4G' | '5G'; onNavigate?: (imsi: string) => void }): JSX.Element {
+  const sessions = ueSessions(ue);
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2/40 transition-colors">
       <ChevronRight className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
@@ -91,8 +110,16 @@ function UESubRow({ ue, gen, onNavigate }: { ue: ActiveUE; gen: '4G' | '5G'; onN
         <button onClick={() => onNavigate?.(ue.imsi)} className="text-xs font-mono text-nms-accent hover:underline text-left truncate block">{ue.imsi}</button>
         {ue.nickname && <span className="text-xs text-nms-text-dim block truncate">{ue.nickname}</span>}
       </div>
-      <span className="w-28 text-xs font-mono text-nms-text text-center flex-shrink-0">{ue.ip || '—'}</span>
-      <span className="w-20 text-xs font-mono text-nms-text-dim text-center flex-shrink-0 truncate">{ue.dnn || ue.apn || '—'}</span>
+      <div className="w-28 flex-shrink-0 flex flex-col items-center">
+        {sessions.map((s, i) => (
+          <span key={i} className="text-xs font-mono text-nms-text">{s.ip || '—'}</span>
+        ))}
+      </div>
+      <div className="w-20 flex-shrink-0 flex flex-col items-center">
+        {sessions.map((s, i) => (
+          <span key={i} className="text-xs font-mono text-nms-text-dim truncate">{s.apn || '—'}</span>
+        ))}
+      </div>
       <div className="w-20 flex justify-end flex-shrink-0">
         <span className={clsx('inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium',
           (ue.cmState === 'connected' || !ue.cmState) ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-text-dim/10 text-nms-text-dim')}>
@@ -1155,7 +1182,11 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                       )}
                     </td>
                     <td className="px-3 py-2.5 font-mono text-nms-text text-xs">
-                      {ue.metricsOnly ? <span className="text-nms-text-dim italic">—</span> : ue.ip || <span className="text-nms-text-dim">—</span>}
+                      {ue.metricsOnly ? <span className="text-nms-text-dim italic">—</span> : (
+                        <div className="flex flex-col gap-0.5">
+                          {ueSessions(ue).map((s, i) => <span key={i}>{s.ip || <span className="text-nms-text-dim">—</span>}</span>)}
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 font-mono text-xs">
                       {ue.radioIp ? (
@@ -1175,7 +1206,11 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                         </span>
                       ) : <span className="text-nms-text-dim">—</span>}
                     </td>
-                    <td className="px-3 py-2.5 text-nms-text font-mono text-xs">{ue.dnn || ue.apn || <span className="text-nms-text-dim">—</span>}</td>
+                    <td className="px-3 py-2.5 text-nms-text font-mono text-xs">
+                      <div className="flex flex-col gap-0.5">
+                        {ueSessions(ue).map((s, i) => <span key={i}>{s.apn || <span className="text-nms-text-dim">—</span>}</span>)}
+                      </div>
+                    </td>
                     <td className="px-3 py-2.5 text-center">
                       {ue.securityEnc || ue.securityInt ? (
                         <span className="inline-flex items-center gap-1 text-xs text-nms-text-dim">

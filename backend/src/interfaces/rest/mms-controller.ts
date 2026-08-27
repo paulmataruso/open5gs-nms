@@ -338,7 +338,7 @@ interface MmsState {
   installedWithVersion?: string;
 }
 
-function readMmsState(): MmsState | null {
+export function readMmsState(): MmsState | null {
   if (!fs.existsSync(HOST_MMS_STATE)) return null;
   try { return JSON.parse(fs.readFileSync(HOST_MMS_STATE, 'utf-8')); } catch { return null; }
 }
@@ -558,6 +558,308 @@ async function registerSmppUpstream(esmeName: string, esmePassword: string): Pro
   }
 }
 
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same install logic in-process — write() is the only side-channel.
+export async function installMms(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const spawnStream = (bashScript: string): Promise<number> =>
+      new Promise(resolve => {
+        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
+        child.stdout.on('data', (d: Buffer) => write(d.toString()));
+        child.stderr.on('data', (d: Buffer) => write(d.toString()));
+        child.on('close', (code) => resolve(code ?? 1));
+      });
+
+    try {
+      write('=== Installing build dependencies (build-essential, make, git, sqlite3) ===');
+      // Deliberately does NOT apt-get install npm: this host's Node.js comes
+      // from NodeSource (deb.nodesource.com), which bundles its own npm —
+      // confirmed live that Ubuntu's distro `npm` package then conflicts
+      // (wants a completely separate `node-*` transitive dependency tree
+      // that was never installed alongside a NodeSource Node.js, apt refuses
+      // the whole install with "unmet dependencies"/"held broken packages").
+      // Only install npm via apt if this host genuinely has neither.
+      const depsExit = await spawnStream(
+        `set -e\n` +
+        `DEBIAN_FRONTEND=noninteractive apt-get update -q\n` +
+        `DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential make git sqlite3\n` +
+        `if command -v npm >/dev/null 2>&1; then\n` +
+        `  echo "npm already present ($(npm --version)) — skipping apt npm package."\n` +
+        `else\n` +
+        `  DEBIAN_FRONTEND=noninteractive apt-get install -y npm\n` +
+        `fi`
+      );
+      if (depsExit !== 0) {
+        write(`\n❌ apt-get install failed (exit ${depsExit}).`);
+        return { success: false, error: `apt exit ${depsExit}` };
+      }
+
+      write(`\n=== Ensuring Go ${GO_VERSION}+ toolchain ===`);
+      const goExit = await spawnStream(
+        `set -e\n` +
+        `NEED_GO=1\n` +
+        `if [ -x /usr/local/go/bin/go ]; then\n` +
+        `  CURVER=$(/usr/local/go/bin/go version | grep -oE 'go[0-9]+\\.[0-9]+(\\.[0-9]+)?' | sed 's/^go//')\n` +
+        `  TOPVER=$(printf '%s\\n%s\\n' "${GO_VERSION}" "$CURVER" | sort -V | tail -1)\n` +
+        `  if [ "$TOPVER" = "$CURVER" ]; then NEED_GO=0; fi\n` +
+        `fi\n` +
+        `if [ "$NEED_GO" = "1" ]; then\n` +
+        `  ARCH=$(uname -m)\n` +
+        `  case $ARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac\n` +
+        `  echo "Downloading go${GO_VERSION}.linux-$GOARCH.tar.gz..."\n` +
+        `  curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-$GOARCH.tar.gz"\n` +
+        `  rm -rf /usr/local/go\n` +
+        `  tar -C /usr/local -xzf /tmp/go.tar.gz\n` +
+        `  rm -f /tmp/go.tar.gz\n` +
+        `  echo "Installed: $(/usr/local/go/bin/go version)"\n` +
+        `else\n` +
+        `  echo "Already have: $(/usr/local/go/bin/go version)"\n` +
+        `fi`
+      );
+      if (goExit !== 0) {
+        write(`\n❌ Go toolchain setup failed (exit ${goExit}).`);
+        return { success: false, error: `go setup exit ${goExit}` };
+      }
+
+      write('\n=== Cloning VectorCore MMSC ===');
+      await spawnStream(`[ -d ${VC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-mmsc.git ${VC_DIR}`);
+
+      // Real bug, confirmed live (2026-08-01): VectorCore's own well-known
+      // content-type token table (internal/mmspdu/content_type.go) has
+      // 0xA9 mapped to "image/png" - wrong on both counts. Verified against
+      // the real, authoritative WAP-WINA WSP Content Type registry
+      // (wapforum.org/wina/wsp-content-type.htm): image/png's assigned
+      // number is 0x20 (well-known token 0x80|0x20 = 0xA0, not 0xA9), and
+      // 0xA9 (assigned number 0x29) actually belongs to a completely
+      // different type, application/vnd.wap.wbxml. A real phone sending an
+      // MMS with a PNG attachment uses the correct standard token 0xA0,
+      // which VectorCore's decoder doesn't recognize at all (logs
+      // "mmspdu: unsupported content-type token 0xa0" and drops the
+      // message) - this looked exactly like "MMS is broken" from the
+      // outside but only affected PNG attachments specifically; GIF (0x9D)
+      // and JPEG (0x9E) were already correct in the table. Idempotent
+      // (line-anchored) so it's safe to re-run against an already-patched
+      // clone.
+      write('\n=== Patching VectorCore content_type.go (PNG token fix) ===');
+      const contentTypePatchExit = await spawnStream(
+        'set -e\n' +
+        'python3 - <<\'PYEOF\'\n' +
+        'import sys\n' +
+        `path = "${VC_DIR}/internal/mmspdu/content_type.go"\n` +
+        'with open(path) as f:\n' +
+        '    content = f.read()\n' +
+        'changed = False\n' +
+        'decode_old = \'0xA9: "image/png",\'\n' +
+        'decode_new = \'0xA0: "image/png",\\n\\t0xA9: "application/vnd.wap.wbxml",\'\n' +
+        'encode_old = \'"image/png":                             0xA9,\'\n' +
+        'encode_new = \'"image/png":                             0xA0,\\n\\t"application/vnd.wap.wbxml":            0xA9,\'\n' +
+        'if decode_old in content:\n' +
+        '    content = content.replace(decode_old, decode_new, 1)\n' +
+        '    changed = True\n' +
+        'elif "0xA0:" in content and \'"image/png"\' in content.split("0xA0:")[1][:40]:\n' +
+        '    print("already patched (decode side) - skipping")\n' +
+        'else:\n' +
+        '    print("ERROR: decode-side anchor not found - VectorCore source may have changed, skipping patch, please review manually.")\n' +
+        '    sys.exit(1)\n' +
+        'if encode_old in content:\n' +
+        '    content = content.replace(encode_old, encode_new, 1)\n' +
+        '    changed = True\n' +
+        'elif \'"image/png":                             0xA0,\' in content:\n' +
+        '    print("already patched (encode side) - skipping")\n' +
+        'else:\n' +
+        '    print("ERROR: encode-side anchor not found - VectorCore source may have changed, skipping patch, please review manually.")\n' +
+        '    sys.exit(1)\n' +
+        'if changed:\n' +
+        '    with open(path, "w") as f:\n' +
+        '        f.write(content)\n' +
+        '    print("patched")\n' +
+        'else:\n' +
+        '    print("already patched - skipping")\n' +
+        'PYEOF\n'
+      );
+      if (contentTypePatchExit !== 0) {
+        write('\n⚠️ WARNING: content_type.go PNG-token patch FAILED (see errors above). ' +
+          'MMS attachments encoded as PNG will fail to decode with "unsupported content-type token 0xa0" ' +
+          'until this is fixed and Install is re-run - the patch is idempotent and will retry automatically.\n');
+      } else {
+        write('✅ content_type.go patched.\n');
+      }
+
+      write('\n=== Building (web UI + Go binary) ===');
+      const buildExit = await spawnStream(
+        `set -e\n` +
+        `export PATH=/usr/local/go/bin:$PATH\n` +
+        `export GOCACHE=${VC_DIR}/.gocache\n` +
+        `export GOMODCACHE=${VC_DIR}/.gomodcache\n` +
+        `cd ${VC_DIR}\n` +
+        // --include=dev: this host runs with NODE_ENV=production set globally
+        // (for the NMS's own Node processes) — confirmed live that a plain
+        // `npm install` then silently skips devDependencies, which is where
+        // vite (the actual build tool) lives, failing "vite: not found" at
+        // build time with no earlier warning. --include=dev forces them in
+        // regardless of NODE_ENV.
+        `npm install --include=dev --prefix web\n` +
+        `make build`
+      );
+      if (buildExit !== 0) {
+        write(`\n❌ Build failed (exit ${buildExit}).`);
+        return { success: false, error: `build exit ${buildExit}` };
+      }
+
+      write('\n=== Installing systemd unit (content as shipped, renamed to avoid colliding with the real vectorcore-smsc project) ===');
+      await spawnStream(`cp ${VC_DIR}/systemd/${UPSTREAM_SYSTEMD_UNIT_FILENAME}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
+
+      // Record installedWithVersion (preserving any existing config state —
+      // Install can run standalone before Configure on a fresh deploy, or
+      // as a re-install picking up a source patch on an already-configured
+      // one) so /status can tell an operator this deployment's VectorCore
+      // binary predates a fix shipped since then and prompt a re-Install —
+      // see the MmsState.installedWithVersion comment above.
+      const existingState = readMmsState();
+      writeMmsState({ ...(existingState ?? {} as MmsState), installedWithVersion: getAppVersion() });
+
+      write('\n✅ VectorCore MMSC installed. Run Configure next.');
+      return { success: true };
+    } catch (err) {
+      write(`\n❌ Install error: ${String(err)}`);
+      return { success: false, error: String(err) };
+    }
+}
+
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same configure logic in-process, always passing the last-saved
+// mm1PublicIp explicitly rather than an empty body — re-running Configure with
+// defaults would silently reset a real per-deployment value.
+export async function configureMms(
+  input: { mm1PublicIp: string },
+  subscriberRepo: ISubscriberRepository,
+): Promise<{ success: boolean; error?: string; message?: string }> {
+  const { mm1PublicIp } = input;
+  try {
+      if (!mm1PublicIp || !/^\d{1,3}(\.\d{1,3}){3}$/.test(mm1PublicIp)) {
+        return { success: false, error: 'mm1PublicIp is required and must be an IPv4 address reachable from real UEs' };
+      }
+
+      if (!isImsConfigured()) {
+        return { success: false, error: 'IMS is not configured yet — configure IMS on the IMS page first.' };
+      }
+      const smsConfig = readCurrentSmsConfig();
+      if (!smsConfig) {
+        return { success: false, error: 'SMS (SGs) is not configured yet — configure SMS on the SMS/MMS page first (MMS delivery notifications ride on its SMPP interface).' };
+      }
+      if (!fs.existsSync(`${HOST_ROOT}${VC_BIN}`)) {
+        return { success: false, error: 'VectorCore MMSC is not installed yet — run Install first.' };
+      }
+
+      // Reuse a previously-generated ESME password across re-Configure calls
+      // rather than rotating it every time — avoids a spurious mismatch
+      // between what's registered on osmo-msc and what's in VectorCore's own
+      // smpp_upstream row if one half of this sequence fails partway.
+      //
+      // 4 bytes -> 8 hex chars: SMPP 3.4's bind PDU password field is capped
+      // at 8 characters by the protocol spec itself (confirmed live: osmo-msc
+      // rejected a longer one at the wire level — "smpp34_unpack(): password:
+      // Data length is invalid" — even though its own VTY happily accepted
+      // setting a longer password with no complaint, since VTY parsing
+      // doesn't enforce SMPP PDU limits, only the real bind path does).
+      const existing = readMmsState();
+      const esmePassword = existing?.esmePassword ?? crypto.randomBytes(4).toString('hex');
+
+      await nsenter('mkdir', ['-p', VC_ETC, VC_DATA, `${VC_DATA}/store`, VC_LOG]);
+      const mm4Hostname = `mmsc.${mm1PublicIp}`;
+      fs.writeFileSync(`${HOST_ROOT}${VC_CFG}`, mmscYamlCfg(mm1PublicIp, mm4Hostname), 'utf-8');
+
+      const wasActive = (await nsenter('systemctl', ['is-active', SYSTEMD_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+      if (wasActive) {
+        await nsenter('systemctl', ['restart', SYSTEMD_UNIT]);
+      } else {
+        await nsenter('systemctl', ['enable', '--now', SYSTEMD_UNIT]);
+      }
+
+      // Deploy/refresh the MM1 MSISDN header-injection proxy (see block
+      // comment near MM1_PROXY_SRC above) — source + binary regenerated on
+      // every Configure so a change to the generated source always takes
+      // effect, same as VectorCore's own config file above.
+      fs.writeFileSync(`${HOST_ROOT}${MM1_PROXY_SRC}`, mm1MsisdnProxyGo(), 'utf-8');
+      const proxyBuild = await nsenter('bash', ['-c',
+        `export PATH=/usr/local/go/bin:$PATH && export GOCACHE=${VC_DIR}/.gocache && ` +
+        `cd ${VC_DIR} && go build -o ${MM1_PROXY_BIN} ${MM1_PROXY_SRC}`,
+      ]).catch(err => ({ stdout: '', stderr: String(err) }));
+      if (!fs.existsSync(`${HOST_ROOT}${MM1_PROXY_BIN}`)) {
+        return { success: false, error: `Failed to compile MM1 MSISDN proxy: ${proxyBuild.stderr}` };
+      }
+      fs.writeFileSync(`${HOST_ROOT}${MM1_PROXY_UNIT_PATH}`, mm1ProxySystemdUnit(), 'utf-8');
+      await writeMmsIpMsisdnMap(subscriberRepo);
+      await nsenter('systemctl', ['daemon-reload']);
+      const proxyWasActive = (await nsenter('systemctl', ['is-active', MM1_PROXY_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+      if (proxyWasActive) {
+        await nsenter('systemctl', ['restart', MM1_PROXY_UNIT]);
+      } else {
+        await nsenter('systemctl', ['enable', '--now', MM1_PROXY_UNIT]);
+      }
+
+      const apiUp = await waitForVectorCoreApi();
+      if (!apiUp) {
+        // VectorCore logs to its own file (log.file in mmsc.yaml), NOT
+        // journal — confirmed live: systemd reports the unit as running even
+        // when its admin listener failed to bind (e.g. a port collision with
+        // another already-running service), because only the *admin*
+        // listener goroutine errors out, the process itself doesn't exit.
+        // journalctl would show nothing useful here; surface the real log instead.
+        let tail = '';
+        try {
+          const { stdout } = await nsenter('tail', ['-n', '15', VC_LOG_FILE]);
+          tail = stdout;
+        } catch { /* log file may not exist yet */ }
+        return { success: false, error: `VectorCore MMSC did not come up (healthz never responded on :${API_PORT}). Last lines of ${VC_LOG_FILE}:\n${tail}` };
+      }
+
+      const esmeResult = await upsertSmppEsme(ESME_NAME, esmePassword);
+      if (!esmeResult.success) {
+        return { success: false, error: `Failed to register SMPP ESME on osmo-msc: ${esmeResult.output}` };
+      }
+
+      await registerSmppUpstream(ESME_NAME, esmePassword);
+
+      // Spread existing state first so installedWithVersion (written by
+      // /install, see MmsState comment) survives a subsequent Configure —
+      // a plain object literal here would silently wipe it every time.
+      writeMmsState({ ...(readMmsState() ?? {} as MmsState), deliveryPath: 'sgs', mm1PublicIp, esmeName: ESME_NAME, esmePassword, configuredWithVersion: getAppVersion() });
+
+      return { success: true, message: 'VectorCore MMSC configured and wired to osmo-msc via SMPP.' };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+export interface MmsStalenessResult {
+  installed: boolean;
+  hasSavedConfig: boolean;
+  installStale: boolean;
+  configStale: boolean;
+  installedWithVersion?: string;
+  configuredWithVersion?: string;
+  savedMm1PublicIp?: string;
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
+// comparison GET /status already does, without the rest of that endpoint's work.
+export async function getMmsStaleness(): Promise<MmsStalenessResult> {
+  const installed = fs.existsSync(`${HOST_ROOT}${VC_BIN}`);
+  const state = readMmsState();
+  const appVersion = getAppVersion();
+  const configStale = !!state && state.configuredWithVersion !== appVersion;
+  const installStale = installed && state?.installedWithVersion !== appVersion;
+  return {
+    installed,
+    hasSavedConfig: !!state,
+    installStale,
+    configStale,
+    installedWithVersion: state?.installedWithVersion,
+    configuredWithVersion: state?.configuredWithVersion,
+    savedMm1PublicIp: state?.mm1PublicIp,
+  };
+}
+
 export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
@@ -645,281 +947,22 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-
-    const spawnStream = (bashScript: string): Promise<number> =>
-      new Promise(resolve => {
-        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
-        child.stdout.on('data', (d: Buffer) => write(d.toString()));
-        child.stderr.on('data', (d: Buffer) => write(d.toString()));
-        child.on('close', (code) => resolve(code ?? 1));
-      });
-
-    try {
-      write('=== Installing build dependencies (build-essential, make, git, sqlite3) ===');
-      // Deliberately does NOT apt-get install npm: this host's Node.js comes
-      // from NodeSource (deb.nodesource.com), which bundles its own npm —
-      // confirmed live that Ubuntu's distro `npm` package then conflicts
-      // (wants a completely separate `node-*` transitive dependency tree
-      // that was never installed alongside a NodeSource Node.js, apt refuses
-      // the whole install with "unmet dependencies"/"held broken packages").
-      // Only install npm via apt if this host genuinely has neither.
-      const depsExit = await spawnStream(
-        `set -e\n` +
-        `DEBIAN_FRONTEND=noninteractive apt-get update -q\n` +
-        `DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential make git sqlite3\n` +
-        `if command -v npm >/dev/null 2>&1; then\n` +
-        `  echo "npm already present ($(npm --version)) — skipping apt npm package."\n` +
-        `else\n` +
-        `  DEBIAN_FRONTEND=noninteractive apt-get install -y npm\n` +
-        `fi`
-      );
-      if (depsExit !== 0) {
-        write(`\n❌ apt-get install failed (exit ${depsExit}).`);
-        await auditLogger.log({ action: 'mms_install', user, details: `apt exit ${depsExit}`, success: false });
-        return res.end();
-      }
-
-      write(`\n=== Ensuring Go ${GO_VERSION}+ toolchain ===`);
-      const goExit = await spawnStream(
-        `set -e\n` +
-        `NEED_GO=1\n` +
-        `if [ -x /usr/local/go/bin/go ]; then\n` +
-        `  CURVER=$(/usr/local/go/bin/go version | grep -oE 'go[0-9]+\\.[0-9]+(\\.[0-9]+)?' | sed 's/^go//')\n` +
-        `  TOPVER=$(printf '%s\\n%s\\n' "${GO_VERSION}" "$CURVER" | sort -V | tail -1)\n` +
-        `  if [ "$TOPVER" = "$CURVER" ]; then NEED_GO=0; fi\n` +
-        `fi\n` +
-        `if [ "$NEED_GO" = "1" ]; then\n` +
-        `  ARCH=$(uname -m)\n` +
-        `  case $ARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac\n` +
-        `  echo "Downloading go${GO_VERSION}.linux-$GOARCH.tar.gz..."\n` +
-        `  curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-$GOARCH.tar.gz"\n` +
-        `  rm -rf /usr/local/go\n` +
-        `  tar -C /usr/local -xzf /tmp/go.tar.gz\n` +
-        `  rm -f /tmp/go.tar.gz\n` +
-        `  echo "Installed: $(/usr/local/go/bin/go version)"\n` +
-        `else\n` +
-        `  echo "Already have: $(/usr/local/go/bin/go version)"\n` +
-        `fi`
-      );
-      if (goExit !== 0) {
-        write(`\n❌ Go toolchain setup failed (exit ${goExit}).`);
-        await auditLogger.log({ action: 'mms_install', user, details: `go setup exit ${goExit}`, success: false });
-        return res.end();
-      }
-
-      write('\n=== Cloning VectorCore MMSC ===');
-      await spawnStream(`[ -d ${VC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-mmsc.git ${VC_DIR}`);
-
-      // Real bug, confirmed live (2026-08-01): VectorCore's own well-known
-      // content-type token table (internal/mmspdu/content_type.go) has
-      // 0xA9 mapped to "image/png" - wrong on both counts. Verified against
-      // the real, authoritative WAP-WINA WSP Content Type registry
-      // (wapforum.org/wina/wsp-content-type.htm): image/png's assigned
-      // number is 0x20 (well-known token 0x80|0x20 = 0xA0, not 0xA9), and
-      // 0xA9 (assigned number 0x29) actually belongs to a completely
-      // different type, application/vnd.wap.wbxml. A real phone sending an
-      // MMS with a PNG attachment uses the correct standard token 0xA0,
-      // which VectorCore's decoder doesn't recognize at all (logs
-      // "mmspdu: unsupported content-type token 0xa0" and drops the
-      // message) - this looked exactly like "MMS is broken" from the
-      // outside but only affected PNG attachments specifically; GIF (0x9D)
-      // and JPEG (0x9E) were already correct in the table. Idempotent
-      // (line-anchored) so it's safe to re-run against an already-patched
-      // clone.
-      write('\n=== Patching VectorCore content_type.go (PNG token fix) ===');
-      const contentTypePatchExit = await spawnStream(
-        'set -e\n' +
-        'python3 - <<\'PYEOF\'\n' +
-        'import sys\n' +
-        `path = "${VC_DIR}/internal/mmspdu/content_type.go"\n` +
-        'with open(path) as f:\n' +
-        '    content = f.read()\n' +
-        'changed = False\n' +
-        'decode_old = \'0xA9: "image/png",\'\n' +
-        'decode_new = \'0xA0: "image/png",\\n\\t0xA9: "application/vnd.wap.wbxml",\'\n' +
-        'encode_old = \'"image/png":                             0xA9,\'\n' +
-        'encode_new = \'"image/png":                             0xA0,\\n\\t"application/vnd.wap.wbxml":            0xA9,\'\n' +
-        'if decode_old in content:\n' +
-        '    content = content.replace(decode_old, decode_new, 1)\n' +
-        '    changed = True\n' +
-        'elif "0xA0:" in content and \'"image/png"\' in content.split("0xA0:")[1][:40]:\n' +
-        '    print("already patched (decode side) - skipping")\n' +
-        'else:\n' +
-        '    print("ERROR: decode-side anchor not found - VectorCore source may have changed, skipping patch, please review manually.")\n' +
-        '    sys.exit(1)\n' +
-        'if encode_old in content:\n' +
-        '    content = content.replace(encode_old, encode_new, 1)\n' +
-        '    changed = True\n' +
-        'elif \'"image/png":                             0xA0,\' in content:\n' +
-        '    print("already patched (encode side) - skipping")\n' +
-        'else:\n' +
-        '    print("ERROR: encode-side anchor not found - VectorCore source may have changed, skipping patch, please review manually.")\n' +
-        '    sys.exit(1)\n' +
-        'if changed:\n' +
-        '    with open(path, "w") as f:\n' +
-        '        f.write(content)\n' +
-        '    print("patched")\n' +
-        'else:\n' +
-        '    print("already patched - skipping")\n' +
-        'PYEOF\n'
-      );
-      if (contentTypePatchExit !== 0) {
-        write('\n⚠️ WARNING: content_type.go PNG-token patch FAILED (see errors above). ' +
-          'MMS attachments encoded as PNG will fail to decode with "unsupported content-type token 0xa0" ' +
-          'until this is fixed and Install is re-run - the patch is idempotent and will retry automatically.\n');
-      } else {
-        write('✅ content_type.go patched.\n');
-      }
-
-      write('\n=== Building (web UI + Go binary) ===');
-      const buildExit = await spawnStream(
-        `set -e\n` +
-        `export PATH=/usr/local/go/bin:$PATH\n` +
-        `export GOCACHE=${VC_DIR}/.gocache\n` +
-        `export GOMODCACHE=${VC_DIR}/.gomodcache\n` +
-        `cd ${VC_DIR}\n` +
-        // --include=dev: this host runs with NODE_ENV=production set globally
-        // (for the NMS's own Node processes) — confirmed live that a plain
-        // `npm install` then silently skips devDependencies, which is where
-        // vite (the actual build tool) lives, failing "vite: not found" at
-        // build time with no earlier warning. --include=dev forces them in
-        // regardless of NODE_ENV.
-        `npm install --include=dev --prefix web\n` +
-        `make build`
-      );
-      if (buildExit !== 0) {
-        write(`\n❌ Build failed (exit ${buildExit}).`);
-        await auditLogger.log({ action: 'mms_install', user, details: `build exit ${buildExit}`, success: false });
-        return res.end();
-      }
-
-      write('\n=== Installing systemd unit (content as shipped, renamed to avoid colliding with the real vectorcore-smsc project) ===');
-      await spawnStream(`cp ${VC_DIR}/systemd/${UPSTREAM_SYSTEMD_UNIT_FILENAME}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
-
-      // Record installedWithVersion (preserving any existing config state —
-      // Install can run standalone before Configure on a fresh deploy, or
-      // as a re-install picking up a source patch on an already-configured
-      // one) so /status can tell an operator this deployment's VectorCore
-      // binary predates a fix shipped since then and prompt a re-Install —
-      // see the MmsState.installedWithVersion comment above.
-      const existingState = readMmsState();
-      writeMmsState({ ...(existingState ?? {} as MmsState), installedWithVersion: getAppVersion() });
-
-      await auditLogger.log({ action: 'mms_install', user, details: 'success', success: true });
-      write('\n✅ VectorCore MMSC installed. Run Configure next.');
-      res.end();
-    } catch (err) {
-      write(`\n❌ Install error: ${String(err)}`);
-      await auditLogger.log({ action: 'mms_install', user, details: String(err), success: false });
-      res.end();
-    }
+    const result = await installMms(write);
+    await auditLogger.log({ action: 'mms_install', user, details: result.error ?? 'success', success: result.success });
+    res.end();
   });
 
   // POST /api/mms/configure — body: { mm1PublicIp }
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    try {
-      const { mm1PublicIp } = req.body as { mm1PublicIp?: string };
-      if (!mm1PublicIp || !/^\d{1,3}(\.\d{1,3}){3}$/.test(mm1PublicIp)) {
-        return res.status(400).json({ success: false, error: 'mm1PublicIp is required and must be an IPv4 address reachable from real UEs' });
-      }
-
-      if (!isImsConfigured()) {
-        return res.status(400).json({ success: false, error: 'IMS is not configured yet — configure IMS on the IMS page first.' });
-      }
-      const smsConfig = readCurrentSmsConfig();
-      if (!smsConfig) {
-        return res.status(400).json({ success: false, error: 'SMS (SGs) is not configured yet — configure SMS on the SMS/MMS page first (MMS delivery notifications ride on its SMPP interface).' });
-      }
-      if (!fs.existsSync(`${HOST_ROOT}${VC_BIN}`)) {
-        return res.status(400).json({ success: false, error: 'VectorCore MMSC is not installed yet — run Install first.' });
-      }
-
-      // Reuse a previously-generated ESME password across re-Configure calls
-      // rather than rotating it every time — avoids a spurious mismatch
-      // between what's registered on osmo-msc and what's in VectorCore's own
-      // smpp_upstream row if one half of this sequence fails partway.
-      //
-      // 4 bytes -> 8 hex chars: SMPP 3.4's bind PDU password field is capped
-      // at 8 characters by the protocol spec itself (confirmed live: osmo-msc
-      // rejected a longer one at the wire level — "smpp34_unpack(): password:
-      // Data length is invalid" — even though its own VTY happily accepted
-      // setting a longer password with no complaint, since VTY parsing
-      // doesn't enforce SMPP PDU limits, only the real bind path does).
-      const existing = readMmsState();
-      const esmePassword = existing?.esmePassword ?? crypto.randomBytes(4).toString('hex');
-
-      await nsenter('mkdir', ['-p', VC_ETC, VC_DATA, `${VC_DATA}/store`, VC_LOG]);
-      const mm4Hostname = `mmsc.${mm1PublicIp}`;
-      fs.writeFileSync(`${HOST_ROOT}${VC_CFG}`, mmscYamlCfg(mm1PublicIp, mm4Hostname), 'utf-8');
-
-      const wasActive = (await nsenter('systemctl', ['is-active', SYSTEMD_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
-      if (wasActive) {
-        await nsenter('systemctl', ['restart', SYSTEMD_UNIT]);
-      } else {
-        await nsenter('systemctl', ['enable', '--now', SYSTEMD_UNIT]);
-      }
-
-      // Deploy/refresh the MM1 MSISDN header-injection proxy (see block
-      // comment near MM1_PROXY_SRC above) — source + binary regenerated on
-      // every Configure so a change to the generated source always takes
-      // effect, same as VectorCore's own config file above.
-      fs.writeFileSync(`${HOST_ROOT}${MM1_PROXY_SRC}`, mm1MsisdnProxyGo(), 'utf-8');
-      const proxyBuild = await nsenter('bash', ['-c',
-        `export PATH=/usr/local/go/bin:$PATH && export GOCACHE=${VC_DIR}/.gocache && ` +
-        `cd ${VC_DIR} && go build -o ${MM1_PROXY_BIN} ${MM1_PROXY_SRC}`,
-      ]).catch(err => ({ stdout: '', stderr: String(err) }));
-      if (!fs.existsSync(`${HOST_ROOT}${MM1_PROXY_BIN}`)) {
-        return res.status(500).json({ success: false, error: `Failed to compile MM1 MSISDN proxy: ${proxyBuild.stderr}` });
-      }
-      fs.writeFileSync(`${HOST_ROOT}${MM1_PROXY_UNIT_PATH}`, mm1ProxySystemdUnit(), 'utf-8');
-      await writeMmsIpMsisdnMap(subscriberRepo);
-      await nsenter('systemctl', ['daemon-reload']);
-      const proxyWasActive = (await nsenter('systemctl', ['is-active', MM1_PROXY_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
-      if (proxyWasActive) {
-        await nsenter('systemctl', ['restart', MM1_PROXY_UNIT]);
-      } else {
-        await nsenter('systemctl', ['enable', '--now', MM1_PROXY_UNIT]);
-      }
-
-      const apiUp = await waitForVectorCoreApi();
-      if (!apiUp) {
-        // VectorCore logs to its own file (log.file in mmsc.yaml), NOT
-        // journal — confirmed live: systemd reports the unit as running even
-        // when its admin listener failed to bind (e.g. a port collision with
-        // another already-running service), because only the *admin*
-        // listener goroutine errors out, the process itself doesn't exit.
-        // journalctl would show nothing useful here; surface the real log instead.
-        let tail = '';
-        try {
-          const { stdout } = await nsenter('tail', ['-n', '15', VC_LOG_FILE]);
-          tail = stdout;
-        } catch { /* log file may not exist yet */ }
-        return res.status(500).json({
-          success: false,
-          error: `VectorCore MMSC did not come up (healthz never responded on :${API_PORT}). Last lines of ${VC_LOG_FILE}:\n${tail}`,
-        });
-      }
-
-      const esmeResult = await upsertSmppEsme(ESME_NAME, esmePassword);
-      if (!esmeResult.success) {
-        return res.status(500).json({ success: false, error: `Failed to register SMPP ESME on osmo-msc: ${esmeResult.output}` });
-      }
-
-      await registerSmppUpstream(ESME_NAME, esmePassword);
-
-      // Spread existing state first so installedWithVersion (written by
-      // /install, see MmsState comment) survives a subsequent Configure —
-      // a plain object literal here would silently wipe it every time.
-      writeMmsState({ ...(readMmsState() ?? {} as MmsState), deliveryPath: 'sgs', mm1PublicIp, esmeName: ESME_NAME, esmePassword, configuredWithVersion: getAppVersion() });
-
-      await auditLogger.log({ action: 'mms_configure', user, details: `mm1PublicIp=${mm1PublicIp}`, success: true });
-      res.json({ success: true, message: 'VectorCore MMSC configured and wired to osmo-msc via SMPP.' });
-    } catch (err) {
-      await auditLogger.log({ action: 'mms_configure', user, details: String(err), success: false });
-      logger.error({ err: String(err) }, 'mms configure error');
-      res.status(500).json({ success: false, error: String(err) });
+    const { mm1PublicIp } = req.body as { mm1PublicIp?: string };
+    const result = await configureMms({ mm1PublicIp: mm1PublicIp ?? '' }, subscriberRepo);
+    if (!result.success) {
+      await auditLogger.log({ action: 'mms_configure', user, details: result.error ?? 'failed', success: false });
+      return res.status(400).json({ success: false, error: result.error });
     }
+    await auditLogger.log({ action: 'mms_configure', user, details: `mm1PublicIp=${mm1PublicIp}`, success: true });
+    res.json({ success: true, message: result.message });
   });
 
   // POST /api/mms/sync-subscribers — VectorCore has no REST endpoint for

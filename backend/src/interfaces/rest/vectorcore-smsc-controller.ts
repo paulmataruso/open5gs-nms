@@ -180,6 +180,177 @@ log:
 `;
 }
 
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same install logic in-process — write() is the only side-channel.
+export async function installVectorcoreSmsc(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const spawnStream = (bashScript: string): Promise<number> =>
+      new Promise(resolve => {
+        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
+        child.stdout.on('data', (d: Buffer) => write(d.toString()));
+        child.stderr.on('data', (d: Buffer) => write(d.toString()));
+        child.on('close', (code) => resolve(code ?? 1));
+      });
+
+    try {
+      write('=== Installing build dependencies (build-essential, make, git, sqlite3) ===');
+      const depsExit = await spawnStream(
+        `set -e\n` +
+        `DEBIAN_FRONTEND=noninteractive apt-get update -q\n` +
+        `DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential make git sqlite3\n` +
+        `if command -v npm >/dev/null 2>&1; then\n` +
+        `  echo "npm already present ($(npm --version)) — skipping apt npm package."\n` +
+        `else\n` +
+        `  DEBIAN_FRONTEND=noninteractive apt-get install -y npm\n` +
+        `fi`
+      );
+      if (depsExit !== 0) {
+        write(`\n❌ apt-get install failed (exit ${depsExit}).`);
+        return { success: false, error: `apt exit ${depsExit}` };
+      }
+
+      write(`\n=== Ensuring Go ${GO_VERSION}+ toolchain ===`);
+      const goExit = await spawnStream(
+        `set -e\n` +
+        `NEED_GO=1\n` +
+        `if [ -x /usr/local/go/bin/go ]; then\n` +
+        `  CURVER=$(/usr/local/go/bin/go version | grep -oE 'go[0-9]+\\.[0-9]+(\\.[0-9]+)?' | sed 's/^go//')\n` +
+        `  TOPVER=$(printf '%s\\n%s\\n' "${GO_VERSION}" "$CURVER" | sort -V | tail -1)\n` +
+        `  if [ "$TOPVER" = "$CURVER" ]; then NEED_GO=0; fi\n` +
+        `fi\n` +
+        `if [ "$NEED_GO" = "1" ]; then\n` +
+        `  ARCH=$(uname -m)\n` +
+        `  case $ARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac\n` +
+        `  echo "Downloading go${GO_VERSION}.linux-$GOARCH.tar.gz..."\n` +
+        `  curl -fsSL -o /tmp/go-smsc.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-$GOARCH.tar.gz"\n` +
+        `  rm -rf /usr/local/go\n` +
+        `  tar -C /usr/local -xzf /tmp/go-smsc.tar.gz\n` +
+        `  rm -f /tmp/go-smsc.tar.gz\n` +
+        `  echo "Installed: $(/usr/local/go/bin/go version)"\n` +
+        `else\n` +
+        `  echo "Already have: $(/usr/local/go/bin/go version)"\n` +
+        `fi`
+      );
+      if (goExit !== 0) {
+        write(`\n❌ Go toolchain setup failed (exit ${goExit}).`);
+        return { success: false, error: `go setup exit ${goExit}` };
+      }
+
+      write('\n=== Cloning VectorCore SMSC ===');
+      const SRC_PARENT_DIR = SRC_DIR.slice(0, SRC_DIR.lastIndexOf('/'));
+      await spawnStream(`mkdir -p ${SRC_PARENT_DIR} 2>/dev/null; [ -d ${SRC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-smsc.git ${SRC_DIR}`);
+
+      write('\n=== Building (web UI + Go binary) ===');
+      const buildExit = await spawnStream(
+        `set -e\n` +
+        `export PATH=/usr/local/go/bin:$PATH\n` +
+        `export GOCACHE=${SRC_DIR}/.gocache\n` +
+        `export GOMODCACHE=${SRC_DIR}/.gomodcache\n` +
+        // This host's NMS backend runs with NODE_ENV=production set (a normal
+        // choice for its own Node process) — child_process.spawn() inherits
+        // that into every nsenter'd command by default, and npm silently
+        // skips devDependencies when it sees NODE_ENV=production. This repo's
+        // own Makefile builds its embedded web UI via `cd web && npm ci &&
+        // npm run build`, and vite (the actual build tool) lives in
+        // devDependencies — confirmed live: this produced "added 48 packages"
+        // (deps only, no vite) instead of the full ~109, then "vite: not
+        // found" at build time with no earlier warning. Unlike
+        // mms-controller.ts's own install (which pre-populates node_modules
+        // itself with `npm install --include=dev` before calling make), this
+        // Makefile's `npm ci` always wipes node_modules first, so a
+        // pre-install doesn't survive — unset NODE_ENV instead, so npm never
+        // sees it in the first place.
+        `unset NODE_ENV\n` +
+        `cd ${SRC_DIR}\n` +
+        `make`
+      );
+      if (buildExit !== 0) {
+        write(`\n❌ Build failed (exit ${buildExit}).`);
+        return { success: false, error: `build exit ${buildExit}` };
+      }
+
+      write('\n=== Installing binary and systemd unit (content as shipped) ===');
+      await spawnStream(
+        `set -e\n` +
+        `mkdir -p ${VC_DIR}/bin ${VC_ETC} ${VC_DATA} ${VC_LOG}\n` +
+        `cp ${SRC_DIR}/bin/smsc ${VC_BIN}\n` +
+        `chmod +x ${VC_BIN}\n` +
+        `cp ${SRC_DIR}/systemd/${SYSTEMD_UNIT}.service ${SYSTEMD_UNIT_PATH}\n` +
+        // The shipped unit's ExecStart points at /opt/vectorcore/bin/smsc — this
+        // deployment installs under /opt/vectorcore/sms/bin/smsc instead (own
+        // subdirectory, see module header), so the copied unit needs its
+        // ExecStart/config path rewritten. Everything else (Restart=,
+        // dependencies, etc.) stays exactly as shipped.
+        `sed -i "s|ExecStart=.*|ExecStart=${VC_BIN} -c ${VC_CFG}|" ${SYSTEMD_UNIT_PATH}\n` +
+        `systemctl daemon-reload`
+      );
+
+      const existingState = readState();
+      writeState({ ...(existingState ?? {} as VectorcoreSmscState), imsDomain: existingState?.imsDomain ?? '', installedWithVersion: getAppVersion() });
+
+      write('\n✅ VectorCore SMSC installed. Run Configure next.');
+      return { success: true };
+    } catch (err) {
+      write(`\n❌ Install error: ${String(err)}`);
+      return { success: false, error: String(err) };
+    }
+}
+
+// Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// invoke the same configure logic in-process — zero-input, imsDomain is always
+// derived live from ims-controller.ts's own state, never a caller-supplied value.
+export async function configureVectorcoreSmsc(): Promise<{ success: boolean; error?: string; imsDomain?: string; sipAddress?: string }> {
+  try {
+      const imsState = readImsState();
+      if (!imsState) {
+        return { success: false, error: 'IMS is not configured yet — configure IMS first.' };
+      }
+      const { imsDomain } = imsState;
+      if (!fs.existsSync(`${HOST_ROOT}${VC_BIN}`)) {
+        return { success: false, error: 'VectorCore SMSC is not installed yet — run Install first.' };
+      }
+
+      const cfg = smscYamlCfg(imsDomain);
+      fs.mkdirSync(`${HOST_ROOT}${VC_ETC}`, { recursive: true });
+      fs.writeFileSync(`${HOST_ROOT}${VC_CFG}`, cfg, 'utf-8');
+
+      await nsenter('systemctl', ['enable', '--now', SYSTEMD_UNIT]);
+
+      writeState({ imsDomain, configuredWithVersion: getAppVersion(), installedWithVersion: readState()?.installedWithVersion });
+
+      return { success: true, imsDomain, sipAddress: `${SIP_BIND_IP}:${SIP_PORT}` };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, error: message };
+    }
+}
+
+export interface VectorcoreSmscStalenessResult {
+  installed: boolean;
+  hasSavedConfig: boolean;
+  installStale: boolean;
+  configStale: boolean;
+  installedWithVersion?: string;
+  configuredWithVersion?: string;
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
+// comparison GET /status already does, without the rest of that endpoint's work.
+export async function getVectorcoreSmscStaleness(): Promise<VectorcoreSmscStalenessResult> {
+  const installed = fs.existsSync(`${HOST_ROOT}${VC_BIN}`);
+  const state = readState();
+  const appVersion = getAppVersion();
+  const configStale = !!state && state.configuredWithVersion !== appVersion;
+  const installStale = installed && state?.installedWithVersion !== appVersion;
+  return {
+    installed,
+    hasSavedConfig: !!state,
+    installStale,
+    configStale,
+    installedWithVersion: state?.installedWithVersion,
+    configuredWithVersion: state?.configuredWithVersion,
+  };
+}
+
 export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
@@ -241,154 +412,22 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-
-    const spawnStream = (bashScript: string): Promise<number> =>
-      new Promise(resolve => {
-        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
-        child.stdout.on('data', (d: Buffer) => write(d.toString()));
-        child.stderr.on('data', (d: Buffer) => write(d.toString()));
-        child.on('close', (code) => resolve(code ?? 1));
-      });
-
-    try {
-      write('=== Installing build dependencies (build-essential, make, git, sqlite3) ===');
-      const depsExit = await spawnStream(
-        `set -e\n` +
-        `DEBIAN_FRONTEND=noninteractive apt-get update -q\n` +
-        `DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential make git sqlite3\n` +
-        `if command -v npm >/dev/null 2>&1; then\n` +
-        `  echo "npm already present ($(npm --version)) — skipping apt npm package."\n` +
-        `else\n` +
-        `  DEBIAN_FRONTEND=noninteractive apt-get install -y npm\n` +
-        `fi`
-      );
-      if (depsExit !== 0) {
-        write(`\n❌ apt-get install failed (exit ${depsExit}).`);
-        await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: `apt exit ${depsExit}`, success: false });
-        return res.end();
-      }
-
-      write(`\n=== Ensuring Go ${GO_VERSION}+ toolchain ===`);
-      const goExit = await spawnStream(
-        `set -e\n` +
-        `NEED_GO=1\n` +
-        `if [ -x /usr/local/go/bin/go ]; then\n` +
-        `  CURVER=$(/usr/local/go/bin/go version | grep -oE 'go[0-9]+\\.[0-9]+(\\.[0-9]+)?' | sed 's/^go//')\n` +
-        `  TOPVER=$(printf '%s\\n%s\\n' "${GO_VERSION}" "$CURVER" | sort -V | tail -1)\n` +
-        `  if [ "$TOPVER" = "$CURVER" ]; then NEED_GO=0; fi\n` +
-        `fi\n` +
-        `if [ "$NEED_GO" = "1" ]; then\n` +
-        `  ARCH=$(uname -m)\n` +
-        `  case $ARCH in x86_64) GOARCH=amd64 ;; aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac\n` +
-        `  echo "Downloading go${GO_VERSION}.linux-$GOARCH.tar.gz..."\n` +
-        `  curl -fsSL -o /tmp/go-smsc.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-$GOARCH.tar.gz"\n` +
-        `  rm -rf /usr/local/go\n` +
-        `  tar -C /usr/local -xzf /tmp/go-smsc.tar.gz\n` +
-        `  rm -f /tmp/go-smsc.tar.gz\n` +
-        `  echo "Installed: $(/usr/local/go/bin/go version)"\n` +
-        `else\n` +
-        `  echo "Already have: $(/usr/local/go/bin/go version)"\n` +
-        `fi`
-      );
-      if (goExit !== 0) {
-        write(`\n❌ Go toolchain setup failed (exit ${goExit}).`);
-        await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: `go setup exit ${goExit}`, success: false });
-        return res.end();
-      }
-
-      write('\n=== Cloning VectorCore SMSC ===');
-      const SRC_PARENT_DIR = SRC_DIR.slice(0, SRC_DIR.lastIndexOf('/'));
-      await spawnStream(`mkdir -p ${SRC_PARENT_DIR} 2>/dev/null; [ -d ${SRC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-smsc.git ${SRC_DIR}`);
-
-      write('\n=== Building (web UI + Go binary) ===');
-      const buildExit = await spawnStream(
-        `set -e\n` +
-        `export PATH=/usr/local/go/bin:$PATH\n` +
-        `export GOCACHE=${SRC_DIR}/.gocache\n` +
-        `export GOMODCACHE=${SRC_DIR}/.gomodcache\n` +
-        // This host's NMS backend runs with NODE_ENV=production set (a normal
-        // choice for its own Node process) — child_process.spawn() inherits
-        // that into every nsenter'd command by default, and npm silently
-        // skips devDependencies when it sees NODE_ENV=production. This repo's
-        // own Makefile builds its embedded web UI via `cd web && npm ci &&
-        // npm run build`, and vite (the actual build tool) lives in
-        // devDependencies — confirmed live: this produced "added 48 packages"
-        // (deps only, no vite) instead of the full ~109, then "vite: not
-        // found" at build time with no earlier warning. Unlike
-        // mms-controller.ts's own install (which pre-populates node_modules
-        // itself with `npm install --include=dev` before calling make), this
-        // Makefile's `npm ci` always wipes node_modules first, so a
-        // pre-install doesn't survive — unset NODE_ENV instead, so npm never
-        // sees it in the first place.
-        `unset NODE_ENV\n` +
-        `cd ${SRC_DIR}\n` +
-        `make`
-      );
-      if (buildExit !== 0) {
-        write(`\n❌ Build failed (exit ${buildExit}).`);
-        await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: `build exit ${buildExit}`, success: false });
-        return res.end();
-      }
-
-      write('\n=== Installing binary and systemd unit (content as shipped) ===');
-      await spawnStream(
-        `set -e\n` +
-        `mkdir -p ${VC_DIR}/bin ${VC_ETC} ${VC_DATA} ${VC_LOG}\n` +
-        `cp ${SRC_DIR}/bin/smsc ${VC_BIN}\n` +
-        `chmod +x ${VC_BIN}\n` +
-        `cp ${SRC_DIR}/systemd/${SYSTEMD_UNIT}.service ${SYSTEMD_UNIT_PATH}\n` +
-        // The shipped unit's ExecStart points at /opt/vectorcore/bin/smsc — this
-        // deployment installs under /opt/vectorcore/sms/bin/smsc instead (own
-        // subdirectory, see module header), so the copied unit needs its
-        // ExecStart/config path rewritten. Everything else (Restart=,
-        // dependencies, etc.) stays exactly as shipped.
-        `sed -i "s|ExecStart=.*|ExecStart=${VC_BIN} -c ${VC_CFG}|" ${SYSTEMD_UNIT_PATH}\n` +
-        `systemctl daemon-reload`
-      );
-
-      const existingState = readState();
-      writeState({ ...(existingState ?? {} as VectorcoreSmscState), imsDomain: existingState?.imsDomain ?? '', installedWithVersion: getAppVersion() });
-
-      await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: 'success', success: true });
-      write('\n✅ VectorCore SMSC installed. Run Configure next.');
-      res.end();
-    } catch (err) {
-      write(`\n❌ Install error: ${String(err)}`);
-      await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: String(err), success: false });
-      res.end();
-    }
+    const result = await installVectorcoreSmsc(write);
+    await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: result.error ?? 'success', success: result.success });
+    res.end();
   });
 
   // POST /api/vectorcore-smsc/configure — no body needed; imsDomain is
   // derived from ims-controller.ts's own state, not supplied by the caller.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    try {
-      const imsState = readImsState();
-      if (!imsState) {
-        return res.status(400).json({ success: false, error: 'IMS is not configured yet — configure IMS first.' });
-      }
-      const { imsDomain } = imsState;
-      if (!fs.existsSync(`${HOST_ROOT}${VC_BIN}`)) {
-        return res.status(400).json({ success: false, error: 'VectorCore SMSC is not installed yet — run Install first.' });
-      }
-
-      const cfg = smscYamlCfg(imsDomain);
-      fs.mkdirSync(`${HOST_ROOT}${VC_ETC}`, { recursive: true });
-      fs.writeFileSync(`${HOST_ROOT}${VC_CFG}`, cfg, 'utf-8');
-
-      await nsenter('systemctl', ['enable', '--now', SYSTEMD_UNIT]);
-
-      writeState({ imsDomain, configuredWithVersion: getAppVersion(), installedWithVersion: readState()?.installedWithVersion });
-
-      await auditLogger.log({ action: 'vectorcore_smsc_configure', user, details: `imsDomain=${imsDomain}`, success: true });
-      res.json({ success: true, sipAddress: `${SIP_BIND_IP}:${SIP_PORT}` });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      await auditLogger.log({ action: 'vectorcore_smsc_configure', user, details: message, success: false });
-      logger.error({ err: message }, 'vectorcore-smsc configure error');
-      res.status(500).json({ success: false, error: message });
+    const result = await configureVectorcoreSmsc();
+    if (!result.success) {
+      await auditLogger.log({ action: 'vectorcore_smsc_configure', user, details: result.error ?? 'failed', success: false });
+      return res.status(400).json({ success: false, error: result.error });
     }
+    await auditLogger.log({ action: 'vectorcore_smsc_configure', user, details: `imsDomain=${result.imsDomain}`, success: true });
+    res.json({ success: true, sipAddress: result.sipAddress });
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {

@@ -105,6 +105,19 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    `frr.conf` for anything (a subscriber's framed route, an NF's FQDN advertisement,
    etc.) — any EIGRP `network` statement addition is left as a manual, deliberate
    operator step, shown as a copy-paste hint in the UI instead of automated.
+   **Confirmed live (2026-08-26), not just theoretical**: applying a new EIGRP
+   `network` statement via the naive path (write `frr.conf`, `systemctl restart
+   frr`) triggered this exact bug twice in a row — the crash happens while
+   `eigrpd` reprocesses the *whole* topology during a fresh neighbor resync,
+   not because of anything about the new statement itself (reverting the
+   change and restarting again crashed identically). **The safe method,
+   proven live**: apply via `vtysh -c "configure terminal" -c "router eigrp 1"
+   -c "network X.X.X.X/32" -c ... -c "end"` then `vtysh -c "write memory"` to
+   persist — this advertises the new network incrementally to the
+   *already-established* neighbor and never tears down/resyncs the adjacency,
+   so it doesn't hit the trigger. If you ever do touch `frr.conf`
+   programmatically for a network statement, use the live `vtysh` method,
+   never a full `systemctl restart frr`.
 
 8. **MME hostname vs IP behavior** (4G-side version of gotcha #6): Open5GS MME also
    calls `getaddrinfo()` synchronously during config parse for SGs-AP peer addresses —

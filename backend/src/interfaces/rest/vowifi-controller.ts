@@ -602,7 +602,12 @@ async function verifyInstall(): Promise<void> {
   appendLog(`\n==VERIFY:epdg=${epdgExists} vectorcore-aaa=${aaaExists}==\n`);
 }
 
-function startInstall(logger: pino.Logger): void {
+// Exported so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
+// kick off the same detached build — same fire-and-forget shape as the router
+// handler below: caller must separately poll loadState().installStatus for
+// 'complete'/'failed' (see the /install/log/stream route for the existing
+// polling pattern this mirrors).
+export function startInstall(logger: pino.Logger): void {
   const script = buildVowifiScript();
   fs.mkdirSync(HOST_BUILD_WORKDIR, { recursive: true });
   fs.writeFileSync(`${HOST_BUILD_WORKDIR}/run.sh`, script, { mode: 0o755 });
@@ -661,6 +666,20 @@ function startInstall(logger: pino.Logger): void {
       }
     }
   }, 3000);
+}
+
+// Resets state to a fresh 'preparing' run and kicks off the detached build —
+// exactly what the router's own POST /install does. Exported so the
+// cross-module Fix-All orchestrator (module-fixall-usecase.ts) can trigger the
+// same reset+start sequence without duplicating it; callers must still poll
+// loadState().installStatus for 'complete'/'failed' themselves (this function
+// only kicks the build off, same fire-and-forget contract as startInstall()).
+export function resetAndStartInstall(logger: pino.Logger, user: string): void {
+  const newState: VowifiState = { ...defaultState(), installStatus: 'preparing', installStartedAt: new Date().toISOString() };
+  saveState(newState);
+  fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+  fs.writeFileSync(LOG_FILE, `=== VoWiFi (VectorCore) install started ${newState.installStartedAt} by ${user} ===\n`, 'utf-8');
+  startInstall(logger);
 }
 
 export async function reconcileVowifiInstallState(logger: pino.Logger): Promise<void> {
@@ -850,6 +869,40 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
   return { epdgIp, interfaceMode, aaaListenIp, aaaFqdn, hssSwxIp, smfGtpcIp, smfActive, hssActive, dnsConfigured };
 }
 
+export interface VowifiStalenessResult {
+  installedOnDisk: boolean;
+  installStatus: VowifiInstallStatus;
+  hasSavedConfig: boolean;
+  buildStale: boolean;
+  configStale: boolean;
+  savedEpdgIp?: string;
+  savedAaaListenIp?: string;
+  savedInterfaceMode?: 'dummy' | 'existing';
+}
+
+// Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
+// comparison GET /status already does, without the rest of that endpoint's work
+// (live service/client stats, DNS/SMF-peer verification, etc).
+export function getVowifiStaleness(): VowifiStalenessResult {
+  const state = loadState();
+  const installedOnDisk = fs.existsSync(HOST_EPDG_RUNTIME_BIN) && fs.existsSync(HOST_AAA_RUNTIME_BIN);
+  const buildStale = installedOnDisk &&
+    (state.builtWithVectorcoreEpdgCommit !== VECTORCORE_EPDG_COMMIT ||
+     state.builtWithVectorcoreAaaCommit !== VECTORCORE_AAA_COMMIT ||
+     state.builtWithVectorcorePatchRev !== VECTORCORE_PATCH_REV);
+  const configStale = state.configured && state.configuredWithVersion !== VOWIFI_CONFIG_GEN_VERSION;
+  return {
+    installedOnDisk,
+    installStatus: state.installStatus,
+    hasSavedConfig: state.configured,
+    buildStale,
+    configStale,
+    savedEpdgIp: state.epdgIp ?? undefined,
+    savedAaaListenIp: state.aaaListenIp ?? undefined,
+    savedInterfaceMode: state.epdgInterfaceMode ?? undefined,
+  };
+}
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
@@ -974,11 +1027,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
       res.status(409).json({ success: false, error: `An install is already in progress (status: ${state.installStatus})` });
       return;
     }
-    const newState: VowifiState = { ...defaultState(), installStatus: 'preparing', installStartedAt: new Date().toISOString() };
-    saveState(newState);
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.writeFileSync(LOG_FILE, `=== VoWiFi (VectorCore) install started ${newState.installStartedAt} by ${user} ===\n`, 'utf-8');
-    startInstall(logger);
+    resetAndStartInstall(logger, user);
     await auditLogger.log({ action: 'vowifi_install', user, details: 'Started VectorCore ePDG/AAA install', success: true });
     res.json({ ok: true, installStatus: 'preparing' });
   });

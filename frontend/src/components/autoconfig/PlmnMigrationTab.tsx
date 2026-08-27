@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Globe, RefreshCw, ChevronDown, Database, Play, RotateCcw, AlertTriangle,
   CheckCircle, XCircle, ShieldAlert,
@@ -9,6 +9,7 @@ import {
   plmnMigrationApi, PlmnMigrationPlan, PhaseResult, MigrationBackupInfo,
   MigrationBackupListItem, PlmnMigrationPhase,
 } from '../../api/plmn-migration';
+import { LogBlock } from '../common/LogBlock';
 
 const PHASES: { id: PlmnMigrationPhase; title: string; description: string }[] = [
   {
@@ -37,16 +38,6 @@ const PHASES: { id: PlmnMigrationPhase; title: string; description: string }[] =
     description: 'Cross-checks every service (mme/hss/pcrf/amf/smf/IMS/VoWiFi) actually agrees on the new PLMN and is active. No writes.',
   },
 ];
-
-function LogBlock({ lines }: { lines: string[] }) {
-  const ref = useRef<HTMLPreElement>(null);
-  useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [lines]);
-  return (
-    <pre ref={ref} className="bg-nms-bg rounded p-3 text-xs font-mono text-green-300 max-h-64 overflow-y-auto whitespace-pre-wrap border border-nms-border mt-3">
-      {lines.join('\n')}
-    </pre>
-  );
-}
 
 function ExclusionsCard() {
   const [open, setOpen] = useState(false);
