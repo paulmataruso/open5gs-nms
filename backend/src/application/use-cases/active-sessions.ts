@@ -62,6 +62,16 @@ export class ActiveSessionsUseCase {
     this.apiClient = new Open5gsApiClient(hostExecutor, configRepo, logger);
   }
 
+  /** Live eNodeBs known by the MME, including radios with no attached UE. */
+  async getConnected4GRadios(): Promise<Array<{ enbId: number; ip: string; connected: boolean }>> {
+    const enbs = await this.apiClient.getMmeEnbInfo();
+    return enbs.map(enb => ({
+      enbId: enb.enb_id,
+      ip: parsePeerIP(enb.s1.sctp.peer),
+      connected: !!enb.s1?.setup_success,
+    })).filter(enb => !!enb.ip);
+  }
+
   /**
    * Active 5G UEs — sourced from SMF /pdu-info.
    *

@@ -29,6 +29,7 @@ import { ValidationPage } from './pages/ValidationPage';
 import { PcapPage } from './components/pcap/PcapPage';
 import { TrafficHistoryPage } from './pages/TrafficHistoryPage';
 import { RfPlanningPage } from './pages/RfPlanningPage';
+import { RadioSignalPage } from './pages/RadioSignalPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { StaleModulesModal } from './components/common/StaleModulesModal';
@@ -84,6 +85,8 @@ function App(): JSX.Element {
         return <MetricsPage />;
       case 'traffic-history':
         return <TrafficHistoryPage />;
+      case 'radio-signal':
+        return <RadioSignalPage />;
       case 'sas':
         return <SASPage />;
       case 'time-server':
