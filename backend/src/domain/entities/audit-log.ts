@@ -169,7 +169,11 @@ export type AuditAction =
   | 'apn_profile_delete'
   | 'apn_profile_promote'
   | 'apn_profile_ipv6_settings_update'
-  | 'module_fix_all';
+  | 'module_fix_all'
+  | 'snmp_install'
+  | 'snmp_start'
+  | 'snmp_stop'
+  | 'snmp_restart';
 
 export interface AuditLogEntry {
   id: string;

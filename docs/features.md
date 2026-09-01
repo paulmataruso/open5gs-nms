@@ -1015,6 +1015,14 @@ Spins up a containerized test UE — **srsRAN** for 4G (eNB+UE in one container,
 
 ---
 
+## SNMP Monitoring
+
+Install and manage a read-only Net-SNMP agent from the NMS. The module exports host health, 4G/5G UE and radio counts, Open5GS service health, `ogstun` counters, and standard `IF-MIB` interface data for PRTG and other SNMP managers. The generated Open5GS MIB can be downloaded directly from the page.
+
+See [SNMP monitoring](snmp-monitoring.md) for installation, OIDs, PRTG usage, and security guidance.
+
+---
+
 ## Summary
 
 Open5GS NMS provides a complete management solution for Open5GS deployments with:
