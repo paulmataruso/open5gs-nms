@@ -107,6 +107,7 @@ import { createTwampMetricsRegistry } from './application/use-cases/twamp/twamp-
 import { createTwampRouter } from './interfaces/rest/twamp-controller';
 import { createModulesRouter } from './interfaces/rest/modules-controller';
 import { ModuleFixAllUseCase } from './application/use-cases/module-fixall-usecase';
+import { createSnmpRouter } from './interfaces/rest/snmp-controller';
 
 async function main() {
   // Load configuration
@@ -470,6 +471,7 @@ async function main() {
   app.use('/api/traffic-history', createTrafficHistoryRouter(config.prometheusUrl, subscriberRepo, logger));
   app.use('/api/twamp', createTwampRouter(subscriberRepo.getDb(), hostExecutor, twampMonitor, logger, auditLogger));
   app.use('/api/modules', createModulesRouter(moduleFixAllUseCase, logger));
+  app.use('/api/snmp', createSnmpRouter(activeSessionsUseCase, hostExecutor, configRepo, auditLogger, logger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
   // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below

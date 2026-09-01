@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import {
-  Radio, Settings, Users, Activity, Network,
+  Radio, Settings, Users, Activity, Network, ServerCog,
   ChevronLeft, ChevronRight, Database, ScrollText,
   Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge,
 } from 'lucide-react';
@@ -32,6 +32,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'logs', label: 'Unified Logs', icon: ScrollText },
   { id: 'metrics', label: 'Metrics', icon: BarChart2 },
   { id: 'traffic-history', label: 'Traffic History', icon: TrendingUp },
+  { id: 'snmp', label: 'SNMP Monitoring', icon: ServerCog },
   { id: 'sas',         label: 'SAS',          icon: Shield    },
   { id: 'time-server', label: 'Time Server',   icon: Clock     },
   { id: 'frr', label: 'L3 Routing', icon: GitBranch },
