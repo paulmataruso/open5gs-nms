@@ -474,13 +474,25 @@ const SercommRadioRow: React.FC<{
                 Core Network (S1)
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div><label className="nms-label">MCC</label>
-                  <input className="nms-input font-mono" placeholder="999" value={form.mcc} onChange={e => set({ mcc: e.target.value })} maxLength={3} /></div>
-                <div><label className="nms-label">MNC</label>
-                  <input className="nms-input font-mono" placeholder="70" value={form.mnc} onChange={e => set({ mnc: e.target.value })} maxLength={3} /></div>
-                <div><label className="nms-label">TAC</label>
+                <div>
+                  <LabelWithTooltip tooltip="Mobile Country Code — the first part of the PLMN this cell broadcasts in its System Information Block (SIB1). Must exactly match the mcc configured in Open5GS's own mme.yaml (Config → MME → PLMN) or phones will see this cell as belonging to a foreign, non-forbidden-list network and refuse to camp on it. This deployment's current PLMN is MCC 001.">
+                    <span className="nms-label">MCC</span>
+                  </LabelWithTooltip>
+                  <input className="nms-input font-mono" placeholder="001" value={form.mcc} onChange={e => set({ mcc: e.target.value })} maxLength={3} /></div>
+                <div>
+                  <LabelWithTooltip tooltip="Mobile Network Code — the second part of the PLMN broadcast alongside MCC. Combined with MCC this forms the full PLMN ID phones match against their SIM's home/roaming list. Must exactly match the mnc in Open5GS's mme.yaml. This deployment's current PLMN is MNC 01.">
+                    <span className="nms-label">MNC</span>
+                  </LabelWithTooltip>
+                  <input className="nms-input font-mono" placeholder="01" value={form.mnc} onChange={e => set({ mnc: e.target.value })} maxLength={3} /></div>
+                <div>
+                  <LabelWithTooltip tooltip="Tracking Area Code — groups this cell with others for paging and mobility. Must match one of the TACs Open5GS's MME is configured to serve (mme.yaml's tai list) — a TAC the MME doesn't recognize causes the S1 Setup to be rejected outright (the cell will never leave TRYING). Using the same TAC across all cells minimizes Tracking Area Update signaling; splitting into multiple TACs only matters at a scale this deployment isn't at yet.">
+                    <span className="nms-label">TAC</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="1" value={form.tac} onChange={e => set({ tac: e.target.value })} /></div>
-                <div><label className="nms-label">MME IP</label>
+                <div>
+                  <LabelWithTooltip tooltip="IP address of Open5GS's MME, reached over the S1-MME (SCTP) interface for this cell's control-plane signaling (attach, handover, paging). Must be reachable from the radio's own network — if the radio sits behind SecGW/IPsec, this should be the address the tunnel actually delivers, not necessarily the MME's raw LAN IP. Auto-populated from the current MME config's S1AP address when this tab first loads.">
+                    <span className="nms-label">MME IP</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="10.0.1.2" value={form.mmeIp} onChange={e => set({ mmeIp: e.target.value })} /></div>
                 <div>
                   <LabelWithTooltip
@@ -506,7 +518,10 @@ const SercommRadioRow: React.FC<{
                 Radio Configuration
               </p>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                <div><label className="nms-label">Carrier Number <span className="text-nms-text-dim font-normal">(X_000E8F_Cell_Number)</span></label>
+                <div>
+                  <LabelWithTooltip tooltip="X_000E8F_Cell_Number — how many LTE carriers this cell radio activates. '1' runs a single carrier on the C1 fields below. '2' enables Carrier Aggregation, activating a second carrier on the C2 fields and doubling the fields you need to fill in (Freq Band, EARFCN, Cell Identity, PCI all get a C2 counterpart). Switching this also toggles the Carrier Aggregation checkbox further down — they're the same underlying setting shown in two places.">
+                    <span className="nms-label">Carrier Number <span className="text-nms-text-dim font-normal">(X_000E8F_Cell_Number)</span></span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.carrierNumber} onChange={e => {
                     const v = e.target.value;
                     const enabling = v === '2';
@@ -524,25 +539,39 @@ const SercommRadioRow: React.FC<{
                     <option value="1">1 — Single Carrier</option>
                     <option value="2">2 — Dual Carrier (CA)</option>
                   </select></div>
-                <div><label className="nms-label">Bandwidth (MHz)</label>
+                <div>
+                  <LabelWithTooltip tooltip="Channel bandwidth per carrier, in MHz. This must fit entirely within your CBRS SAS grant's frequency range — a wider request than your grant allows causes the SAS to reject or shrink the grant at the next heartbeat, silently reducing your actual on-air bandwidth. 20 MHz is the common choice for CBRS Band 48 when the grant supports it; use a narrower value only if your SAS grant, spectrum availability, or coexistence with neighboring CBSDs requires it.">
+                    <span className="nms-label">Bandwidth (MHz)</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.bandwidth} onChange={e => set({ bandwidth: e.target.value })}>
                     <option value="5">5 MHz</option>
                     <option value="10">10 MHz</option>
                     <option value="15">15 MHz</option>
                     <option value="20">20 MHz</option>
                   </select></div>
-                <div><label className="nms-label">Sync Source</label>
+                <div>
+                  <LabelWithTooltip tooltip="Timing synchronization source for the cell's LTE frame clock. FREE_RUNNING uses the radio's own internal oscillator — no external timing reference needed, works standalone, but drifts slowly over time (fine for a single isolated cell, but multiple cells syncing independently can drift apart enough to cause inter-cell interference). GPS locks to satellite timing — the recommended choice whenever the radio has a GPS antenna with sky visibility, since it also satisfies CBRS SAS location-reporting requirements. PTP (IEEE 1588) syncs over the network from a PTP grandmaster clock — only useful if your transport network actually runs a PTP service; picking it without one leaves the radio unsynced.">
+                    <span className="nms-label">Sync Source</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.syncSource} onChange={e => set({ syncSource: e.target.value })}>
                     <option value="FREE_RUNNING">FREE_RUNNING</option>
                     <option value="GPS">GPS</option>
                     <option value="PTP">PTP (1588)</option>
                   </select></div>
-                <div><label className="nms-label">Freq Band (C1)</label>
+                <div>
+                  <LabelWithTooltip tooltip="LTE frequency band number for carrier 1. Band 48 = CBRS (3550–3700 MHz, the band this radio and its SAS grant are certified for). Changing this to anything else is not meaningful for this hardware — it's exposed as a field because it's a real TR-069 parameter, not because other bands are supported.">
+                    <span className="nms-label">Freq Band (C1)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="48" value={form.freqBand1} onChange={e => set({ freqBand1: e.target.value })} /></div>
-                <div><label className="nms-label">Freq Band (C2)</label>
+                <div>
+                  <LabelWithTooltip tooltip="LTE frequency band number for carrier 2 — only relevant when Carrier Aggregation is enabled (Carrier Number = 2). Should match Freq Band (C1); this radio's CA implementation combines two Band 48 carriers, not carriers from two different bands.">
+                    <span className="nms-label">Freq Band (C2)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="48" value={form.freqBand2} onChange={e => set({ freqBand2: e.target.value })} /></div>
                 <div>
-                  <label className="nms-label">EARFCN (C1)</label>
+                  <LabelWithTooltip tooltip={`E-UTRA Absolute Radio Frequency Channel Number for carrier 1 — determines the exact center frequency the cell transmits on. Must fall within ${EARFCN_MIN}–${EARFCN_MAX} (the Band 48/CBRS downlink EARFCN range) and, more importantly, within the actual frequency range your SAS grant covers — an EARFCN outside your grant's approved range will get the transmission shut down by SAS enforcement, not just rejected at config time. When Carrier Aggregation is on, changing this auto-suggests EARFCN (C2) at exactly C1 + 198 (the required CA channel spacing).`}>
+                    <span className="nms-label">EARFCN (C1)</span>
+                  </LabelWithTooltip>
                   <input
                     className={clsx('nms-input font-mono', !earfcn1Valid && form.earfcn && 'border-red-500/60 focus:border-red-500')}
                     placeholder="56000"
@@ -551,7 +580,9 @@ const SercommRadioRow: React.FC<{
                   />
                 </div>
                 <div>
-                  <label className="nms-label">EARFCN (C2) {form.caEnable && <span className="text-nms-text-dim font-normal">— auto C1+198</span>}</label>
+                  <LabelWithTooltip tooltip={`E-UTRA Absolute Radio Frequency Channel Number for carrier 2 — only used when Carrier Aggregation is on. Must be exactly ${CA_SPACING} channels away from EARFCN (C1) (auto-filled and locked while C1 is valid — the radio's CA implementation requires this specific spacing, not an arbitrary second frequency) and, like C1, must sit inside your SAS grant's approved frequency range.`}>
+                    <span className="nms-label">EARFCN (C2) {form.caEnable && <span className="text-nms-text-dim font-normal">— auto C1+198</span>}</span>
+                  </LabelWithTooltip>
                   <input
                     className={clsx('nms-input font-mono', form.caEnable && !caSpacingValid && earfcn2Valid && 'border-amber-500/60 focus:border-amber-500')}
                     placeholder="56198"
@@ -567,21 +598,36 @@ const SercommRadioRow: React.FC<{
                     {earfcnError}
                   </div>
                 )}
-                <div><label className="nms-label">Cell Identity</label>
+                <div>
+                  <LabelWithTooltip tooltip="28-bit E-UTRAN Cell Identity for carrier 1 — uniquely identifies this specific cell within the eNodeB, broadcast in SIB1 and used to build the global ECGI (PLMN + Cell Identity) that appears in every S1AP message and in Open5GS's own eNB/UE logs. Must be unique across every cell in this deployment — two cells sharing a Cell Identity will confuse handover and any per-cell troubleshooting (RAN Network page, packet captures) since both would report the same ECGI.">
+                    <span className="nms-label">Cell Identity</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="138777000" value={form.cellIdentity} onChange={e => set({ cellIdentity: e.target.value })} /></div>
-                <div><label className="nms-label">Cell Identity 2</label>
+                <div>
+                  <LabelWithTooltip tooltip="Cell Identity for carrier 2 — only used when Carrier Aggregation is on. Per 3GPP, the high 20 bits of a CA cell pair's two Cell Identities must match (they represent the same physical eNodeB); only the low bits differ to distinguish the two carriers. This form defaults it to Cell Identity + 1, which satisfies that constraint automatically — only override it if you understand the bit-layout implications.">
+                    <span className="nms-label">Cell Identity 2</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="138777001" value={form.cellIdentity2} onChange={e => set({ cellIdentity2: e.target.value })} /></div>
-                <div><label className="nms-label">PCI (C1)</label>
+                <div>
+                  <LabelWithTooltip tooltip="Physical Cell Identity (0–503) for carrier 1 — identifies the cell at the radio layer via its synchronization signals, distinct from Cell Identity above (which is a core-network-facing ID). UEs use PCI to distinguish neighboring cells before they've even read SIB1. Must not collide with any neighboring cell's PCI on the same frequency (a PCI collision causes UEs near the boundary to intermittently fail measurement reports and handovers) — with only a handful of radios in this deployment, picking distinct values by hand is enough; no PCI planning tool is needed at this scale.">
+                    <span className="nms-label">PCI (C1)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="361" value={form.pci1} onChange={e => set({ pci1: e.target.value })} /></div>
-                <div><label className="nms-label">PCI (C2)</label>
+                <div>
+                  <LabelWithTooltip tooltip="Physical Cell Identity for carrier 2 — only used when Carrier Aggregation is on. Must be a distinct PCI from carrier 1's (they're two independent radio-layer cells, even though they share the high bits of their Cell Identity) and, like PCI (C1), must not collide with any neighboring cell.">
+                    <span className="nms-label">PCI (C2)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="362" value={form.pci2} onChange={e => set({ pci2: e.target.value })} /></div>
-                <div><label className="nms-label">TX Power (dBm)</label>
+                <div>
+                  <LabelWithTooltip tooltip="Transmit power per antenna, in dBm, applied to both carriers equally. Higher power extends coverage but must stay within both this radio's hardware maximum and whatever EIRP limit your active SAS grant allows for this Category (A/B) and Location (indoor/outdoor) — a value the SAS considers too high for your grant gets capped or the grant gets denied at the next heartbeat, not rejected up front by this form.">
+                    <span className="nms-label">TX Power (dBm)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="13" value={form.txPower} onChange={e => set({ txPower: e.target.value })} /></div>
               </div>
               <div className="flex flex-wrap gap-5 mt-3">
                 <label className="flex items-center gap-2 cursor-pointer opacity-60">
                   <input type="checkbox" checked disabled className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent" />
-                  <LabelWithTooltip tooltip="AdminState is set automatically as the final step after push — always enabled">
+                  <LabelWithTooltip tooltip="Device.Services.FAPService.1.FAPControl.LTE.AdminState — administratively enables the cell to actually transmit. This checkbox is locked on (disabled, always checked) because Push Config handles it automatically as the deliberate final step of the provisioning sequence, fired only after the radio has rebooted and reported back an inform following the reboot — setting AdminState before the reboot completes has no effect, since the parameter only takes hold cleanly once the radio has finished applying the rest of the pushed config.">
                     <span className="text-xs text-nms-text">Admin State</span>
                   </LabelWithTooltip>
                 </label>
@@ -597,12 +643,14 @@ const SercommRadioRow: React.FC<{
                     });
                   }}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">Carrier Aggregation</span>
+                  <LabelWithTooltip tooltip="Enables LTE Carrier Aggregation — combines two Band 48 carriers into one wider effective channel for higher throughput. Toggling this is the same setting as the Carrier Number dropdown above (linked together); turning it on auto-fills the C2 frequency/PCI/Cell-Identity fields from sensible defaults derived from C1. Requires two valid, correctly-spaced SAS grants (one per carrier) — CA won't help if the SAS only grants one carrier's worth of spectrum.">
+                    <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">Carrier Aggregation</span>
+                  </LabelWithTooltip>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input type="checkbox" checked={form.enable256QAM} onChange={e => set({ enable256QAM: e.target.checked })}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <LabelWithTooltip tooltip="Sets PDSCH.X_000E8F_Enable256QAM — enables 256QAM downlink modulation when UE supports it">
+                  <LabelWithTooltip tooltip="Sets PDSCH.X_000E8F_Enable256QAM — enables 256-QAM downlink modulation, a higher-order modulation scheme that packs more bits per symbol than the default 64-QAM, increasing peak downlink throughput. Only actually helps UEs whose modem supports 256-QAM in this band/category (most modern LTE/LTE-A phones do) and that have good enough signal quality (SINR) to sustain it — under weaker signal conditions the radio automatically falls back to a lower-order modulation regardless of this setting, so enabling it never hurts a UE that can't use it, it simply won't help.">
                     <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">256QAM DL</span>
                   </LabelWithTooltip>
                 </label>
@@ -618,22 +666,34 @@ const SercommRadioRow: React.FC<{
 
               {/* Row 1 — SAS mode fields */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <div><label className="nms-label">Method</label>
+                <div>
+                  <LabelWithTooltip tooltip="How this radio's sasd client talks to the Spectrum Access System. Direct SAS: the radio connects straight to the SAS server URL below over HTTPS (CBRS SAS protocol, WInnForum TS-0016). Domain Proxy: the radio instead routes CBRS signaling through a Domain Proxy that aggregates multiple CBSDs behind one SAS registration — only use this if you're actually running a Domain Proxy in front of this deployment's SAS server; this project's built-in CBRS SAS server expects Direct SAS connections.">
+                    <span className="nms-label">Method</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasMethod} onChange={e => set({ sasMethod: e.target.value })}>
                     <option value="0">0 — Direct SAS</option>
                     <option value="1">1 — Domain Proxy</option>
                   </select></div>
-                <div><label className="nms-label">Installation Method</label>
+                <div>
+                  <LabelWithTooltip tooltip="Single-Step: the radio self-registers with SAS in one automated Registration Request — no installer certification step required. Correct for Category A (indoor/low-power) deployments. Multi-Step (sets CPIInstallParamSuppliedEnable): registration includes a separate CPI-signed installation-parameters step, required by FCC Part 96 rules for Category B (outdoor/high-power) installs where a Certified Professional Installer must attest to the antenna's height and location.">
+                    <span className="nms-label">Installation Method</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasInstallMethod} onChange={e => set({ sasInstallMethod: e.target.value })}>
                     <option value="0">Single-Step</option>
                     <option value="1">Multi-Step</option>
                   </select></div>
-                <div><label className="nms-label">Category</label>
+                <div>
+                  <LabelWithTooltip tooltip="FCC CBRS device category, which sets the maximum EIRP the SAS will grant. Category A: indoor or low-power outdoor use, lower power ceiling, simpler Single-Step registration, no CPI required. Category B: higher-power outdoor deployments, requires CPI Required to be checked and Installation Method set to Multi-Step per FCC Part 96 — picking B without those satisfied will get the grant rejected by the SAS.">
+                    <span className="nms-label">Category</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasCategory} onChange={e => set({ sasCategory: e.target.value })}>
                     <option value="A">A — Indoor / low power</option>
                     <option value="B">B — Outdoor / high power</option>
                   </select></div>
-                <div><label className="nms-label">Channel Type</label>
+                <div>
+                  <LabelWithTooltip tooltip="CBRS channel type requested from SAS. GAA (General Authorized Access) is unlicensed, best-effort shared spectrum — the correct choice for essentially every deployment that hasn't separately won a PAL license auction. PAL (Priority Access License) is licensed, protected spectrum tied to a specific census tract that must actually be won/held for that area — selecting PAL without a real PAL license for this location will simply fail SAS grant approval.">
+                    <span className="nms-label">Channel Type</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasChannelType} onChange={e => set({ sasChannelType: e.target.value })}>
                     <option value="GAA">GAA</option>
                     <option value="PAL">PAL</option>
@@ -655,17 +715,26 @@ const SercommRadioRow: React.FC<{
 
               {/* Row 2 — Location fields */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-                <div><label className="nms-label">Location</label>
+                <div>
+                  <LabelWithTooltip tooltip="Physical installation environment reported to SAS. Indoor installations get a lower maximum EIRP under CBRS rules (less potential for interference beyond the building), Outdoor gets a higher ceiling but demands more accurate location reporting. This must reflect where the radio is physically mounted — the SAS uses it directly when computing the EIRP limit for your grant.">
+                    <span className="nms-label">Location</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasLocation} onChange={e => set({ sasLocation: e.target.value })}>
                     <option value="indoor">Indoor</option>
                     <option value="outdoor">Outdoor</option>
                   </select></div>
-                <div><label className="nms-label">Location Source</label>
+                <div>
+                  <LabelWithTooltip tooltip="How the radio determined the coordinates it reports to SAS. Manual: you (or 'Use My Location' below) provide fixed lat/long. GPS (HighAccuracyLocationEnable): the radio uses its own onboard GPS receiver for higher-accuracy positioning, which SAS rules require for Category B/outdoor installs — pick GPS whenever the radio actually has a GPS antenna with sky visibility, since it's more authoritative than a manually-entered value.">
+                    <span className="nms-label">Location Source</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasLocationSource} onChange={e => set({ sasLocationSource: e.target.value })}>
                     <option value="0">Manual</option>
                     <option value="1">GPS</option>
                   </select></div>
-                <div><label className="nms-label">Height Type</label>
+                <div>
+                  <LabelWithTooltip tooltip="Reference datum for the antenna height value sent to SAS as part of the installation parameters. AGL (Above Ground Level) measures from the ground directly beneath the antenna — the more common choice, and what most site surveys report. AMSL (Above Mean Sea Level) measures from sea level instead — only use this if your height figure was actually surveyed against mean sea level (e.g. from certain GPS/geodesic tools), otherwise SAS will compute the wrong effective height and can mis-grant your EIRP.">
+                    <span className="nms-label">Height Type</span>
+                  </LabelWithTooltip>
                   <select className="nms-input" value={form.sasHeightType} onChange={e => set({ sasHeightType: e.target.value })}>
                     <option value="AGL">AGL (Above Ground Level)</option>
                     <option value="AMSL">AMSL (Above Mean Sea Level)</option>
@@ -681,9 +750,15 @@ const SercommRadioRow: React.FC<{
 
               {/* Row 3 — Lat/Long */}
               <div className="grid grid-cols-2 gap-3 mt-3">
-                <div><label className="nms-label">Latitude (decimal degrees)</label>
+                <div>
+                  <LabelWithTooltip tooltip="Site latitude in plain decimal degrees (e.g. 43.375246). This form converts it to the microdegree integer format (× 1,000,000) the radio's TR-069 parameters actually use when you push config, so you never have to do that math by hand. Feeds directly into the SAS grant request — an inaccurate coordinate can cause SAS to compute the wrong interference/EIRP envelope for this site.">
+                    <span className="nms-label">Latitude (decimal degrees)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="43.375246" value={form.latitude} onChange={e => set({ latitude: e.target.value })} /></div>
-                <div><label className="nms-label">Longitude (decimal degrees)</label>
+                <div>
+                  <LabelWithTooltip tooltip="Site longitude in plain decimal degrees (e.g. -72.180291, negative = West). Same microdegree auto-conversion as Latitude applies on push. Click 'Use My Location' to fill both fields from your browser's geolocation (falls back to IP-based geolocation if the browser blocks GPS, e.g. over plain HTTP).">
+                    <span className="nms-label">Longitude (decimal degrees)</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" placeholder="-72.180291" value={form.longitude} onChange={e => set({ longitude: e.target.value })} /></div>
               </div>
               <p className="text-xs text-nms-text-dim mt-1">Decimal degrees — converted to microdegrees automatically on push.</p>
@@ -691,16 +766,22 @@ const SercommRadioRow: React.FC<{
               {/* Row 4 — User ID + Server URL + ICG Group ID */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                 <div>
-                  <label className="nms-label">SAS User ID <span className="text-nms-text-dim font-normal">(UserContactInformation)</span></label>
+                  <LabelWithTooltip tooltip="UserContactInformation sent to SAS as this CBSD's registered user/contact identifier — the SAS uses it to group grants under one logical operator/user rather than as a literal email or phone number. Defaults to the Cell Identity so every radio in this deployment registers under a distinct, traceable ID; change it only if you need multiple radios to share one SAS-side user grouping.">
+                    <span className="nms-label">SAS User ID <span className="text-nms-text-dim font-normal">(UserContactInformation)</span></span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono" value={form.sasUserId} onChange={e => set({ sasUserId: e.target.value })} placeholder="256000" />
                 </div>
                 <div>
-                  <label className="nms-label">SAS Server URL</label>
+                  <LabelWithTooltip tooltip="Full HTTPS URL of the CBRS SAS server this radio registers with, including the API version path (e.g. /sas/v1.2). Defaults to this deployment's own built-in SAS server on port 8443. Must be reachable from the radio's network — if the radio is behind SecGW/IPsec, confirm the tunnel's traffic selectors actually permit reaching this address, or SAS registration will silently never complete even though every other setting is correct.">
+                    <span className="nms-label">SAS Server URL</span>
+                  </LabelWithTooltip>
                   <input className="nms-input font-mono text-xs" value={form.sasServerUrl} onChange={e => set({ sasServerUrl: e.target.value })} placeholder="https://172.16.0.168:8443/sas/v1.2" />
                 </div>
               </div>
               <div className="mt-3">
-                <label className="nms-label">ICG Group ID <span className="text-nms-text-dim font-normal">(ICGGroupId — interference coordination group name sent to SAS)</span></label>
+                <LabelWithTooltip tooltip="ICGGroupId — an optional Interference Coordination Group name sent to SAS. Radios sharing the same ICG Group ID are treated by SAS as belonging to the same operator/site cluster for interference-coordination purposes when it grants nearby spectrum. Leave blank unless you specifically need multiple radios in this deployment to be SAS-coordinated as one group (e.g. co-located cells that must not be granted overlapping frequencies).">
+                  <span className="nms-label">ICG Group ID <span className="text-nms-text-dim font-normal">(ICGGroupId — interference coordination group name sent to SAS)</span></span>
+                </LabelWithTooltip>
                 <input className="nms-input font-mono" value={form.sasIcgGroupId} onChange={e => set({ sasIcgGroupId: e.target.value })} placeholder="Leave blank for no group" />
               </div>
 
@@ -709,30 +790,38 @@ const SercommRadioRow: React.FC<{
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input type="checkbox" checked={form.sasManufacturerPrefix} onChange={e => set({ sasManufacturerPrefix: e.target.checked })}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
-                    Manufacturer Prefix <span className="text-nms-text-dim">(prepend &quot;Sercomm-&quot; to serial)</span>
-                  </span>
+                  <LabelWithTooltip tooltip="Prepends the literal string 'Sercomm-' to the radio's hardware serial number before sending it to SAS as the CBSD serial identifier. Leave this checked unless your SAS operator has told you they expect the raw, unprefixed serial — some SAS deployments key device registration off this exact prefixed format for Sercomm-manufactured CBSDs.">
+                    <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
+                      Manufacturer Prefix <span className="text-nms-text-dim">(prepend &quot;Sercomm-&quot; to serial)</span>
+                    </span>
+                  </LabelWithTooltip>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input type="checkbox" checked={form.sasCpiEnable} onChange={e => set({ sasCpiEnable: e.target.checked })}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
-                    CPI Required <span className="text-nms-text-dim">(Cat B outdoor only)</span>
-                  </span>
+                  <LabelWithTooltip tooltip="Whether SAS registration includes a CPI (Certified Professional Installer)-signed installation-parameters payload. FCC Part 96 requires this for Category B (outdoor/high-power) installs — check this and set Installation Method to Multi-Step together; leaving this unchecked for a Category B radio will get the grant rejected by the SAS. Not required for Category A.">
+                    <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
+                      CPI Required <span className="text-nms-text-dim">(Cat B outdoor only)</span>
+                    </span>
+                  </LabelWithTooltip>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input type="checkbox" checked={form.sasPeerCertVerify} onChange={e => set({ sasPeerCertVerify: e.target.checked })}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
-                    Verify SAS Cert <span className="text-nms-text-dim">(disable for self-signed)</span>
-                  </span>
+                  <LabelWithTooltip tooltip="Whether the radio's SAS client validates the SAS server's TLS certificate against a trusted CA chain. Disable this when pointing at this deployment's own built-in SAS server, which uses a self-signed certificate (nginx/setup-sas-cert.sh) — leaving verification on against a self-signed cert will cause every SAS request to fail TLS validation and the radio will never get a grant. Enable it only if pointed at a real, publicly-trusted SAS provider.">
+                    <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
+                      Verify SAS Cert <span className="text-nms-text-dim">(disable for self-signed)</span>
+                    </span>
+                  </LabelWithTooltip>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input type="checkbox" checked={form.sasEnable} onChange={e => set({ sasEnable: e.target.checked })}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
-                    Enable SAS
-                  </span>
+                  <LabelWithTooltip tooltip="Master switch for Spectrum Access System integration on this radio. Must be enabled for CBRS Band 48 operation — without an active SAS grant, the radio is not federally authorized to transmit on this spectrum and will refuse to bring RF up regardless of other config. Disable only for lab/private CBRS testing where no real over-the-air SAS coordination is required.">
+                    <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
+                      Enable SAS
+                    </span>
+                  </LabelWithTooltip>
                 </label>
               </div>
             </div>
@@ -995,7 +1084,9 @@ export function FemtoConfigTab() {
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="nms-label">MAC Address</label>
+            <LabelWithTooltip tooltip="MAC address of the physical small cell, printed on its label or visible in its DHCP lease. This backend derives the device's root SSH password and Debug WebUI password from this MAC using the same calc_f2 algorithm Sercomm/FreedomFi's factory tooling uses — so entering it here recovers credentials for a device you never set a password on yourself. Accepts any common separator format (colons, dashes, or none); leave blank if you don't need SSH/WebUI access and only intend to provision via TR-069.">
+              <span className="nms-label">MAC Address</span>
+            </LabelWithTooltip>
             <input
               className="nms-input font-mono"
               value={mac}

@@ -265,7 +265,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               updateAmf({ ngap: { server: [v ? { ...rest, address: v } : rest] } });
             }}
             placeholder="10.0.1.155"
-            tooltip="Bind NGAP listener to this IP. Leave blank if using Interface binding."
+            tooltip="Bind the AMF's N2 (NGAP) listener to this specific IP address. Mutually exclusive with the Interface/dev field to the right — setting one clears the other, since Open5GS's ngap.server config accepts either a fixed address or a named interface for a given entry, not both at once. Leave blank if you'd rather bind by interface name (e.g. useful when the interface's IP can change, such as DHCP)."
           />
           <div>
             <FieldWithTooltip
@@ -278,7 +278,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                 updateAmf({ ngap: { server: [v ? { ...rest, dev: v } : { ...rest, address: ngapServer.address || '' }] } });
               }}
               placeholder="eth0"
-              tooltip="Bind NGAP to all IPs on this interface. Use instead of Address."
+              tooltip="Bind the AMF's N2 (NGAP) listener to every IP currently assigned to this named network interface, instead of one fixed address. Useful when the interface's address can change (DHCP, or an interface you expect to reconfigure) without needing to revisit this page every time. Mutually exclusive with the Address field to the left — when this field has a value, Open5GS's ngap.server config writes only 'dev', omitting 'address' entirely."
             />
             {ngapServer.dev && (
               <p className="text-xs text-blue-400 mt-1">

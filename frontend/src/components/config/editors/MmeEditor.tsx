@@ -127,7 +127,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               updateMme({ s1ap: { server: [v ? { ...rest, address: v } : rest] } });
             }}
             placeholder="10.0.1.175"
-            tooltip="Bind S1AP listener to this IP. Leave blank if using Interface binding."
+            tooltip="Bind the MME's S1-MME (S1AP) listener to this specific IP address — the address eNodeBs connect to over SCTP for 4G control-plane signaling. Mutually exclusive with the Interface/dev field to the right — setting one clears the other, since Open5GS's s1ap.server config accepts either a fixed address or a named interface per entry, not both. Leave blank if you'd rather bind by interface name."
           />
           <div>
             <FieldWithTooltip
@@ -138,7 +138,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 updateMme({ s1ap: { server: [v ? { ...rest, dev: v } : { ...rest, address: s1apServer.address || '' }] } });
               }}
               placeholder="eth0"
-              tooltip="Bind S1AP to all IPs on this interface. Use instead of Address."
+              tooltip="Bind the MME's S1AP listener to every IP currently assigned to this named network interface, instead of one fixed address. Useful when the interface's address can change without needing to revisit this page. Mutually exclusive with the Address field to the left — when this field has a value, Open5GS's s1ap.server config writes only 'dev', omitting 'address' entirely."
             />
             {s1apServer.dev && (
               <p className="text-xs text-blue-400 mt-1">
@@ -751,7 +751,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               updateMme({ time: Object.keys(updated).length ? updated : undefined });
             }}
             placeholder="720"
-            tooltip={(MME_TOOLTIPS as any).t3402}
+            tooltip={MME_TOOLTIPS.t3402}
           />
           <FieldWithTooltip
             label="T3412 (seconds)"
@@ -768,7 +768,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               updateMme({ time: Object.keys(updated).length ? updated : undefined });
             }}
             placeholder="3240"
-            tooltip={(MME_TOOLTIPS as any).t3412}
+            tooltip={MME_TOOLTIPS.t3412}
           />
           <FieldWithTooltip
             label="T3423 (seconds)"
@@ -785,7 +785,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               updateMme({ time: Object.keys(updated).length ? updated : undefined });
             }}
             placeholder="720"
-            tooltip={(MME_TOOLTIPS as any).t3423}
+            tooltip={MME_TOOLTIPS.t3423}
           />
         </div>
       </div>

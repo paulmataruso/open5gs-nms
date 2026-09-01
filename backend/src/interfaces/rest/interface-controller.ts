@@ -5,15 +5,17 @@ import { GtpBandwidthMonitor } from '../../application/use-cases/interface-statu
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { ActiveSessionsUseCase } from '../../application/use-cases/active-sessions';
+import { BaicellsUeCountsUseCase } from '../../application/use-cases/baicells-ue-counts';
 
 export const createInterfaceRouter = (
   hostExecutor: IHostExecutor,
   logger: pino.Logger,
   activeSessionsUseCase: ActiveSessionsUseCase,
   configRepo: IConfigRepository,
+  baicellsUeCounts: BaicellsUeCountsUseCase,
 ): Router => {
   const router = Router();
-  const getInterfaceStatus = new GetInterfaceStatus(hostExecutor, logger, activeSessionsUseCase, configRepo);
+  const getInterfaceStatus = new GetInterfaceStatus(hostExecutor, logger, activeSessionsUseCase, configRepo, baicellsUeCounts);
   const gtpBandwidthMonitor = new GtpBandwidthMonitor(hostExecutor, configRepo, logger);
   gtpBandwidthMonitor.start();
 

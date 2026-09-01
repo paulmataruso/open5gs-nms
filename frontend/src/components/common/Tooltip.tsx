@@ -1,129 +1,55 @@
-import { ReactNode, useState, useRef, useEffect } from 'react';
-import { clsx } from 'clsx';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { HelpCircle } from 'lucide-react';
 
-interface TooltipProps {
+interface TooltipTriggerProps {
   content: string;
-  children: ReactNode;
-  delay?: number;
-  position?: 'top' | 'bottom' | 'left' | 'right';
-  maxWidth?: string;
-  minWidth?: string;
+  className?: string;
 }
 
-export function Tooltip({
-  content,
-  children,
-  delay = 500,
-  position = 'top',
-  maxWidth = '400px',
-  minWidth = '200px',
-}: TooltipProps): JSX.Element {
-  const [visible, setVisible] = useState(false);
-  const [adjustedPosition, setAdjustedPosition] = useState(position);
-  const timeoutRef = useRef<number | null>(null);
-  const tooltipRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLDivElement>(null);
+// Click-to-open help popup. Previously this was a hover-delay popover (500ms
+// mouseenter/leave), which cut off long/detailed explanations on stray mouse
+// movement and didn't work on touch devices at all. Clicking now opens a
+// centered modal overlay with the full explanation — click anywhere (the
+// backdrop or the box itself) to dismiss, no close button to hunt for, since
+// the content here is read-only text with nothing else to interact with.
+export function TooltipTrigger({ content, className }: TooltipTriggerProps): JSX.Element {
+  const [open, setOpen] = useState(false);
 
-  const showTooltip = () => {
-    timeoutRef.current = window.setTimeout(() => {
-      setVisible(true);
-    }, delay);
-  };
-
-  const hideTooltip = () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-    }
-    setVisible(false);
-  };
-
-  // Adjust position if tooltip would overflow viewport
   useEffect(() => {
-    if (visible && tooltipRef.current && triggerRef.current) {
-      const tooltipRect = tooltipRef.current.getBoundingClientRect();
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-
-      let newPosition = position;
-
-      // Check horizontal overflow
-      if (tooltipRect.right > viewportWidth && position === 'right') {
-        newPosition = 'left';
-      } else if (tooltipRect.left < 0 && position === 'left') {
-        newPosition = 'right';
-      }
-
-      // Check vertical overflow
-      if (tooltipRect.bottom > viewportHeight && position === 'bottom') {
-        newPosition = 'top';
-      } else if (tooltipRect.top < 0 && position === 'top') {
-        newPosition = 'bottom';
-      }
-
-      setAdjustedPosition(newPosition);
-    }
-  }, [visible, position]);
-
-  const getPositionClasses = () => {
-    switch (adjustedPosition) {
-      case 'top':
-        return 'bottom-full left-1/2 -translate-x-1/2 mb-2';
-      case 'bottom':
-        return 'top-full left-1/2 -translate-x-1/2 mt-2';
-      case 'left':
-        return 'right-full top-1/2 -translate-y-1/2 mr-2';
-      case 'right':
-        return 'left-full top-1/2 -translate-y-1/2 ml-2';
-      default:
-        return 'bottom-full left-1/2 -translate-x-1/2 mb-2';
-    }
-  };
-
-  const getArrowClasses = () => {
-    switch (adjustedPosition) {
-      case 'top':
-        return 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-nms-surface-2';
-      case 'bottom':
-        return 'bottom-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-t-transparent border-b-nms-surface-2';
-      case 'left':
-        return 'left-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-r-transparent border-l-nms-surface-2';
-      case 'right':
-        return 'right-full top-1/2 -translate-y-1/2 border-t-transparent border-b-transparent border-l-transparent border-r-nms-surface-2';
-      default:
-        return 'top-full left-1/2 -translate-x-1/2 border-l-transparent border-r-transparent border-b-transparent border-t-nms-surface-2';
-    }
-  };
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open]);
 
   return (
-    <div
-      ref={triggerRef}
-      className="relative inline-block"
-      onMouseEnter={showTooltip}
-      onMouseLeave={hideTooltip}
-      onFocus={showTooltip}
-      onBlur={hideTooltip}
-    >
-      {children}
-      {visible && content && (
+    <>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+        className={className ?? 'inline-flex text-nms-text-dim hover:text-nms-accent transition-colors'}
+        aria-label="Show help"
+      >
+        <HelpCircle className="w-3.5 h-3.5 flex-shrink-0" />
+      </button>
+
+      {open && createPortal(
         <div
-          ref={tooltipRef}
-          className={clsx(
-            'absolute z-50 px-3 py-2 text-xs leading-relaxed text-nms-text bg-nms-surface-2 border border-nms-border rounded-lg shadow-lg',
-            'animate-fade-in pointer-events-none whitespace-normal',
-            getPositionClasses()
-          )}
-          style={{ maxWidth, minWidth }}
+          className="fixed inset-0 z-[100] flex items-center justify-center p-6 cursor-pointer"
+          style={{ background: 'rgba(0,0,0,0.7)' }}
+          onClick={() => setOpen(false)}
         >
-          {content}
-          {/* Arrow */}
-          <div
-            className={clsx(
-              'absolute w-0 h-0 border-4',
-              getArrowClasses()
-            )}
-          />
-        </div>
+          <div className="nms-card max-w-md w-full shadow-2xl">
+            <div className="flex items-start gap-3">
+              <HelpCircle className="w-5 h-5 text-nms-accent flex-shrink-0 mt-0.5" />
+              <p className="text-sm leading-relaxed text-nms-text whitespace-pre-line">{content}</p>
+            </div>
+            <p className="text-xs text-nms-text-dim mt-3 text-center">Click anywhere to close</p>
+          </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }

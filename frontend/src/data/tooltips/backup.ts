@@ -1,6 +1,6 @@
 // Backup & Restore Page Tooltips
 
 export const BACKUP_TOOLTIPS = {
-  config_backups_to_keep: "Number of configuration backups to retain before automatic cleanup. Older backups beyond this limit will be deleted. Minimum: 1. Recommended: 10 for adequate restore points.",
-  mongo_backups_to_keep: "Number of MongoDB (subscriber data) backups to retain. Each backup contains complete subscriber collection with IMSI, K, OPc, and slice configurations. Minimum: 1. Recommended: 5 to balance disk space and recovery options.",
+  config_backups_to_keep: "How many configuration backups (the core 17 NFs' YAML files plus every installed optional module's own config) to retain before automatic cleanup deletes the oldest ones beyond this count. A new backup is created before every config-changing operation, so this number is really 'how many restore points into the past can I go back.' Minimum: 1 (only ever keep the most recent). Recommended: 10 — enough to recover from a bad change made a while ago without discovering the backup you needed was already cleaned up, without letting backups accumulate indefinitely on disk.",
+  mongo_backups_to_keep: "How many MongoDB backups (the full subscriber collection — IMSI, Ki, OPc, MSISDN, slice/session profiles, and every other subscriber-linked record) to retain before cleanup. This is the backup that matters most for disaster recovery — losing it means losing the actual subscriber identities and keys, not just configuration that can be reconstructed from documentation. Minimum: 1. Recommended: 5, balancing meaningful recovery depth against the disk space a subscriber database backup actually consumes at scale.",
 };

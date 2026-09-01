@@ -3,6 +3,7 @@ import { toast } from 'react-hot-toast';
 import {
   Play, Square, RefreshCw, Wifi, Radio, ChevronDown, ChevronUp,
   CheckCircle, XCircle, Loader, AlertTriangle, Network, Signal, Trash2, Download, PhoneCall, Plus, Phone, PhoneOff,
+  ShieldCheck, ShieldOff, Antenna,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
@@ -13,6 +14,12 @@ import {
 import { swuEmulatorApi, SwuEmulatorStatus } from '../api/swuEmulator';
 import { getVolteStatus, runVolteTest, VolteValidationStatus, VolteTestStep } from '../api/volteValidation';
 import { getVowifiStatus, runVowifiTest, VowifiValidationStatus, VowifiTestStep } from '../api/vowifiValidation';
+import {
+  getQciHwTestStatus, installQciHwTest, getAttachedUes, runQciHwTest,
+  QciHwTestStatus, AttachedUe, QciHwTestEvent,
+} from '../api/qciHwTest';
+import { interfaceApi } from '../api';
+import type { ConnectedRadio } from '../stores';
 import {
   listImsTestNumbers, createImsTestNumber, stopImsTestNumber, placeImsTestCall, hangupImsTestCall,
   ImsTestNumberInfo,
@@ -293,6 +300,249 @@ function VolteStepRow({ step }: { step: VolteTestStep }) {
           {step.logExcerpt}
         </pre>
       )}
+    </div>
+  );
+}
+
+// ── QCI / Radio Hardware Test ─────────────────────────────────────────────────
+// Real physical-radio admission-control test — NOT a core-only/simulated-eNB
+// test (that version was built and explicitly removed: "does not test real
+// radio bearer setup, that is useless"). There is no way to make a real
+// dedicated-bearer request happen against real hardware without a real UE
+// (a real phone) actually attached to that radio placing a real call, so
+// this is entirely operator-driven, not scheduled — see PROJECT_STATE.md's
+// 2026-08-30 design discussion for the full reasoning. Flow: pick a radio,
+// confirm your own phone is attached to it (server re-checks this before
+// running, not just this page), pick a QCI, dial the IMS Test Number shown,
+// and this reports exactly what the real radio's own admission control
+// decided — nftables NFQUEUE intercepts the real E-RABSetupRequest your call
+// produces and patches only its QCI field, same mechanism as the qciprobe
+// diagnostic tool built live during the Nokia VoLTE investigation.
+function QciHwTestCard() {
+  const [status, setStatus] = useState<QciHwTestStatus | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installLog, setInstallLog] = useState('');
+
+  const [radios, setRadios] = useState<ConnectedRadio[]>([]);
+  const [selectedRadio, setSelectedRadio] = useState('');
+  const [attachedUes, setAttachedUes] = useState<AttachedUe[]>([]);
+  const [checkingAttachment, setCheckingAttachment] = useState(false);
+  const [qci, setQci] = useState(1);
+
+  const [running, setRunning] = useState(false);
+  const [events, setEvents] = useState<QciHwTestEvent[]>([]);
+  const [outcome, setOutcome] = useState<QciHwTestEvent | null>(null);
+
+  const loadStatus = useCallback(async () => {
+    try { setStatus(await getQciHwTestStatus()); } catch { /* silent */ }
+  }, []);
+  const loadRadios = useCallback(async () => {
+    try {
+      const s = await interfaceApi.getStatus();
+      setRadios((s.s1mme?.connectedEnodebs ?? []).filter(r => /^\d+\.\d+\.\d+\.\d+$/.test(r.ip)));
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { loadStatus(); loadRadios(); }, [loadStatus, loadRadios]);
+
+  useEffect(() => {
+    if (!selectedRadio) { setAttachedUes([]); return; }
+    setCheckingAttachment(true);
+    getAttachedUes(selectedRadio)
+      .then(setAttachedUes)
+      .catch(() => setAttachedUes([]))
+      .finally(() => setCheckingAttachment(false));
+  }, [selectedRadio]);
+
+  const doInstall = async () => {
+    setInstalling(true);
+    setInstallLog('');
+    try {
+      const resp = await installQciHwTest();
+      if (resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          setInstallLog(prev => prev + decoder.decode(value, { stream: true }));
+        }
+      }
+      const s = await getQciHwTestStatus();
+      setStatus(s);
+      toast[s.built ? 'success' : 'error'](s.built ? 'Installed' : 'Install failed — see log below');
+    } catch (err: any) {
+      toast.error('Install failed: ' + String(err.message ?? err));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const doRun = async () => {
+    setRunning(true);
+    setEvents([]);
+    setOutcome(null);
+    try {
+      const resp = await runQciHwTest(selectedRadio, qci);
+      if (!resp.ok || !resp.body) {
+        const j = await resp.json().catch(() => ({}));
+        throw new Error(j.error ?? `HTTP ${resp.status}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const parsed = JSON.parse(line) as QciHwTestEvent;
+          setEvents(prev => [...prev, parsed]);
+          if (parsed.type === 'outcome' || parsed.type === 'error') setOutcome(parsed);
+        }
+      }
+    } catch (err: any) {
+      toast.error('QCI hardware test failed: ' + String(err.message ?? err));
+      setOutcome({ type: 'error', message: String(err.message ?? err) });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const guardOk = attachedUes.length > 0;
+  const testNumberEvent = events.find(e => e.type === 'test_number');
+  const waitingEvent = [...events].reverse().find(e => e.type === 'waiting');
+
+  return (
+    <div className="border rounded-lg overflow-hidden border-nms-border bg-nms-surface">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-nms-border/50">
+        <div className="flex items-center gap-2">
+          <Antenna className="w-4 h-4 text-nms-accent" />
+          <span className="font-semibold text-nms-text">QCI / Radio Hardware Test</span>
+          <span className="text-[10px] text-nms-text-dim bg-nms-surface border border-nms-border px-1.5 py-0.5 rounded">Real radio, real call</span>
+        </div>
+        {outcome && (
+          <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
+            outcome.status === 'success' ? 'text-green-400 bg-green-500/10 border-green-500/30' :
+            outcome.status === 'rejected' ? 'text-red-400 bg-red-500/10 border-red-500/30' :
+            'text-amber-400 bg-amber-500/10 border-amber-500/30')}>
+            {outcome.status === 'success' ? <ShieldCheck className="w-3 h-3" /> : outcome.status === 'rejected' ? <ShieldOff className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+            {outcome.status === 'success' ? 'ADMITTED' : outcome.status === 'rejected' ? 'REJECTED' : outcome.status?.toUpperCase() ?? 'ERROR'}
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-4 space-y-4">
+        <p className="text-xs text-nms-text-dim leading-relaxed">
+          Tests whether a real, physical radio actually admits a specific QCI — <strong>not all radios support
+          all QCI values by default</strong>, and this is the way to check what yours actually accepts. Attach a
+          real phone to the radio you want to test, pick the QCI below, and dial the test number this shows —
+          the tool intercepts the real dedicated-bearer request your call produces and reports exactly what the
+          radio's own admission control decided. QCI=1 (conversational voice) is what real VoLTE calls use;
+          other values may need to be explicitly enabled in the radio's own configuration.
+        </p>
+
+        {!status?.built && (
+          <div className="space-y-2">
+            <div className="flex items-start gap-2 text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              {status?.open5gsSrcAvailable === false
+                ? `Not available on this host — Open5GS's own compiled S1AP codec was not found under ${status.open5gsSrcDir}. This feature needs Open5GS built from source with its dev artifacts still present.`
+                : 'Not installed yet — this builds a small tool (Go + Open5GS’s own S1AP codec) the first time you use it.'}
+            </div>
+            {status?.open5gsSrcAvailable !== false && (
+              <button onClick={doInstall} disabled={installing} className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40">
+                {installing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                {installing ? 'Installing...' : 'Install'}
+              </button>
+            )}
+            {installLog && (
+              <pre className="bg-nms-bg rounded p-2 text-[10px] font-mono text-nms-text-dim max-h-40 overflow-y-auto whitespace-pre-wrap border border-nms-border">{installLog}</pre>
+            )}
+          </div>
+        )}
+
+        {status?.built && (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-nms-text-dim block mb-1">Radio</label>
+                <select
+                  value={selectedRadio}
+                  onChange={(e) => setSelectedRadio(e.target.value)}
+                  disabled={running}
+                  className="nms-input w-full text-sm"
+                >
+                  <option value="">Select a connected radio...</option>
+                  {radios.map(r => <option key={r.ip} value={r.ip}>{r.ip}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-nms-text-dim block mb-1">QCI to test</label>
+                <select
+                  value={qci}
+                  onChange={(e) => setQci(Number(e.target.value))}
+                  disabled={running}
+                  className="nms-input w-full text-sm"
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(q => <option key={q} value={q}>{q}{q === 1 ? ' (conversational voice — real VoLTE default)' : ''}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {selectedRadio && (
+              <div className={clsx('flex items-start gap-2 text-xs rounded px-3 py-2 border',
+                checkingAttachment ? 'text-nms-text-dim bg-nms-surface-2 border-nms-border' :
+                guardOk ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
+                {checkingAttachment ? <RefreshCw className="w-3.5 h-3.5 shrink-0 mt-0.5 animate-spin" /> :
+                  guardOk ? <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                {checkingAttachment ? 'Checking attached UEs...' :
+                  guardOk ? `Confirmed attached: ${attachedUes.map(u => u.nickname || u.imsi).join(', ')}` :
+                  'No UE is currently attached to this radio — attach a real phone to it first.'}
+              </div>
+            )}
+
+            <button
+              onClick={doRun}
+              disabled={running || !selectedRadio || !guardOk || status?.running}
+              className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40"
+            >
+              {running ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              {running ? 'Running... (waiting up to 90s for your call)' : 'Run Test'}
+            </button>
+
+            {testNumberEvent?.msisdn && (
+              <div className="flex items-center gap-2 text-sm bg-nms-accent/10 border border-nms-accent/30 rounded px-3 py-2">
+                <PhoneCall className="w-4 h-4 text-nms-accent shrink-0" />
+                <span className="text-nms-text">Dial <span className="font-mono font-semibold">{testNumberEvent.msisdn}</span> from the attached phone now.</span>
+              </div>
+            )}
+            {!testNumberEvent?.msisdn && waitingEvent?.message && (
+              <p className="text-xs text-nms-text-dim">{waitingEvent.message}</p>
+            )}
+
+            {events.some(e => e.type === 'probe_event' && e.event?.type === 'request_seen') && (
+              <div className="flex items-center gap-2 text-xs text-nms-accent">
+                <Signal className="w-3.5 h-3.5" /> Real bearer request detected — waiting for the radio's response...
+              </div>
+            )}
+
+            {outcome && (
+              <div className={clsx('text-sm rounded px-3 py-2 border',
+                outcome.status === 'success' ? 'text-green-400 bg-green-500/10 border-green-500/30' :
+                outcome.status === 'rejected' ? 'text-red-400 bg-red-500/10 border-red-500/30' :
+                'text-amber-400 bg-amber-500/10 border-amber-500/30')}>
+                {outcome.message}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -1109,6 +1359,8 @@ export function ValidationPage() {
       </div>
 
       <SwuEmulatorCard />
+
+      <QciHwTestCard />
 
       <VolteTestCard />
 

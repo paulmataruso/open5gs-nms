@@ -311,7 +311,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                 value={pfcpServer.address}
                 onChange={(v) => updateUpf({ pfcp: { ...upf.pfcp, server: [{ ...pfcpServer, address: v }] } })}
                 placeholder="127.0.0.7"
-                tooltip="PFCP server address. Can be loopback (127.0.0.7) when SMF and UPF are on the same host."
+                tooltip="Where this UPF listens for PFCP (N4) control-plane requests from the SMF — session establishment, modification, and deletion rules all arrive here. Can safely be loopback (127.0.0.7) when SMF and UPF run on the same host, unlike the GTP-U address below which must always be real and routable. Must exactly match the address configured on SMF's own pfcp.client.upf list, or the two will never form a PFCP association and PDU sessions will fail even though registration otherwise succeeds."
               />
               <FieldRow
                 label="Port"
@@ -324,7 +324,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                 }}
                 placeholder="8805 (default)"
                 type="number"
-                tooltip="PFCP port (default 8805). Usually omitted to use the default."
+                tooltip="PFCP listen port. Default: 8805 — the standard 3GPP PFCP port. Usually left blank (omitted from the YAML) so Open5GS applies its built-in default; only set this explicitly if you have a specific reason (e.g. running multiple UPF instances on distinguishable ports on one host). Whatever port you pick here must match what the SMF is configured to send PFCP requests to."
               />
             </div>
           </div>
@@ -416,7 +416,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       updateUpf({ session: updated });
                     }}
                     placeholder="10.45.0.0/16"
-                    tooltip="UE IP address pool. Required."
+                    tooltip="IPv4 (or IPv6) address pool in CIDR notation that this UPF assigns addresses from for UE PDU sessions matching this pool's DNN. Required — a pool with no subnet is skipped entirely when generating the YAML. Size for real expected concurrent-session peak with headroom; must not overlap any other pool on this UPF or address space already used elsewhere on the host."
                   />
                   <FieldRow
                     label="Gateway"
@@ -427,7 +427,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       updateUpf({ session: updated });
                     }}
                     placeholder="10.45.0.1"
-                    tooltip="TUN interface gateway IP address."
+                    tooltip="The gateway/default-route IP handed to UEs assigned an address from this pool — also the address this UPF's TUN interface for this pool binds locally. Conventionally the first usable address in the subnet above (e.g. 10.45.0.1 for a 10.45.0.0/16 pool)."
                   />
                   <FieldRow
                     label="DNN / APN (optional)"
@@ -438,7 +438,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       updateUpf({ session: updated });
                     }}
                     placeholder="internet"
-                    tooltip="Tie this pool to a specific DNN/APN. Leave blank for default (all DNNs)."
+                    tooltip="Restricts this pool to sessions requesting this specific DNN/APN (e.g. 'internet', 'ims'). Leave blank to make this the fallback/default pool used for any DNN that doesn't have its own dedicated pool entry. When running multiple pools, list DNN-specific ones before the blank/default one — Open5GS matches in order."
                   />
                   <FieldRow
                     label="TUN Interface / dev (optional)"
@@ -449,7 +449,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       updateUpf({ session: updated });
                     }}
                     placeholder="ogstun"
-                    tooltip="Specific TUN interface name. Leave blank to use the default ogstun. Use named interfaces (ogstun2, ogstun3) for multi-APN setups."
+                    tooltip="Which TUN interface this pool binds to on the host. Leave blank to use Open5GS's default 'ogstun' interface. Use a distinct named interface (ogstun2, ogstun3, ...) when running multiple pools/DNNs that each need their own separate interface — e.g. this project's IMS module provisions its own dedicated ogstun2 session pool alongside the default internet pool on ogstun."
                   />
                 </div>
               </div>
@@ -534,7 +534,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
               onChange={(v) => setRemote({ label: v })}
               placeholder="edge-site-1"
               mono={false}
-              tooltip="Used only to name the downloaded file. Not written to the YAML."
+              tooltip="A human-friendly label for this remote/edge UPF site — used only to generate a descriptive filename for the downloaded YAML (e.g. upf-edge-site-1.yaml) and to distinguish this generator's output from another site's. Purely cosmetic: it is never written into the generated upf.yaml content itself, so it has zero effect on the remote UPF's actual behavior."
             />
           </div>
 
@@ -551,7 +551,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                   value={remoteForm.pfcpAddress}
                   onChange={(v) => setRemote({ pfcpAddress: v })}
                   placeholder="172.16.10.20"
-                  tooltip="The IP the SMF will use to reach this UPF over PFCP/N4. Must be routable from the central Open5GS host."
+                  tooltip="The real, routable IP the central Open5GS SMF will use to reach this remote/edge UPF over PFCP (N4), UDP port 8805. Unlike the local UPF's own PFCP address (which can be loopback when SMF and UPF are colocated), this one genuinely cannot be loopback — SMF and this UPF run on different hosts by definition here. This becomes the pfcp.server address in the generated remote upf.yaml, and it's automatically what gets added to the central SMF's pfcp.client.upf list when you click 'Add to SMF & Apply' below."
                 />
                 {remoteForm.pfcpAddress && isLoopback(remoteForm.pfcpAddress) && (
                   <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
@@ -565,7 +565,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                   value={remoteForm.gtpuAddress}
                   onChange={(v) => setRemote({ gtpuAddress: v })}
                   placeholder="172.16.10.21"
-                  tooltip="The IP radios will use to send UE user traffic. Must be reachable from the radio at the edge site."
+                  tooltip="The real, routable IP the radios at this edge site send UE data-plane traffic to over GTP-U (N3/S1-U), UDP port 2152 — this is the whole point of a distributed/remote UPF: subscriber data never has to cross back to the central site's WAN link, only PFCP control signaling does. Must be directly reachable from the edge site's own radios; unreachable here means UEs can register (control plane goes through the central AMF/MME fine) but get zero actual data throughput."
                 />
                 {remoteForm.gtpuAddress && isLoopback(remoteForm.gtpuAddress) && (
                   <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
@@ -614,7 +614,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       setRemote({ sessions: updated });
                     }}
                     placeholder="10.45.0.0/16"
-                    tooltip="UE IP address pool."
+                    tooltip="IPv4 address pool (CIDR) this remote UPF assigns UE addresses from for sessions matching this pool's DNN. Size for real expected concurrent-session peak at this edge site, and make sure it doesn't overlap any other site's or DNN's pool anywhere in the deployment — overlapping pools across sites can cause genuinely ambiguous routing if a UE's address ever needs to be reached from outside its own edge site."
                   />
                   <FieldRow
                     label="Gateway"
@@ -625,7 +625,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       setRemote({ sessions: updated });
                     }}
                     placeholder="10.45.0.1"
-                    tooltip="TUN interface gateway IP."
+                    tooltip="The gateway/default-route IP handed to UEs assigned from this pool, and where this remote UPF's TUN interface for the pool binds locally on the edge-site host. Conventionally the first usable address in the subnet."
                   />
                   <FieldRow
                     label="DNN / APN (optional)"
@@ -636,7 +636,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       setRemote({ sessions: updated });
                     }}
                     placeholder="internet"
-                    tooltip="Tie pool to a specific DNN/APN. Leave blank for all DNNs."
+                    tooltip="Restricts this pool to sessions requesting this specific DNN/APN. Leave blank to make it the default/fallback pool for any DNN without its own dedicated entry. This value is also what gets used as the DNN hint when this pool is added to the central SMF's session list via 'Add to SMF & Apply' below."
                   />
                   <FieldRow
                     label="TUN Interface / dev (optional)"
@@ -647,7 +647,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                       setRemote({ sessions: updated });
                     }}
                     placeholder="ogstun"
-                    tooltip="Named TUN interface. Use ogstun2, ogstun3 etc. for multi-APN setups."
+                    tooltip="Which TUN interface this pool binds to on the remote host. Leave blank for Open5GS's default 'ogstun'. Use a distinct name (ogstun2, ogstun3, ...) if this edge site's UPF serves more than one DNN and each needs its own separate interface."
                   />
                 </div>
               </div>
@@ -657,7 +657,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
           {/* Log path */}
           <div>
             <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Logging</h4>
-            <FieldRow label="Log File Path" value={remoteForm.logPath} onChange={(v) => setRemote({ logPath: v })} placeholder="/var/log/open5gs/upf.log" tooltip="Log file path on the remote UPF host." />
+            <FieldRow label="Log File Path" value={remoteForm.logPath} onChange={(v) => setRemote({ logPath: v })} placeholder="/var/log/open5gs/upf.log" tooltip="Filesystem path where open5gs-upfd writes its log file on the remote edge-site host, written directly into the generated YAML's logger.file.path. The parent directory must exist and be writable by the process on that remote host — this isn't validated by this generator, since it has no visibility into the remote filesystem, so double-check it after deploying." />
           </div>
 
           {/* Generated YAML */}

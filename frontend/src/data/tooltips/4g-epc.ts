@@ -2,108 +2,116 @@
 
 // MME (Mobility Management Entity) Tooltips
 export const MME_TOOLTIPS = {
-  freediameter: "Path to FreeDiameter configuration file for S6a/Diameter interface with HSS. Used for authentication and subscription data retrieval.",
-  s1ap_address: "S1-MME interface address for eNodeB connections. Must be reachable by 4G base stations. SCTP protocol",
-  s1ap_port: "S1-MME port. Default: 36412. Used for control plane with eNodeBs",
-  gtpc_server: "GTP-C server address for S11 interface to SGW-C. Control plane for bearer management",
-  gtpc_sgwc: "SGW-C address for GTP-C signaling. MME communicates with SGW-C for session management and bearer setup.",
-  gtpc_smf: "SMF address for 4G/5G interworking. Enables MME to communicate with 5G SMF for dual-mode network support.",
-  gtpc_address: "GTP-C address for S11 interface to SGW-C. Control plane for bearer management",
-  gtpc_port: "GTP-C port. Default: 2123. GPRS Tunneling Protocol Control plane",
-  mcc: "Mobile Country Code for 4G PLMN. Must match USIM cards and broadcast by eNodeBs",
-  mnc: "Mobile Network Code for 4G PLMN. Identifies your 4G operator network",
-  gummei_mcc: "Mobile Country Code for GUMMEI (Globally Unique MME Identifier). 3 digits identifying the country (e.g., 001 for test, 310 for USA).",
-  gummei_mnc: "Mobile Network Code for GUMMEI. 2-3 digits identifying the mobile network within a country.",
-  mme_gid: "MME Group ID (16-bit: 0-65535). Pool identifier for load balancing across multiple MMEs. Part of GUMMEI",
-  mme_code: "MME Code (8-bit: 0-255). Unique MME identifier within the group. Part of GUMMEI for specific MME identification",
-  tai_mcc: "Mobile Country Code for Tracking Area Identity. Defines the geographic tracking area this MME serves.",
-  tai_mnc: "Mobile Network Code for Tracking Area Identity. Works with MCC to define the tracking area.",
-  tai_tac: "Tracking Area Code (1-65535). Identifies a specific tracking area within a PLMN. Larger TAC = fewer location updates, more paging load.",
-  
+  freediameter: "Path to the FreeDiameter configuration file governing the MME's S6a Diameter interface to the HSS — this is how the MME authenticates subscribers and retrieves subscription data (APN list, QoS profile, AMBR) during attach. If this file is missing, malformed, or points at the wrong HSS peer, every 4G attach will fail during the authentication/location-update step even though S1AP setup with the eNodeB succeeds fine — a useful way to narrow down where an attach failure is actually occurring.",
+  s1ap_address: "Bind address for the S1-MME interface — where 4G base stations (eNodeBs) connect for control-plane signaling (attach, bearer setup, handover, paging). Must be reachable by every eNodeB expected to serve this core, whether over a flat LAN, VPN, or a SecGW/IPsec tunnel. Uses SCTP, not TCP/UDP — a firewall or NAT device that doesn't understand SCTP can silently break this even when ICMP/ping to the same address works fine.",
+  s1ap_port: "S1-MME port eNodeBs connect to. Default: 36412, transported over SCTP. eNodeB configuration must specify this exact port and protocol — a mismatch (or an eNodeB still trying plain TCP) shows up as the SCTP association never establishing, which usually surfaces on the radio's own management UI as 'not connected to core.'",
+  gtpc_server: "GTP-C server address for the S11 interface toward SGW-C — the control-plane channel the MME uses to request bearer setup/modification/deletion for each attached UE's default and dedicated bearers. Distinct from the GTP-U (user-plane) path, which the MME never touches directly in the EPC architecture (that's entirely between eNodeB, SGW-U, and PGW-U).",
+  gtpc_sgwc: "Address of the SGW-C (Serving Gateway, control plane) this MME sends S11 GTP-C signaling to for session/bearer management. Must exactly match SGW-C's own configured GTP-C listen address — a mismatch causes bearer setup requests to go nowhere, which manifests as attach getting stuck or completing with no usable data bearer.",
+  gtpc_smf: "Address of a 5G SMF this MME can reach for 4G/5G interworking scenarios (a combined-core deployment where SMF is also acting as the 4G PGW-C role). Only relevant if this deployment actually runs a shared 4G/5G core with interworking configured — leave unset for a standalone 4G/EPC-only setup.",
+  gtpc_address: "GTP-C address for the S11 interface to SGW-C — functionally the same field as gtpc_server/gtpc_sgwc above depending on which config path is in use; controls where the MME's own GTP-C control-plane socket binds for bearer-management signaling.",
+  gtpc_port: "GTP-C port. Default: 2123 — the standard port for GTP Control-plane signaling (bearer setup/modify/delete requests between MME and SGW-C). Must match what SGW-C expects to receive on.",
+  mcc: "Mobile Country Code for this 4G PLMN — must match what subscriber USIM cards are provisioned with and what every eNodeB actually broadcasts in its SIB1. A mismatch here means phones see this as a different, non-home network and refuse to attach, well before any deeper diagnostic (Diameter, bearer setup) is even reached.",
+  mnc: "Mobile Network Code identifying your specific 4G operator within the country named by mcc. Combined with mcc this forms the complete PLMN ID subscriber SIMs match against — must be consistent across every eNodeB and every other core NF in this deployment.",
+  gummei_mcc: "Mobile Country Code component of this MME's GUMMEI (Globally Unique MME Identifier) — broadcast so an eNodeB/UE can route back to the correct MME on reselection. Should normally match the mcc field above; a deliberate mismatch is only meaningful in advanced multi-PLMN MME pooling scenarios.",
+  gummei_mnc: "Mobile Network Code component of the GUMMEI, paired with gummei_mcc. Combined with mme_gid and mme_code below, this forms the complete identifier eNodeBs use to select which MME (out of a pool, if more than one exists) should handle a given UE.",
+  mme_gid: "MME Group ID (16-bit: 0-65535) — identifies a pool of MMEs for load balancing and redundancy; every MME sharing the same Group ID is considered part of the same pool by eNodeBs doing MME selection. In a single-MME deployment this can be any value, but it must exactly match whatever a radio's own 'MME Group ID' provisioning field expects (see Femtocell Provisioning's MME Group ID tooltip) — a mismatch there causes the cell to stay in a perpetual 'TRYING' state even though S1 Setup otherwise succeeds.",
+  mme_code: "MME Code (8-bit: 0-255) — uniquely identifies this specific MME instance within its Group ID's pool, completing the GUMMEI. With only one MME in this deployment's pool, any value works, since there's nothing else in the same group to collide with.",
+  tai_mcc: "Mobile Country Code for this MME's Tracking Area Identity — must match the PLMN actually broadcast by connected eNodeBs. Kept identical to mcc/gummei_mcc in the overwhelming majority of deployments, but is technically a separate field, so it's worth double-checking after any PLMN change.",
+  tai_mnc: "Mobile Network Code for the Tracking Area Identity, paired with tai_mcc. Works together with tai_tac below to define which UEs' registration and paging this MME is responsible for.",
+  tai_tac: "Tracking Area Code (1-65535) — groups eNodeB cells for paging and location-update purposes. A larger TAC value has no functional meaning on its own; what matters is how many distinct tracking areas you configure: fewer/larger TAs reduce Tracking Area Update signaling from mobile UEs but increase paging fan-out (every cell in the TA gets paged for an incoming call/SMS to an idle UE, since the network only knows the TA, not the specific cell).",
+
   // SGs-AP Interface (CSFB - Circuit Switched FallBack)
-  sgsap_overview: "SGs-AP enables CSFB (Circuit Switched FallBack) - allows 4G LTE devices to fall back to 2G/3G networks for voice calls when VoLTE is unavailable. Connects MME to MSC/VLR.",
-  sgsap_server_address: "MSC/VLR SCTP server address(es). The 2G/3G MSC that handles circuit-switched voice calls. Can specify multiple addresses for redundancy.",
-  sgsap_local_address: "MME's local SCTP bind address(es) for SGs interface. IP addresses the MME uses to communicate with the MSC/VLR.",
-  
+  sgsap_overview: "SGs-AP enables CSFB (Circuit Switched FallBack) — lets 4G LTE devices temporarily fall back to a 2G/3G network to handle a voice call when VoLTE isn't available or hasn't been negotiated. This interface connects the MME to an MSC/VLR on the legacy circuit-switched side. It's an alternative/fallback path to native VoLTE, not a replacement — a deployment with working VoLTE generally doesn't need SGs-AP configured at all, and CSFB adds real call-setup latency (dropping to 2G/3G and back) compared to native VoLTE.",
+  sgsap_server_address: "SCTP server address(es) of the MSC/VLR that handles circuit-switched voice calls for CSFB'd UEs. You can specify multiple addresses for redundancy — the MME will attempt each for the SGs association. This must be a real, reachable 2G/3G MSC/VLR; there's no equivalent to Open5GS's own core NFs for this role, so it typically means integrating with external legacy infrastructure.",
+  sgsap_local_address: "The MME's own local SCTP bind address(es) for the SGs interface — the IP the MME uses as its side of the SCTP association toward the MSC/VLR. Must be an address the MSC/VLR can actually route back to.",
+
   // TAI (4G) - Used by LTE/4G network
-  sgsap_tai_header: "4G TRACKING AREA (TAI) - Where the UE is registered in the LTE network. This is the 4G side of the mapping.",
-  sgsap_tai_mcc: "4G Tracking Area MCC (Mobile Country Code). The country code in the LTE network where the UE is registered.",
-  sgsap_tai_mnc: "4G Tracking Area MNC (Mobile Network Code). The operator code in the LTE network where the UE is registered.",
-  sgsap_tai_tac: "4G Tracking Area Code (TAC). The specific LTE tracking area. Example: 4131 (decimal) or 0x1023 (hex).",
-  
+  sgsap_tai_header: "4G TRACKING AREA (TAI) — describes where the UE is currently registered within the LTE/4G network. This is the 4G-side half of the TAI→LAI mapping the MSC/VLR needs in order to make sense of a UE that just fell back from 4G into its legacy 2G/3G domain.",
+  sgsap_tai_mcc: "4G Tracking Area MCC — the Mobile Country Code of the LTE network the UE is registered on when CSFB is triggered. Should match this MME's own tai_mcc configuration.",
+  sgsap_tai_mnc: "4G Tracking Area MNC — the Mobile Network Code of the LTE network. Should match this MME's own tai_mnc configuration.",
+  sgsap_tai_tac: "4G Tracking Area Code — the specific LTE tracking area the UE was in before falling back. Example: 4131 (decimal) or 0x1023 (hex). Must correspond to a real TAC this MME actually serves.",
+
   // LAI (2G/3G) - Used by legacy network
-  sgsap_lai_header: "2G/3G LOCATION AREA (LAI) - Where the UE appears to be registered in the legacy network. This is the 2G/3G side that MAPS FROM the 4G TAI above.",
-  sgsap_lai_mcc: "2G/3G Location Area MCC. When UE falls back to 2G/3G for voice, it appears to be in this country. Usually matches TAI MCC.",
-  sgsap_lai_mnc: "2G/3G Location Area MNC. When UE falls back to 2G/3G for voice, it appears to be in this operator's network. Usually matches TAI MNC.",
-  sgsap_lai_lac: "2G/3G Location Area Code (LAC). The legacy location area the UE appears to be in. Example: 43691 (decimal) or 0xAAAAB (hex). Different from TAC!",
-  
+  sgsap_lai_header: "2G/3G LOCATION AREA (LAI) — the legacy-network identity the UE will appear to have once it falls back for the CSFB voice call. This is what the TAI above gets MAPPED TO so the MSC/VLR (which only understands LAI, not TAI) can locate and page the UE correctly.",
+  sgsap_lai_mcc: "2G/3G Location Area MCC — the country code the UE will appear to be in on the legacy side after falling back. Usually identical to the 4G TAI MCC, since it's normally the same physical operator/country.",
+  sgsap_lai_mnc: "2G/3G Location Area MNC — the operator code the UE will appear to be under on the legacy network after CSFB. Usually matches the 4G TAI MNC for the same reason.",
+  sgsap_lai_lac: "2G/3G Location Area Code — the specific legacy location area the UE is mapped into. Example: 43691 (decimal) or 0xAAAAB (hex). This is a genuinely different numbering space from a 4G TAC despite the conceptual similarity — don't assume a TAC value is directly reusable as a LAC.",
+
   // Mapping explanation
-  sgsap_mapping_explanation: "TAI→LAI mapping tells the MSC/VLR: 'When a UE is in 4G TAI (MCC:001, MNC:01, TAC:4131), treat it as if it's in 2G/3G LAI (MCC:001, MNC:01, LAC:43691)'. This allows seamless fallback for voice calls.",
-  
-  tac: "Tracking Area Code (1-65535). Groups eNodeBs for paging and location updates. Lower TAC = more frequent updates",
-  tai_list: "Tracking Area Identity list. Defines which TAs this MME serves. Broadcast by eNodeBs for UE selection",
-  security_eia: "Integrity protection algorithm order for NAS messages. EIA2 (AES) recommended. Format: [EIA2, EIA1, EIA0]",
-  security_eea: "Encryption algorithm order for NAS/user data. EEA2 (AES) recommended. EEA0 = no encryption (testing only)",
-  network_name_full: "Full 4G network name (max 63 chars). Displayed to users during LTE attach and in phone settings",
-  network_name_short: "Short 4G network name (max 31 chars). Shown when full name doesn't fit on device screen",
-  mme_name: "MME identifier name (FQDN format). Used for logging, debugging, and Diameter routing",
-  log_path: "MME log file path. Contains attach procedures, handovers, and S1 events",
-  log_level: "MME log verbosity. Debug for UE attachment troubleshooting, info for production monitoring",
+  sgsap_mapping_explanation: "The TAI→LAI mapping tells the MSC/VLR: 'when a UE is in 4G TAI (MCC:001, MNC:01, TAC:4131), treat it as if it's in 2G/3G LAI (MCC:001, MNC:01, LAC:43691)' — without this explicit mapping table, the MSC/VLR has no way to translate a 4G location into a legacy one it understands, and CSFB will fail even though the SGs association itself is up. Every TAC your eNodeBs actually broadcast needs a corresponding LAI mapping entry here, or UEs on an unmapped TAC simply can't CSFB.",
+
+  tac: "Tracking Area Code (1-65535). Groups eNodeBs together for paging and location-update purposes — every eNodeB whose S1AP config lists this TAC is paged whenever an idle UE registered under it receives an incoming call/SMS. A lower TAC value has no inherent meaning; what matters is how many distinct TACs you carve your RAN into (see tai_tac above for the tradeoff).",
+  tai_list: "The list of Tracking Area Identities this MME actually serves. Broadcast to eNodeBs so they know which MME(s) can be selected for their tracking area during S1 Setup — a TAC an eNodeB broadcasts that isn't in this MME's own tai_list causes the S1 Setup Request for that TAC to be rejected outright.",
+  security_eia: "Ordered list of NAS integrity-protection algorithms this MME offers during the UE security-mode procedure. Format: [EIA2, EIA1, EIA0] — the first algorithm the UE also supports wins. EIA2 (AES-based) is the modern, hardware-accelerated recommendation and should be first; EIA0 (null integrity, meaning zero protection on NAS signaling) should be included only for lab/interop testing, never left first or as the sole option in production.",
+  security_eea: "Ordered list of NAS/user-data encryption algorithms. EEA2 (AES) is the recommended, hardware-accelerated first choice for production. EEA0 (no encryption at all) should be reserved for controlled testing scenarios — e.g. deliberately capturing plaintext NAS traffic for packet-level debugging — never a live deployment carrying real subscriber traffic.",
+  network_name_full: "Full 4G network/operator name shown to users during LTE attach and in phone settings (max 63 characters). Purely cosmetic — has zero effect on attach success, routing, or any protocol behavior — but a wrong or blank value is often the first thing a user notices when checking they're on the intended network.",
+  network_name_short: "Abbreviated 4G network name (max 31 characters), used by devices whose display doesn't have room to show the full name. Same cosmetic-only scope as network_name_full.",
+  mme_name: "This MME instance's own identifier, in FQDN format (e.g. mme.epc.mnc001.mcc001.3gppnetwork.org). Used for logging/debugging correlation and Diameter routing/identity purposes — this string doesn't need to actually resolve in DNS unless it's also being used elsewhere as an advertised hostname (see gotcha #6 in this project's architectural notes about NFs fatally aborting on unresolvable self-advertised FQDNs).",
+  // 3GPP mobility timers — real bug found live (2026-08-28): these were
+  // defined in an orphaned, never-imported data/tooltips/mme.ts, so the
+  // Timer Configuration section's tooltips were silently blank in the
+  // actual running UI. Moved here (the file this module's barrel export
+  // actually re-exports) and that dead file removed.
+  t3402: "T3402 timer, in seconds. Controls how long a UE waits before automatically re-attempting attach after a failed attach attempt (e.g. rejected due to network congestion or a temporary core-side problem). Default: 720 seconds (12 minutes). Set shorter for faster automatic recovery during testing/lab work where you want to see the next attempt sooner; the long default is deliberate for production to avoid a flood of synchronized re-attach storms from many UEs at once after a brief outage.",
+  t3412: "T3412 timer, in seconds — the Periodic Tracking Area Update (TAU) interval, i.e. how often an idle (not actively communicating) UE checks back in with the network just to confirm it's still reachable, without a full re-attach. Default: 3240 seconds (54 minutes). Shorter values mean the network's idea of 'is this UE still here' stays fresher (useful if you need tighter presence detection) at the cost of more periodic signaling load from every idle UE; longer values reduce signaling but mean a UE that silently went out of coverage takes longer for the network to notice.",
+  t3423: "T3423 timer, in seconds — the deregistration/IMSI-detach timer used during the combined EPS/IMSI attach procedure, controlling GPRS-side detach timing for dual-stack (packet+circuit) subscribers. Default: 720 seconds (12 minutes). Only meaningful for subscribers configured with network_access_mode = combined packet+circuit rather than packet-only — see the Subscriber page's Network Access Mode tooltip.",
+  log_path: "Filesystem path where the MME writes its log file — attach procedures, handovers, S1AP setup/release, and Diameter (S6a) exchanges all appear here. Parent directory must exist and be writable by open5gs-mmed, or the service fails to start rather than silently skip logging.",
+  log_level: "MME log verbosity. debug is the right setting for actively troubleshooting a specific UE's attach or handover (shows the full S1AP/NAS message flow); it's high-volume and not meant for steady-state operation. info is the standard production level once things are known-good.",
 };
 
-// HSS (Home Subscriber Server) Tooltips  
+// HSS (Home Subscriber Server) Tooltips
 export const HSS_TOOLTIPS = {
-  diameter_address: "Diameter protocol address for S6a interface to MME. Provides authentication and subscriber data",
-  diameter_port: "Diameter port. Default: 3868. Used for S6a (MME), S6d (SGSN), and Cx (IMS) interfaces",
-  mongodb_uri: "MongoDB connection for 4G subscriber database. Stores IMSI, Ki, OPc, and subscription profiles",
-  freediameter_conf: "FreeDiameter configuration file path. Defines Diameter realm, identity, and peer connections",
-  log_path: "HSS log file path. Contains authentication requests, location updates, and subscriber data queries",
-  log_level: "HSS log verbosity. Info sufficient for production, debug for authentication troubleshooting",
+  diameter_address: "Diameter protocol bind address for the HSS's S6a interface toward the MME (and S6d toward an SGSN, Cx toward IMS if configured). This is where the MME sends authentication-vector and subscriber-profile requests during attach — if the MME can't reach this address, every 4G attach fails at the authentication step even though S1AP setup with the eNodeB succeeds.",
+  diameter_port: "Diameter port. Default: 3868 — used across all of the HSS's Diameter-based interfaces (S6a for MME, S6d for SGSN, Cx for IMS/PyHSS integration if that module is enabled). Must match what each peer (MME, SGSN, or IMS's Cx client) is configured to connect to.",
+  mongodb_uri: "MongoDB connection storing 4G subscriber data — IMSI, Ki, OPc, and full subscription profiles (APN list, QoS class, AMBR). This is the actual system-of-record for who's allowed to attach and what service they get; a subscriber missing or misconfigured here fails authentication regardless of how correct the radio/MME configuration is.",
+  freediameter_conf: "Path to the FreeDiameter configuration file defining this HSS's own Diameter realm, identity, and peer relationships (which MMEs/SGSNs it accepts connections from). A misconfigured realm/identity here is a common cause of Diameter Capabilities-Exchange failures that look, from the MME's side, like the HSS simply isn't responding.",
+  log_path: "HSS log file path — every authentication request, location update, and subscriber-data query lands here, making it the first place to look when a specific subscriber can't attach even though their record looks correct in the Subscriber page.",
+  log_level: "HSS log verbosity. info is sufficient for production; debug is worth turning on temporarily when diagnosing a specific authentication failure, since it shows the full Diameter AVP exchange rather than just success/failure.",
 };
 
 // PCRF (Policy and Charging Rules Function) Tooltips
 export const PCRF_TOOLTIPS = {
-  diameter_address: "Diameter address for Gx interface to PGW. Provides dynamic QoS and charging rules",
-  diameter_port: "Diameter port. Default: 3868. Gx interface for policy and charging control",
-  mongodb_uri: "MongoDB for 4G policy rules, charging rules, and spending limits",
-  freediameter_conf: "FreeDiameter config for PCRF. Defines Diameter realm and PGW peer connections",
-  log_path: "PCRF log file path. Contains policy decisions, Gx messages, and rule installations",
-  log_level: "PCRF log verbosity. Debug shows per-session policy decisions, info for normal operation",
+  diameter_address: "Diameter bind address for the PCRF's Gx interface toward the PGW — this is how the PGW requests dynamic QoS and charging rules for each subscriber's PDN session. Also the interface P-CSCF speaks Rx over when VoLTE needs a dedicated QCI=1 bearer for a call (see this project's architectural notes on the P-CSCF↔PCRF Rx interface for real VoLTE calling).",
+  diameter_port: "Diameter port. Default: 3868 — shared with every other Diameter-based interface in this stack (matches HSS's default too, which is fine since they're normally different processes/addresses). Must match what the PGW (Gx) and P-CSCF (Rx, if VoLTE dedicated bearers are in use) are each configured to connect to.",
+  mongodb_uri: "MongoDB connection storing 4G policy rules, charging rules, and spending-limit state the PCRF applies dynamically to active sessions.",
+  freediameter_conf: "FreeDiameter configuration defining this PCRF's own Diameter realm and identity, plus its accepted peer list (PGW for Gx, and P-CSCF for Rx if VoLTE dedicated bearers are enabled). Misconfiguring the peer list here is a real, previously-confirmed cause of VoLTE calls failing to get their dedicated bearer even though everything else about the call setup looks fine — see this project's notes on stale ConnectPeer entries from old PLMNs interfering with the real P-CSCF↔PCRF connection.",
+  log_path: "PCRF log file path — policy decisions, Gx message exchanges, and rule installations for every active session appear here.",
+  log_level: "PCRF log verbosity. debug shows the full per-session policy decision trail (useful when a specific call/session isn't getting the QoS treatment expected); info is the right default once policy behavior is confirmed working.",
 };
 
 // SGW-C (Serving Gateway Control Plane) Tooltips
 export const SGWC_TOOLTIPS = {
-  gtpc_address: "GTP-C address for S11 (MME) and S5 (PGW) interfaces. Control plane for bearer management",
-  gtpc_port: "GTP-C port. Default: 2123. Handles bearer setup, modification, deletion procedures",
-  pfcp_address: "PFCP address for Sxb interface to SGW-U. Control plane to user plane communication",
-  pfcp_port: "PFCP port. Default: 8805. Used to install packet forwarding rules in SGW-U",
-  log_path: "SGW-C log file path. Contains bearer events, PFCP sessions, and S11/S5 procedures",
-  log_level: "SGW-C log verbosity. Info for production, debug for bearer establishment troubleshooting",
+  gtpc_address: "GTP-C bind address handling both S11 (toward MME, bearer management signaling) and S5 (toward PGW-C) control-plane interfaces. This is the address the MME's own gtpc_sgwc/gtpc_address field must match — a mismatch here means bearer-management requests from the MME never reach SGW-C, and UEs get stuck without a usable data bearer even though attach otherwise succeeds.",
+  gtpc_port: "GTP-C port. Default: 2123 — handles the full bearer lifecycle: setup, modification, and deletion requests arriving from the MME over S11.",
+  pfcp_address: "PFCP bind address for the Sxb interface toward SGW-U — SGW-C uses this to install/modify/delete the actual packet-forwarding rules on the user-plane side once it's decided what a bearer needs to do. This is the control-to-user-plane split that lets SGW-C and SGW-U scale/fail independently.",
+  pfcp_port: "PFCP port. Default: 8805 — must match what SGW-U's own pfcp_address/pfcp_port is configured to listen on, or the Sxb association never forms and SGW-C's bearer decisions never actually reach the data plane.",
+  log_path: "SGW-C log file path — bearer lifecycle events, PFCP sessions with SGW-U, and S11/S5 procedure logs.",
+  log_level: "SGW-C log verbosity. info is right for production; debug is useful when specifically troubleshooting why a bearer isn't being established or torn down correctly.",
 };
 
 // SGW-U (Serving Gateway User Plane) Tooltips
 export const SGWU_TOOLTIPS = {
-  gtpu_address: "GTP-U address for S1-U (eNodeB) and S5-U (PGW) interfaces. Data plane for user traffic",
-  gtpu_port: "GTP-U port. Default: 2152. Forwards encapsulated user packets between eNodeB and PGW",
-  pfcp_address: "PFCP address for Sxb interface from SGW-C. Receives packet forwarding rules and QoS policies",
-  pfcp_port: "PFCP port. Default: 8805. Control plane from SGW-C configures data plane forwarding",
-  log_path: "SGW-U log file path. Contains packet forwarding statistics, tunnel events, and PFCP actions",
-  log_level: "SGW-U log verbosity. Warn/error for production (high traffic). Debug impacts performance",
+  gtpu_address: "GTP-U tunnel endpoint address handling both S1-U (toward eNodeB, receiving UE uplink/downlink traffic) and S5-U (toward PGW-U) data-plane interfaces. This is the address eNodeBs actually send/receive subscriber IP packets to/from — if it's unreachable from the RAN, UEs can complete attach and even get a bearer established at the control-plane level while all real data traffic silently goes nowhere.",
+  gtpu_port: "GTP-U port. Default: 2152 — the standard 3GPP GTP-U port every generation of RAN uses; eNodeBs need this exact port for their S1-U tunnel, and most CBRS/femtocell provisioning flows in this project don't expose it as an editable field, so leaving this at the default is strongly recommended.",
+  pfcp_address: "PFCP bind address for the Sxb interface from SGW-C — where SGW-U receives its actual packet-forwarding rules and QoS instructions. Must match what SGW-C is configured to send PFCP requests to.",
+  pfcp_port: "PFCP port. Default: 8805 — must match SGW-C's configured PFCP peer port for this Sxb association to form.",
+  log_path: "SGW-U log file path — packet-forwarding statistics, tunnel lifecycle events, and PFCP actions received from SGW-C.",
+  log_level: "SGW-U log verbosity. warn/error are the right choice for production given this NF sits directly in the high-volume data path — debug-level logging here has a real, measurable performance cost under real traffic load and should only be enabled briefly for targeted troubleshooting.",
 };
 
 // PGW-C (PDN Gateway Control Plane) Tooltips - Often combined with SMF
 export const PGWC_TOOLTIPS = {
-  gtpc_address: "GTP-C address for S5 interface from SGW. Also S2a/S2b for non-3GPP access",
-  apn: "Access Point Name. Defines external data network (internet, IMS, enterprise). Routes to specific IP pool",
-  dns_primary: "Primary DNS provided to 4G UEs. Used for hostname resolution by applications",
-  dns_secondary: "Secondary DNS for 4G UEs. Backup if primary DNS unreachable",
-  ue_pool: "IP address pool for 4G UE sessions (CIDR). PGW assigns from this range. Size for peak concurrent users",
-  pcrf_diameter: "PCRF address for Gx interface. Retrieves dynamic policies and charging rules per UE session",
+  gtpc_address: "GTP-C address for the S5 interface from SGW (and S2a/S2b for non-3GPP access paths like VoWiFi's ePDG, when those are in use). In this project's shared-NF architecture, PGW-C's role is typically absorbed into the SMF rather than run as a fully separate process — see SMF's own gtpc_address/gtpc_smf tooltips for the combined-core equivalent of this field.",
+  apn: "Access Point Name — identifies which external data network a subscriber's session connects to (internet, IMS/VoLTE signaling, an enterprise network, etc.) and routes to a specific IP address pool accordingly. Must match one of the APNs listed in the subscriber's own subscription profile (HSS/UDR record), or their request for this APN gets rejected.",
+  dns_primary: "Primary DNS server address handed to 4G UEs for this APN, used for hostname resolution by every app on the device once the session is up. Unreachable DNS here silently breaks name resolution for the whole device even though the PDN connection itself looks healthy.",
+  dns_secondary: "Secondary/fallback DNS server for 4G UEs on this APN, used if the primary doesn't respond. Recommended to be a genuinely independent resolver from the primary.",
+  ue_pool: "IPv4 address pool (CIDR) for 4G UE sessions on this APN. Size it for real expected peak concurrent users with headroom — exhausting this pool causes new PDN connection requests to fail even though the rest of the network is healthy. Must not overlap with any other APN's pool or with addressing already used elsewhere on the host.",
+  pcrf_diameter: "Address of the PCRF this PGW-C queries over Gx for dynamic policy and charging rules per UE session. If unreachable, PGW-C typically falls back to static/default policy rather than failing sessions outright — but anything depending on dynamic policy (like a VoLTE call's dedicated QCI=1 bearer request) won't get the treatment it needs.",
 };
 
 // PGW-U (PDN Gateway User Plane) Tooltips - Often combined with UPF
 export const PGWU_TOOLTIPS = {
-  gtpu_address: "GTP-U address for S5-U interface from SGW. Tunnel endpoint for user data",
-  sgi_interface: "SGi interface to external packet data networks (internet). Physical or virtual interface name",
-  nat_enable: "Enable NAT (Network Address Translation) for UE traffic to internet. Required if UE pool uses private IPs",
+  gtpu_address: "GTP-U address for the S5-U interface from SGW — the actual tunnel endpoint where PGW-U sends/receives subscriber IP packets after decapsulating them from the GTP tunnel. In this project's shared-NF architecture, PGW-U's role is typically absorbed into UPF rather than run separately — see UPF's own gtpu_address tooltip for the combined-core equivalent.",
+  sgi_interface: "SGi interface toward external packet data networks (i.e. the actual internet/enterprise-network-facing side, after GTP decapsulation) — the physical or virtual interface name traffic egresses through once it leaves the mobile-network tunnel world. Must be a real interface that exists on this host and has a working route to wherever the traffic needs to go.",
+  nat_enable: "Enables NAT (Network Address Translation) for UE traffic heading out the SGi interface toward the internet. Required whenever the UE IP pool uses private/RFC1918 addressing (the common case for a small deployment) and needs a public-routable path out — without it, return traffic from the internet has nowhere valid to route back to.",
 };

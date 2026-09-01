@@ -140,11 +140,14 @@ export interface RegisteredUserInfo {
   nickname: string | null;
 }
 
-// Parses the text file `kamcmd ulscscf.snapshot <file>` writes — S-CSCF's
-// usrloc is db_mode=0/in-memory only (see Coding Standards / multiple
-// Decision Log entries), so this live dump is the only way to see current
-// registrations at all, there's nothing to query in scscf's own MariaDB
-// tables. Groups by Call-ID (falling back to Contact URI if Call-ID is
+// Parses the text file `kamcmd ulscscf.snapshot <file>` writes. S-CSCF's
+// usrloc is now db_mode=1/write-through (persisted to scscf.impu/
+// impu_contact/contact so a restart doesn't wipe every phone's registration
+// — see kamailio_scscf.cfg's own comment, 2026-08-31), but this live dump
+// still reflects the in-memory view exactly (including anything not yet
+// flushed) and needs no extra DB-shape parsing, so it's kept as the one
+// source of truth here rather than querying those tables directly. Groups
+// by Call-ID (falling back to Contact URI if Call-ID is
 // somehow absent) so one real registered device shows as one row with all
 // its IMPU aliases listed together, instead of one row per alias.
 function parseRegisteredUsersSnapshot(raw: string): RegisteredUserInfo[] {
@@ -2162,6 +2165,11 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   await nsenter('systemctl', ['restart', 'open5gs-pcrfd']).catch(() => {});
   await nsenter('systemctl', ['restart', 'open5gs-upfd']).catch(() => {});
 
+  // kamailio-scscf was restarted in the same loop above, so its own registrar
+  // is normally empty right after a full Configure and this is a no-op — kept
+  // for defense-in-depth in case that ever changes (see forceReregisterAllRegisteredUes).
+  await forceReregisterAllRegisteredUes().catch(() => {});
+
   return { imsDomain };
 }
 
@@ -2237,7 +2245,7 @@ export async function setSmsWorkerInterval(seconds: number): Promise<void> {
 // the full usrloc snapshot (ulscscf.snapshot) and deduping by Contact URI
 // to get the true distinct-device count, classified by device type from
 // each contact's User-Agent header.
-async function getRegisteredUesWithActivity(): Promise<{
+async function getRegisteredUesWithActivity(pcscfIp?: string): Promise<{
   registeredUes: number;
   registeredUesByType: { iphone: number; android: number; other: number };
   activeUes: number;
@@ -2285,7 +2293,13 @@ async function getRegisteredUesWithActivity(): Promise<{
 
   // "Active" = the UE's IPsec SA has passed real traffic in the last 5
   // minutes - distinguishes actually-doing-something-right-now from
-  // merely holding a still-valid-but-idle registration binding.
+  // merely holding a still-valid-but-idle registration binding. Must be
+  // scoped to P-CSCF's own IP — `ip xfrm state` dumps the WHOLE host's IPsec
+  // state, which also includes SecGW's completely unrelated radio-backhaul
+  // tunnels (different IP, different mechanism — strongSwan/IKEv2, not
+  // P-CSCF's AKA-derived kamailio-internal SAs) when that module is enabled.
+  // Confirmed live 2026-08-30: without this filter, SecGW's tunnels get
+  // counted as if they were UE registration activity.
   const activeIps = new Set<string>();
   try {
     const xfrmOut = await nsenter('ip', ['-s', 'xfrm', 'state']);
@@ -2295,6 +2309,7 @@ async function getRegisteredUesWithActivity(): Promise<{
       const srcDst = /^src (\S+) dst (\S+)/.exec(block);
       const lastUsed = /lastused (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(block);
       if (!srcDst || !lastUsed) continue;
+      if (pcscfIp && srcDst[1] !== pcscfIp && srcDst[2] !== pcscfIp) continue;
       const t = new Date(lastUsed[1].replace(' ', 'T')).getTime();
       if (Number.isNaN(t) || now - t > 5 * 60 * 1000) continue;
       activeIps.add(srcDst[1]);
@@ -2308,6 +2323,63 @@ async function getRegisteredUesWithActivity(): Promise<{
   }
 
   return { registeredUes: byContact.size, registeredUesByType, activeUes };
+}
+
+// P-CSCF keeps its own in-memory registration state (pcscf_location,
+// ipsec_clients) completely separate from S-CSCF's registrar — restarting
+// kamailio-pcscf alone (e.g. a raw config/route-script edit via
+// /configs/restart, as happened live 2026-08-30 for a mt.cfg fix) wipes that
+// state while S-CSCF (a different, unrestarted process) still reports every
+// phone as registered. A phone has no way to know P-CSCF forgot about it, so
+// its next call attempt hits mo.cfg's very first check
+// (`pcscf_is_registered`) and gets an explicit 403 "You must register first
+// with a S-CSCF" — looking exactly like "IMS says registered but calls
+// silently fail" until the user manually toggles Airplane Mode to force a
+// fresh REGISTER. Confirmed live as the root cause of that exact symptom.
+// Fix: force every currently-registered IMPU off S-CSCF's own registrar via
+// its dereg_impu RPC (the same one used to clean up a stale/ghost
+// registration — see memory) right after a P-CSCF-only restart. That RPC
+// sends a real NOTIFY to any phone subscribed to its own reg-event package
+// (standard GSMA VoLTE-profile behavior, confirmed present on both the
+// iPhone and Android entries in this project's own registrar dump), which
+// makes a compliant phone silently re-REGISTER on its own — repopulating
+// P-CSCF's local state with no user action needed. If kamailio-scscf was
+// ALSO just restarted in the same action, this naturally finds nothing to
+// deregister (S-CSCF's own state is freshly empty too) and is a harmless
+// no-op. Never throws — best-effort UX improvement, not a restart blocker.
+export async function forceReregisterAllRegisteredUes(logger?: pino.Logger): Promise<void> {
+  const snapshotPath = '/tmp/.nms-scscf-dereg-snapshot.txt';
+  try {
+    await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.snapshot', snapshotPath]);
+  } catch (err) {
+    logger?.warn({ err: String(err) }, 'ims: force-reregister skipped — S-CSCF unreachable');
+    return;
+  }
+  const hostSnapshotPath = `/proc/1/root${snapshotPath}`;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(hostSnapshotPath, 'utf-8');
+  } catch (err) {
+    logger?.warn({ err: String(err) }, 'ims: force-reregister skipped — could not read snapshot');
+    return;
+  }
+  try { fs.unlinkSync(hostSnapshotPath); } catch { /* best-effort cleanup */ }
+
+  const registrations = parseRegisteredUsersSnapshot(raw);
+  let count = 0;
+  for (const reg of registrations) {
+    const impu = reg.publicIdentities[0];
+    if (!impu) continue;
+    try {
+      await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'regscscf.dereg_impu', impu]);
+      count++;
+    } catch (err) {
+      logger?.warn({ err: String(err), impu }, 'ims: force-reregister failed for one IMPU');
+    }
+  }
+  if (count > 0) {
+    logger?.info({ count }, 'ims: forced re-register for all previously-registered UEs after a P-CSCF restart');
+  }
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -2859,17 +2931,33 @@ export function createImsRouter(
       // isn't necessarily registered, and IPsec SAs get wiped by any P-CSCF
       // restart until the phone re-registers — see memory:
       // ims-ue-to-ue-calling-investigation.
+      //
+      // Both must be scoped to P-CSCF's own IP (currentConfig?.pcscfIp) —
+      // `ip xfrm state` is a whole-host dump and also picks up SecGW's
+      // entirely unrelated radio-backhaul tunnels (different mechanism,
+      // different IPs) when that module is enabled, which showed IPsec SAs
+      // as "present" on this page even when P-CSCF had none of its own and
+      // every phone was actually unregistered (confirmed live 2026-08-30).
       let ipsecSaCount = 0;
       const [ueRes, xfrmRes] = await Promise.allSettled([
         services.scscf
-          ? getRegisteredUesWithActivity()
+          ? getRegisteredUesWithActivity(currentConfig?.pcscfIp)
           : Promise.reject(new Error('scscf not running')),
         nsenter('ip', ['xfrm', 'state']),
       ]);
       const { registeredUes, registeredUesByType, activeUes } =
         ueRes.status === 'fulfilled' ? ueRes.value : { registeredUes: 0, registeredUesByType: { iphone: 0, android: 0, other: 0 }, activeUes: 0 };
       if (xfrmRes.status === 'fulfilled') {
-        ipsecSaCount = (xfrmRes.value.stdout.match(/^src /gm) ?? []).length;
+        const pcscfIp = currentConfig?.pcscfIp;
+        if (pcscfIp) {
+          const blocks = xfrmRes.value.stdout.split(/\n(?=src )/);
+          ipsecSaCount = blocks.filter((b) => {
+            const m = /^src (\S+) dst (\S+)/.exec(b);
+            return !!m && (m[1] === pcscfIp || m[2] === pcscfIp);
+          }).length;
+        } else {
+          ipsecSaCount = (xfrmRes.value.stdout.match(/^src /gm) ?? []).length;
+        }
       }
 
       const smfImsConfigured = fs.existsSync(HOST_SMF_YAML) &&
@@ -2965,9 +3053,10 @@ export function createImsRouter(
 
   // GET /api/ims/live — real-time IPsec SA / registration / active-call
   // view for the IMS page's "Live Status" tab. Every field here is read
-  // directly off the running system (no DB) — S-CSCF's own registrar is
-  // db_mode=0/in-memory only, so `kamcmd ulscscf.snapshot` is the only way
-  // to see current registrations at all, and IPsec SA byte/packet counters
+  // directly off the running system rather than the DB (S-CSCF's usrloc is
+  // db_mode=1/write-through as of 2026-08-31, but this live in-memory view
+  // is still the most current signal, including anything not yet flushed),
+  // and IPsec SA byte/packet counters
   // are the same live signal used throughout this project's own VoLTE
   // debugging history to tell "registered" from "actually exchanging
   // traffic." Three independent nsenter calls — one slow/failed source
@@ -3741,6 +3830,7 @@ export function createImsRouter(
           await new Promise(r => setTimeout(r, 2000)); // let redis bind before pyhss services
         }
       }
+      await forceReregisterAllRegisteredUes(logger).catch(() => {});
       await auditLogger.log({ action: 'ims_restart', user, details: 'IMS restarted', success: true });
       res.json({ success: true, message: 'IMS services restarted.' });
     } catch (err) {
@@ -3821,6 +3911,9 @@ export function createImsRouter(
         } catch (err) {
           results.push(`${svc}: error — ${String(err)}`);
         }
+      }
+      if (services.includes('kamailio-pcscf')) {
+        await forceReregisterAllRegisteredUes(logger).catch(() => {});
       }
       res.json({ success: true, results });
     } catch (err) {

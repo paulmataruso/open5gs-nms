@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, ShieldCheck, Globe, PhoneCall, Phone, MessageSquare, Smartphone } from 'lucide-react';
+import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, Shield, ShieldCheck, ShieldOff, Globe, PhoneCall, Phone, MessageSquare, Smartphone } from 'lucide-react';
 import { useServiceStore, useSubscriberStore } from '../../stores';
-import { configApi, serviceApi, interfaceApi } from '../../api';
+import { configApi, serviceApi, interfaceApi, radioBlockApi } from '../../api';
+import { ConfirmModal } from '../common/ConfirmModal';
 import { sasApi } from '../../api/sas';
 import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
@@ -291,7 +292,7 @@ export function DashboardPage(): JSX.Element {
 
   const doBulkAction = async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
     if (!confirm(`Are you sure you want to ${action} ALL services?`)) return;
-    
+
     setBulkActing(true);
     try {
       const result = await serviceApi.bulkAction(action);
@@ -305,6 +306,23 @@ export function DashboardPage(): JSX.Element {
       toast.error(`Failed to ${action} all services`);
     } finally {
       setBulkActing(false);
+    }
+  };
+
+  // "Block RAN" kill switch — severs S1-MME/S1-U (nftables, this host only) for every
+  // currently connected 4G eNodeB at once, without touching any radio's own config. Same
+  // mechanism as the per-radio Block button on the RAN page — see radio-block-service.ts.
+  const [confirmBlockRan, setConfirmBlockRan] = useState(false);
+  const [blockingRan, setBlockingRan] = useState(false);
+  const doBlockAllRadios = async (): Promise<void> => {
+    setBlockingRan(true);
+    try {
+      const { ips } = await radioBlockApi.blockAll();
+      toast.success(ips.length > 0 ? `Blocked ${ips.length} radio${ips.length === 1 ? '' : 's'}` : 'No radios currently connected to block');
+    } catch (err) {
+      toast.error('Failed to block RAN');
+    } finally {
+      setBlockingRan(false);
     }
   };
 
@@ -337,6 +355,14 @@ export function DashboardPage(): JSX.Element {
             className="nms-btn-primary flex items-center gap-2 text-sm"
           >
             <Zap className="w-4 h-4" /> Restart All
+          </button>
+          <button
+            onClick={() => setConfirmBlockRan(true)}
+            disabled={blockingRan}
+            className="nms-btn-danger flex items-center gap-2 text-sm"
+            title="Sever S1-MME and S1-U for every connected radio (nftables, this host only) — radios themselves are not touched"
+          >
+            <ShieldOff className="w-4 h-4" /> Block RAN
           </button>
         </div>
       </div>
@@ -753,6 +779,16 @@ export function DashboardPage(): JSX.Element {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        open={confirmBlockRan}
+        title="Block RAN?"
+        message="This immediately severs S1-MME and S1-U for every currently connected radio (nftables, this host only) — no radio's own config is touched, and each one can be restored individually from the RAN page, or all at once by unblocking them there."
+        confirmLabel="Block RAN"
+        danger
+        onConfirm={() => { setConfirmBlockRan(false); doBlockAllRadios(); }}
+        onCancel={() => setConfirmBlockRan(false)}
+      />
     </div>
   );
 }

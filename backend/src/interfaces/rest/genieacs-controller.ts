@@ -6,6 +6,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { radioBackupDir, backupDeviceById } from './radio-backup';
 import { parseMccMncFromMmeYaml, isPlmnMismatch } from '../../domain/services/read-plmn';
+import { BaicellsUeCountsUseCase } from '../../application/use-cases/baicells-ue-counts';
 
 const HOST_MME_YAML = '/proc/1/root/etc/open5gs/mme.yaml';
 
@@ -703,7 +704,7 @@ function findDuplicatePlmnEntries(device: Record<string, any>): string[] {
   return issues;
 }
 
-function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string) {
+function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string, mmeUeCount: number | null = null) {
   const serial     = device._id ?? 'unknown';
   const plmn       = getParam(device, `${FAP}CellConfig.LTE.EPC.PLMNList.1.PLMNID`);
   const mcc        = plmn.length >= 3 ? plmn.slice(0, 3) : '';
@@ -713,21 +714,30 @@ function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string) 
   const mmePoolTable = getMmePoolTable(device);
   const mmePoolConfig = getMmePoolConfig(device);
   const lastInform = device._lastInform ?? null;
-  const opState    = getParam(device, `${FAP}FAPControl.LTE.OpState`);
-  const rfTxStatus = getParam(device, `${FAP}FAPControl.LTE.RFTxStatus`);
+  const radioEnable   = getParam(device, `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`);
   const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
   const isOnline   = lastInform && lastInform > fiveMinAgo;
 
-  // Deliberately NOT X_COM_RadioEnable — confirmed live (2026-08-16, see the
-  // provisioning-task comment above buildProvisionTasks) that this parameter
-  // can get permanently stuck (firmware rejects every write except a no-op)
-  // and does not reflect the radio's actual RF state at all. OpState +
-  // RFTxStatus are the device's own real operational-state parameters and
-  // were confirmed reading `true` the whole time X_COM_RadioEnable sat stuck
-  // `false` — using them here instead is what actually matches reality.
+  // Reversed from an earlier (2026-08-16) finding that trusted OpState/
+  // RFTxStatus instead — superseded live (2026-08-28) by a real, deliberate
+  // before/after test: all 3 Baicells radios confirmed OFF via their own
+  // GUI, then turned ON via their own GUI (entirely outside this NMS), then
+  // re-read fresh from GenieACS (a real connection-request + GPV, not a
+  // cached value). OpState/RFTxStatus stayed pinned at "true" through BOTH
+  // the confirmed-off and confirmed-on states on every radio — proven to
+  // never actually track live RF transmit state on this firmware; the
+  // 08-16 finding only happened to catch them at a moment they were right.
+  // X_COM_RadioEnable, by contrast, correctly flipped false->true on 2 of 3
+  // radios in the same test, read passively (nothing here ever wrote to
+  // it) — real proof this parameter does track the radio's actual,
+  // externally-set state. One radio (SC-1202000463221SY0360) still didn't
+  // track correctly even on this parameter (stuck reporting true through
+  // both the real off and real on state) — a device-specific quirk on that
+  // one serial, not something either parameter can currently see; treat
+  // its rfStatus as unreliable until re-verified.
   const rfStatus: 'on' | 'off' | 'offline' =
-    !isOnline                                     ? 'offline' :
-    rfTxStatus === 'true' && opState === 'true'   ? 'on'      : 'off';
+    !isOnline               ? 'offline' :
+    radioEnable === 'true'  ? 'on'      : 'off';
 
   const directIp = getParam(device, 'Device.IP.Interface.1.IPv4Address.1.IPAddress');
   const crUrl    = getParam(device, 'Device.ManagementServer.ConnectionRequestURL');
@@ -767,6 +777,14 @@ function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string) 
     // Live status — from newly discovered full parameter tree
     mmeStatus:    getParam(device, 'Device.DeviceInfo.X_COM_MME_Status'),
     ueCount,
+    // MME's own /enb-info count for this radio — deliberately a separate
+    // field from `ueCount` above, not a replacement. Confirmed live
+    // (2026-08-28) these can legitimately disagree: `ueCount` is the
+    // radio's own self-reported RRC-connected count, this is the core's
+    // count including RRC-idle UEs MME still holds S1/EPS context for. See
+    // baicells-ue-counts.ts for the full explanation. null (not 0) means
+    // "this radio isn't currently associated with MME at all", not "zero UEs".
+    mmeUeCount,
     gpsStatus:    getParam(device, 'Device.DeviceInfo.X_COM_GPS_Status'),
     gpsSatCount:  getParam(device, 'Device.DeviceInfo.X_COM_GPS_Satellite_count'),
     uptime:       getParam(device, 'Device.DeviceInfo.X_COM_STATION_RUN_Time'),
@@ -879,6 +897,7 @@ export function createGenieacsRouter(
   logger:      pino.Logger,
   auditLogger: IAuditLogger,
   backupRoot:  string,
+  baicellsUeCounts: BaicellsUeCountsUseCase,
 ): Router {
   const router = Router();
 
@@ -1099,7 +1118,12 @@ export function createGenieacsRouter(
       });
 
       const { mcc: coreMcc, mnc: coreMnc } = readCoreMccMnc();
-      res.json({ success: true, devices: baicellsDevices.map(d => toRadio(d, coreMcc, coreMnc)) });
+      const mmeUeCounts = await baicellsUeCounts.getAll().catch(() => []);
+      const mmeUeCountByDeviceId = new Map(mmeUeCounts.map(c => [c.genieacsDeviceId, c.mmeUeCount]));
+      res.json({
+        success: true,
+        devices: baicellsDevices.map(d => toRadio(d, coreMcc, coreMnc, mmeUeCountByDeviceId.get(d._id) ?? null)),
+      });
     } catch (err) {
       logger.error({ err: String(err) }, 'Failed to fetch GenieACS devices');
       res.status(502).json({ success: false, error: `GenieACS NBI unreachable: ${String(err)}` });
@@ -1206,6 +1230,41 @@ export function createGenieacsRouter(
       const gpv = await nbiPost(gpvUrl, {
         name: 'getParameterValues',
         parameterNames: [
+          // Real bug found live (2026-08-28): none of OpState/RFTxStatus/
+          // X_COM_RadioEnable were in this list at all, meaning "Force
+          // Refresh" could never update the displayed RF status no matter
+          // what — nothing else ever re-queries them (Baicells' periodic
+          // Inform only reports a small fixed set that doesn't include any
+          // of these). Added all three below. Also see toRadio()'s own
+          // comment: a live before/after test the same day (verified off
+          // via each radio's own GUI, then on, entirely outside this NMS)
+          // proved OpState/RFTxStatus never actually change with real RF
+          // state on this firmware — they're kept in this refresh list only
+          // because they're still displayed/logged elsewhere, not because
+          // rfStatus depends on them anymore.
+          `${FAP}FAPControl.LTE.OpState`,
+          `${FAP}FAPControl.LTE.RFTxStatus`,
+          `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`,
+          // Real bug found live (2026-08-28), same root cause as the RF
+          // fields above: the ENTIRE "Live status fields" block toRadio()
+          // reads (UE count, MME status, GPS, uptime, HW/SW version, SAS
+          // radio-enable) was missing from this list too — none of it is in
+          // Baicells' periodic Inform set either, so none of it could ever
+          // be corrected by Force Refresh, only by a full re-bootstrap.
+          // Confirmed live: X_COM_UE_Count/LteUECount both read stale `0`
+          // on radios with real attached UEs, timestamped well before the
+          // device's own most recent Inform.
+          'Device.DeviceInfo.X_COM_MME_Status',
+          'Device.DeviceInfo.X_COM_UE_Count',
+          `${FAP}X_COM.LTE.LteUECount`,
+          'Device.DeviceInfo.X_COM_GPS_Status',
+          'Device.DeviceInfo.X_COM_GPS_Satellite_count',
+          'Device.DeviceInfo.cpiLatitude',
+          'Device.DeviceInfo.cpiLongitude',
+          'Device.DeviceInfo.X_COM_STATION_RUN_Time',
+          'Device.DeviceInfo.HardwareVersion',
+          'Device.DeviceInfo.SoftwareVersion',
+          'Device.DeviceInfo.SAS.RadioEnable',
           `${FAP}CellConfig.LTE.EPC.TAC`,
           // Real bug found live (2026-08-16): this list omitted PLMNID
           // entirely — buildProvisionTasks() writes it (it's the only source

@@ -29,11 +29,19 @@ export default {
       animation: {
         'pulse-slow': 'pulse 3s ease-in-out infinite',
         'fade-in': 'fadeIn 0.3s ease-out',
+        'flash-red': 'flashRed 1.2s ease-in-out infinite',
       },
       keyframes: {
         fadeIn: {
           '0%': { opacity: '0', transform: 'translateY(4px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        // Uses the nms-red CSS var directly (not the Tailwind color token, which
+        // only resolves the <alpha-value> placeholder inside class names) so this
+        // still tracks the light/dark theme swap in index.css.
+        flashRed: {
+          '0%, 100%': { backgroundColor: 'rgb(var(--nms-red-rgb) / 0.06)' },
+          '50%': { backgroundColor: 'rgb(var(--nms-red-rgb) / 0.28)' },
         },
       },
     },

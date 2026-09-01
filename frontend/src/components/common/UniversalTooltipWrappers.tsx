@@ -1,6 +1,5 @@
 import { ReactNode } from 'react';
-import { Tooltip } from '../common/Tooltip';
-import { HelpCircle } from 'lucide-react';
+import { TooltipTrigger } from '../common/Tooltip';
 
 /**
  * Universal label wrapper that adds tooltip support
@@ -19,11 +18,7 @@ export function LabelWithTooltip({
     <span className="inline-flex items-center gap-1.5">
       {children}
       {required && <span className="text-nms-red">*</span>}
-      {tooltip && (
-        <Tooltip content={tooltip} position="top" maxWidth="450px" minWidth="250px">
-          <HelpCircle className="w-3.5 h-3.5 text-nms-text-dim hover:text-nms-accent transition-colors cursor-help flex-shrink-0" />
-        </Tooltip>
-      )}
+      {tooltip && <TooltipTrigger content={tooltip} className="inline-flex flex-shrink-0 text-nms-text-dim hover:text-nms-accent transition-colors" />}
     </span>
   );
 }

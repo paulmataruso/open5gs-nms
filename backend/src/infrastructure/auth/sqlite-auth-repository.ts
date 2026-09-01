@@ -141,7 +141,38 @@ export class SqliteAuthRepository implements IAuthRepository {
         nickname   TEXT    NOT NULL,
         updated_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS radio_blocks (
+        ip         TEXT    NOT NULL PRIMARY KEY,
+        blocked_by TEXT    NOT NULL,
+        blocked_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS gnb_blocks (
+        ip         TEXT    NOT NULL PRIMARY KEY,
+        blocked_by TEXT    NOT NULL,
+        blocked_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ue_blocks (
+        imsi       TEXT    NOT NULL PRIMARY KEY,
+        last_ip    TEXT,
+        blocked_by TEXT    NOT NULL,
+        blocked_at INTEGER NOT NULL
+      );
     `);
+
+    // Added 2026-08-28 for LTE-band tagging (RAN page filter) — CREATE TABLE
+    // IF NOT EXISTS above doesn't add columns to an already-existing table
+    // on a live deployment, so migrate it explicitly. Guarded so a fresh
+    // install (where the CREATE TABLE above already ran without `band`,
+    // since it was written after this migration was added) doesn't error
+    // on a duplicate column.
+    const radioTagsCols = this.db.prepare("PRAGMA table_info(radio_tags)").all() as { name: string }[];
+    if (!radioTagsCols.some(c => c.name === 'band')) {
+      this.db.exec('ALTER TABLE radio_tags ADD COLUMN band TEXT');
+    }
+
     this.logger.info('Auth database schema initialised');
   }
 

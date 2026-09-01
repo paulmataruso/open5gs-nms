@@ -75,10 +75,44 @@ export const serviceApi = {
 export const radioTagsApi = {
   getAll: () =>
     api.get<Record<string, string>>('/radio-tags').then(r => r.data),
+  getAllFull: () =>
+    api.get<Record<string, { nickname: string; band: string | null }>>('/radio-tags/full').then(r => r.data),
   set: (ip: string, nickname: string) =>
     api.put(`/radio-tags/${encodeURIComponent(ip)}`, { nickname }).then(r => r.data),
+  setBand: (ip: string, band: string) =>
+    api.put(`/radio-tags/${encodeURIComponent(ip)}`, { band }).then(r => r.data),
   remove: (ip: string) =>
     api.delete(`/radio-tags/${encodeURIComponent(ip)}`).then(r => r.data),
+};
+
+// Blocks a radio's S1-MME (SCTP/36412) and S1-U (UDP/2152) paths to the core via
+// nftables, without touching the radio itself — see radio-block-service.ts.
+export interface RadioBlockInfo { ip: string; blockedBy: string; blockedAt: number }
+export const radioBlockApi = {
+  getAll: () =>
+    api.get<RadioBlockInfo[]>('/radio-block').then(r => r.data),
+  block: (ip: string) =>
+    api.post(`/radio-block/${encodeURIComponent(ip)}`).then(r => r.data),
+  unblock: (ip: string) =>
+    api.delete(`/radio-block/${encodeURIComponent(ip)}`).then(r => r.data),
+  blockAll: () =>
+    api.post<{ success: boolean; ips: string[] }>('/radio-block/all').then(r => r.data),
+};
+
+// Blocks a gNodeB's N2 (SCTP/38412) and N3 (UDP/2152) paths to the core via nftables,
+// without touching the radio itself — the 5G equivalent of radioBlockApi, see
+// gnb-block-service.ts for why this is a genuinely separate mechanism (different N2
+// port, own nftables table) rather than a reuse of the 4G one.
+export interface GnbBlockInfo { ip: string; blockedBy: string; blockedAt: number }
+export const gnbBlockApi = {
+  getAll: () =>
+    api.get<GnbBlockInfo[]>('/gnb-block').then(r => r.data),
+  block: (ip: string) =>
+    api.post(`/gnb-block/${encodeURIComponent(ip)}`).then(r => r.data),
+  unblock: (ip: string) =>
+    api.delete(`/gnb-block/${encodeURIComponent(ip)}`).then(r => r.data),
+  blockAll: () =>
+    api.post<{ success: boolean; ips: string[] }>('/gnb-block/all').then(r => r.data),
 };
 
 export const tunApi = {

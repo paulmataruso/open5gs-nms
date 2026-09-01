@@ -13,12 +13,14 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { convertRepeatedMapKeysToArray } from '../../infrastructure/yaml/yaml-config-repository';
 import { createDummyInterface, deleteDummyInterface, nsenter, dummyNetdevPath, dummyNetworkPath } from '../../infrastructure/network/dummy-interface';
 import { ipToNum, numToIp, cidrRange } from '../../domain/services/ip-utils';
+import { killStrayQciHwTestProcesses } from '../../application/use-cases/ran/qci-hw-test-runner';
+import { resetQciHwTestRunningFlag } from './qci-hw-test-controller';
 
 const moduleLogger = pino({ name: 'validation-controller' });
 
 const execFileAsync = promisify(execFile);
 
-const VALIDATION_DIR = '/tmp/ue-validation';
+export const VALIDATION_DIR = '/tmp/ue-validation';
 const UERANSIM_IMAGE = 'free5gc/ueransim:latest';
 // Unlike UERANSIM_IMAGE, this is NOT a published image — it's built locally
 // from the Dockerfile at SRSRAN_BUILD_CONTEXT (mounted into this container
@@ -27,8 +29,8 @@ const UERANSIM_IMAGE = 'free5gc/ueransim:latest';
 // confirmed via a real bug report where that failure was silently swallowed
 // as a WARN, then `docker run` failed too because the image was never built
 // anywhere). Build-if-missing below replaces the old pull attempt entirely.
-const SRSRAN_IMAGE = 'srsran4g-noavx:latest';
-const SRSRAN_BUILD_CONTEXT = '/app/srsran4g';
+export const SRSRAN_IMAGE = 'srsran4g-noavx:latest';
+export const SRSRAN_BUILD_CONTEXT = '/app/srsran4g';
 const GNB_BASE = '127.0.3';
 const ENB_BASE = '127.0.4';
 const OPEN5GS_DIR = '/etc/open5gs';
@@ -53,7 +55,7 @@ const VAL_GNB_DUMMY_BASE = 110; // 10.0.9.110 .. 10.0.9.209
 // with IP-address [...]!!! N2 Socket Closed"). Giving each radio its own
 // dummy /32 avoids the collision. Host-local only — not persisted, not
 // advertised into FRR/EIGRP, torn down when the session stops.
-function allocateRadioDummyIp(sessionId: string, kind: '4g' | '5g', idx: number): { name: string; ip: string } {
+export function allocateRadioDummyIp(sessionId: string, kind: '4g' | '5g', idx: number): { name: string; ip: string } {
   const shortId = sessionId.slice(0, 6);
   if (kind === '4g') {
     return { name: `v4-${shortId}-${idx}`, ip: `10.0.9.${VAL_ENB_DUMMY_BASE + idx}` };
@@ -91,7 +93,7 @@ async function listOrphanedValidationDummyInterfaces(): Promise<string[]> {
 
 // Safety invariant: NEVER delete a subscriber whose nickname doesn't start
 // with VAL-TEST-.  This is enforced in safeDeleteTestImsi().
-const VAL_NICKNAME_PREFIX = 'VAL-TEST-';
+export const VAL_NICKNAME_PREFIX = 'VAL-TEST-';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,13 +123,13 @@ interface Session {
   error?: string;    // last fatal error message
 }
 
-interface DnnSubnet {
+export interface DnnSubnet {
   dnn: string;
   cidr: string;    // e.g. "10.45.0.0/24"
   gateway: string; // excluded from pool
 }
 
-interface InferredConfig {
+export interface InferredConfig {
   plmn: { mcc: string; mnc: string };
   amfIp: string;
   upfIp: string;
@@ -313,12 +315,12 @@ function clearLogReadOffsets(sessionDir: string): void {
 
 // ─── Docker helpers ────────────────────────────────────────────────────────
 
-async function dockerRun(args: string[]): Promise<string> {
+export async function dockerRun(args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('docker', args, { timeout: 30_000 });
   return stdout.trim();
 }
 
-async function dockerKill(name: string): Promise<void> {
+export async function dockerKill(name: string): Promise<void> {
   try { await execFileAsync('docker', ['kill', name], { timeout: 10_000 }); } catch { /* already gone */ }
   try { await execFileAsync('docker', ['rm', '-f', name], { timeout: 10_000 }); } catch { /* already gone */ }
 }
@@ -334,7 +336,7 @@ async function dockerPull(image: string): Promise<void> {
   await execFileAsync('docker', ['pull', image], { timeout: 300_000 });
 }
 
-async function dockerImageExists(image: string): Promise<boolean> {
+export async function dockerImageExists(image: string): Promise<boolean> {
   try {
     await execFileAsync('docker', ['image', 'inspect', image], { timeout: 10_000 });
     return true;
@@ -348,7 +350,7 @@ async function dockerImageExists(image: string): Promise<boolean> {
 // needs real headroom above that, not just "a few minutes". Matches this
 // project's other genuinely-slow-first-run timeouts (see nginx.conf's
 // dedicated 1800s install/uninstall regex, FRR source-build).
-async function dockerBuild(tag: string, contextDir: string): Promise<void> {
+export async function dockerBuild(tag: string, contextDir: string): Promise<void> {
   await execFileAsync('docker', ['build', '-t', tag, contextDir], {
     timeout: 1_800_000,
     maxBuffer: 50 * 1024 * 1024,
@@ -376,7 +378,7 @@ function readYaml(file: string): Record<string, any> | null {
   }
 }
 
-function inferConfig(): InferredConfig {
+export function inferConfig(): InferredConfig {
   const amf  = readYaml(path.join(OPEN5GS_DIR, 'amf.yaml'))?.amf   ?? {};
   const mme  = readYaml(path.join(OPEN5GS_DIR, 'mme.yaml'))?.mme   ?? {};
   const smf  = readYaml(path.join(OPEN5GS_DIR, 'smf.yaml'))?.smf   ?? {};
@@ -392,7 +394,15 @@ function inferConfig(): InferredConfig {
                ?? mme.gummei?.[0]?.plmn_id
                ?? { mcc: '999', mnc: '70' };
   const plmn = {
-    mcc: String(plmnRaw.mcc),
+    // Both MCC and MNC need zero-padding, not just MNC — the underlying YAML (amf.yaml's
+    // plmn_support[0].plmn_id, or mme.yaml's tai[0]/gummei[0] equivalent) stores these
+    // unquoted, so js-yaml parses "001" as the *number* 1, silently dropping the leading
+    // zeros. Confirmed live 2026-08-29: this real PLMN's mcc="001" came out of inferConfig()
+    // as bare "1", which srsenb's own config parser flatly rejects ("must be a 3-digit
+    // string" / "mnc=0 is not valid" — the mcc failure cascades into corrupting mnc parsing
+    // too) — crashed the QCI validation test's srsenb instantly, and this same bug is
+    // shared with (so equally latent in) the regular 4G/5G UE validation test.
+    mcc: String(plmnRaw.mcc).padStart(3, '0'),
     mnc: String(plmnRaw.mnc).padStart(2, '0'),
   };
 
@@ -527,7 +537,7 @@ function buildUeYaml(
 // Port allocation: eNB N uses tcp ports (2000+N*2) tx and (2001+N*2) rx.
 // s1c_bind_addr=0.0.0.0: 127.0.4.x can't make SCTP connections to the MME's
 // dummy-interface IP (loopback→non-loopback routing is blocked by the kernel).
-function buildEnbConf(ueRelIdx: number, cfg: InferredConfig, params: any, s1cBindIp: string): string {
+export function buildEnbConf(ueRelIdx: number, cfg: InferredConfig, params: any, s1cBindIp: string): string {
   const gtpIp  = `${ENB_BASE}.${ueRelIdx + 1}`;
   const enbId = (ueRelIdx + 1).toString(16).padStart(3, '0').toUpperCase();
   const txPort = 2000 + ueRelIdx * 2;
@@ -588,7 +598,7 @@ metrics_period_secs = 2
 
 // Minimal rr.conf with the correct TAC for the MME.
 // Only the cell_list tac field is customized; all other radio params stay at defaults.
-function buildRrConf(cfg: InferredConfig): string {
+export function buildRrConf(cfg: InferredConfig): string {
   const tac = `0x${cfg.tac4g.toString(16).padStart(4, '0')}`;
   return `
 mac_cnfg =
@@ -625,7 +635,7 @@ nr_cell_list = ();
 `.trim();
 }
 
-function buildUeConf(imsi: string, k: string, opc: string, ueRelIdx: number, cfg: InferredConfig, params: any): string {
+export function buildUeConf(imsi: string, k: string, opc: string, ueRelIdx: number, cfg: InferredConfig, params: any): string {
   // UE N pairs with eNB N: swap tx/rx relative to eNB's ports
   const enbTxPort = 2000 + ueRelIdx * 2;
   const enbRxPort = enbTxPort + 1;
@@ -807,7 +817,7 @@ async function collectUsedIps(subscriberRepo: ISubscriberRepository): Promise<Se
 
 // Find the first contiguous block of `count` free IPs within the DNN's subnet.
 // Excludes the gateway address.  Throws if no block is found.
-async function allocateIpBlock(
+export async function allocateIpBlock(
   count: number,
   dnn: string,
   subnets: DnnSubnet[],
@@ -848,21 +858,43 @@ async function allocateIpBlock(
 
 // Safety invariant: we ONLY ever delete subscribers whose nickname starts
 // with VAL_NICKNAME_PREFIX — this is enforced in safeDeleteTestImsi().
-async function allocateImsiBlock(
+export async function allocateImsiBlock(
   count: number,
   subscriberRepo: ISubscriberRepository,
+  plmnPrefix?: string,
 ): Promise<string> {
-  const top = await subscriberRepo.findAll(0, 1, 'desc', 'imsi');
-  const highestImsi = top[0]?.imsi ?? '000000000000000';
-  const base = BigInt(highestImsi) + 1n;
-  return base.toString().padStart(15, '0');
+  if (!plmnPrefix) {
+    const top = await subscriberRepo.findAll(0, 1, 'desc', 'imsi');
+    const highestImsi = top[0]?.imsi ?? '000000000000000';
+    const base = BigInt(highestImsi) + 1n;
+    return base.toString().padStart(15, '0');
+  }
+  // Scoped to the real, currently-configured PLMN — the naive "global max IMSI + 1" above
+  // silently drifts into a numerically-higher but STALE PLMN block once one exists (this
+  // deployment migrated off test PLMN 999-070 to 001-01 per CLAUDE.md, but real subscribers
+  // with physical SIMs already provisioned on the old PLMN never got re-keyed, so their
+  // 999070... IMSIs permanently sort above every real 001010... one). Confirmed live
+  // 2026-08-29: this broke the QCI validation test outright — the simulated UE's USIM ended
+  // up claiming Home PLMN 999-70, which the real (001-01) MME doesn't recognize as itself, so
+  // attach just timed out with no useful error. Once a single test run picks a stale-PLMN
+  // IMSI this way, every subsequent "max + 1" allocation stays stuck in that same wrong block
+  // — page through descending IMSI order and take the first one that actually starts with the
+  // real PLMN prefix, rather than trusting global numeric rank.
+  const PAGE = 200;
+  for (let skip = 0; skip < 5000; skip += PAGE) {
+    const page = await subscriberRepo.findAll(skip, PAGE, 'desc', 'imsi');
+    if (page.length === 0) break;
+    const match = page.find(s => s.imsi.startsWith(plmnPrefix));
+    if (match) return (BigInt(match.imsi) + 1n).toString().padStart(15, '0');
+  }
+  return plmnPrefix.padEnd(15, '0'); // no existing subscriber on this PLMN at all
 }
 
-function makeImsi(baseImsi: string, idx: number): string {
+export function makeImsi(baseImsi: string, idx: number): string {
   return (BigInt(baseImsi) + BigInt(idx)).toString().padStart(15, '0');
 }
 
-function makeSubscriber(
+export function makeSubscriber(
   imsi: string, k: string, opc: string,
   sessionId: string, idx: number,
   ueIp: string,
@@ -994,7 +1026,7 @@ function parseUeStates(
 
 // Only deletes a subscriber if it was created by the validation harness.
 // This is the hard safety guard — a real subscriber can never be removed here.
-async function safeDeleteTestImsi(
+export async function safeDeleteTestImsi(
   imsi: string,
   subscriberRepo: ISubscriberRepository,
   logger: pino.Logger,
@@ -1371,7 +1403,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
         step(session, 'Querying MongoDB for highest IMSI to allocate test block above it...', logger);
         let baseImsi: string;
         try {
-          baseImsi = await allocateImsiBlock(totalUes, subscriberRepo);
+          baseImsi = await allocateImsiBlock(totalUes, subscriberRepo, cfg.plmn.mcc + cfg.plmn.mnc);
           step(session, `IMSI block: ${baseImsi} → ${makeImsi(baseImsi, totalUes - 1)}`, logger);
         } catch (e) {
           throw new Error(`IMSI allocation failed: ${e}`);
@@ -1719,6 +1751,15 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
       // Clear in-memory sessions
       sessions.clear();
       broadcast('session', { type: 'clear' });
+
+      // QCI hardware test has no dedicated "End Test" button — a stray instance can
+      // outlive a backend container restart (spawned via `nsenter -p` into the host's
+      // own pid namespace) and permanently hold its NFQUEUE bindings, breaking every
+      // future run. Force Cleanup is the one place a user can reach to clear that.
+      try {
+        results.push(...await killStrayQciHwTestProcesses());
+        resetQciHwTestRunningFlag();
+      } catch (e) { results.push(`QCI hw test cleanup failed: ${e}`); }
 
       res.json({ ok: true, results });
     } catch (err) {

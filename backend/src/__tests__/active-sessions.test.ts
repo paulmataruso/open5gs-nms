@@ -17,6 +17,7 @@
 import pino from 'pino';
 import { ActiveSessionsUseCase } from '../application/use-cases/active-sessions';
 import { GetInterfaceStatus } from '../application/use-cases/interface-status/get-interface-status';
+import { BaicellsUeCountsUseCase } from '../application/use-cases/baicells-ue-counts';
 import { parsePeerIP } from '../application/use-cases/open5gs-api-client';
 import type { IHostExecutor } from '../domain/interfaces/host-executor';
 import type { IConfigRepository } from '../domain/interfaces/config-repository';
@@ -590,7 +591,12 @@ describe('GetInterfaceStatus', () => {
     const executor   = makeHostExecutor(responses);
     const subRepo    = makeSubscriberRepo();
     const sessions   = new ActiveSessionsUseCase(executor, makeConfigRepo(), subRepo, logger);
-    return new GetInterfaceStatus(executor, logger, sessions, makeConfigRepo());
+    // Points at an unused local port — GenieACS isn't part of this test's
+    // scope, this just needs to fail fast (connection refused) so
+    // BaicellsUeCountsUseCase.getAll()'s own try/catch returns [] quickly,
+    // same as any other unreachable-dependency case it already handles.
+    const baicellsUeCounts = new BaicellsUeCountsUseCase('http://127.0.0.1:1', executor, makeConfigRepo(), logger);
+    return new GetInterfaceStatus(executor, logger, sessions, makeConfigRepo(), baicellsUeCounts);
   }
 
   test('S1-MME active when eNodeB connected with setup_success=true', async () => {

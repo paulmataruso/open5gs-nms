@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { RotateCw, Trash2, Radio, Wifi, WifiOff, LogIn, LogOut, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
+import { RotateCw, Trash2, Radio, Wifi, WifiOff, LogIn, LogOut, ArrowUpCircle, ArrowDownCircle, AlertTriangle } from 'lucide-react';
 import axios from 'axios';
 import { useLogStream, LogEntry, MajorEventType } from '../../hooks/useLogStream';
 import { MultiSelectDropdown } from '../common/MultiSelectDropdown';
@@ -17,7 +17,25 @@ const EVENT_LABELS: Record<MajorEventType, string> = {
   ue_deregister: 'UE deregistered',
   pdu_session_up: 'PDU session up',
   pdu_session_down: 'PDU session down',
+  bearer_setup_failure: 'Bearer setup failed',
 };
+
+// S1AP Cause IE, group 1 = radioNetwork (3GPP TS 36.413 S1AP_CauseRadioNetwork) — only the
+// values actually seen/documented on this deployment are labeled; anything else falls back
+// to the raw "Group:X Cause:Y" the backend sends. Cause 37 is the exact Nokia eNB rejection
+// that motivated this category — see CLAUDE.md pattern #13 / the Nokia VoLTE investigation.
+const RADIO_NETWORK_CAUSE_LABELS: Record<number, string> = {
+  27: 'invalid QoS combination',
+  37: 'not supported QCI value',
+};
+
+function bearerCauseLabel(causeGroup?: number, causeValue?: number): string | undefined {
+  if (causeGroup === undefined || causeValue === undefined) return undefined;
+  if (causeGroup === 1 && RADIO_NETWORK_CAUSE_LABELS[causeValue]) {
+    return RADIO_NETWORK_CAUSE_LABELS[causeValue];
+  }
+  return `Group:${causeGroup} Cause:${causeValue}`;
+}
 
 const EVENT_STYLES: Record<MajorEventType, { className: string; Icon: typeof Radio }> = {
   radio_connect:     { className: 'bg-green-500/10 text-green-400 border-green-500/30', Icon: Wifi },
@@ -28,6 +46,7 @@ const EVENT_STYLES: Record<MajorEventType, { className: string; Icon: typeof Rad
   ue_deregister:     { className: 'bg-slate-500/10 text-slate-400 border-slate-500/30', Icon: LogOut },
   pdu_session_up:    { className: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30', Icon: ArrowUpCircle },
   pdu_session_down:  { className: 'bg-amber-500/10 text-amber-400 border-amber-500/30', Icon: ArrowDownCircle },
+  bearer_setup_failure: { className: 'bg-red-500/10 text-red-400 border-red-500/30', Icon: AlertTriangle },
 };
 
 function formatTimestamp(timestamp: string): string {
@@ -62,6 +81,11 @@ function renderEventLine(log: LogEntry, index: number, onSelect: (log: LogEntry)
         {event?.imsi && <span className="text-nms-accent font-semibold">IMSI:{event.imsi} </span>}
         {event?.radioIp && <span className="text-purple-400 font-semibold">{event.radioIp} </span>}
         {event?.apn && <span className="text-nms-text-dim">APN:{event.apn} </span>}
+        {event?.type === 'bearer_setup_failure' && (
+          <span className="text-red-400 font-semibold">
+            Cause: {bearerCauseLabel(event.causeGroup, event.causeValue) ?? 'unknown'}{' '}
+          </span>
+        )}
         {log.message}
       </span>
     </div>
@@ -180,7 +204,9 @@ export function MajorEventsView() {
       <div className="px-3 py-1.5 text-xs text-nms-text-dim border-t border-nms-border bg-nms-surface">
         Radio IP filtering only narrows radio connect/disconnect events — the raw logs don't
         carry radio IP on UE attach/PDU session lines, so those are filtered by IMSI only.
-        Click any line to see it in context.
+        Bearer setup failures carry neither IMSI nor radio IP in MME's own log line (only the
+        E-RAB cause code) — filter those by event type, and click the line to see the IMSI
+        and E-RAB ID in the surrounding raw log context. Click any line to see it in context.
       </div>
 
       {selectedLog && (

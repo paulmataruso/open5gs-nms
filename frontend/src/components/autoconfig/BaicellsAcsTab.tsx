@@ -675,7 +675,16 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
     try {
       await genieacsApi.setRf(radio.id, enable);
       toast.success(`${radio.serial}: RF ${enable ? 'enabled' : 'disabled'}.`);
-      setTimeout(onRefresh, 5000);
+      // Verify, don't trust success: X_COM_RadioEnable writes have been
+      // confirmed unreliable on some Baicells firmware (see
+      // genieacs-controller.ts's buildProvisionTasks() comment) — a plain
+      // re-read of the (possibly stale) cache isn't enough to know the
+      // toggle actually took effect. Force a real connection-request +
+      // getParameterValues (same as the Refresh button) so the displayed
+      // status reflects what the radio actually reports, not just what we
+      // asked it to do.
+      await genieacsApi.forceRefresh(radio.id).catch(() => {});
+      setTimeout(onRefresh, 10000);
     } catch (err: any) {
       toast.error(`RF set failed: ${err?.response?.data?.error ?? err?.message}`);
     } finally { setRfBusy(false); }
@@ -745,9 +754,9 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
           )}
           <span className={clsx(
             'text-xs font-mono flex items-center gap-1',
-            parseInt(radio.ueCount || '0') > 0 ? 'text-green-400' : 'text-nms-text-dim',
-          )} title="Active UEs">
-            <Users className="w-3 h-3" />{radio.ueCount || '0'}
+            (radio.mmeUeCount ?? parseInt(radio.ueCount || '0')) > 0 ? 'text-green-400' : 'text-nms-text-dim',
+          )} title={`Radio-reported RRC-connected UEs: ${radio.ueCount || '0'} · Core (MME)-reported UEs, incl. idle: ${radio.mmeUeCount ?? 'not associated with MME'}`}>
+            <Users className="w-3 h-3" />{radio.ueCount || '0'}/{radio.mmeUeCount ?? '—'}
           </span>
           <S1Chips ip={radio.ip} />
           <span className={clsx(
@@ -827,11 +836,20 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                     </div>
                   )}
                   {radio.ueCount !== '' && (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5" title="From the radio's own TR-069 status — RRC-connected UEs only, does not include UEs that are RRC-idle">
                       <Users className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
-                      <span className="text-nms-text-dim">UEs</span>
+                      <span className="text-nms-text-dim">UEs (Radio)</span>
                       <span className={parseInt(radio.ueCount) > 0 ? 'text-green-400' : 'text-nms-text'}>
                         {radio.ueCount}
+                      </span>
+                    </div>
+                  )}
+                  {radio.mmeUeCount !== null && (
+                    <div className="flex items-center gap-1.5" title="From MME's own /enb-info — includes UEs MME still holds an S1/EPS context for while RRC-idle">
+                      <Users className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
+                      <span className="text-nms-text-dim">UEs (Core)</span>
+                      <span className={radio.mmeUeCount > 0 ? 'text-green-400' : 'text-nms-text'}>
+                        {radio.mmeUeCount}
                       </span>
                     </div>
                   )}

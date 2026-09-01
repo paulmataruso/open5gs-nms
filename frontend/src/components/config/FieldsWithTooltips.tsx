@@ -1,6 +1,5 @@
 import { clsx } from 'clsx';
-import { Tooltip } from '../common/Tooltip';
-import { HelpCircle } from 'lucide-react';
+import { TooltipTrigger } from '../common/Tooltip';
 
 interface FieldWithTooltipProps {
   label: string;
@@ -30,11 +29,7 @@ export function FieldWithTooltip({
       <label className="nms-label flex items-center gap-1.5">
         {label}
         {required && <span className="text-nms-red">*</span>}
-        {tooltip && (
-          <Tooltip content={tooltip} position="top">
-            <HelpCircle className="w-3.5 h-3.5 text-nms-text-dim hover:text-nms-accent transition-colors cursor-help" />
-          </Tooltip>
-        )}
+        {tooltip && <TooltipTrigger content={tooltip} />}
       </label>
       <input
         type={type}
@@ -73,11 +68,7 @@ export function SelectWithTooltip({
       <label className="nms-label flex items-center gap-1.5">
         {label}
         {required && <span className="text-nms-red">*</span>}
-        {tooltip && (
-          <Tooltip content={tooltip} position="top">
-            <HelpCircle className="w-3.5 h-3.5 text-nms-text-dim hover:text-nms-accent transition-colors cursor-help" />
-          </Tooltip>
-        )}
+        {tooltip && <TooltipTrigger content={tooltip} />}
       </label>
       <select
         className="nms-input font-mono text-xs"
@@ -122,11 +113,7 @@ export function CheckboxWithTooltip({
       />
       <span className="text-sm text-nms-text flex items-center gap-1.5">
         {label}
-        {tooltip && (
-          <Tooltip content={tooltip} position="top">
-            <HelpCircle className="w-3.5 h-3.5 text-nms-text-dim hover:text-nms-accent transition-colors cursor-help" />
-          </Tooltip>
-        )}
+        {tooltip && <TooltipTrigger content={tooltip} />}
       </span>
     </label>
   );

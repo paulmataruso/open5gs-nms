@@ -11,13 +11,21 @@ export type MajorEventType =
   | 'radio_connect' | 'radio_disconnect'
   | 'ue_attach' | 'ue_detach'
   | 'ue_register' | 'ue_deregister'
-  | 'pdu_session_up' | 'pdu_session_down';
+  | 'pdu_session_up' | 'pdu_session_down'
+  | 'bearer_setup_failure';
 
 export interface MajorEvent {
   type: MajorEventType;
   imsi?: string;
   radioIp?: string;
   apn?: string;
+  // bearer_setup_failure only — raw S1AP Cause IE (see S1AP_Cause.h/
+  // S1AP_CauseRadioNetwork.h). causeGroup 1 = radioNetwork (37 =
+  // not-supported-QCI-value, the real Nokia VoLTE bug this category exists
+  // to catch; 27 = invalid-qos-combination). Frontend maps known values to
+  // human-readable labels.
+  causeGroup?: number;
+  causeValue?: number;
 }
 
 // Same timestamp convention as log-streaming.ts's parseLogLine (open5gs writes these in the
@@ -78,6 +86,22 @@ const RULES: EventRule[] = [
   // PDU session establish/release (SMF) — "up" and "down" use different line shapes
   { type: 'pdu_session_up',   serviceScope: ['smf'], test: /UE IMSI\[\d+\] APN\[/ },
   { type: 'pdu_session_down', serviceScope: ['smf'], test: /Removed Session: UE IMSI:/ },
+
+  // Dedicated/default E-RAB (bearer) setup rejected by the eNB — this is the exact log
+  // shape produced by MME's s1ap_handle_e_rab_setup_response() when
+  // E_RABFailedToSetupListBearerSURes is present (src/mme/s1ap-handler.c in the open5gs
+  // repo, not this one): one "RAB_ID: %x" line per failed bearer immediately followed by
+  // "    Cause[Group:%d Cause:%d]" — both at ogs_warn level, both inside the same loop
+  // iteration. This rule matches the Cause[...] line specifically (not RAB_ID) because the
+  // cause code is the actually-actionable data (e.g. radioNetwork cause 37 =
+  // not-supported-QCI-value, the real bug behind the Nokia VoLTE investigation this
+  // category was added for) — the E-RAB ID on the preceding line is not recoverable here
+  // since classifyMajorEvent only ever sees one line at a time; use "click to view in
+  // context" in the Major Events view to see it alongside the raw RAB_ID line.
+  // InitialContextSetupFailure's own Cause (the very first/default bearer, at attach time)
+  // is deliberately NOT covered — open5gs only logs it at ogs_debug, which won't appear in
+  // this deployment's actual mme.log at its normal run-time log level.
+  { type: 'bearer_setup_failure', serviceScope: ['mme'], test: /Cause\[Group:\d+ Cause:\d+\]/ },
 ];
 
 // Derived from RULES — which services can ever produce a given event type. Lets callers skip
@@ -93,7 +117,7 @@ export const EVENT_TYPE_SERVICES: Record<MajorEventType, string[]> = RULES.reduc
 // candidate lines directly out of multi-GB log files without tailing/parsing every line.
 // Keep in sync with RULES above if event patterns change.
 export const MAJOR_EVENT_GREP_PATTERNS: Record<string, string> = {
-  mme: 'eNB-S1 accepted\\[|eNB-S1\\[[0-9.]+\\] connection refused|Attach complete|Detach request',
+  mme: 'eNB-S1 accepted\\[|eNB-S1\\[[0-9.]+\\] connection refused|Attach complete|Detach request|Cause\\[Group:[0-9]+ Cause:[0-9]+\\]',
   amf: 'gNB-N2 accepted\\[|gNB-N2\\[[0-9.]+\\] connection refused|Registration complete|Deregistration request',
   smf: 'UE IMSI\\[[0-9]+\\] APN\\[|Removed Session: UE IMSI:',
 };
@@ -139,6 +163,29 @@ function extractApn(line: string): string | undefined {
   return undefined;
 }
 
+function extractBearerCause(line: string): { group: number; value: number } | undefined {
+  const m = line.match(/Cause\[Group:(\d+) Cause:(\d+)\]/);
+  if (!m) return undefined;
+  return { group: Number(m[1]), value: Number(m[2]) };
+}
+
+// Human-readable label for a bearer_setup_failure's cause — only the values actually
+// seen/documented on this deployment (see CLAUDE.md pattern #13 / the Nokia VoLTE
+// investigation) are named; everything else falls back to the raw numbers. Used by
+// qci-validation-controller.ts to explain a failed dedicated-bearer test; mirrored
+// (independently, frontend/backend don't share code) in MajorEventsView.tsx for display.
+const RADIO_NETWORK_CAUSE_LABELS: Record<number, string> = {
+  27: 'invalid QoS combination',
+  37: 'not supported QCI value',
+};
+
+export function describeBearerCause(causeGroup: number, causeValue: number): string {
+  if (causeGroup === 1 && RADIO_NETWORK_CAUSE_LABELS[causeValue]) {
+    return RADIO_NETWORK_CAUSE_LABELS[causeValue];
+  }
+  return `Group:${causeGroup} Cause:${causeValue}`;
+}
+
 export function classifyMajorEvent(line: string, service: string): MajorEvent | null {
   for (const rule of RULES) {
     if (!rule.serviceScope.includes(service)) continue;
@@ -152,6 +199,13 @@ export function classifyMajorEvent(line: string, service: string): MajorEvent | 
     if (rule.type === 'pdu_session_up' || rule.type === 'pdu_session_down') {
       const apn = extractApn(line);
       if (apn) event.apn = apn;
+    }
+    if (rule.type === 'bearer_setup_failure') {
+      const cause = extractBearerCause(line);
+      if (cause) {
+        event.causeGroup = cause.group;
+        event.causeValue = cause.value;
+      }
     }
     return event;
   }

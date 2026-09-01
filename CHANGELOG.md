@@ -4,6 +4,100 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.54] - 2026-08-30
+
+### Added — QCI / dedicated-bearer validation, two ways
+
+Neither the existing radio/NAS validation test (PDU sessions use QCI=9, no IMS involved)
+nor the linphonec-only VoLTE test (pure SIP/IMS, no RRC/S1AP at all) could ever exercise
+a real dedicated QCI=1 bearer request — exactly the gap exposed by this session's earlier
+Nokia VoLTE investigation, where a disabled radio-side LMT setting silently broke every
+real call without any existing test catching it. Closed from two directions:
+
+- **Simulated-core test** (`qci-validation-controller.ts`, new "QCI / Dedicated Bearer
+  Test" card on the Validation page): attaches a real srsue+srsenb pair (ZMQ RF loopback,
+  no real radio) on the IMS APN using one identity shared between a real Mongo/NAS
+  subscriber and a PyHSS IMS identity, then runs `linphonec` inside that UE's own network
+  namespace to place a real SIP call — triggering the actual Rx→Gx→S1AP dedicated-bearer
+  chain end-to-end. Validates the *core's* own bearer-request logic, not any specific
+  radio's admission control. Built, then debugged live through a real first-run cycle —
+  fixed a `docker exec` missing `-i` (stdin never reached linphonec), a docker-outside-of-
+  docker volume-mount path mismatch (the container's `/config` silently resolved to
+  nothing on the real host), an `apt-get` lock race between two concurrent installs inside
+  the same container, IMSI allocation drifting into a stale pre-migration PLMN block
+  (999-070) once any legacy subscriber outranked it, MCC losing its zero-padding
+  (`"001"` parsed as bare `1`, rejected outright by srsenb's config parser), a missing
+  default route inside the UE's own network namespace, a hangup-confirmation race that
+  could fail a fully working call, and a bearer-failure log-classifier false positive
+  (matched an unrelated MME log line sharing the same `Cause[Group:X Cause:Y]` shape).
+  Confirmed live: real registration, real INVITE/answer, and real bidirectional RTP audio
+  all succeeding end-to-end on the simulated core.
+- **Real-hardware test** (`qci-hw-test-controller.ts`, new operator-triggered tool):
+  reuses Open5GS's own compiled S1AP ASN.1 codec via a small cgo shim to synthesize a real
+  E-RABSetupRequest against a real, already-attached UE on a real radio — pick a radio,
+  confirm your own phone is on it (re-checked server-side, not just trusted from the UI),
+  pick a QCI, dial the IMS Test Number, and it decodes the real E-RABSetupResponse/cause
+  code. This is the real-hardware counterpart the simulated test above explicitly cannot
+  be — no software eNB simulator can reproduce a specific radio's own admission-control
+  quirks (like the Nokia LMT setting that started this whole investigation).
+
+### Added — 5G N2/N3 per-gNodeB block, mirroring the existing 4G S1-MME/S1-U block
+
+The RAN page's per-radio Block/Unblock button was 4G-only (S1-MME SCTP/36412 + S1-U
+UDP/2152 via nftables) — 5G's N2/N3 had no equivalent. Added a parallel `GnbBlockService`
+using N2's real port (NGAP is SCTP 38412, distinct from S1AP's 36412) and its own isolated
+nftables table (`open5gs_nms_gnb_block`, never sharing the 4G one), with its own SQLite
+persistence, reconcile loop, and `/api/gnb-block` routes. N2/N3 interface cards on the RAN
+page now show live Block/Unblock controls with N2/N3-specific wording and their own
+confirmation modal.
+
+### Changed — RAN page radio list: layout choice, and a real idle-UE undercount fix
+
+Reworked the RAN page's per-radio S1-MME/S1-U/N2/N3 list, which had gotten visually
+cramped once each row also had to carry a band tag, a blocked badge, a nickname editor,
+and a block button. Prototyped five different layouts, kept three (Table, Collapsible
+List, List + Detail Panel) after live comparison, dropped two. Layout is now a dropdown
+in the page header next to "IP Plumbing", with a pin button to remember your choice as
+the default for next time (stored per-browser). The Collapsible List layout defaults any
+radio that already has UEs on it to expanded, rather than starting fully collapsed.
+
+Also fixed a real undercounting bug found while building this: each radio's "UEs"
+stat came from MME/AMF's own `num_connected_ues` field, which — confirmed against
+Open5GS's real source (`src/mme/enb-info.c`) — is a live walk of the eNB's/gNB's
+currently-attached UE-*context* list, unconditionally emptied the instant a UE goes
+idle (that's structurally what idle means — no active S1AP/NGAP context). It can never
+include idle UEs, despite an earlier in-repo comment claiming otherwise. Radio cards now
+show the actual total (idle + connected, from the real matched UE list) as the primary
+stat, with MME/AMF's connected-only count kept as a secondary annotation.
+
+### Fixed — Major Events: new `bearer_setup_failure` category, and IMS registration desync
+
+Added a `bearer_setup_failure` Major Event category matching MME's
+`E_RABFailedToSetupListBearerSURes`/`Cause[Group:X Cause:Y]` S1AP log lines — the exact
+shape behind the Nokia VoLTE investigation — with a decoded cause label (37 → "not
+supported QCI value", 27 → "invalid QoS combination"). Separately fixed a real IMS bug:
+P-CSCF keeps its own in-memory registration state completely separate from S-CSCF's
+registrar, so restarting `kamailio-pcscf` alone (as a targeted config/route-script fix
+does) silently wipes P-CSCF's view of every registered phone while S-CSCF still reports
+them all as registered — a phone has no way to know, so its next call attempt hits a
+403 "must register first," looking exactly like a client-side bug until Airplane Mode is
+toggled to force a fresh REGISTER. S-CSCF's own usrloc is now `db_mode=1` (write-through,
+persisted across restarts instead of wiped), and P-CSCF registration desync is now
+actively detected.
+
+### Also included in this release
+
+Carried in alongside the above: the full tooltip system overhaul (click-to-open modal
+replacing the old hover tooltips, every tooltip data file audited and expanded), RAN page
+LTE-band tagging, a GenieACS RF-status detection fix for Baicells radios (`X_COM_
+RadioEnable` confirmed as the only parameter that actually tracks live RF transmit state
+on this firmware — `OpState`/`RFTxStatus` do not), a 4G "Block RAN" kill switch on the
+Dashboard page, and UE block/detach now backed by a real Cancel-Location-Request tool
+(same cgo-shim pattern as the hardware QCI test above) rather than a softer prior
+mechanism.
+
+---
+
 ## [v2.0-beta_0.53] - 2026-08-27
 
 ### Added — Centralized "Fix All" stale-module popup

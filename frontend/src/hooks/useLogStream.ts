@@ -4,14 +4,18 @@ export type MajorEventType =
   | 'radio_connect' | 'radio_disconnect'
   | 'ue_attach' | 'ue_detach'
   | 'ue_register' | 'ue_deregister'
-  | 'pdu_session_up' | 'pdu_session_down';
+  | 'pdu_session_up' | 'pdu_session_down'
+  | 'bearer_setup_failure';
 
 export interface LogEntry {
   timestamp: string;
   service: string;
   message: string;
   // Populated only when majorEventsOnly is set — see backend major-event-classifier.ts
-  event?: { type: MajorEventType; imsi?: string; radioIp?: string; apn?: string };
+  event?: {
+    type: MajorEventType; imsi?: string; radioIp?: string; apn?: string;
+    causeGroup?: number; causeValue?: number;
+  };
 }
 
 interface UseLogStreamOptions {

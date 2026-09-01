@@ -1,7 +1,9 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight } from 'lucide-react';
+import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin } from 'lucide-react';
 import { useTopologyStore } from '../../stores';
-import { radioTagsApi, configApi } from '../../api';
+import { radioTagsApi, radioBlockApi, gnbBlockApi, configApi } from '../../api';
+import { getBlockedUes, blockUe, unblockUe } from '../../api/ueBlock';
+import { ConfirmModal } from '../common/ConfirmModal';
 import { imsApi } from '../../api/ims';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
@@ -16,6 +18,18 @@ interface ConnectedRadio {
   numConnectedUes: number;
   setupSuccess: boolean;
   plmn?: string;
+  // MME/AMF's own live count — ECM/CM-CONNECTED UEs only. Confirmed against Open5GS's real
+  // source (src/mme/enb-info.c): this is a live walk of the eNB's/gNB's own currently-attached
+  // UE-context list, which is unconditionally emptied the instant a UE goes idle (that's what
+  // idle IS — no active S1AP/NGAP UE context) — it can never include idle UEs, no matter what
+  // an earlier comment here claimed. The per-radio card's own "total UEs" stat is derived
+  // separately from the actual matched UE list (which does include idle, each carrying a
+  // last-known radioIp) rather than from this field — see buildRadioRows's totalUeCount.
+  //
+  // Baicells-only — the radio's own TR-069-reported RRC-connected count, shown as a secondary
+  // annotation alongside numConnectedUes since the two can legitimately disagree (different
+  // sampling instant, different definition of "connected"). Undefined for non-Baicells radios/gNodeBs.
+  selfReportedUeCount?: number | null;
 }
 
 interface UeApnSession {
@@ -48,6 +62,22 @@ interface ActiveUE {
 // sessions[] is always populated by the backend now, but this guards
 // against an older cached API response / metrics-fallback edge case that
 // might not have it, so the UI never crashes on a missing array.
+// Once a radio is blocked, MME/UPF's own live connection state legitimately drops it
+// (S1-MME/S1-U is severed, so it really is disconnected) — but that means it silently
+// vanishes from connectedEnodebs entirely, taking the only Unblock button with it. Real
+// bug found live 2026-08-30. Synthesize a placeholder row for any blocked IP the live
+// list no longer reports, so it stays visible (and unblockable) until the operator
+// explicitly restores it.
+function withBlockedRadios(live: ConnectedRadio[], blockedIps: Set<string>): ConnectedRadio[] {
+  if (blockedIps.size === 0) return live;
+  const liveIps = new Set(live.map(r => r.ip));
+  const synthetic: ConnectedRadio[] = [];
+  for (const ip of blockedIps) {
+    if (!liveIps.has(ip)) synthetic.push({ ip, numConnectedUes: 0, setupSuccess: false });
+  }
+  return synthetic.length > 0 ? [...live, ...synthetic] : live;
+}
+
 function ueSessions(ue: ActiveUE): UeApnSession[] {
   if (ue.sessions && ue.sessions.length > 0) return ue.sessions;
   return [{ apn: ue.dnn || ue.apn || '', ip: ue.ip }];
@@ -99,15 +129,63 @@ function RadioTagCell({ ip, nickname, isAdmin, onSave }: {
   );
 }
 
+// ── Inline LTE-band tag editor ─────────────────────────────────────────────────
+// Same interaction shape as RadioTagCell above, rendered as a small badge
+// instead of plain text so it reads as a distinct, filterable attribute
+// rather than a second nickname.
+
+function RadioBandTag({ ip, band, isAdmin, onSave }: {
+  ip: string; band?: string; isAdmin: boolean;
+  onSave: (ip: string, band: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue]     = useState(band || '');
+  const handleSave = async () => { await onSave(ip, value.trim()); setEditing(false); };
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') { setValue(band || ''); setEditing(false); }
+  };
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input autoFocus className="nms-input text-xs py-0.5 px-1.5 h-6 font-mono w-20"
+          value={value} onChange={e => setValue(e.target.value)} onKeyDown={handleKeyDown}
+          onBlur={handleSave} placeholder="e.g. B48" maxLength={32} />
+        <button onClick={handleSave} className="text-nms-green hover:text-nms-green/80"><Check className="w-3 h-3" /></button>
+        <button onClick={() => { setValue(band || ''); setEditing(false); }} className="text-nms-text-dim hover:text-nms-red"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 group/band">
+      {band ? (
+        <span className="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-nms-accent/10 text-nms-accent">
+          <Tag className="w-2.5 h-2.5" />{band}
+        </span>
+      ) : isAdmin && <span className="text-xs text-nms-text-dim/40 italic hidden group-hover/band:inline">add band</span>}
+      {isAdmin && (
+        <button onClick={() => { setValue(band || ''); setEditing(true); }}
+          className="opacity-0 group-hover/band:opacity-100 transition-opacity text-nms-text-dim hover:text-nms-accent" title="Edit LTE band">
+          <Pencil className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── UE sub-row ────────────────────────────────────────────────────────────────
 
-function UESubRow({ ue, gen, onNavigate }: { ue: ActiveUE; gen: '4G' | '5G'; onNavigate?: (imsi: string) => void }): JSX.Element {
+function UESubRow({ ue, gen, onNavigate }: {
+  ue: ActiveUE; gen: '4G' | '5G'; onNavigate?: (imsi: string) => void;
+}): JSX.Element {
   const sessions = ueSessions(ue);
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2/40 transition-colors">
       <ChevronRight className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
       <div className="flex-1 min-w-0">
-        <button onClick={() => onNavigate?.(ue.imsi)} className="text-xs font-mono text-nms-accent hover:underline text-left truncate block">{ue.imsi}</button>
+        <div className="flex items-center gap-1.5">
+          <button onClick={() => onNavigate?.(ue.imsi)} className="text-xs font-mono text-nms-accent hover:underline text-left truncate">{ue.imsi}</button>
+        </div>
         {ue.nickname && <span className="text-xs text-nms-text-dim block truncate">{ue.nickname}</span>}
       </div>
       <div className="w-28 flex-shrink-0 flex flex-col items-center">
@@ -139,15 +217,354 @@ function UESubRow({ ue, gen, onNavigate }: { ue: ActiveUE; gen: '4G' | '5G'; onN
   );
 }
 
+// ── Radio list layouts (user-selectable, with a persisted default — see the layout picker in
+// the main page component below) ────────────────────────────────────────────────────────
+//
+// The original single "grid-cols-3 rows + nested UE sub-table" layout below (now
+// RadioListTable) gets visually cramped once a radio row also has to carry a band tag, a
+// blocked badge, a nickname editor AND a block button, per the user's own "getting really
+// tight and messy" feedback (2026-08-30). Rather than lock in one replacement, this section
+// keeps three genuinely different layouts (of the five originally prototyped — Cards and
+// Tiles were tried and dropped) behind one shared row-data prep (buildRadioRows) and a shared
+// block-button control (RadioBlockButton), switchable at runtime via the pill selector, with
+// the choice persisted to localStorage as each operator's own default.
+
+export type RadioLayoutKind = 'table' | 'accordion' | 'split';
+
+export const RADIO_LAYOUTS: { key: RadioLayoutKind; label: string }[] = [
+  { key: 'table',     label: 'Table' },
+  { key: 'accordion', label: 'Collapsible List' },
+  { key: 'split',     label: 'List + Detail Panel' },
+];
+
+const RADIO_LAYOUT_STORAGE_KEY = 'nms.ranPage.radioLayout';
+
+function loadDefaultRadioLayout(): RadioLayoutKind {
+  try {
+    const saved = localStorage.getItem(RADIO_LAYOUT_STORAGE_KEY);
+    if (saved === 'table' || saved === 'accordion' || saved === 'split') return saved;
+  } catch { /* localStorage unavailable (private mode, etc.) — fall through to default */ }
+  return 'table';
+}
+
+interface RadioRowData {
+  radio: ConnectedRadio;
+  isSyntheticIp: boolean;
+  radioUEs: ActiveUE[];
+  // Idle + connected, from the actual matched UE list — NOT radio.numConnectedUes, which is
+  // MME/AMF's own live count and structurally connected-only (confirmed against Open5GS's
+  // real source, src/mme/enb-info.c — see ConnectedRadio's own comment above). Real bug fixed
+  // live 2026-08-30: radio cards previously showed only connected UEs, undercounting whenever
+  // any UE on that radio was idle.
+  totalUeCount: number;
+  nickname?: string;
+  band?: string;
+  isBlocked: boolean;
+}
+
+// Synthetic metrics-fallback radios have a non-IP placeholder string for their IP. When the
+// JSON API isn't available (Open5GS < v2.7.7), pair all metricsOnly UEs with the synthetic
+// radio rather than leaving "session details pending".
+function buildRadioRows(radios: ConnectedRadio[], ues: ActiveUE[], radioTags: Record<string, string>, radioBands: Record<string, string>, blockedIps: Set<string>): RadioRowData[] {
+  return radios.map(radio => {
+    const isSyntheticIp = !/^\d+\.\d+\.\d+\.\d+$/.test(radio.ip);
+    const radioUEs = ues.filter(ue => ue.radioIp === radio.ip || (isSyntheticIp && (ue.metricsOnly || !ue.radioIp)));
+    return { radio, isSyntheticIp, radioUEs, totalUeCount: radioUEs.length, nickname: radioTags[radio.ip], band: radioBands[radio.ip], isBlocked: blockedIps.has(radio.ip) };
+  });
+}
+
+interface RadioListProps {
+  layout: RadioLayoutKind;
+  radios: ConnectedRadio[]; ues: ActiveUE[]; generation: '4G' | '5G'; deviceLabel: string;
+  radioTags: Record<string, string>; radioBands: Record<string, string>; isAdmin: boolean;
+  onTagSave: (ip: string, nickname: string) => Promise<void>;
+  onBandSave: (ip: string, band: string) => Promise<void>;
+  onNavigateToSubscriber?: (imsi: string) => void;
+  hasActiveFilter: boolean;
+  blockedIps: Set<string>;
+  onRequestBlock: (ip: string) => void;
+  onUnblock: (ip: string) => Promise<void>;
+}
+
+function RadioBlockButton({ ip, isBlocked, isAdmin, isSyntheticIp, deviceNoun, deviceNounCap, blockedInterfaces, onRequestBlock, onUnblock, compact }: {
+  ip: string; isBlocked: boolean; isAdmin: boolean; isSyntheticIp: boolean;
+  deviceNoun: string; deviceNounCap: string; blockedInterfaces: string;
+  onRequestBlock: (ip: string) => void; onUnblock: (ip: string) => Promise<void>;
+  compact?: boolean;
+}): JSX.Element | null {
+  if (!isAdmin || isSyntheticIp) return null;
+  const cls = 'flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors border';
+  return isBlocked ? (
+    <button onClick={() => onUnblock(ip)} title={`Restore ${blockedInterfaces} to this ${deviceNoun}`}
+      className={clsx(cls, 'text-nms-text-dim hover:text-nms-text border-nms-border hover:border-nms-text-dim')}>
+      <ShieldOff className="w-2.5 h-2.5" />{compact ? 'Unblock' : `Unblock ${deviceNounCap}`}
+    </button>
+  ) : (
+    <button onClick={() => onRequestBlock(ip)} title={`Block this ${deviceNoun}'s ${blockedInterfaces} paths to the core (nftables, this host only — the ${deviceNoun} itself is not touched)`}
+      className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red border-nms-red/40 hover:border-nms-red')}>
+      <ShieldAlert className="w-2.5 h-2.5" />{compact ? 'Block' : `Block ${deviceNounCap}`}
+    </button>
+  );
+}
+
+function EmptyRadioList({ deviceLabel, hasActiveFilter }: { deviceLabel: string; hasActiveFilter: boolean }): JSX.Element {
+  return (
+    <div className="text-center py-8 text-nms-text-dim text-sm space-y-2">
+      {hasActiveFilter ? (
+        <p>No {deviceLabel}s match the current filter</p>
+      ) : (
+        <>
+          <p>No {deviceLabel}s connected</p>
+          <p className="text-xs text-nms-text-dim/60">If your {deviceLabel}s are connected, this feature requires Open5GS ≥ v2.7.7.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+const UE_LIST_HEADER = (is5G: boolean) => (
+  <div className="flex items-center gap-2 px-3 py-1 border-b border-nms-border/50">
+    <div className="w-3 flex-shrink-0" />
+    <span className="flex-1 text-xs text-nms-text-dim">IMSI</span>
+    <span className="w-28 text-xs text-nms-text-dim text-center flex-shrink-0">UE IP</span>
+    <span className="w-20 text-xs text-nms-text-dim text-center flex-shrink-0">DNN</span>
+    <span className="w-20 text-xs text-nms-text-dim text-right flex-shrink-0">State</span>
+    {is5G && <span className="w-16 text-xs text-nms-text-dim flex-shrink-0">Enc</span>}
+  </div>
+);
+
+// ── Layout A: Compact Table (the original layout — dense grid rows, UEs nested inline) ─────
+
+function RadioListTable({ radios, ues, generation, deviceLabel, radioTags, radioBands, isAdmin,
+  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock }: RadioListProps): JSX.Element {
+  const is5G = generation === '5G';
+  const blockedInterfaces = is5G ? 'N2 and N3' : 'S1-MME and S1-U';
+  const deviceNoun = is5G ? 'gNodeB' : 'radio';
+  const deviceNounCap = is5G ? 'gNodeB' : 'Radio';
+  const rows = buildRadioRows(radios, ues, radioTags, radioBands, blockedIps);
+  if (rows.length === 0) return <EmptyRadioList deviceLabel={deviceLabel} hasActiveFilter={hasActiveFilter} />;
+  return (
+    <div className="border border-nms-border rounded-md overflow-hidden">
+      <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-3 text-xs font-semibold text-nms-text uppercase tracking-wider">
+        <span>IP / Nickname</span><span className="text-center">UEs</span><span className="text-right">Status</span>
+      </div>
+      {rows.map(({ radio, isSyntheticIp, radioUEs, totalUeCount, nickname, band, isBlocked }, idx) => (
+        <div key={radio.ip + idx}>
+          <div className={clsx(
+            'grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border hover:bg-nms-surface-2/50 transition-colors',
+            isBlocked ? 'animate-flash-red ring-1 ring-inset ring-nms-red/40' : 'bg-nms-surface-2/20',
+          )}>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-mono font-semibold text-nms-text">{radio.ip}</span>
+                <RadioBandTag ip={radio.ip} band={band} isAdmin={isAdmin} onSave={onBandSave} />
+                {isBlocked && (
+                  <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded" title={`${blockedInterfaces} blocked from this NMS (nftables) — the ${deviceNoun} itself is untouched`}>
+                    <ShieldOff className="w-2.5 h-2.5" />{deviceNoun.toUpperCase()} BLOCKED
+                  </span>
+                )}
+              </div>
+              <RadioTagCell ip={radio.ip} nickname={nickname} isAdmin={isAdmin} onSave={onTagSave} />
+            </div>
+            <div className="text-center self-center">
+              <span className="text-sm font-bold text-nms-accent" title="Total UEs on this radio, idle + connected">{totalUeCount}</span>
+              {radio.numConnectedUes !== totalUeCount && (
+                <span className="block text-[10px] text-nms-text-dim" title="MME/AMF's own live count — connected only, excludes idle UEs">
+                  {radio.numConnectedUes} connected
+                </span>
+              )}
+              {radio.selfReportedUeCount != null && radio.selfReportedUeCount !== radio.numConnectedUes && (
+                <span className="block text-[10px] text-nms-text-dim" title="Radio's own self-reported count — RRC-connected only, can legitimately differ from MME's count">
+                  radio: {radio.selfReportedUeCount}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 self-center">
+              <RadioBlockButton ip={radio.ip} isBlocked={isBlocked} isAdmin={isAdmin} isSyntheticIp={isSyntheticIp}
+                deviceNoun={deviceNoun} deviceNounCap={deviceNounCap} blockedInterfaces={blockedInterfaces}
+                onRequestBlock={onRequestBlock} onUnblock={onUnblock} />
+              <Circle className={clsx('w-2 h-2', radio.setupSuccess ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
+            </div>
+          </div>
+          {radioUEs.length > 0 && (
+            <div className="bg-nms-surface-2/10">
+              {idx === 0 && UE_LIST_HEADER(is5G)}
+              {radioUEs.map((ue, ueIdx) => <UESubRow key={ueIdx} ue={ue} gen={generation} onNavigate={onNavigateToSubscriber} />)}
+            </div>
+          )}
+          {radioUEs.length === 0 && radio.numConnectedUes > 0 && (
+            <div className="px-6 py-1.5 border-b border-nms-border/50 last:border-b-0">
+              <span className="text-xs text-nms-text-dim italic">{radio.numConnectedUes} UE{radio.numConnectedUes > 1 ? 's' : ''} connected (session details pending)</span>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Layout C: Collapsible List (one-line summary per radio, click to expand details) ───────
+
+function RadioListAccordion({ radios, ues, generation, deviceLabel, radioTags, radioBands, isAdmin,
+  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock }: RadioListProps): JSX.Element {
+  const is5G = generation === '5G';
+  const blockedInterfaces = is5G ? 'N2 and N3' : 'S1-MME and S1-U';
+  const deviceNoun = is5G ? 'gNodeB' : 'radio';
+  const deviceNounCap = is5G ? 'gNodeB' : 'Radio';
+  const rows = buildRadioRows(radios, ues, radioTags, radioBands, blockedIps);
+  // Default-open any radio that already has UEs on it (idle or connected) — computed once at
+  // mount from the first render's rows, not re-synced on every 30s data refresh, so a radio an
+  // operator has manually collapsed stays collapsed even if its UE count changes later.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(rows.filter(r => r.radioUEs.length > 0).map(r => r.radio.ip)));
+  const toggle = (ip: string) => setExpanded(prev => { const next = new Set(prev); next.has(ip) ? next.delete(ip) : next.add(ip); return next; });
+  if (rows.length === 0) return <EmptyRadioList deviceLabel={deviceLabel} hasActiveFilter={hasActiveFilter} />;
+  return (
+    <div className="border border-nms-border rounded-md overflow-hidden divide-y divide-nms-border">
+      {rows.map(({ radio, isSyntheticIp, radioUEs, totalUeCount, nickname, band, isBlocked }, idx) => {
+        const isOpen = expanded.has(radio.ip);
+        return (
+          <div key={radio.ip + idx} className={isBlocked ? 'animate-flash-red' : undefined}>
+            <button onClick={() => toggle(radio.ip)}
+              className="w-full flex items-center gap-2 px-3 py-2 hover:bg-nms-surface-2/50 transition-colors text-left">
+              <ChevronRight className={clsx('w-3.5 h-3.5 text-nms-text-dim flex-shrink-0 transition-transform', isOpen && 'rotate-90')} />
+              <span className="text-sm font-mono font-semibold text-nms-text">{radio.ip}</span>
+              {nickname && <span className="text-xs text-nms-text-dim truncate">{nickname}</span>}
+              {isBlocked && (
+                <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded flex-shrink-0">
+                  <ShieldOff className="w-2.5 h-2.5" />BLOCKED
+                </span>
+              )}
+              <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+                <span className="text-xs font-semibold text-nms-accent bg-nms-accent/10 px-1.5 py-0.5 rounded-full" title="Total UEs, idle + connected">{totalUeCount} UE{totalUeCount === 1 ? '' : 's'}</span>
+                <Circle className={clsx('w-2 h-2', radio.setupSuccess ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
+              </span>
+            </button>
+            {isOpen && (
+              <div className="px-3 pb-3 pl-9 bg-nms-surface-2/10 space-y-2">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <RadioBandTag ip={radio.ip} band={band} isAdmin={isAdmin} onSave={onBandSave} />
+                  <RadioTagCell ip={radio.ip} nickname={nickname} isAdmin={isAdmin} onSave={onTagSave} />
+                  <RadioBlockButton ip={radio.ip} isBlocked={isBlocked} isAdmin={isAdmin} isSyntheticIp={isSyntheticIp}
+                    deviceNoun={deviceNoun} deviceNounCap={deviceNounCap} blockedInterfaces={blockedInterfaces}
+                    onRequestBlock={onRequestBlock} onUnblock={onUnblock} />
+                </div>
+                {radioUEs.length > 0 ? (
+                  <div className="border border-nms-border/50 rounded overflow-hidden">
+                    {UE_LIST_HEADER(is5G)}
+                    {radioUEs.map((ue, ueIdx) => <UESubRow key={ueIdx} ue={ue} gen={generation} onNavigate={onNavigateToSubscriber} />)}
+                  </div>
+                ) : radio.numConnectedUes > 0 ? (
+                  <p className="text-xs text-nms-text-dim italic">{radio.numConnectedUes} UE{radio.numConnectedUes > 1 ? 's' : ''} connected (session details pending)</p>
+                ) : (
+                  <p className="text-xs text-nms-text-dim italic">No UEs connected</p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Layout D: List + Detail Panel (narrow radio list, selected radio's detail on the right) ─
+
+function RadioListSplit({ radios, ues, generation, deviceLabel, radioTags, radioBands, isAdmin,
+  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock }: RadioListProps): JSX.Element {
+  const is5G = generation === '5G';
+  const blockedInterfaces = is5G ? 'N2 and N3' : 'S1-MME and S1-U';
+  const deviceNoun = is5G ? 'gNodeB' : 'radio';
+  const deviceNounCap = is5G ? 'gNodeB' : 'Radio';
+  const rows = buildRadioRows(radios, ues, radioTags, radioBands, blockedIps);
+  const [selectedIp, setSelectedIp] = useState<string | null>(null);
+  if (rows.length === 0) return <EmptyRadioList deviceLabel={deviceLabel} hasActiveFilter={hasActiveFilter} />;
+  const selected = rows.find(r => r.radio.ip === selectedIp) ?? rows[0];
+  return (
+    <div className="border border-nms-border rounded-md overflow-hidden flex" style={{ minHeight: '180px' }}>
+      <div className="w-48 flex-shrink-0 border-r border-nms-border divide-y divide-nms-border overflow-y-auto max-h-96">
+        {rows.map(({ radio, totalUeCount, isBlocked }, idx) => (
+          <button key={radio.ip + idx} onClick={() => setSelectedIp(radio.ip)}
+            className={clsx('w-full flex items-center gap-1.5 px-2.5 py-2 text-left transition-colors',
+              (selected.radio.ip === radio.ip) ? 'bg-nms-accent/10' : 'hover:bg-nms-surface-2/50',
+              isBlocked && 'animate-flash-red')}>
+            <Circle className={clsx('w-1.5 h-1.5 flex-shrink-0', radio.setupSuccess ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
+            <span className="text-xs font-mono text-nms-text truncate flex-1">{radio.ip}</span>
+            <span className="text-[10px] font-semibold text-nms-accent flex-shrink-0" title="Total UEs, idle + connected">{totalUeCount}</span>
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 p-3 min-w-0">
+        {(() => {
+          const { radio, isSyntheticIp, radioUEs, totalUeCount, nickname, band, isBlocked } = selected;
+          return (
+            <>
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-base font-mono font-semibold text-nms-text">{radio.ip}</span>
+                    <RadioBandTag ip={radio.ip} band={band} isAdmin={isAdmin} onSave={onBandSave} />
+                    {isBlocked && (
+                      <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded">
+                        <ShieldOff className="w-2.5 h-2.5" />{deviceNoun.toUpperCase()} BLOCKED
+                      </span>
+                    )}
+                  </div>
+                  <RadioTagCell ip={radio.ip} nickname={nickname} isAdmin={isAdmin} onSave={onTagSave} />
+                </div>
+                <RadioBlockButton ip={radio.ip} isBlocked={isBlocked} isAdmin={isAdmin} isSyntheticIp={isSyntheticIp}
+                  deviceNoun={deviceNoun} deviceNounCap={deviceNounCap} blockedInterfaces={blockedInterfaces}
+                  onRequestBlock={onRequestBlock} onUnblock={onUnblock} />
+              </div>
+              <div className="flex items-center gap-3 text-xs text-nms-text-dim mb-2">
+                <span><span className="font-bold text-nms-accent">{totalUeCount}</span> UE{totalUeCount === 1 ? '' : 's'} total (idle + connected)</span>
+                {radio.numConnectedUes !== totalUeCount && <span>({radio.numConnectedUes} connected)</span>}
+                {radio.selfReportedUeCount != null && radio.selfReportedUeCount !== radio.numConnectedUes && (
+                  <span>(radio self-reports: {radio.selfReportedUeCount})</span>
+                )}
+              </div>
+              {radioUEs.length > 0 ? (
+                <div className="border border-nms-border/50 rounded overflow-hidden">
+                  {UE_LIST_HEADER(is5G)}
+                  {radioUEs.map((ue, ueIdx) => <UESubRow key={ueIdx} ue={ue} gen={generation} onNavigate={onNavigateToSubscriber} />)}
+                </div>
+              ) : radio.numConnectedUes > 0 ? (
+                <p className="text-xs text-nms-text-dim italic">Session details pending</p>
+              ) : (
+                <p className="text-xs text-nms-text-dim italic">No UEs connected</p>
+              )}
+            </>
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+function RadioList(props: RadioListProps): JSX.Element {
+  switch (props.layout) {
+    case 'accordion': return <RadioListAccordion {...props} />;
+    case 'split':      return <RadioListSplit {...props} />;
+    case 'table':
+    default:           return <RadioListTable {...props} />;
+  }
+}
+
 // ── Interface card ────────────────────────────────────────────────────────────
 
 function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, generation, ues,
-  radioTags, isAdmin, onTagSave, onNavigateToSubscriber }: {
+  radioTags, radioBands, isAdmin, onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter,
+  blockedIps, onRequestBlock, onUnblock, layout }: {
   icon: React.ReactNode; title: string; subtitle: string; active: boolean;
   radios: ConnectedRadio[]; deviceLabel: string; generation: '4G' | '5G';
-  ues: ActiveUE[]; radioTags: Record<string, string>; isAdmin: boolean;
+  ues: ActiveUE[]; radioTags: Record<string, string>; radioBands: Record<string, string>; isAdmin: boolean;
   onTagSave: (ip: string, nickname: string) => Promise<void>;
+  onBandSave: (ip: string, band: string) => Promise<void>;
   onNavigateToSubscriber?: (imsi: string) => void;
+  hasActiveFilter: boolean;
+  blockedIps: Set<string>;
+  onRequestBlock: (ip: string) => void;
+  onUnblock: (ip: string) => Promise<void>;
+  layout: RadioLayoutKind;
 }): JSX.Element {
   const is5G = generation === '5G';
   const accentColor = is5G ? 'text-nms-accent' : 'text-purple-400';
@@ -171,63 +588,10 @@ function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, gen
         <span className={clsx('text-sm font-medium', active ? 'text-nms-green' : 'text-nms-red')}>{active ? 'Active' : 'Inactive'}</span>
         <span className="text-xs text-nms-text-dim ml-auto">{radios.length} {radios.length === 1 ? deviceLabel : `${deviceLabel}s`} connected</span>
       </div>
-      {radios.length > 0 ? (
-        <div className="border border-nms-border rounded-md overflow-hidden">
-          <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-3 text-xs font-semibold text-nms-text uppercase tracking-wider">
-            <span>IP / Nickname</span><span className="text-center">UEs</span><span className="text-right">Status</span>
-          </div>
-          {radios.map((radio, idx) => {
-            // Synthetic metrics-fallback radios have a non-IP placeholder string for their IP.
-            // When the JSON API isn't available (Open5GS < v2.7.7), pair all metricsOnly UEs
-            // with the synthetic radio rather than leaving "session details pending".
-            const isSyntheticIp = !/^\d+\.\d+\.\d+\.\d+$/.test(radio.ip);
-            const radioUEs = ues.filter(ue =>
-              ue.radioIp === radio.ip ||
-              (isSyntheticIp && (ue.metricsOnly || !ue.radioIp)),
-            );
-            const nickname = radioTags[radio.ip];
-            return (
-              <div key={idx}>
-                <div className="grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border hover:bg-nms-surface-2/50 transition-colors bg-nms-surface-2/20">
-                  <div>
-                    <span className="text-sm font-mono font-semibold text-nms-text">{radio.ip}</span>
-                    <RadioTagCell ip={radio.ip} nickname={nickname} isAdmin={isAdmin} onSave={onTagSave} />
-                  </div>
-                  <span className="text-center text-sm font-bold text-nms-accent self-center">{radio.numConnectedUes}</span>
-                  <div className="flex justify-end self-center">
-                    <Circle className={clsx('w-2 h-2', radio.setupSuccess ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
-                  </div>
-                </div>
-                {radioUEs.length > 0 && (
-                  <div className="bg-nms-surface-2/10">
-                    {idx === 0 && (
-                      <div className="flex items-center gap-2 px-3 py-1 border-b border-nms-border/50">
-                        <div className="w-3 flex-shrink-0" />
-                        <span className="flex-1 text-xs text-nms-text-dim">IMSI</span>
-                        <span className="w-28 text-xs text-nms-text-dim text-center flex-shrink-0">UE IP</span>
-                        <span className="w-20 text-xs text-nms-text-dim text-center flex-shrink-0">DNN</span>
-                        <span className="w-20 text-xs text-nms-text-dim text-right flex-shrink-0">State</span>
-                        {is5G && <span className="w-16 text-xs text-nms-text-dim flex-shrink-0">Enc</span>}
-                      </div>
-                    )}
-                    {radioUEs.map((ue, ueIdx) => <UESubRow key={ueIdx} ue={ue} gen={generation} onNavigate={onNavigateToSubscriber} />)}
-                  </div>
-                )}
-                {radioUEs.length === 0 && radio.numConnectedUes > 0 && (
-                  <div className="px-6 py-1.5 border-b border-nms-border/50 last:border-b-0">
-                    <span className="text-xs text-nms-text-dim italic">{radio.numConnectedUes} UE{radio.numConnectedUes > 1 ? 's' : ''} connected (session details pending)</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="text-center py-8 text-nms-text-dim text-sm space-y-2">
-          <p>No {deviceLabel}s connected</p>
-          <p className="text-xs text-nms-text-dim/60">If your {deviceLabel}s are connected, this feature requires Open5GS ≥ v2.7.7.</p>
-        </div>
-      )}
+      <RadioList layout={layout} radios={radios} ues={ues} generation={generation} deviceLabel={deviceLabel}
+        radioTags={radioTags} radioBands={radioBands} isAdmin={isAdmin} onTagSave={onTagSave} onBandSave={onBandSave}
+        onNavigateToSubscriber={onNavigateToSubscriber} hasActiveFilter={hasActiveFilter}
+        blockedIps={blockedIps} onRequestBlock={onRequestBlock} onUnblock={onUnblock} />
     </div>
   );
 }
@@ -1031,36 +1395,149 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
     } catch { /* silent */ }
   }, []);
 
-  const [radioTags, setRadioTags] = useState<Record<string, string>>({});
+  const [radioTagsFull, setRadioTagsFull] = useState<Record<string, { nickname: string; band: string | null }>>({});
   const loadTags = useCallback(async () => {
-    try { setRadioTags(await radioTagsApi.getAll()); } catch { /* silent */ }
+    try { setRadioTagsFull(await radioTagsApi.getAllFull()); } catch { /* silent */ }
+  }, []);
+
+  const [blockedIps, setBlockedIps] = useState<Set<string>>(new Set());
+  const loadBlocked = useCallback(async () => {
+    try { setBlockedIps(new Set((await radioBlockApi.getAll()).map(b => b.ip))); } catch { /* silent */ }
+  }, []);
+
+  const [blockedGnbIps, setBlockedGnbIps] = useState<Set<string>>(new Set());
+  const loadBlockedGnbs = useCallback(async () => {
+    try { setBlockedGnbIps(new Set((await gnbBlockApi.getAll()).map(b => b.ip))); } catch { /* silent */ }
+  }, []);
+
+  const [blockedUeImsis, setBlockedUeImsis] = useState<Set<string>>(new Set());
+  const loadBlockedUes = useCallback(async () => {
+    try { setBlockedUeImsis(new Set((await getBlockedUes()).map(b => b.imsi))); } catch { /* silent */ }
   }, []);
 
   useEffect(() => {
-    fetchInterfaceStatus(); loadTags(); loadConfigs();
+    fetchInterfaceStatus(); loadTags(); loadConfigs(); loadBlocked(); loadBlockedGnbs(); loadBlockedUes();
     const interval = setInterval(fetchInterfaceStatus, 30000);
     return () => clearInterval(interval);
-  }, [fetchInterfaceStatus, loadTags, loadConfigs]);
+  }, [fetchInterfaceStatus, loadTags, loadConfigs, loadBlocked, loadBlockedGnbs, loadBlockedUes]);
+
+  // Blocking severs S1-MME/S1-U (4G) or N2/N3 (5G) to the core from the NMS side (nftables),
+  // without touching the radio itself — a real, live-impact action, so it's gated behind an
+  // in-app confirmation modal (pendingBlockIp/pendingBlockGnbIp + <ConfirmModal> below) rather
+  // than window.confirm(), which is a native browser popup that can't be styled to match this app.
+  const [pendingBlockIp, setPendingBlockIp] = useState<string | null>(null);
+  const [pendingBlockGnbIp, setPendingBlockGnbIp] = useState<string | null>(null);
+
+  const handleBlock = useCallback(async (ip: string) => {
+    try {
+      await radioBlockApi.block(ip);
+      setBlockedIps(prev => new Set(prev).add(ip));
+      toast.success(`${ip} blocked`);
+    } catch { toast.error('Failed to block radio'); }
+  }, []);
+
+  const handleUnblock = useCallback(async (ip: string) => {
+    try {
+      await radioBlockApi.unblock(ip);
+      setBlockedIps(prev => { const next = new Set(prev); next.delete(ip); return next; });
+      toast.success(`${ip} unblocked`);
+    } catch { toast.error('Failed to unblock radio'); }
+  }, []);
+
+  const handleBlockGnb = useCallback(async (ip: string) => {
+    try {
+      await gnbBlockApi.block(ip);
+      setBlockedGnbIps(prev => new Set(prev).add(ip));
+      toast.success(`${ip} blocked`);
+    } catch { toast.error('Failed to block gNodeB'); }
+  }, []);
+
+  const handleUnblockGnb = useCallback(async (ip: string) => {
+    try {
+      await gnbBlockApi.unblock(ip);
+      setBlockedGnbIps(prev => { const next = new Set(prev); next.delete(ip); return next; });
+      toast.success(`${ip} unblocked`);
+    } catch { toast.error('Failed to unblock gNodeB'); }
+  }, []);
+
+  // Same confirm-modal gating as radio blocking — this fires a real Cancel-Location-Request
+  // (immediate detach) plus a persistent nftables block, not a reversible-by-accident action.
+  const [pendingBlockUeImsi, setPendingBlockUeImsi] = useState<string | null>(null);
+
+  const handleBlockUe = useCallback(async (imsi: string) => {
+    try {
+      const result = await blockUe(imsi);
+      setBlockedUeImsis(prev => new Set(prev).add(imsi));
+      if (result.detach.attempted && result.detach.status === 'success') {
+        toast.success(`${imsi} detached and blocked`);
+      } else if (result.detach.attempted) {
+        toast.success(`${imsi} blocked (detach: ${result.detach.status ?? 'no response'})`);
+      } else {
+        toast.success(`${imsi} blocked`);
+      }
+    } catch { toast.error('Failed to block UE'); }
+  }, []);
+
+  const handleUnblockUe = useCallback(async (imsi: string) => {
+    try {
+      await unblockUe(imsi);
+      setBlockedUeImsis(prev => { const next = new Set(prev); next.delete(imsi); return next; });
+      toast.success(`${imsi} unblocked`);
+    } catch { toast.error('Failed to unblock UE'); }
+  }, []);
+
+  // Derived, nickname-only view — matches every existing `radioTags[ip]` call
+  // site's expectations unchanged.
+  const radioTags = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [ip, t] of Object.entries(radioTagsFull)) if (t.nickname) out[ip] = t.nickname;
+    return out;
+  }, [radioTagsFull]);
+  const radioBands = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [ip, t] of Object.entries(radioTagsFull)) if (t.band) out[ip] = t.band;
+    return out;
+  }, [radioTagsFull]);
+  // Distinct tagged bands, for the filter dropdown's option list.
+  const bandOptions = useMemo(
+    () => [...new Set(Object.values(radioBands))].sort(),
+    [radioBands],
+  );
 
   const handleTagSave = useCallback(async (ip: string, nickname: string) => {
     try {
       await radioTagsApi.set(ip, nickname);
-      setRadioTags(prev => {
-        if (!nickname) { const next = { ...prev }; delete next[ip]; return next; }
-        return { ...prev, [ip]: nickname };
-      });
+      setRadioTagsFull(prev => ({ ...prev, [ip]: { nickname, band: prev[ip]?.band ?? null } }));
       toast.success(nickname ? `Tag saved: ${nickname}` : 'Tag removed', { duration: 2000 });
     } catch { toast.error('Failed to save tag'); }
   }, []);
 
+  const handleBandSave = useCallback(async (ip: string, band: string) => {
+    try {
+      await radioTagsApi.setBand(ip, band);
+      setRadioTagsFull(prev => ({ ...prev, [ip]: { nickname: prev[ip]?.nickname ?? '', band: band || null } }));
+      toast.success(band ? `Band tagged: ${band}` : 'Band tag removed', { duration: 2000 });
+    } catch { toast.error('Failed to save band'); }
+  }, []);
+
+  // ── Filters (band + partial IP) ─────────────────────────────────────────
+  const [bandFilter, setBandFilter] = useState('');
+  const [ipFilter, setIpFilter]     = useState('');
+  const hasActiveFilter = !!bandFilter || !!ipFilter.trim();
+  const matchesFilter = useCallback((ip: string) => {
+    if (bandFilter && radioBands[ip] !== bandFilter) return false;
+    if (ipFilter.trim() && !ip.toLowerCase().includes(ipFilter.trim().toLowerCase())) return false;
+    return true;
+  }, [bandFilter, ipFilter, radioBands]);
+
   const s1mmeActive = interfaceStatus?.s1mme?.active            || false;
-  const s1mmeRadios = (interfaceStatus?.s1mme?.connectedEnodebs || []) as ConnectedRadio[];
+  const s1mmeRadios = withBlockedRadios((interfaceStatus?.s1mme?.connectedEnodebs || []) as ConnectedRadio[], blockedIps).filter(r => matchesFilter(r.ip));
   const s1uActive   = interfaceStatus?.s1u?.active               || false;
-  const s1uRadios   = (interfaceStatus?.s1u?.connectedEnodebs   || []) as ConnectedRadio[];
+  const s1uRadios   = withBlockedRadios((interfaceStatus?.s1u?.connectedEnodebs   || []) as ConnectedRadio[], blockedIps).filter(r => matchesFilter(r.ip));
   const n2Active    = interfaceStatus?.n2?.active                || false;
-  const n2Radios    = (interfaceStatus?.n2?.connectedGnodebs    || []) as ConnectedRadio[];
+  const n2Radios    = withBlockedRadios((interfaceStatus?.n2?.connectedGnodebs || []) as ConnectedRadio[], blockedGnbIps).filter(r => matchesFilter(r.ip));
   const n3Active    = interfaceStatus?.n3?.active                || false;
-  const n3Radios    = (interfaceStatus?.n3?.connectedGnodebs    || []) as ConnectedRadio[];
+  const n3Radios    = withBlockedRadios((interfaceStatus?.n3?.connectedGnodebs || []) as ConnectedRadio[], blockedGnbIps).filter(r => matchesFilter(r.ip));
   const activeUEs4G = (interfaceStatus?.activeUEs4G || []) as ActiveUE[];
   const activeUEs5G = (interfaceStatus?.activeUEs5G || []) as ActiveUE[];
 
@@ -1080,7 +1557,12 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       ...activeUEs4G.map(ue => ({ ...ue, gen: '4G' as const })),
       ...activeUEs5G.map(ue => ({ ...ue, gen: '5G' as const })),
     ];
-    return [...combined].sort((a, b) => {
+    // Same band/partial-IP filter as the radio cards, applied via each
+    // session's own radioIp — a UE whose radio isn't in the filtered set
+    // shouldn't show up here either. A UE with no known radioIp (metrics
+    // fallback) always passes through, since there's nothing to filter on.
+    const filtered = combined.filter(ue => !ue.radioIp || matchesFilter(ue.radioIp));
+    return filtered.sort((a, b) => {
       let av = '', bv = '';
       if (sortCol === 'imsi')      { av = a.imsi || '';        bv = b.imsi || ''; }
       else if (sortCol === 'ip')   { av = a.ip || '';          bv = b.ip || ''; }
@@ -1088,10 +1570,25 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       const cmp = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [activeUEs4G, activeUEs5G, sortCol, sortDir]);
+  }, [activeUEs4G, activeUEs5G, sortCol, sortDir, matchesFilter]);
 
   const isMetricsFallback = allSessions.some(s => s.metricsOnly);
-  const sharedCardProps = { radioTags, isAdmin, onTagSave: handleTagSave, onNavigateToSubscriber };
+
+  // Radio list layout — user-selectable, persisted to localStorage as this operator's own
+  // default (per-browser, not backend-persisted — this is a display preference, not shared
+  // operational data). radioLayout is the live selection for this view; defaultRadioLayout
+  // tracks what's actually saved, so "Set as Default" can show whether they already match.
+  const [radioLayout, setRadioLayout] = useState<RadioLayoutKind>(loadDefaultRadioLayout);
+  const [defaultRadioLayout, setDefaultRadioLayout] = useState<RadioLayoutKind>(loadDefaultRadioLayout);
+  const handleSetDefaultLayout = useCallback(() => {
+    try { localStorage.setItem(RADIO_LAYOUT_STORAGE_KEY, radioLayout); } catch { /* localStorage unavailable */ }
+    setDefaultRadioLayout(radioLayout);
+    toast.success(`${RADIO_LAYOUTS.find(l => l.key === radioLayout)?.label} set as your default layout`, { duration: 2500 });
+  }, [radioLayout]);
+
+  const sharedCardProps = { radioTags, radioBands, isAdmin, onTagSave: handleTagSave, onBandSave: handleBandSave, onNavigateToSubscriber, hasActiveFilter, layout: radioLayout };
+  const radioBlockProps = { blockedIps, onRequestBlock: setPendingBlockIp, onUnblock: handleUnblock };
+  const gnbBlockProps = { blockedIps: blockedGnbIps, onRequestBlock: setPendingBlockGnbIp, onUnblock: handleUnblockGnb };
 
   return (
     <div className="px-4 pt-6 max-w-[1600px] mx-auto space-y-8">
@@ -1106,19 +1603,55 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
           <h1 className="text-2xl font-bold font-display text-nms-text mb-1">RAN Network</h1>
           <p className="text-sm text-nms-text-dim">Radio Access Network — interface status, connected radios, and active UE sessions</p>
         </div>
-        <button onClick={() => { loadConfigs(); setShowIPTable(true); }}
-          className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text hover:border-nms-accent/50 flex items-center gap-2 text-sm shrink-0"
-          title="Show all IPs used by Open5GS and what they are for">
-          <Map className="w-4 h-4" /> IP Plumbing
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Radio list layout — applies to every S1-MME/S1-U/N2/N3 radio list below. */}
+          <select value={radioLayout} onChange={e => setRadioLayout(e.target.value as RadioLayoutKind)}
+            className="nms-input text-sm py-2 px-2.5 w-auto" title="Radio list layout">
+            {RADIO_LAYOUTS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
+          </select>
+          <button onClick={handleSetDefaultLayout} disabled={radioLayout === defaultRadioLayout}
+            className="p-2 rounded-md border border-nms-border text-nms-text-dim hover:text-nms-accent hover:border-nms-accent/50 disabled:opacity-40 disabled:cursor-default disabled:hover:text-nms-text-dim disabled:hover:border-nms-border transition-colors"
+            title={radioLayout === defaultRadioLayout ? 'This is already your default layout' : 'Remember this layout as your default for next time you open this page'}>
+            <Pin className="w-4 h-4" />
+          </button>
+          <button onClick={() => { loadConfigs(); setShowIPTable(true); }}
+            className="nms-btn border border-nms-border text-nms-text-dim hover:text-nms-text hover:border-nms-accent/50 flex items-center gap-2 text-sm shrink-0"
+            title="Show all IPs used by Open5GS and what they are for">
+            <Map className="w-4 h-4" /> IP Plumbing
+          </button>
+        </div>
+      </div>
+
+      {/* Filter bar — applies to every radio card below and the All Sessions
+          table (via each session's own radioIp). */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5 text-xs text-nms-text-dim shrink-0">
+          <Filter className="w-3.5 h-3.5" /> Filter
+        </div>
+        <select value={bandFilter} onChange={e => setBandFilter(e.target.value)}
+          className="nms-input text-sm py-1.5 px-2.5 w-auto">
+          <option value="">All bands</option>
+          {bandOptions.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <input value={ipFilter} onChange={e => setIpFilter(e.target.value)}
+          placeholder="Filter by IP (e.g. 10.0.2)" className="nms-input text-sm py-1.5 px-2.5 w-48 font-mono" />
+        {hasActiveFilter && (
+          <button onClick={() => { setBandFilter(''); setIpFilter(''); }}
+            className="text-xs text-nms-text-dim hover:text-nms-text flex items-center gap-1">
+            <X className="w-3 h-3" /> Clear
+          </button>
+        )}
+        {bandOptions.length === 0 && (
+          <span className="text-xs text-nms-text-dim/60 italic">No radios tagged with a band yet — click the pencil next to a radio's IP below to add one.</span>
+        )}
       </div>
 
       {/* 4G EPC */}
       <div>
         <SectionHeader label="4G EPC" color="4G" />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <InterfaceCard icon={<Radio className="w-5 h-5" />} title="S1-MME Interface" subtitle="Control Plane (MME ↔ eNodeB)" active={s1mmeActive} radios={s1mmeRadios} deviceLabel="eNodeB" generation="4G" ues={activeUEs4G} {...sharedCardProps} />
-          <InterfaceCard icon={<Activity className="w-5 h-5" />} title="S1-U Interface" subtitle="User Plane (SGW-U ↔ eNodeB)" active={s1uActive} radios={s1uRadios} deviceLabel="eNodeB" generation="4G" ues={activeUEs4G} {...sharedCardProps} />
+          <InterfaceCard icon={<Radio className="w-5 h-5" />} title="S1-MME Interface" subtitle="Control Plane (MME ↔ eNodeB)" active={s1mmeActive} radios={s1mmeRadios} deviceLabel="eNodeB" generation="4G" ues={activeUEs4G} {...sharedCardProps} {...radioBlockProps} />
+          <InterfaceCard icon={<Activity className="w-5 h-5" />} title="S1-U Interface" subtitle="User Plane (SGW-U ↔ eNodeB)" active={s1uActive} radios={s1uRadios} deviceLabel="eNodeB" generation="4G" ues={activeUEs4G} {...sharedCardProps} {...radioBlockProps} />
         </div>
       </div>
 
@@ -1126,8 +1659,8 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       <div>
         <SectionHeader label="5G NR" color="5G" />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <InterfaceCard icon={<Wifi className="w-5 h-5" />} title="N2 Interface" subtitle="Control Plane (AMF ↔ gNodeB)" active={n2Active} radios={n2Radios} deviceLabel="gNodeB" generation="5G" ues={activeUEs5G} {...sharedCardProps} />
-          <InterfaceCard icon={<Network className="w-5 h-5" />} title="N3 Interface" subtitle="User Plane (UPF ↔ gNodeB)" active={n3Active} radios={n3Radios} deviceLabel="gNodeB" generation="5G" ues={activeUEs5G} {...sharedCardProps} />
+          <InterfaceCard icon={<Wifi className="w-5 h-5" />} title="N2 Interface" subtitle="Control Plane (AMF ↔ gNodeB)" active={n2Active} radios={n2Radios} deviceLabel="gNodeB" generation="5G" ues={activeUEs5G} {...sharedCardProps} {...gnbBlockProps} />
+          <InterfaceCard icon={<Network className="w-5 h-5" />} title="N3 Interface" subtitle="User Plane (UPF ↔ gNodeB)" active={n3Active} radios={n3Radios} deviceLabel="gNodeB" generation="5G" ues={activeUEs5G} {...sharedCardProps} {...gnbBlockProps} />
         </div>
       </div>
 
@@ -1168,15 +1701,25 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                   </th>
                   <th className="px-3 py-2.5 text-center text-xs font-semibold text-nms-text uppercase tracking-wider">Security</th>
                   <th className="px-3 py-2.5 text-right text-xs font-semibold text-nms-text uppercase tracking-wider">AMBR ↓ / ↑</th>
+                  {isAdmin && <th className="px-3 py-2.5 text-right text-xs font-semibold text-nms-text uppercase tracking-wider">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-nms-border">
-                {allSessions.map((ue, idx) => (
-                  <tr key={idx} className="hover:bg-nms-surface-2/50 transition-colors">
+                {allSessions.map((ue, idx) => {
+                  const isUeBlocked = blockedUeImsis.has(ue.imsi);
+                  return (
+                  <tr key={idx} className={clsx('hover:bg-nms-surface-2/50 transition-colors', isUeBlocked && 'animate-flash-red')}>
                     <td className="px-3 py-2.5 font-mono">
                       {ue.metricsOnly ? <span className="text-xs text-nms-text-dim italic">metrics only</span> : (
                         <div>
-                          <button onClick={() => onNavigateToSubscriber?.(ue.imsi)} className="text-nms-accent hover:underline transition-colors block">{ue.imsi}</button>
+                          <div className="flex items-center gap-1.5">
+                            <button onClick={() => onNavigateToSubscriber?.(ue.imsi)} className="text-nms-accent hover:underline transition-colors">{ue.imsi}</button>
+                            {isUeBlocked && (
+                              <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded flex-shrink-0" title="Detached and blocked from this NMS — persists until unblocked">
+                                <UserX className="w-2.5 h-2.5" />UE BLOCKED
+                              </span>
+                            )}
+                          </div>
                           {ue.nickname && <span className="text-xs text-nms-text-dim">{ue.nickname}</span>}
                         </div>
                       )}
@@ -1223,8 +1766,32 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                     <td className="px-3 py-2.5 text-right text-xs text-nms-text-dim font-mono">
                       {ue.ambrDownlink || ue.ambrUplink ? `${formatAmbr(ue.ambrDownlink)} / ${formatAmbr(ue.ambrUplink)}` : '—'}
                     </td>
+                    {isAdmin && (
+                      <td className="px-3 py-2.5 text-right">
+                        {!ue.metricsOnly && (
+                          isUeBlocked ? (
+                            <button
+                              onClick={() => handleUnblockUe(ue.imsi)}
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-text-dim px-1.5 py-0.5 rounded transition-colors"
+                              title="Restore this UE"
+                            >
+                              <UserCheck className="w-2.5 h-2.5" />Unblock UE
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setPendingBlockUeImsi(ue.imsi)}
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-red hover:text-white hover:bg-nms-red border border-nms-red/40 hover:border-nms-red px-1.5 py-0.5 rounded transition-colors"
+                              title="Detach this UE now and block it from reconnecting until unblocked"
+                            >
+                              <UserX className="w-2.5 h-2.5" />Block UE
+                            </button>
+                          )
+                        )}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1237,6 +1804,36 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
           </div>
         )}
       </div>
+
+      <ConfirmModal
+        open={pendingBlockIp !== null}
+        title={`Block ${pendingBlockIp}?`}
+        message="This immediately severs its S1-MME and S1-U paths to the core (nftables, this host only) — the radio itself is not touched, and this can be undone with Unblock at any time."
+        confirmLabel="Block"
+        danger
+        onConfirm={() => { const ip = pendingBlockIp!; setPendingBlockIp(null); handleBlock(ip); }}
+        onCancel={() => setPendingBlockIp(null)}
+      />
+
+      <ConfirmModal
+        open={pendingBlockGnbIp !== null}
+        title={`Block ${pendingBlockGnbIp}?`}
+        message="This immediately severs its N2 and N3 paths to the core (nftables, this host only) — the gNodeB itself is not touched, and this can be undone with Unblock at any time."
+        confirmLabel="Block"
+        danger
+        onConfirm={() => { const ip = pendingBlockGnbIp!; setPendingBlockGnbIp(null); handleBlockGnb(ip); }}
+        onCancel={() => setPendingBlockGnbIp(null)}
+      />
+
+      <ConfirmModal
+        open={pendingBlockUeImsi !== null}
+        title={`Block UE ${pendingBlockUeImsi}?`}
+        message="This immediately detaches the UE from the network (a real Cancel-Location-Request to MME) and blocks its traffic from this NMS side if it reconnects — this can be undone with Unblock at any time."
+        confirmLabel="Block"
+        danger
+        onConfirm={() => { const imsi = pendingBlockUeImsi!; setPendingBlockUeImsi(null); handleBlockUe(imsi); }}
+        onCancel={() => setPendingBlockUeImsi(null)}
+      />
     </div>
   );
 };

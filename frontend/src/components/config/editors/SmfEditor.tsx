@@ -721,7 +721,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         updateSessions(updated);
                       }}
                       placeholder="internet"
-                      tooltip="Link this pool to a specific DNN. UEs requesting this APN/DNN get IPs from this range."
+                      tooltip="Restricts this session-pool entry to UEs requesting this specific DNN/APN — SMF uses the DNN a UE requests in its PDU Session Establishment Request to pick which pool (and therefore which UPF, per the routing badge below) serves it. Leave blank to make this the fallback pool for any DNN without its own dedicated entry; when multiple pools exist, list DNN-specific ones before the blank one so they're matched first."
                     />
                     {/* Routing destination badge — always shown */}
                     <div className="mt-1">

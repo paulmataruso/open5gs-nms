@@ -33,7 +33,15 @@ export interface BaicellsRadio {
   txPower:      string;
   // Live status (from full parameter tree — only populated after bootstrap)
   mmeStatus:   string;
+  // Radio's own TR-069-reported RRC-connected count. Distinct from
+  // mmeUeCount below on purpose — confirmed live (2026-08-28) these can
+  // legitimately disagree, since this only counts UEs currently on the
+  // radio link, not ones MME still holds an S1/EPS context for while idle.
   ueCount:     string;
+  // MME's own /enb-info count for this radio (includes RRC-idle UEs).
+  // null means this radio isn't currently associated with MME at all —
+  // distinct from a genuine 0.
+  mmeUeCount:  number | null;
   gpsStatus:   string;
   gpsSatCount: string;
   uptime:      string;

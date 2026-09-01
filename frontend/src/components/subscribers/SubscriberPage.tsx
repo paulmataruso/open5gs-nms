@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Upload, Shield, Network, List, ArrowUp, ArrowDown, ChevronDown, Users, ChevronRight, Pencil, Unlink, Smartphone } from 'lucide-react';
+import { Plus, Search, Trash2, Edit, X, Save, CreditCard, Copy, Download, Upload, Shield, Network, List, ArrowUp, ArrowDown, ChevronDown, Users, ChevronRight, Pencil, Unlink, Smartphone, UserX, UserCheck } from 'lucide-react';
 import { clsx } from 'clsx';
 import { EsimGeneratorModal } from './EsimGeneratorModal';
+import { ConfirmModal } from '../common/ConfirmModal';
+import { getBlockedUes, blockUe, unblockUe } from '../../api/ueBlock';
 import { useSubscriberStore, useSuciStore } from '../../stores';
 import { subscriberApi, subscriberGroupsApi } from '../../api';
 import type { SubscriberGroup } from '../../api';
@@ -2710,6 +2712,39 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
   useEffect(() => { fetch(); }, [fetch]);
 
+  // UE block/detach — same combined action as the RAN page: an immediate real
+  // Cancel-Location-Request detach plus a persistent nftables block that survives
+  // a re-attach, gated behind an in-app confirm modal (a real, live-impact action).
+  const [blockedUeImsis, setBlockedUeImsis] = useState<Set<string>>(new Set());
+  const loadBlockedUes = useCallback(async () => {
+    try { setBlockedUeImsis(new Set((await getBlockedUes()).map(b => b.imsi))); } catch { /* silent */ }
+  }, []);
+  useEffect(() => { loadBlockedUes(); }, [loadBlockedUes]);
+
+  const [pendingBlockUeImsi, setPendingBlockUeImsi] = useState<string | null>(null);
+
+  const handleBlockUe = useCallback(async (imsi: string) => {
+    try {
+      const result = await blockUe(imsi);
+      setBlockedUeImsis(prev => new Set(prev).add(imsi));
+      if (result.detach.attempted && result.detach.status === 'success') {
+        toast.success(`${imsi} detached and blocked`);
+      } else if (result.detach.attempted) {
+        toast.success(`${imsi} blocked (detach: ${result.detach.status ?? 'no response'})`);
+      } else {
+        toast.success(`${imsi} blocked`);
+      }
+    } catch { toast.error('Failed to block UE'); }
+  }, []);
+
+  const handleUnblockUe = useCallback(async (imsi: string) => {
+    try {
+      await unblockUe(imsi);
+      setBlockedUeImsis(prev => { const next = new Set(prev); next.delete(imsi); return next; });
+      toast.success(`${imsi} unblocked`);
+    } catch { toast.error('Failed to unblock UE'); }
+  }, []);
+
   const handleExport = () => {
     const a = document.createElement('a');
     a.href = subscriberApi.exportCSV('csv');
@@ -2860,6 +2895,15 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
       {showIPAssignments && <IPAssignmentsModal onClose={() => setShowIPAssignments(false)} />}
       {showFramedRoutes && <FramedRoutesModal onClose={() => setShowFramedRoutes(false)} />}
+      <ConfirmModal
+        open={pendingBlockUeImsi !== null}
+        title={`Block UE ${pendingBlockUeImsi}?`}
+        message="This immediately detaches the UE from the network (a real Cancel-Location-Request to MME) and blocks its traffic from this NMS side if it reconnects — this can be undone with Unblock at any time."
+        confirmLabel="Block"
+        danger
+        onConfirm={() => { const imsi = pendingBlockUeImsi!; setPendingBlockUeImsi(null); handleBlockUe(imsi); }}
+        onCancel={() => setPendingBlockUeImsi(null)}
+      />
       {showEsimModal && (
         <EsimGeneratorModal
           subscriber={esimSubscriber}
@@ -3098,11 +3142,16 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
               const inGroup = item.type === 'group-member';
               const groupColor = inGroup ? (item.group.color ?? '#6366f1') : null;
               const isSelected = selectedImsis.has(sub.imsi);
+              const isBlockedUe = blockedUeImsis.has(sub.imsi);
 
               return (
                 <tr
                   key={sub.imsi}
-                  className={`border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors ${isSelected ? 'bg-nms-accent/5' : ''}`}
+                  className={clsx(
+                    'border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors',
+                    isSelected && 'bg-nms-accent/5',
+                    isBlockedUe && 'animate-flash-red ring-1 ring-inset ring-nms-red/40',
+                  )}
                   style={inGroup ? { borderLeft: `3px solid ${groupColor}` } : undefined}
                 >
                   {!isViewer && (
@@ -3115,7 +3164,16 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                       />
                     </td>
                   )}
-                  <td className={`px-4 py-3 font-mono text-xs ${inGroup ? 'pl-5' : ''}`}>{sub.imsi}</td>
+                  <td className={`px-4 py-3 font-mono text-xs ${inGroup ? 'pl-5' : ''}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span>{sub.imsi}</span>
+                      {isBlockedUe && (
+                        <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded flex-shrink-0" title="Detached and blocked from this NMS — persists until unblocked">
+                          <UserX className="w-2.5 h-2.5" />UE BLOCKED
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-xs">
                     {sub.nickname
                       ? <span className="text-nms-accent font-medium">{sub.nickname}</span>
@@ -3197,6 +3255,23 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                         >
                           <Smartphone className="w-4 h-4 inline" />
                         </button>
+                        {isBlockedUe ? (
+                          <button
+                            onClick={() => handleUnblockUe(sub.imsi)}
+                            className="text-nms-text-dim hover:text-nms-text"
+                            title="Unblock UE — restore this subscriber"
+                          >
+                            <UserCheck className="w-4 h-4 inline" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setPendingBlockUeImsi(sub.imsi)}
+                            className="text-nms-text-dim hover:text-nms-red"
+                            title="Block UE — detach now and block it from reconnecting until unblocked"
+                          >
+                            <UserX className="w-4 h-4 inline" />
+                          </button>
+                        )}
                         <button
                           onClick={async () => {
                             if (!confirm(`Delete subscriber ${sub.imsi}?`)) return;

@@ -19,6 +19,7 @@ import { IHostExecutor } from '../../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../../domain/interfaces/config-repository';
 import { ActiveSessionsUseCase, ActiveUE } from '../active-sessions';
 import { Open5gsApiClient, parsePeerIP } from '../open5gs-api-client';
+import { BaicellsUeCountsUseCase } from '../baicells-ue-counts';
 
 // ── Exported types ────────────────────────────────────────────────────────────
 
@@ -27,6 +28,18 @@ export interface ConnectedRadio {
   numConnectedUes: number;
   setupSuccess: boolean;
   plmn?: string;
+  // numConnectedUes is ECM/CM-CONNECTED only — confirmed against Open5GS's real source
+  // (src/mme/enb-info.c walks the eNB's own live enb_ue_list, which is emptied the instant a
+  // UE goes idle) — it can never include idle UEs. The frontend derives a separate "total UEs
+  // (idle+connected)" stat per radio from the actual matched activeUEs4G/5G list instead,
+  // since each UE there (idle or not) still carries a valid radioIp — see RANPage.tsx's
+  // buildRadioRows. Fixed live 2026-08-30 after a real bug: radio cards under-reported UE
+  // count whenever any UE on that radio was idle.
+  //
+  // Baicells-only — the radio's own TR-069-reported RRC-connected count, shown as a secondary
+  // annotation alongside numConnectedUes since the two can legitimately disagree — see
+  // baicells-ue-counts.ts. Undefined for non-Baicells radios/gNodeBs.
+  selfReportedUeCount?: number | null;
 }
 
 export interface InterfaceStatus {
@@ -48,8 +61,20 @@ export class GetInterfaceStatus {
     private readonly logger: pino.Logger,
     private readonly activeSessionsUseCase: ActiveSessionsUseCase,
     private readonly configRepo: IConfigRepository,
+    private readonly baicellsUeCounts: BaicellsUeCountsUseCase,
   ) {
     this.apiClient = new Open5gsApiClient(hostExecutor, configRepo, logger);
+  }
+
+  // Keyed by mmePeerIp (pool address if SecGW-tunneled, else the radio's
+  // real IP) — exactly what ConnectedRadio.ip already is for S1-MME/S1-U
+  // entries, so this can be looked up directly with no further translation.
+  private async getBaicellsSelfReportedByPeerIp(): Promise<Map<string, number | null>> {
+    const entries = await this.baicellsUeCounts.getAll().catch(err => {
+      this.logger.error({ err: String(err) }, 'Error getting Baicells self-reported UE counts');
+      return [];
+    });
+    return new Map(entries.map(e => [e.mmePeerIp, e.selfReportedUeCount]));
   }
 
   async execute(): Promise<InterfaceStatus> {
@@ -97,12 +122,17 @@ export class GetInterfaceStatus {
         }
       }
 
-      const radios: ConnectedRadio[] = enbs.map(enb => ({
-        ip:               parsePeerIP(enb.s1.sctp.peer),
-        numConnectedUes:  enb.num_connected_ues,
-        setupSuccess:     enb.s1.setup_success,
-        plmn:             enb.plmn,
-      }));
+      const selfReportedByPeerIp = await this.getBaicellsSelfReportedByPeerIp();
+      const radios: ConnectedRadio[] = enbs.map(enb => {
+        const ip = parsePeerIP(enb.s1.sctp.peer);
+        return {
+          ip,
+          numConnectedUes:  enb.num_connected_ues,
+          setupSuccess:     enb.s1.setup_success,
+          plmn:             enb.plmn,
+          selfReportedUeCount: selfReportedByPeerIp.get(ip),
+        };
+      });
 
       this.logger.info({ count: radios.length, radios: radios.map(r => r.ip) }, 'S1-MME check complete');
       return { active: radios.some(r => r.setupSuccess), connectedEnodebs: radios };
@@ -136,12 +166,17 @@ export class GetInterfaceStatus {
         }
       }
 
-      const radios: ConnectedRadio[] = enbs.map(enb => ({
-        ip:               parsePeerIP(enb.s1.sctp.peer),
-        numConnectedUes:  enb.num_connected_ues,
-        setupSuccess:     enb.s1.setup_success,
-        plmn:             enb.plmn,
-      }));
+      const selfReportedByPeerIp = await this.getBaicellsSelfReportedByPeerIp();
+      const radios: ConnectedRadio[] = enbs.map(enb => {
+        const ip = parsePeerIP(enb.s1.sctp.peer);
+        return {
+          ip,
+          numConnectedUes:  enb.num_connected_ues,
+          setupSuccess:     enb.s1.setup_success,
+          plmn:             enb.plmn,
+          selfReportedUeCount: selfReportedByPeerIp.get(ip),
+        };
+      });
 
       this.logger.info({ count: radios.length }, 'S1-U check complete');
       return { active: radios.some(r => r.setupSuccess), connectedEnodebs: radios };

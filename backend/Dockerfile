@@ -64,6 +64,15 @@ COPY src/config/ims-templates ./dist/config/ims-templates
 # Install time — see twamp-controller.ts) into dist
 COPY src/config/twamp-templates ./dist/config/twamp-templates
 
+# Copy the QCI hardware test tool source (Go + cgo shim, written to the host
+# and compiled at Install time — see qci-hw-test-controller.ts) into dist
+COPY src/config/qci-hw-test-templates ./dist/config/qci-hw-test-templates
+
+# Copy the UE detach tool source (Go + cgo shim bridging Open5GS's own
+# compiled Diameter S6a stack, written to the host and compiled at Install
+# time — see ue-detach-runner.ts) into dist
+COPY src/config/ue-detach-templates ./dist/config/ue-detach-templates
+
 RUN mkdir -p /var/log/open5gs-nms && mkdir -p /app/data
 
 ENV NODE_ENV=production

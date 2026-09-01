@@ -59,6 +59,7 @@ import { createAuditRouter } from './interfaces/rest/audit-controller';
 import { createTunRouter } from './interfaces/rest/tun-controller';
 import { TunManagementUseCase } from './application/use-cases/tun-management';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
+import { GetInterfaceStatus } from './application/use-cases/interface-status/get-interface-status';
 import { GtpBandwidthMonitor } from './application/use-cases/interface-status/gtp-bandwidth';
 import { ImsCallStatsMonitor } from './application/use-cases/ims/call-stats-monitor';
 import { IpsecSaCleanup } from './application/use-cases/ims/ipsec-sa-cleanup';
@@ -72,6 +73,16 @@ import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
 import { SqliteRadioTagRepository } from './infrastructure/auth/sqlite-radio-tag-repository';
 import { createRadioTagsRouter } from './interfaces/rest/radio-tags-controller';
+import { SqliteRadioBlockRepository } from './infrastructure/auth/sqlite-radio-block-repository';
+import { RadioBlockService } from './application/use-cases/ran/radio-block-service';
+import { createRadioBlockRouter } from './interfaces/rest/radio-block-controller';
+import { SqliteGnbBlockRepository } from './infrastructure/auth/sqlite-gnb-block-repository';
+import { GnbBlockService } from './application/use-cases/ran/gnb-block-service';
+import { createGnbBlockRouter } from './interfaces/rest/gnb-block-controller';
+import { createQciHwTestRouter } from './interfaces/rest/qci-hw-test-controller';
+import { SqliteUeBlockRepository } from './infrastructure/auth/sqlite-ue-block-repository';
+import { UeBlockService } from './application/use-cases/ran/ue-block-service';
+import { createUeBlockRouter } from './interfaces/rest/ue-block-controller';
 import { createLogDownloadRouter } from './interfaces/rest/log-download-controller';
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
 import { createChronyRouter } from './interfaces/rest/chrony-controller';
@@ -92,6 +103,7 @@ import { createValidationRouter } from './interfaces/rest/validation-controller'
 import { createVolteValidationRouter } from './interfaces/rest/volte-validation-controller';
 import { ImsTestNumberManager, createImsTestNumberRouter } from './interfaces/rest/ims-test-number-controller';
 import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validation-controller';
+import { createQciValidationRouter } from './interfaces/rest/qci-validation-controller';
 import * as http from 'http';
 import { spawn } from 'child_process';
 import { SasService } from './domain/sas/sas-service';
@@ -107,6 +119,7 @@ import { createTwampMetricsRegistry } from './application/use-cases/twamp/twamp-
 import { createTwampRouter } from './interfaces/rest/twamp-controller';
 import { createModulesRouter } from './interfaces/rest/modules-controller';
 import { ModuleFixAllUseCase } from './application/use-cases/module-fixall-usecase';
+import { BaicellsUeCountsUseCase } from './application/use-cases/baicells-ue-counts';
 
 async function main() {
   // Load configuration
@@ -209,6 +222,12 @@ async function main() {
   logger.info({ dbPath: config.authDbPath }, 'Auth initialised');
 
   const radioTagRepo = new SqliteRadioTagRepository(authRepo.getDb());
+  const radioBlockRepo = new SqliteRadioBlockRepository(authRepo.getDb());
+  const radioBlockService = new RadioBlockService(hostExecutor, radioBlockRepo, logger);
+  radioBlockService.start();
+  const gnbBlockRepo = new SqliteGnbBlockRepository(authRepo.getDb());
+  const gnbBlockService = new GnbBlockService(hostExecutor, gnbBlockRepo, logger);
+  gnbBlockService.start();
 
   // Ensure backup directories exist
   try {
@@ -344,6 +363,12 @@ async function main() {
     subscriberRepo,
     logger,
   );
+  const baicellsUeCounts = new BaicellsUeCountsUseCase(
+    config.genieacsNbiUrl,
+    hostExecutor,
+    configRepo,
+    logger,
+  );
   const suciManagementUseCase = new SuciManagementUseCase(
     hostExecutor,
     configRepo,
@@ -440,12 +465,22 @@ async function main() {
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
   app.use('/api/tun-interfaces', createTunRouter(tunUseCase, logger));
 
-  app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo));
+  app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo, baicellsUeCounts));
   app.use('/api/suci', createSuciRouter(suciManagementUseCase, logger));
   app.use('/api/radio-tags', createRadioTagsRouter(radioTagRepo, logger));
+  // Separate instance from interface-controller.ts's own — this lightweight use case has
+  // no state worth sharing, and it avoids threading a pre-built instance through that
+  // router's constructor just for this.
+  const getInterfaceStatusForBlock = new GetInterfaceStatus(hostExecutor, logger, activeSessionsUseCase, configRepo, baicellsUeCounts);
+  app.use('/api/radio-block', createRadioBlockRouter(radioBlockService, getInterfaceStatusForBlock, auditLogger, logger));
+  app.use('/api/gnb-block', createGnbBlockRouter(gnbBlockService, getInterfaceStatusForBlock, auditLogger, logger));
+  const ueBlockRepo = new SqliteUeBlockRepository(authRepo.getDb());
+  const ueBlockService = new UeBlockService(hostExecutor, ueBlockRepo, getInterfaceStatusForBlock, logger);
+  ueBlockService.start();
+  app.use('/api/ue-block', createUeBlockRouter(ueBlockService, auditLogger, logger));
   app.use('/api/docker', createDockerRouter(dockerLogStreamingUseCase, logger));
   app.use('/api/logs', createLogDownloadRouter(hostExecutor, config, logger));
-  app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
+  app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath, baicellsUeCounts));
   app.use('/api/chrony',   createChronyRouter(logger, auditLogger));
   app.use('/api/syslog',   createSyslogRouter(logger, auditLogger));
   app.use('/api/speedtest', createSpeedtestRouter(logger, auditLogger));
@@ -464,7 +499,9 @@ async function main() {
   const imsTestNumberManager = new ImsTestNumberManager(logger);
   app.use('/api/validation/ims-test-numbers', createImsTestNumberRouter(imsTestNumberManager, auditLogger));
   await imsTestNumberManager.reconcile().catch((err) => logger.warn({ err: String(err) }, 'ims-test-number: reconcile failed at startup'));
+  app.use('/api/validation/qci-hw-test', createQciHwTestRouter(getInterfaceStatusForBlock, imsTestNumberManager, auditLogger, logger));
   app.use('/api/validation/vowifi', createVowifiValidationRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/validation/qci', createQciValidationRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
   app.use('/api/traffic-history', createTrafficHistoryRouter(config.prometheusUrl, subscriberRepo, logger));
@@ -600,6 +637,9 @@ async function main() {
     sasService.stopSummaryLogger();
     logStreamHandler.cleanup();
     subscriberIpAccounting.stop();
+    radioBlockService.stop();
+    gnbBlockService.stop();
+    ueBlockService.stop();
     mmsMsisdnMapRefresher.stop();
     await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
