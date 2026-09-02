@@ -20,6 +20,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
   { id: 'topology', label: 'Topology', icon: Network },
   { id: 'ran', label: 'RAN Network', icon: Radio },
+  { id: 'radio-signal', label: 'UE Signal', icon: Wifi },
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
