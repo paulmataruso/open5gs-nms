@@ -1564,10 +1564,89 @@ export async function pyhssApiCall(method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', p
 async function sourceKamSql(db: string, files: string[]): Promise<void> {
   const kamSqlDir = '/usr/share/kamailio/mysql';
   for (const f of files) {
+    const filePath = `${kamSqlDir}/${f}`;
+    const exists = await nsenter('bash', ['-c', `[ -f ${filePath} ] && echo yes || echo no`])
+      .then(r => r.stdout.trim() === 'yes');
+    if (!exists) {
+      // Previously this whole function swallowed every failure (`2>/dev/null || true`
+      // plus an outer catch), so a missing schema file — e.g. from a kamailio-ims-modules/
+      // kamailio-mysql-modules package that didn't install cleanly, or a Kamailio version
+      // that ships it under a different path — silently created zero tables for that file
+      // while Install still reported success. Confirmed live 2026-09-02: this exact gap
+      // let a deployment run for a long time with pcscf.pcscf_location missing entirely,
+      // crash-looping kamailio-pcscf ("Cannot fork") with no indication Install was ever
+      // at fault. Fail loudly instead — a missing/broken schema file must abort Install.
+      throw new Error(
+        `Kamailio schema file missing: ${filePath} — expected from the kamailio-ims-modules/` +
+        `kamailio-mysql-modules apt packages installed earlier in this Install run. Check ` +
+        `those packages actually installed (dpkg -l | grep kamailio) before retrying.`,
+      );
+    }
+    // Kamailio's own vendor-shipped schema files are NOT idempotent — plain `CREATE
+    // TABLE foo (...)`, no `IF NOT EXISTS` (unlike this codebase's own hand-written
+    // schema blocks elsewhere in this file, which do use IF NOT EXISTS deliberately).
+    // Every Configure re-run sources them again against an already-initialized
+    // database, so "table/column/key/constraint already exists" is the *expected*,
+    // harmless outcome on a re-run — confirmed live 2026-09-02 when the first version
+    // of this fix (which failed hard on ANY mysql error) broke a healthy re-Configure
+    // on `ERROR 1050 ... Table 'version' already exists`. --force keeps mysql
+    // processing the rest of the file past that line too — without it, a plain
+    // (non-forced) run silently stops at the FIRST error and never applies anything
+    // after it, which was true even before this fix existed (just invisible, since
+    // errors were swallowed wholesale). Only a genuinely different error — anything
+    // NOT matching one of these specific "already exists" codes — aborts Configure.
     try {
-      await nsenter('bash', ['-c', `[ -f ${kamSqlDir}/${f} ] && mysql --user=root --protocol=socket ${db} < ${kamSqlDir}/${f} 2>/dev/null || true`], 60000);
-    } catch { /* non-fatal */ }
+      await nsenter('bash', ['-c', `mysql --force --user=root --protocol=socket ${db} < ${filePath}`], 60000);
+    } catch (err: any) {
+      const stderr: string = err?.stderr || err?.message || String(err);
+      // Empirically verified live 2026-09-02 by force-running every file this function
+      // ever sources against already-populated scscf/pcscf/smsc databases: only 1050
+      // (table exists), 1061 (duplicate key name), and 1062 (duplicate entry — these
+      // files re-INSERT their own `version`/seed rows every time with a plain INSERT,
+      // not INSERT IGNORE) ever actually occur. 1062 looks like it should mean a real
+      // data conflict, and normally would — but here it's exclusively these files'
+      // own non-idempotent version/seed bookkeeping re-running, not subscriber/session
+      // data (that goes through separate, already-idempotent codepaths elsewhere in
+      // this file). 1060 (duplicate column) and 1826 (duplicate FK constraint name)
+      // are kept too even though this exact file set never triggered them — same
+      // "schema object already exists" class of error, just not empirically exercised
+      // here.
+      const benign = /^ERROR (1050|1060|1061|1062|1826)\b/;
+      const realErrors = stderr.split('\n').filter(line => /^ERROR /.test(line) && !benign.test(line));
+      if (realErrors.length > 0) {
+        throw new Error(`Failed sourcing ${filePath} into database '${db}':\n${realErrors.join('\n')}`);
+      }
+      // Every ERROR line was a benign "already exists" — expected on a re-run, not fatal.
+    }
   }
+}
+
+// Polls `systemctl is-active` rather than trusting a bare `restart`/`enable --now` exit
+// code — systemd accepts the restart request and returns immediately, well before the
+// process has actually finished initializing (or crashed). A unit can restart cleanly
+// per systemd's own bookkeeping and still be dead a second later once its own startup
+// logic hits a real error (e.g. a missing MySQL table) — polling for a few seconds is
+// what actually confirms the service stayed up, matching this project's "verify, don't
+// trust success" convention (see CLAUDE.md).
+async function waitForServiceActive(svc: string, timeoutMs = 8000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const active = await nsenter('systemctl', ['is-active', svc])
+      .then(r => r.stdout.trim() === 'active').catch(() => false);
+    if (active) return true;
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return false;
+}
+
+// Formats a diagnostic block for a service that failed to come up — current
+// systemctl status plus its most recent journal lines, so a Configure failure names
+// exactly which service broke and why, instead of a generic "configure failed".
+async function serviceFailureDetail(svc: string): Promise<string> {
+  const status = await nsenter('systemctl', ['is-active', svc]).then(r => r.stdout.trim()).catch(() => 'unknown');
+  const journal = await nsenter('journalctl', ['-u', svc, '-n', '15', '--no-pager'])
+    .then(r => r.stdout.trim()).catch(() => '(could not read journal)');
+  return `${svc} (status: ${status}):\n${journal}`;
 }
 
 async function initializeImsDatabase(p: {
@@ -1826,6 +1905,70 @@ INSERT IGNORE INTO version (table_name, table_version) VALUES
   await mysqlExec(`GRANT ALL PRIVILEGES ON pcscf.* TO 'pcscf'@'localhost';`);
   await mysqlExec(`GRANT ALL PRIVILEGES ON pcscf.* TO 'pcscf'@'127.0.0.1';`);
   await sourceKamSql('pcscf', ['standard-create.sql', 'presence-create.sql', 'ims_usrloc_pcscf-create.sql', 'ims_dialog-create.sql']);
+
+  // ims_usrloc_pcscf-create.sql (above) only ever creates a table literally named
+  // `location` — Kamailio's own stock default. But every route file in this project
+  // (mo.cfg/mt.cfg/register.cfg/kamailio_pcscf.cfg) calls the module's functions with
+  // domain name "pcscf_location", not "location" — ims_usrloc_pcscf uses that domain
+  // string directly as the table it queries, so the module actually needs a table
+  // named `pcscf_location` to exist, and nothing in this codebase ever created one.
+  // Confirmed live 2026-09-02: this table existed on one deployment (this host) purely
+  // because someone created/renamed it by hand at some undocumented point in the past
+  // — a genuinely fresh deployment had no such history and crash-looped kamailio-pcscf
+  // ("Cannot fork") on this exact gap. Schema copied verbatim from this host's own
+  // working `pcscf_location` (confirmed identical to the vendor `location` table,
+  // just renamed) so this is the real, permanent fix rather than another silent gap.
+  await mysqlExec(`CREATE TABLE IF NOT EXISTS pcscf_location (
+  id INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+  domain VARCHAR(64) NOT NULL,
+  aor VARCHAR(255) NOT NULL,
+  host VARCHAR(100) NOT NULL,
+  port INT(10) NOT NULL,
+  received VARCHAR(128) DEFAULT NULL,
+  received_port INT(10) UNSIGNED DEFAULT NULL,
+  received_proto INT(10) UNSIGNED DEFAULT NULL,
+  path VARCHAR(512) DEFAULT NULL,
+  rinstance VARCHAR(255) DEFAULT NULL,
+  rx_session_id VARCHAR(256) DEFAULT NULL,
+  reg_state TINYINT(4) DEFAULT NULL,
+  expires DATETIME DEFAULT '2030-05-28 21:32:15',
+  service_routes VARCHAR(2048) DEFAULT NULL,
+  socket VARCHAR(64) DEFAULT NULL,
+  public_ids VARCHAR(2048) DEFAULT NULL,
+  security_type INT(11) DEFAULT NULL,
+  protocol INT(10) DEFAULT NULL,
+  mode CHAR(10) DEFAULT NULL,
+  ck VARCHAR(100) DEFAULT NULL,
+  ik VARCHAR(100) DEFAULT NULL,
+  ealg CHAR(20) DEFAULT NULL,
+  ialg CHAR(20) DEFAULT NULL,
+  port_pc INT(11) UNSIGNED DEFAULT NULL,
+  port_ps INT(11) UNSIGNED DEFAULT NULL,
+  port_uc INT(11) UNSIGNED DEFAULT NULL,
+  port_us INT(11) UNSIGNED DEFAULT NULL,
+  spi_pc INT(11) UNSIGNED DEFAULT NULL,
+  spi_ps INT(11) UNSIGNED DEFAULT NULL,
+  spi_uc INT(11) UNSIGNED DEFAULT NULL,
+  spi_us INT(11) UNSIGNED DEFAULT NULL,
+  t_security_type INT(11) DEFAULT NULL,
+  t_port_pc INT(11) UNSIGNED DEFAULT NULL,
+  t_port_ps INT(11) UNSIGNED DEFAULT NULL,
+  t_port_uc INT(11) UNSIGNED DEFAULT NULL,
+  t_port_us INT(11) UNSIGNED DEFAULT NULL,
+  t_spi_pc INT(11) UNSIGNED DEFAULT NULL,
+  t_spi_ps INT(11) UNSIGNED DEFAULT NULL,
+  t_spi_uc INT(11) UNSIGNED DEFAULT NULL,
+  t_spi_us INT(11) UNSIGNED DEFAULT NULL,
+  t_protocol CHAR(5) DEFAULT NULL,
+  t_mode CHAR(10) DEFAULT NULL,
+  t_ck VARCHAR(100) DEFAULT NULL,
+  t_ik VARCHAR(100) DEFAULT NULL,
+  t_ealg CHAR(20) DEFAULT NULL,
+  t_ialg CHAR(20) DEFAULT NULL,
+  PRIMARY KEY (id),
+  KEY aor (aor)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci;`);
+  await mysqlExec(`INSERT IGNORE INTO pcscf.version (table_name, table_version) VALUES ('pcscf_location', '7');`);
 
   // ── ims_hss_db (PyHSS) ────────────────────────────────────────────────────────
   await mysqlExec(`CREATE USER IF NOT EXISTS 'pyhss'@'localhost'  IDENTIFIED BY 'ims_db_pass';`);
@@ -2110,17 +2253,21 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     fs.writeFileSync(HOST_UPF_YAML, updateUpfImsSession(upfRaw), 'utf-8');
   }
 
-  // 14. Save state
+  // 14. Save state. configuredWithVersion is deliberately NOT set to the current build
+  // here — it's only updated once every service below is verified to have actually come
+  // up (see the end of this function). Marking it "up to date" before that verification
+  // would silently clear the staleness flag /status uses to drive StaleModulesModal, even
+  // when this exact Configure attempt is about to fail — confirmed live 2026-09-02: a
+  // deployment's Configure silently failed to create pcscf_location and then crash-looped
+  // kamailio-pcscf, but configuredWithVersion still got marked current, so the "update
+  // modules" prompt never came back to tell the operator anything was still wrong.
+  const prevConfiguredWithVersion: string | undefined = fs.existsSync(HOST_IMS_STATE)
+    ? (() => { try { return JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')).configuredWithVersion; } catch { return undefined; } })()
+    : undefined;
   fs.writeFileSync(HOST_IMS_STATE, JSON.stringify({
     imsDomain,
     hssBackend: 'pyhss',
-    // Recorded so /status can tell an operator their live deployment was
-    // configured by an older build than the one now running (e.g. after a
-    // git pull + backend rebuild) and prompt them to re-run Configure to
-    // pick up template fixes — rather than silently leaving a stale config
-    // in place, or auto-restarting live Kamailio/rtpengine/Asterisk on
-    // every upgrade without the operator choosing when. See app-version.ts.
-    configuredWithVersion: getAppVersion(),
+    configuredWithVersion: prevConfiguredWithVersion,
     smsDeliveryMode,
     smsWorkerIntervalSeconds,
     config: {
@@ -2146,6 +2293,12 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   const kamailioCscfServices = new Set(['kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc']);
   const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-hss', 'pyhss-api', 'pyhss-diameter',
                 'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
+  // Collected rather than thrown immediately — a restart failing partway through this
+  // ordered list shouldn't stop the rest from at least being attempted (or skip step 17's
+  // SMF/PCRF/UPF restart below, which is independent of whether IMS itself came up
+  // cleanly). Everything still gets reported in one aggregated error at the end instead
+  // of the previous behavior of silently returning success either way.
+  const serviceFailures: string[] = [];
   for (const svc of svcs) {
     if (kamailioCscfServices.has(svc)) {
       await nsenter('systemctl', ['enable', svc]).catch(() => {});
@@ -2156,19 +2309,42 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     if (svc === 'redis-server') {
       await new Promise(r => setTimeout(r, 2000)); // let redis bind before pyhss services
     }
+    if (!(await waitForServiceActive(svc))) {
+      serviceFailures.push(await serviceFailureDetail(svc));
+    }
   }
   // Reload bind9 zone after restart — systemctl restart alone can race with zone file writes
   await nsenter('rndc', ['reload']).catch(() => {});
 
   // 17. Restart SMF + PCRF + UPF
-  await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
-  await nsenter('systemctl', ['restart', 'open5gs-pcrfd']).catch(() => {});
-  await nsenter('systemctl', ['restart', 'open5gs-upfd']).catch(() => {});
+  for (const svc of ['open5gs-smfd', 'open5gs-pcrfd', 'open5gs-upfd']) {
+    await nsenter('systemctl', ['restart', svc]).catch(() => {});
+    if (!(await waitForServiceActive(svc))) {
+      serviceFailures.push(await serviceFailureDetail(svc));
+    }
+  }
 
   // kamailio-scscf was restarted in the same loop above, so its own registrar
   // is normally empty right after a full Configure and this is a no-op — kept
   // for defense-in-depth in case that ever changes (see forceReregisterAllRegisteredUes).
   await forceReregisterAllRegisteredUes().catch(() => {});
+
+  if (serviceFailures.length > 0) {
+    throw new Error(
+      `IMS Configure wrote all config successfully, but ${serviceFailures.length} service(s) ` +
+      `failed to come up afterward:\n\n${serviceFailures.join('\n\n---\n\n')}`,
+    );
+  }
+
+  // Only now — after every service above is confirmed actually running — mark this
+  // deployment as configured at the current build. If this write itself fails, staleness
+  // just stays stuck true (a safe direction to fail in: worst case is a spurious "update
+  // modules" prompt, never a silently-cleared one).
+  try {
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    state.configuredWithVersion = getAppVersion();
+    fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
+  } catch { /* see comment above */ }
 
   return { imsDomain };
 }
