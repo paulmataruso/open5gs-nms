@@ -81,6 +81,18 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![RAN Network Page](docs/screenshots/ran-network-page.png)
 
+### UE Signal Quality
+- **Per-UE radio measurements** — RSRP/RSRQ/SINR/BLER/MCS/CQI/throughput correlated with subscriber identity (IMSI/ICCID/MSISDN)
+- **Baicells-native today** — built-in connector for Baicells radios; other vendors need the generic JSON connector, which requires the radio to expose its own metrics in that shape, so it isn't a drop-in for every vendor
+- **Encrypted credential storage** — radio credentials encrypted with AES-256-GCM on the server, never returned by the API
+- **7-day signal history** — SQLite-backed per-UE history, viewable as an RSRP/SINR trend chart
+- **Downlink wake packets** — admin-triggered wake for idle UEs to force a fresh measurement when core identity (IMSI/ICCID/MSISDN) hasn't yet correlated
+- Opt-in module — off by default (`ENABLE_UE_SIGNAL_MODULE=false` in `.env`); enable and rebuild the frontend to show it in the nav
+
+![UE Signal Overview](docs/screenshots/ue-signal-overview.png)
+
+![UE Signal Add Radio](docs/screenshots/ue-signal-add-radio.png)
+
 ### Network Topology Visualization
 - **Interactive Diagram** - JointJS-based professional network topology
 - **Real-Time Status** - Color-coded service indicators (green=active, red=inactive)

@@ -77,6 +77,7 @@ export type AuditAction =
   | 'pstn_extension_remove'
   | 'ims_install'
   | 'ims_configure'
+  | 'ims_force_deregister'
   | 'ims_sync_subscribers'
   | 'ims_enable'
   | 'ims_disable'

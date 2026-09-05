@@ -123,6 +123,7 @@ services:
         - VITE_ENABLE_SECGW=${ENABLE_SECGW_MODULE:-false}
         - VITE_ENABLE_TWAMP=${ENABLE_TWAMP_MODULE:-false}
         - VITE_ENABLE_RF_PLANNING=${ENABLE_RF_PLANNING_MODULE:-false}
+        - VITE_ENABLE_UE_SIGNAL=${ENABLE_UE_SIGNAL_MODULE:-true}
     container_name: open5gs-nms-frontend
     restart: unless-stopped
     network_mode: host

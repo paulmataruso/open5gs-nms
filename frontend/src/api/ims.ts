@@ -103,6 +103,7 @@ export interface ImsCallStats {
 export const imsApi = {
   getStatus:       async (): Promise<ImsStatus>         => { const { data } = await api.get('/status');            return data; },
   getLive:         async (): Promise<ImsLiveStatus>     => { const { data } = await api.get('/live');              return data; },
+  forceDeregister: async (publicIdentities: string[])   => { const { data } = await api.post('/live/deregister', { publicIdentities }); return data; },
   getCallStats:    async (): Promise<ImsCallStats>      => { const { data } = await api.get('/call-stats');       return data; },
   configure:       async (input: ImsConfigureInput)     => { const { data } = await api.post('/configure', input); return data; },
   syncSubscribers: async ()                             => { const { data } = await api.post('/sync-subscribers'); return data; },

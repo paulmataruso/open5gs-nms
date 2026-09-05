@@ -1782,11 +1782,24 @@ CREATE TABLE IF NOT EXISTS subscriber (
   call_id          VARCHAR(50)  NOT NULL,
   from_tag         VARCHAR(50)  NOT NULL,
   to_tag           VARCHAR(50)  NOT NULL,
-  record_route     VARCHAR(50)  NOT NULL,
+  -- record_route was VARCHAR(50): real Record-Route header chains across
+  -- multiple IMS proxies (P-CSCF, S-CSCF) routinely exceed that, causing a
+  -- silent MySQL 1406 "Data too long" failure on every real SUBSCRIBE from
+  -- a live phone (confirmed live 2026-09-04 via kamailio-scscf's own error
+  -- log). TEXT matches active_watchers' own record_route column, which
+  -- never had this problem.
+  record_route     TEXT         NOT NULL,
   sockinfo_str     VARCHAR(50)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY watcher_uri (event, watcher_contact, presentity_uri)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+-- Retroactive fix for any deployment whose subscriber table already existed before
+-- record_route became TEXT above (CREATE TABLE IF NOT EXISTS is a no-op against an
+-- existing table, so the CREATE statement alone would never widen an existing
+-- deployment's column). Safe to re-run every Configure: MODIFY to the same type is
+-- a harmless no-op once already applied.
+ALTER TABLE subscriber MODIFY COLUMN record_route TEXT NOT NULL;
 
 CREATE TABLE IF NOT EXISTS impu_subscriber (
   id            INT(11) NOT NULL AUTO_INCREMENT,
@@ -1918,7 +1931,7 @@ INSERT IGNORE INTO version (table_name, table_version) VALUES
   // ("Cannot fork") on this exact gap. Schema copied verbatim from this host's own
   // working `pcscf_location` (confirmed identical to the vendor `location` table,
   // just renamed) so this is the real, permanent fix rather than another silent gap.
-  await mysqlExec(`CREATE TABLE IF NOT EXISTS pcscf_location (
+  await mysqlExec(`CREATE TABLE IF NOT EXISTS pcscf.pcscf_location (
   id INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,
   domain VARCHAR(64) NOT NULL,
   aor VARCHAR(255) NOT NULL,
@@ -3313,6 +3326,99 @@ export function createImsRouter(
       logger.error({ err: String(err) }, 'ims live status error');
       res.status(500).json({ success: false, error: String(err) });
     }
+  });
+
+  // POST /api/ims/live/deregister — manual, operator-triggered force-deregister for
+  // one row on the Live Status table. Same underlying regscscf.dereg_impu RPC
+  // forceReregisterAllRegisteredUes() already uses for automatic post-restart
+  // cleanup, exposed here as an on-demand action so an operator can cleanly reset a
+  // test device's registration state (e.g. to test whether it re-registers cleanly
+  // over a different access, without waiting for the old binding's Expires timer to
+  // lapse on its own).
+  //
+  // IMPORTANT, confirmed live 2026-09-03 by reading ims_registrar_scscf's own RPC
+  // source (reg_rpc.c) and watching kamailio-scscf's debug log during a real call:
+  // dereg_impu does NOT directly remove anything from S-CSCF's in-memory usrloc
+  // table (system.listMethods confirms there is no hard-delete RPC at all — only
+  // showimpu/snapshot/status, all read-only). It builds a reginfo XML marking every
+  // linked AOR state="terminated" and sends that as a NOTIFY to whoever is
+  // SUBSCRIBEd to this phone's own reg-event package (normally the phone itself) —
+  // a "notify and hope the phone reacts" mechanism, not a forced removal. Whether
+  // the row actually disappears therefore depends on the phone currently holding a
+  // live reg-event subscription and choosing to re-register in response — neither
+  // guaranteed. This is exactly why a manual test showed "does nothing" on one
+  // attempt and worked on a later one: pure timing/subscription-state luck, not a
+  // bug in the RPC call itself.
+  //
+  // Since there is no real hard-delete available, this endpoint is honest about
+  // that instead of reporting a blind "success" the moment the RPC call itself
+  // doesn't error: it fires dereg_impu for every alias, then polls the live
+  // snapshot for up to ~6s to confirm each one actually disappeared, and reports
+  // exactly which ones did/didn't — so the UI never claims success when nothing
+  // observably happened.
+  router.post('/live/deregister', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const impus = (req.body as any)?.publicIdentities as unknown;
+    if (!Array.isArray(impus) || impus.length === 0 || !impus.every((i: unknown) => typeof i === 'string' && i)) {
+      res.status(400).json({ success: false, error: 'publicIdentities must be a non-empty array of strings' });
+      return;
+    }
+
+    const rpcResults: { impu: string; rpcOk: boolean; error?: string }[] = [];
+    for (const impu of impus as string[]) {
+      try {
+        await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'regscscf.dereg_impu', impu]);
+        rpcResults.push({ impu, rpcOk: true });
+      } catch (err) {
+        rpcResults.push({ impu, rpcOk: false, error: String(err) });
+      }
+    }
+
+    const readSnapshot = async (): Promise<string> => {
+      const snapFile = `/tmp/kamailio-scscf-deregcheck-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`;
+      await nsenter('kamcmd', ['-s', '/run/kamailio_scscf/kamailio_ctl', 'ulscscf.snapshot', snapFile]);
+      const hostSnapFile = `/proc/1/root${snapFile}`;
+      const content = fs.existsSync(hostSnapFile) ? fs.readFileSync(hostSnapFile, 'utf-8') : '';
+      await nsenter('rm', ['-f', snapFile]).catch(() => {});
+      return content;
+    };
+
+    let remaining = new Set(impus as string[]);
+    const pollDeadline = Date.now() + 6000;
+    while (remaining.size > 0 && Date.now() < pollDeadline) {
+      let snapshot: string;
+      try {
+        snapshot = await readSnapshot();
+      } catch {
+        break;
+      }
+      for (const impu of Array.from(remaining)) {
+        if (!snapshot.includes(`'${impu}'`)) remaining.delete(impu);
+      }
+      if (remaining.size > 0) await new Promise(r => setTimeout(r, 750));
+    }
+
+    const results = (impus as string[]).map(impu => ({
+      impu,
+      success: !remaining.has(impu),
+      rpcError: rpcResults.find(r => r.impu === impu)?.error,
+    }));
+    const allCleared = remaining.size === 0;
+
+    logger.warn({ user, results, allCleared }, 'ims: manual force-deregister');
+    await auditLogger.log({
+      action: 'ims_force_deregister', user,
+      details: results.map(r => `${r.impu}=${r.success ? 'cleared' : 'still-registered'}`).join(', '),
+      success: allCleared,
+    });
+
+    res.json({
+      success: allCleared,
+      results,
+      message: allCleared
+        ? 'Deregistered — confirmed removed from the live registrar.'
+        : 'Kamailio sent the deregister notify, but the device hasn\'t dropped from the live registrar yet — it may not have an active subscription to react to it, or hasn\'t processed it. Try again in a few seconds, or wait for a natural REGISTER refresh.',
+    });
   });
 
   // POST /api/ims/install — streaming: packages + PyHSS install

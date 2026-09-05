@@ -4,6 +4,151 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.55] - 2026-09-04
+
+### Fixed — Real VoLTE call failure: Android-as-caller stuck on "Calling...", ~30s hangup delay
+
+Two real, independently-confirmed P-CSCF bugs, found via full packet capture + IMS log
+correlation across two live reproduction attempts (Android calling iPhone every time;
+iPhone calling Android always worked, which is what made this a real, direction-specific
+signaling bug rather than a device/radio issue):
+
+- **PRACK/BYE silently misrouted to I-CSCF.** A stale Record-Route dialog-hash entry left
+  over from the *original* INVITE's one-shot P-CSCF→I-CSCF hop (I-CSCF only does Cx-based
+  S-CSCF discovery for the initial request — it's never meant to stay in the signaling
+  path) gets replayed by `loose_route()` for a *later* in-dialog request (PRACK, BYE),
+  resolving `$du` back to I-CSCF instead of the real destination. I-CSCF has no route for
+  an already-established dialog and returns `477`, which — for PRACK specifically —
+  silently stalled the whole call: the provisional response was never acknowledged, the
+  callee's UE never actually alerted, and the caller's client sat on "Calling..." until
+  the eventual `486 No Answer` timeout (confirmed live: ~53s, five retransmitted `183`s
+  at standard SIP Timer-A doubling — 2s/4s/8s/16s). Fixed with a scoped
+  `failure_route[WITHINDLG_STALE_ROUTE]` in `kamailio_pcscf.cfg`: on a `477` from an
+  in-dialog relay, retry directly off the Request-URI (already correctly resolved by
+  `loose_route()` a few lines earlier) instead of the bad cached `$du`. First attempt at
+  this fix used `$du = $null` + `t_relay()` alone and still failed — Kamailio's
+  `failure_route` has already consumed the original branch by that point, so a bare
+  `t_relay()` has nothing queued to send (`no branches for forwarding`); `append_branch()`
+  before `t_relay()` is what actually queues a fresh one. Confirmed via kamailio-pcscf's
+  own debug log that the retry now fires and succeeds, on both PRACK and BYE.
+- **TCP connection lifetime silently unbounded.** `tcp_connection_lifetime` was set to
+  `UE_REGISTRATION_EXPIRES` — an identifier that, confirmed live, is never actually
+  `#!define`'d or `#!substdef`'d anywhere in `kamailio_pcscf.cfg` (also used the same
+  broken way in several `htable` auto-expire settings and two other modparams — not yet
+  investigated whether those have their own live impact). In practice this let dead TCP
+  connections (phone's OS closed the real socket — NAT rebind, backgrounding, network
+  handoff — but Kamailio never learned that) accumulate in the connection pool
+  effectively indefinitely. Once the PRACK/BYE fix above let calls actually reach a clean
+  hangup for the first time, this became visible as a ~30s delay ending a call: on
+  BYE/NOTIFY delivery, Kamailio worked through a whole backlog of dead reconnect attempts
+  (17 of them in one real capture, one per earlier test call made that session) before
+  reaching a live one. Fixed by setting an explicit `300`s lifetime — long enough for
+  normal call/registration-refresh reuse, short enough that a backlog can't accumulate
+  for a full registration period. Confirmed live: hangup now completes within a couple
+  seconds.
+
+Both fixes applied to the live host *and* the source template (`deployImsTemplate()`
+fully overwrites `kamailio_pcscf.cfg` from the template on every Configure — unlike the
+DB schema fixes below, no retroactive-patch logic was needed here for existing
+deployments to pick this up on their next Configure).
+
+### Fixed — IMS Configure silently swallowing failures, reporting success when it wasn't
+
+A deployment reported `kamailio-pcscf` crash-looping (`Cannot fork`) on
+`Table 'pcscf.pcscf_location' doesn't exist` after a routine `git pull` + Configure.
+Root-caused to a chain of silent-failure gaps, all now fixed:
+
+- `sourceKamSql()` swallowed every schema-import error (`2>/dev/null || true` plus an
+  empty `catch`), so a missing/broken Kamailio schema file silently created zero tables
+  while Install/Configure still reported success. Now verifies each file exists first
+  (clear error naming the missing file/apt package) and surfaces real `mysql` errors —
+  but only genuine ones: Kamailio's own vendor schema files aren't idempotent (plain
+  `CREATE TABLE`, no `IF NOT EXISTS`), so re-sourcing them on a healthy re-Configure
+  always throws "already exists" noise. Force-ran every file this function touches
+  against every already-populated database on a live host, three times, to empirically
+  nail down the exact benign MySQL error codes (1050/1060/1061/1062/1826) versus what
+  should actually still fail loudly. Also added `--force` to the import itself — without
+  it, `mysql` silently stops at the first error and never applies anything after, a real
+  bug that predated this fix and was simply invisible.
+- The actual missing table: Kamailio 5.8.x's own vendor schema (`kamailio-mysql-modules`)
+  creates a table literally named `location`, not `pcscf_location` — confirmed by diffing
+  against Kamailio's own GitHub history (commit `360bccb`, "kamctl: regenerated db
+  creation files") that this exact rename landed upstream after 5.8, not in any release
+  this project or Ubuntu 24.04 ships. Nothing in this codebase ever created a table named
+  `pcscf_location` at all; it only worked anywhere because someone had created/renamed it
+  by hand at some undocumented point in the past. Fixed by explicitly creating
+  `pcscf_location` (schema copied from a live, working table and verified against it,
+  including a real 124-byte Record-Route value round-tripped uncut) instead of relying on
+  Kamailio's mismatched vendor default.
+- `configureIms`'s service-restart loop fired every `systemctl restart` with
+  `.catch(() => {})` and never checked whether the service actually stayed up — a unit
+  can restart cleanly per systemd's own bookkeeping and still be dead a second later once
+  its own startup logic hits a real error. Now polls `systemctl is-active` for up to 8s
+  after every restart (all `bind9`/`mariadb`/`redis-server`/`pyhss-*`/`rtpengine-daemon`/
+  all four `kamailio-*` units/`open5gs-smfd`/`pcrfd`/`upfd`) and throws one aggregated
+  error naming every service that failed, with its journal tail.
+- `configuredWithVersion` was stamped *before* any of the above verification ran, so even
+  a hard Configure failure would still clear the "stale config" flag that drives
+  `StaleModulesModal` — meaning the very next page load would stop nagging the operator
+  to fix it, on a deployment that was actually still broken. Now only stamped after every
+  service is confirmed healthy; a failed Configure correctly leaves the staleness flag
+  set.
+- `scscf.subscriber.record_route` was `VARCHAR(50)` — real Record-Route header chains
+  across multiple IMS proxies routinely exceed that, causing a silent MySQL 1406 "Data
+  too long" failure on every real `SUBSCRIBE` from a live phone (confirmed firing on live
+  traffic, not just RPC-triggered paths). Widened to `TEXT`, matching `active_watchers`'
+  own already-correct column for the same field. Since `CREATE TABLE IF NOT EXISTS` never
+  touches an existing table's columns, an explicit `ALTER TABLE ... MODIFY COLUMN` was
+  added alongside the `CREATE TABLE` so existing deployments get patched on their next
+  Configure too, not just fresh installs — tested by reverting a live column back to
+  `VARCHAR(50)`, running the exact statement from source, and confirming it re-widened
+  correctly with zero data loss.
+
+### Added — Force-deregister button on IMS Live Status
+
+Manual, operator-triggered force-deregister per row on the Live Status table, for
+resetting a test device's registration state on demand instead of waiting out its
+`Expires` timer. Uses the same `regscscf.dereg_impu` RPC `forceReregisterAllRegisteredUes`
+already relies on for automatic post-restart cleanup — but that RPC turned out to be a
+"notify and hope the phone reacts" mechanism, not a real hard delete (confirmed:
+Kamailio's own `system.listMethods` exposes no forced-removal RPC at all, and a manual
+test showed the NOTIFY delivered and acknowledged with a real `200 OK` while the
+registration stayed put, reproduced across three different subscribers). The endpoint
+now polls the live registrar for up to ~6s after firing and only reports success once
+the row is confirmed gone, with an honest message when it isn't rather than a false
+"success" toast.
+
+### Added — UE Signal Quality page, opt-in via `ENABLE_UE_SIGNAL_MODULE`
+
+Per-UE RSRP/RSRQ/SINR/BLER/MCS/CQI/throughput correlated with subscriber identity
+(IMSI/ICCID/MSISDN), 7-day SQLite history, AES-256-GCM encrypted radio credentials,
+admin-triggered downlink wake for idle UEs (community-contributed, PR #32). Native
+connector is Baicells-specific — other vendors need the generic JSON connector, which
+requires the radio to already expose its own metrics in that shape, so it's called out
+both in-app (a banner on the page itself) and in the README. Defaults **enabled**
+(`ENABLE_UE_SIGNAL_MODULE=false` to hide it) since the page was already always-on with no
+gate at all before this.
+
+### Added — Major Events: `subscriber_auth_rejected` category
+
+New event type for a UE denied due to an unknown IMSI/SIM — not provisioned rather than
+a radio/bearer problem. Covers both the 4G/MME path (`OGS_DIAM_S6A_*` Authentication
+Information/Update Location failures, decoded to a human-readable reason per error code)
+and the 5G/UDM path (`No AuthenticationSubscription`, carrying a SUCI rather than a bare
+IMSI). Verified against real `mme.log` output before shipping.
+
+### Fixed — VoWiFi's ePDG dummy interface silently claiming the entire `10.0.1.0/24`
+
+`dummy-epdg` was created with a `/24` mask instead of `/32` — meaning this host's own
+routing table treated the *entire* `10.0.1.0/24` block as directly connected via that one
+interface, silently blocking every other address in that range from being used for
+anything else on the host (found while trying to give an unrelated reverse-engineering
+effort its own address in that subnet). Narrowed to `/32`; confirmed ePDG's own process
+stayed bound on all its ports (IKE/500, GTPC/2123, GTPU/2152, NAT-T/4500) throughout,
+completely unaffected by the mask change.
+
+---
+
 ## [v2.0-beta_0.54] - 2026-08-30
 
 ### Added — QCI / dedicated-bearer validation, two ways

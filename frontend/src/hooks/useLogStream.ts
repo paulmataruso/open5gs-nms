@@ -5,7 +5,8 @@ export type MajorEventType =
   | 'ue_attach' | 'ue_detach'
   | 'ue_register' | 'ue_deregister'
   | 'pdu_session_up' | 'pdu_session_down'
-  | 'bearer_setup_failure';
+  | 'bearer_setup_failure'
+  | 'subscriber_auth_rejected';
 
 export interface LogEntry {
   timestamp: string;
@@ -14,7 +15,7 @@ export interface LogEntry {
   // Populated only when majorEventsOnly is set — see backend major-event-classifier.ts
   event?: {
     type: MajorEventType; imsi?: string; radioIp?: string; apn?: string;
-    causeGroup?: number; causeValue?: number;
+    causeGroup?: number; causeValue?: number; authRejectReason?: string;
   };
 }
 

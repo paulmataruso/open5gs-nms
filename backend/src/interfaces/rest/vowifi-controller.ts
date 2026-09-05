@@ -735,9 +735,14 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
 
   // 1. ePDG local IP — same dummy-interface convention as every other core NF and as
   // the archived VoWiFi backend used (not advertised into EIGRP — that was the
-  // trigger for a real eigrpd crash-loop incident on this host).
+  // trigger for a real eigrpd crash-loop incident on this host). /32, not /24: a
+  // wider mask here claims the *entire* 10.0.1.0/24 as "directly connected via
+  // dummy-epdg" in this host's own routing table, silently blocking every other
+  // address in that block from being used for anything else on this host (found
+  // live 2026-09-02 while trying to give the Nokia OAM/NE3S reverse-engineering
+  // effort its own address in that subnet).
   if (interfaceMode === 'dummy') {
-    await createDummyInterface(DUMMY_IF_NAME, epdgIp, 24, true);
+    await createDummyInterface(DUMMY_IF_NAME, epdgIp, 32, true);
   } else {
     const ipPresent = await nsenter('bash', ['-c', `ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -qx '${epdgIp}' && echo yes || echo no`])
       .then(r => r.stdout.trim() === 'yes').catch(() => false);

@@ -86,7 +86,7 @@ function App(): JSX.Element {
       case 'traffic-history':
         return <TrafficHistoryPage />;
       case 'radio-signal':
-        return <RadioSignalPage />;
+        return FEATURES.ueSignal ? <RadioSignalPage /> : <DashboardPage />;
       case 'sas':
         return <SASPage />;
       case 'time-server':

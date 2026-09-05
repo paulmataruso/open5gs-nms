@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, AlertCircle, Antenna, CheckCircle2, ChevronRight, Gauge, Plus, Radar, RadioTower, RefreshCw, Search, Send, Settings2, Signal, Trash2, Users, Wifi } from 'lucide-react';
+import { Activity, AlertCircle, Antenna, CheckCircle2, ChevronRight, Gauge, Info, Plus, Radar, RadioTower, RefreshCw, Search, Send, Settings2, Signal, Trash2, Users, Wifi } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { radioSignalApi, type SignalRadio, type SignalUe } from '../api/radioSignal';
@@ -151,6 +151,11 @@ export function RadioSignalPage(): JSX.Element {
           <button onClick={() => { setForm(emptyRadio); setConfigOpen(true); }} className="nms-btn-ghost flex items-center gap-2"><Settings2 className="w-4 h-4" /> Radios</button>
           <button onClick={poll} disabled={polling || !radios.length} className="nms-btn-primary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${polling ? 'animate-spin' : ''}`} /> Refresh</button>
         </div>
+      </div>
+
+      <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-nms-accent/25 bg-nms-accent/10 px-4 py-3">
+        <Info className="w-4 h-4 text-nms-accent shrink-0 mt-0.5" />
+        <p className="text-xs text-nms-text-dim"><span className="text-nms-text font-medium">Baicells radios have native support today.</span> Other vendors need the generic JSON connector, which requires the radio to expose its own metrics in that shape — not a drop-in for every radio.</p>
       </div>
 
       <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3 mt-7">

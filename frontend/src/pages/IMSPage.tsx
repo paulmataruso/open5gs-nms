@@ -10,7 +10,7 @@ import {
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { imsApi, ImsConfigureInput } from '../api/ims';
-import type { ImsStatus, ValidationCheck, ImsConfigFile, ImsLiveStatus } from '../api/ims';
+import type { ImsStatus, ValidationCheck, ImsConfigFile, ImsLiveStatus, RegisteredUserInfo } from '../api/ims';
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
@@ -866,6 +866,7 @@ function LiveStatusTab() {
   const [live, setLive] = useState<ImsLiveStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [deregistering, setDeregistering] = useState<Set<string>>(new Set());
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -878,6 +879,34 @@ function LiveStatusTab() {
       setLoading(false);
     }
   }, []);
+
+  // Force-clears every IMPU alias for one row's registration binding at S-CSCF —
+  // for testing a clean re-register (e.g. after switching a device between VoWiFi
+  // and VoLTE, where the old binding otherwise just sits there showing "registered"
+  // until its own Expires timer lapses, since neither switching access nor going
+  // offline actively deregisters it).
+  const handleForceDeregister = useCallback(async (u: RegisteredUserInfo) => {
+    const key = u.callId ?? u.contact ?? u.publicIdentities[0];
+    if (!key || !window.confirm(`Force-deregister ${u.publicIdentities.join(', ')}? The device will need to send a fresh REGISTER to show up again.`)) return;
+    setDeregistering(prev => new Set(prev).add(key));
+    try {
+      // Backend polls the live registrar for up to ~6s to confirm this actually
+      // took effect — Kamailio's dereg_impu is a notify-the-phone-and-hope
+      // mechanism, not a guaranteed hard delete, so `success` here means
+      // "confirmed gone," not just "the RPC call didn't error."
+      const result = await imsApi.forceDeregister(u.publicIdentities);
+      if (result.success) {
+        toast.success('Deregistered — confirmed removed from the live registrar');
+      } else {
+        toast.error(result.message || 'Still showing registered — the device may not have reacted yet, try again shortly', { duration: 6000 });
+      }
+      await load(true);
+    } catch (err: any) {
+      toast.error('Failed to deregister: ' + String(err));
+    } finally {
+      setDeregistering(prev => { const next = new Set(prev); next.delete(key); return next; });
+    }
+  }, [load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -966,6 +995,7 @@ function LiveStatusTab() {
                   <th className="text-left px-3 py-2 font-medium">Contact</th>
                   <th className="text-left px-3 py-2 font-medium">Expires</th>
                   <th className="text-left px-3 py-2 font-medium">Call-ID</th>
+                  <th className="text-right px-3 py-2 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -998,6 +1028,17 @@ function LiveStatusTab() {
                     <td className="px-3 py-2 text-nms-text-dim">{formatExpiry(u.expiresSeconds)}</td>
                     <td className="px-3 py-2 font-mono text-nms-text-dim truncate max-w-[160px]" title={u.callId ?? ''}>
                       {u.callId ?? '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        onClick={() => handleForceDeregister(u)}
+                        disabled={deregistering.has(u.callId ?? u.contact ?? u.publicIdentities[0])}
+                        title="Force-deregister — clears this binding at S-CSCF so the device must send a fresh REGISTER"
+                        className="nms-btn-ghost text-[10px] px-2 py-1 text-red-400 hover:bg-red-500/10 inline-flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <XCircle className={clsx('w-3 h-3', deregistering.has(u.callId ?? u.contact ?? u.publicIdentities[0]) && 'animate-spin')} />
+                        Deregister
+                      </button>
                     </td>
                   </tr>
                 ))}

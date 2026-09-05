@@ -18,6 +18,7 @@ const EVENT_LABELS: Record<MajorEventType, string> = {
   pdu_session_up: 'PDU session up',
   pdu_session_down: 'PDU session down',
   bearer_setup_failure: 'Bearer setup failed',
+  subscriber_auth_rejected: 'Subscriber rejected',
 };
 
 // S1AP Cause IE, group 1 = radioNetwork (3GPP TS 36.413 S1AP_CauseRadioNetwork) — only the
@@ -47,6 +48,7 @@ const EVENT_STYLES: Record<MajorEventType, { className: string; Icon: typeof Rad
   pdu_session_up:    { className: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30', Icon: ArrowUpCircle },
   pdu_session_down:  { className: 'bg-amber-500/10 text-amber-400 border-amber-500/30', Icon: ArrowDownCircle },
   bearer_setup_failure: { className: 'bg-red-500/10 text-red-400 border-red-500/30', Icon: AlertTriangle },
+  subscriber_auth_rejected: { className: 'bg-orange-500/10 text-orange-400 border-orange-500/30', Icon: AlertTriangle },
 };
 
 function formatTimestamp(timestamp: string): string {
@@ -84,6 +86,11 @@ function renderEventLine(log: LogEntry, index: number, onSelect: (log: LogEntry)
         {event?.type === 'bearer_setup_failure' && (
           <span className="text-red-400 font-semibold">
             Cause: {bearerCauseLabel(event.causeGroup, event.causeValue) ?? 'unknown'}{' '}
+          </span>
+        )}
+        {event?.type === 'subscriber_auth_rejected' && (
+          <span className="text-orange-400 font-semibold">
+            Reason: {event.authRejectReason ?? 'unknown'}{' '}
           </span>
         )}
         {log.message}

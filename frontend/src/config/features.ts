@@ -30,4 +30,11 @@ export const FEATURES = {
   // Opt-in like mms/secgw/vectorcoreSmsc — compiles a small Go program
   // against a third-party module (github.com/ncode/twamp) at Install time.
   twamp: import.meta.env.VITE_ENABLE_TWAMP === 'true',
+  // Defaults to enabled like sms/ims/validation (not opt-in like rfPlanning/
+  // secgw/twamp) — new, community-contributed "UE Signal" page, but already
+  // fully working and shown by default; set ENABLE_UE_SIGNAL_MODULE=false to
+  // hide it. Native connector is Baicells-specific; other vendors need the
+  // generic JSON connector, which isn't a drop-in for every radio's own
+  // metrics API.
+  ueSignal: import.meta.env.VITE_ENABLE_UE_SIGNAL !== 'false',
 };
