@@ -238,7 +238,12 @@ export function createRadioSignalRouter(
     enabled: !!row.enabled, allowSelfSigned: !!row.allow_self_signed,
   });
 
-  router.get('/radios', requireAdmin, (_req, res) => {
+  // Read-only — viewer role must be able to monitor this page (its own
+  // banner promises "you can monitor but cannot make changes"); publicRadio()
+  // already strips all credential material, so this is safe to expose to
+  // any authenticated role. Only the mutating routes below (add/delete/
+  // discover/poll/wake) stay requireAdmin.
+  router.get('/radios', (_req, res) => {
     const rows = db.prepare('SELECT * FROM signal_radios ORDER BY name').all() as RadioRow[];
     res.json({ radios: rows.map(publicRadio) });
   });
@@ -381,7 +386,10 @@ export function createRadioSignalRouter(
     res.json({ success: true, targets: sessions.length, packets: sessions.length * ports.length });
   });
 
-  router.get('/overview', requireAdmin, async (req, res) => {
+  // Read-only — this is the actual page's main data source (radio list +
+  // per-UE signal data); see the comment on GET /radios above for why it
+  // must not be admin-gated.
+  router.get('/overview', async (req, res) => {
     const search = String(req.query.search || '').trim().toLowerCase();
     const since = Date.now() - Math.min(Math.max(Number(req.query.hours) || 24, 1), 168) * 3600000;
     const radios = db.prepare('SELECT * FROM signal_radios ORDER BY name').all() as RadioRow[];
