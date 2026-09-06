@@ -62,6 +62,16 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Traffic History](docs/screenshots/traffic-history.png)
 
+### SNMP Monitoring
+- **Read-only Net-SNMP agent** — installs and manages `snmpd` from the NMS for PRTG and other SNMP managers
+- **Host + mobile-core scalars** — CPU/memory utilization, connected 4G/5G UE counts, connected eNodeB/gNodeB counts, `ogstun` operational state and byte counters, active Open5GS service count
+- **Standard `IF-MIB` interface data** — every host interface (including `ogstun`) readable through standard SNMP interface sensors, no custom MIB required for that part
+- **Downloadable experimental MIB** — `OPEN5GS-NMS-MIB.txt` generated and served directly from the page for the Open5GS-specific scalars
+- **Restricted by design** — SNMPv2c community + CIDR-restricted read-only access, configured at install time
+- Opt-in module — off by default (`ENABLE_SNMP_MODULE=false` in `.env`); enable and rebuild the frontend to show it in the nav
+
+*(Screenshots coming soon)*
+
 ### Configuration Management
 - **Dual Editor Modes** - Form-based editor with 150+ contextual tooltips OR Monaco YAML editor
 - **All 17 Network Functions** - Complete coverage: NRF, SCP, AMF, SMF, UPF, AUSF, UDM, UDR, PCF, NSSF, BSF, SEPP (5G) + MME, HSS, PCRF, SGW-C, SGW-U (4G)

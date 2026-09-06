@@ -4,6 +4,115 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.56] - 2026-09-06
+
+### Added — SNMP Monitoring module, hardened from community PR #31
+
+Reviewed PR #31 (a read-only Net-SNMP agent for PRTG and similar managers), found 15
+real issues via a multi-pass automated review with direct verification (not just static
+reading — `py_compile`, `smilint`, live `snmpget`/`snmpwalk` against a real running
+daemon, concurrent-request testing), and fixed every one before shipping it rather than
+merging the PR as-is. The PR's branch had also diverged before roughly 100 files' worth
+of already-shipped work, so its content was hand-extracted and applied fresh onto
+current `main` instead of merged — nothing else was touched.
+
+- **Embedded Python `pass_persist` agent had an unbalanced parenthesis** on the ogstun
+  TX-bytes OID — a genuine `SyntaxError` (confirmed with `python3 -m py_compile`) that
+  silently broke all 12 custom Open5GS OIDs even though `/status` reported the agent
+  installed and active.
+- **Exact-OID `GET` fell through to the `GETNEXT` search on a miss**, returning another
+  metric's value mislabeled as the requested OID instead of an honest "no such object" —
+  confirmed both by direct execution and, after the fix, by a real `snmpget` against a
+  bogus OID correctly returning "No Such Instance."
+- **`/stats` memory calculation regex was a JS-string-style doubled backslash inside an
+  actual regex literal** (`/:\\s+|\\s+/`), which matches a literal backslash character
+  that never occurs in `/proc/meminfo` instead of whitespace — `memoryPercent` silently
+  reported `0` on every single request. Fixed and confirmed live: now matches the host's
+  real `free`-computed percentage exactly.
+- **`validNetwork()` accepted a blank CIDR prefix as an implicit `/0`** — `Number('')`
+  coerces to `0`, which passed the 0–32 range check, so a trailing-slash typo
+  (`10.0.0.0/`) was silently accepted as a match-everything network instead of being
+  rejected, defeating the entire point of the read-only-access CIDR restriction.
+- **Embedded MIB failed strict SMIv2 validation** two ways: `MODULE-IDENTITY` omitted
+  the mandatory `CONTACT-INFO` clause, and a named enumeration was declared on
+  `Integer32` where SMIv2 only permits that on plain `INTEGER`. Confirmed with `smilint`
+  — which required first discovering and installing `snmp-mibs-downloader` on this host,
+  since it was missing entirely and `smilint` couldn't validate *any* MIB without it,
+  including net-snmp's own shipped ones.
+- **`ip link show` had no `.catch()` and no `maxBuffer` override**, and duplicated the
+  `nsenter` invocation locally instead of using the shared `IHostExecutor` (which already
+  sets a 100MB buffer after a past production incident) — an interface-heavy host (this
+  one runs SecGW xfrm interfaces, EIGRP, Docker veths, radio VLANs) could take down the
+  entire `/stats` endpoint instead of degrading gracefully.
+- **`apt-get install snmpd` auto-starts the daemon with Debian's stock default config**
+  (community `public`, read-only) before the hardened config was written a few lines
+  later — any failure in between left that default-community daemon reachable. Fixed by
+  stopping the freshly-installed service immediately, before writing the real config.
+- **`/stats` didn't thread the 5G IMSI set into `getActive4GUEs()`**, causing it to
+  internally re-run the equivalent of `getActive5GUEs()` a second time on every 15s poll
+  — tripling SMF/AMF/gNB load compared to the established pattern already used by
+  `get-interface-status.ts`.
+- **No `FEATURES` flag at all** — every other module that installs real host software
+  (PSTN, MMS, SecGW, TWAMP, RF Planning) is opt-in behind a `VITE_ENABLE_X` build flag;
+  this one had none, so every deployment got a nav entry that could `apt-get install` a
+  package and open UDP/161 with no build-time opt-out. Now gated behind
+  `ENABLE_SNMP_MODULE` (default `false`), with full `Dockerfile`/`docker-compose.yml`/
+  `.env.example`/nginx-timeout-regex wiring matching every other opt-in module.
+- Also fixed: no install mutual-exclusion lock (a double-click or two admins in
+  different tabs could race `apt-get`/config-writes concurrently), no audit-log entry on
+  a failed install/action (unlike every other admin-gated mutation in the app), no
+  `systemctl is-active` verification after start/restart (could report success while the
+  service silently failed to come up), a missing `withCredentials` on the frontend's
+  axios instance (would 401 under any cross-origin `VITE_API_URL` deployment), and the
+  Services page's boot-enable/disable toggle rendering as clickable with no backend
+  endpoint or handler behind it.
+
+All 15 fixes verified live on this host, not just type-checked: real `snmpget`/
+`snmpwalk` against the running daemon (including the two previously-broken OIDs), a
+real concurrent-install race producing one `409` and one success, real CIDR rejection,
+real enable/disable toggling, and a real audit-log query confirming entries.
+
+### Fixed — TWAMP background poller logging a full error-level line every ~60s for a down target
+
+An unreachable TWAMP reflector is a normal, expected outcome the module's own type
+system already models as `{ success: false }` — but `twamp-client` exits non-zero to
+signal it, and `LocalHostExecutor`'s error/debug log-level split only special-cased
+`systemctl is-active`/`is-enabled` as "expected failures." `IHostExecutor.executeCommand()`
+now takes an explicit `{ expectedFailure: true }` option so a caller can mark this
+itself, rather than the executor guessing from binary names — `runTwampTest()` (shared
+by both the on-demand test endpoint and the background poller) now passes it.
+
+### Fixed — UE Signal page completely unreadable for viewer-role users ([#33](https://github.com/paulmataruso/open5gs-nms/issues/33))
+
+`GET /radios` and `GET /overview` in `radio-signal-controller.ts` required the admin
+role, so a viewer-role user got a silent `403` on every page load — the frontend's
+error handling just left the page in its empty-state default, rendering as "0
+configured radio(s)" / "Connect your first radio" even on a deployment with radios
+actively configured and reporting real data as admin. This directly contradicted the
+page's own "you can monitor but cannot make changes" viewer banner. Both are pure
+reads — `publicRadio()` already strips all credential material before returning it —
+so they no longer require admin; every mutating route (add/delete/discover/poll/wake)
+stays admin-only. Verified live with a real viewer-role account before and after the
+fix.
+
+### Docs — refreshed host software prerequisites, added SNMP to the feature list
+
+`docs/requirements.md` had drifted from the real install code in several places: the
+FRR from-source build's actual dependency list was missing `texinfo libpam0g-dev
+install-info perl`; the VoWiFi row still described an old `osmo-epdg`/`strongswan-epdg`
+architecture rather than the current VectorCore ePDG/AAA (Go + eBPF/XDP) build; MMS,
+VectorCore SMSC, DNS/BIND9, Security Gateway, TWAMP, and SNMP Monitoring had no rows at
+all; UE Validation's real-hardware tabs (`linphone-cli`, a pinned Go toolchain) weren't
+documented, only the Docker-simulator path was; Syslog Forwarding was listed as
+installing `rsyslog` when it only configures the host's existing one; and the two
+silent Open5GS source-patch rebuilds (MME duplicate-release race, SMF late-CSR) had no
+build-dependency documentation at all. Added a new "Go toolchain" note covering the
+four components (TWAMP, MMS, VectorCore SMSC, QCI Hardware Test) that each self-install
+their own exact pinned Go version rather than sharing one. README's feature list also
+gained an SNMP Monitoring entry (screenshots to follow).
+
+---
+
 ## [v2.0-beta_0.55] - 2026-09-04
 
 ### Fixed — Real VoLTE call failure: Android-as-caller stuck on "Calling...", ~30s hangup delay
