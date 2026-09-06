@@ -1027,4 +1027,12 @@ Open5GS NMS provides a complete management solution for Open5GS deployments with
 - ✅ Voice (IMS/VoLTE — confirmed on real iPhone hardware; VoWiFi — alpha) and SMS (SGs) modules, all optional
 - ✅ End-to-end validation via simulated test UEs, no physical radio required
 
+## SNMP Monitoring
+
+Install and manage a read-only Net-SNMP agent from the NMS. The module exports host health, 4G/5G UE and radio counts, Open5GS service health, `ogstun` counters, and standard `IF-MIB` interface data for PRTG and other SNMP managers. The generated Open5GS MIB can be downloaded directly from the page.
+
+See [SNMP monitoring](snmp-monitoring.md) for installation, OIDs, PRTG usage, and security guidance.
+
+---
+
 For detailed usage instructions, see **[INSTALL.md](../INSTALL.md)** and other documentation.

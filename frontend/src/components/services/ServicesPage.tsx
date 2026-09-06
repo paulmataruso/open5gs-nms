@@ -209,6 +209,7 @@ interface SpeedTestStatus {
   running: boolean;
   settings: { bindIp: string; httpPort: number; httpsPort: number; enableHttps: boolean };
 }
+interface SnmpServiceStatus { installed: boolean; active: boolean; enabled: boolean; port: number }
 
 export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => void }): JSX.Element {
   const statuses = useServiceStore((s) => s.statuses);
@@ -225,6 +226,8 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
   const [speedtest, setSpeedtest] = useState<SpeedTestStatus | null>(null);
   const [speedtestActing, setSpeedtestActing] = useState(false);
   const [showSpeedtestModal, setShowSpeedtestModal] = useState(false);
+  const [snmp, setSnmp] = useState<SnmpServiceStatus | null>(null);
+  const [snmpActing, setSnmpActing] = useState(false);
 
   const API = import.meta.env.VITE_API_URL || '/api';
 
@@ -240,9 +243,14 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       .catch(() => {});
   };
 
+  const fetchSnmp = () => {
+    axios.get(`${API}/snmp/status`).then(r => setSnmp(r.data)).catch(() => {});
+  };
+
   useEffect(() => {
     fetchChrony();
     fetchSpeedtest();
+    fetchSnmp();
     // VectorCore (VoWiFi ePDG/AAA, MMS MMSC/MM1 proxy) status for the
     // VectorCore section below — see the VECTORCORE ROWS comment for why
     // these are read-only here rather than independently start/stop/restart-able.
@@ -405,6 +413,36 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
     onManage: () => onNavigate?.(navTarget),
   });
 
+  const snmpAction = async (action: 'start' | 'stop' | 'restart' | 'enable' | 'disable'): Promise<void> => {
+    setSnmpActing(true);
+    try {
+      await axios.post(`${API}/snmp/${action}`);
+      toast.success(`SNMP ${action} successful`);
+      await fetchSnmp();
+    } catch {
+      toast.error(`SNMP ${action} failed`);
+    } finally {
+      setSnmpActing(false);
+    }
+  };
+  const snmpRow: ServiceRowData = {
+    key: 'snmpd',
+    name: 'SNMPD',
+    unitName: 'snmpd.service',
+    badge: { label: 'monitoring', color: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
+    subtitle: snmp?.installed ? `Net-SNMP agent · UDP/${snmp.port}` : 'Install from SNMP Monitoring',
+    active: !snmp ? 'loading' : snmp.active,
+    installed: snmp?.installed,
+    enabled: snmp?.installed ? snmp.enabled : undefined,
+    onToggleEnabled: () => snmpAction(snmp?.enabled ? 'disable' : 'enable'),
+    acting: snmpActing,
+    onStart: snmp?.installed ? () => snmpAction('start') : undefined,
+    onStop: snmp?.installed ? () => snmpAction('stop') : undefined,
+    onRestart: snmp?.installed ? () => snmpAction('restart') : undefined,
+    manageLabel: 'SNMP Monitoring',
+    onManage: () => onNavigate?.('snmp'),
+  };
+
   const speedtestRow: ServiceRowData = {
     key: 'speedtest',
     name: 'OPENSPEEDTEST',
@@ -555,7 +593,7 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
       {/* Tools */}
       <div>
         <SectionHeader label="Tools" color="text-pink-400" />
-        <ServiceTable rows={[speedtestRow]} />
+        <ServiceTable rows={[snmpRow, speedtestRow]} />
       </div>
     </div>
   );

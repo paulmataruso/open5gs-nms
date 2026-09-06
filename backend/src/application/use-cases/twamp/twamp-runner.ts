@@ -197,7 +197,12 @@ export async function runTwampTest(hostExecutor: IHostExecutor, target: TwampTar
   // 1s per packet (twamp-client's own default -interval-ms) plus control-
   // handshake/teardown overhead, plus margin.
   const timeoutMs = packetCount * 1200 + 8000;
-  const result = await hostExecutor.executeCommand('bash', ['-c', args.join(' ')], timeoutMs);
+  // A reflector being unreachable (no reply within timeout) is a normal,
+  // common outcome here — twamp-client exits nonzero for it, but it's not
+  // an unexpected/actionable backend error, just a target that's currently
+  // down. Keep it out of error-level logs the same way systemctl is-active
+  // already is.
+  const result = await hostExecutor.executeCommand('bash', ['-c', args.join(' ')], timeoutMs, { expectedFailure: true });
 
   try {
     const line = result.stdout.trim().split('\n').filter(Boolean).pop() ?? '{}';

@@ -5,7 +5,12 @@ export interface CommandResult {
 }
 
 export interface IHostExecutor {
-  executeCommand(command: string, args: string[], timeoutMs?: number): Promise<CommandResult>;
+  // `expectedFailure`: caller asserts a nonzero exit is a normal, common
+  // outcome for this specific invocation (e.g. a reachability probe against
+  // a target that may legitimately be down) — logs at debug instead of
+  // error on failure, same treatment as the built-in systemctl is-active/
+  // is-enabled case.
+  executeCommand(command: string, args: string[], timeoutMs?: number, options?: { expectedFailure?: boolean }): Promise<CommandResult>;
   executeLocalCommand(command: string, args: string[], timeoutMs?: number): Promise<CommandResult>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;

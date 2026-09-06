@@ -37,4 +37,7 @@ export const FEATURES = {
   // generic JSON connector, which isn't a drop-in for every radio's own
   // metrics API.
   ueSignal: import.meta.env.VITE_ENABLE_UE_SIGNAL !== 'false',
+  // Opt-in like pstn/mms/secgw/twamp/rfPlanning — installs snmpd (a real
+  // host service) and opens UDP/161, not just a config toggle.
+  snmp: import.meta.env.VITE_ENABLE_SNMP === 'true',
 };

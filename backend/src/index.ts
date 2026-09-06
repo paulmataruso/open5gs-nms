@@ -121,6 +121,7 @@ import { createModulesRouter } from './interfaces/rest/modules-controller';
 import { ModuleFixAllUseCase } from './application/use-cases/module-fixall-usecase';
 import { BaicellsUeCountsUseCase } from './application/use-cases/baicells-ue-counts';
 import { createRadioSignalRouter } from './interfaces/rest/radio-signal-controller';
+import { createSnmpRouter } from './interfaces/rest/snmp-controller';
 
 async function main() {
   // Load configuration
@@ -509,6 +510,7 @@ async function main() {
   app.use('/api/twamp', createTwampRouter(subscriberRepo.getDb(), hostExecutor, twampMonitor, logger, auditLogger));
   app.use('/api/modules', createModulesRouter(moduleFixAllUseCase, logger));
   app.use('/api/radio-signal', createRadioSignalRouter(authRepo.getDb(), subscriberRepo, activeSessionsUseCase, logger));
+  app.use('/api/snmp', createSnmpRouter(activeSessionsUseCase, hostExecutor, configRepo, auditLogger, logger));
 
   // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
   // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below

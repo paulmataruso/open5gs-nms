@@ -28,6 +28,7 @@ export class LocalHostExecutor implements IHostExecutor {
     command: string,
     args: string[],
     timeoutMs: number = 30000,
+    options?: { expectedFailure?: boolean },
   ): Promise<CommandResult> {
     this.logger.debug({ command, args }, 'Executing command');
 
@@ -63,7 +64,7 @@ export class LocalHostExecutor implements IHostExecutor {
       const error = err as { stdout?: string; stderr?: string; code?: number; signal?: string };
       // Use debug level for commands that are expected to fail (e.g. systemctl is-active
       // on a service that doesn't exist). Only escalate to error for unexpected failures.
-      const isExpectedFailure = (
+      const isExpectedFailure = options?.expectedFailure || (
         (command === 'systemctl' || command.endsWith('/systemctl') || args[0] === 'systemctl') &&
         (args.includes('is-active') || args.includes('is-enabled'))
       );

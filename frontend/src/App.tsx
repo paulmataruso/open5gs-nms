@@ -30,6 +30,7 @@ import { PcapPage } from './components/pcap/PcapPage';
 import { TrafficHistoryPage } from './pages/TrafficHistoryPage';
 import { RfPlanningPage } from './pages/RfPlanningPage';
 import { RadioSignalPage } from './pages/RadioSignalPage';
+import { SnmpPage } from './pages/SnmpPage';
 import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { StaleModulesModal } from './components/common/StaleModulesModal';
@@ -87,6 +88,8 @@ function App(): JSX.Element {
         return <TrafficHistoryPage />;
       case 'radio-signal':
         return FEATURES.ueSignal ? <RadioSignalPage /> : <DashboardPage />;
+      case 'snmp':
+        return FEATURES.snmp ? <SnmpPage /> : <DashboardPage />;
       case 'sas':
         return <SASPage />;
       case 'time-server':
