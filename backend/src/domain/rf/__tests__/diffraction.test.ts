@@ -36,6 +36,7 @@ describe('diffraction', () => {
     expect(result.isLineOfSight).toBe(true);
     expect(result.totalLossDb).toBe(0);
     expect(result.dominantEdgeIndex).toBeNull();
+    expect(result.losClassification).toBe('los');
   });
 
   test('a single sharp ridge well above the direct line blocks line-of-sight and produces real loss', () => {
@@ -50,6 +51,38 @@ describe('diffraction', () => {
     expect(result.isLineOfSight).toBe(false);
     expect(result.totalLossDb).toBeGreaterThan(0);
     expect(result.dominantEdgeIndex).toBe(2);
+    expect(result.losClassification).toBe('nlos');
+    expect(result.fresnelClearancePercent).not.toBeNull();
+    expect(result.fresnelClearancePercent as number).toBeLessThanOrEqual(0);
+  });
+
+  test('fresnelClearanceThresholdPercent=0 collapses the classification to a strict los/nlos split — never partial', () => {
+    const flat: TerrainProfilePoint[] = Array.from({ length: 10 }, (_, i) => ({ distanceM: i * 100, elevationM: 0 }));
+    const blocked: TerrainProfilePoint[] = [
+      { distanceM: 0, elevationM: 0 }, { distanceM: 250, elevationM: 0 },
+      { distanceM: 500, elevationM: 100 }, { distanceM: 750, elevationM: 0 }, { distanceM: 1000, elevationM: 0 },
+    ];
+    expect(computeDiffractionLossDb(flat, 30, 1.5, FREQ_HZ, undefined, 0).losClassification).toBe('los');
+    expect(computeDiffractionLossDb(blocked, 30, 1.5, FREQ_HZ, undefined, 0).losClassification).toBe('nlos');
+  });
+
+  test('isLineOfSight and losClassification answer different questions — a threshold change can flip one without touching the other', () => {
+    // A modest ridge that intrudes into the Fresnel zone (real, small diffraction
+    // loss — isLineOfSight is genuinely false) without breaking geometric LOS
+    // outright. TX=RX=20m (level line) makes the geometry easy to reason about.
+    const profile: TerrainProfilePoint[] = [
+      { distanceM: 0, elevationM: 0 }, { distanceM: 250, elevationM: 0 },
+      { distanceM: 500, elevationM: 18 }, { distanceM: 750, elevationM: 0 }, { distanceM: 1000, elevationM: 0 },
+    ];
+    const strict = computeDiffractionLossDb(profile, 20, 20, FREQ_HZ, undefined, 0);
+    const lenient = computeDiffractionLossDb(profile, 20, 20, FREQ_HZ, undefined, 60);
+    // Same geometry, same kFactor — isLineOfSight (the v<=-1 test) cannot depend
+    // on the clearance threshold at all.
+    expect(lenient.isLineOfSight).toBe(strict.isLineOfSight);
+    expect(lenient.totalLossDb).toBeCloseTo(strict.totalLossDb, 9);
+    // But the clearance-based classification genuinely differs by threshold.
+    expect(strict.losClassification).toBe('los');       // 0% threshold: any positive clearance qualifies
+    expect(lenient.losClassification).toBe('partial');  // 60% threshold: this ridge's clearance is real but < 60%
   });
 
   test('a taller obstruction produces more loss than a shorter one at the same location', () => {

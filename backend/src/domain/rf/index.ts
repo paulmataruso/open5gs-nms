@@ -20,3 +20,6 @@ export * from './terrain-profile';
 export * from './site-signal';
 export * from './interference';
 export * from './calibration';
+export * from './earth-curvature';
+export * from './fresnel-zone';
+export * from './log-distance-model';

@@ -52,9 +52,18 @@ export interface CalculationResult<T> {
   references: string[];
 }
 
-export type PropagationModel = 'fspl' | 'hata' | 'cost231-hata' | 'close-in';
+export type PropagationModel = 'fspl' | 'hata' | 'cost231-hata' | 'close-in' | 'log-distance' | 'walfisch-ikegami' | 'itm';
 export type HataEnvironment = 'urban' | 'suburban' | 'open';
 export type Cost231CityType = 'medium' | 'metropolitan';
+export type LogDistanceEnvironment = 'free-space' | 'urban' | 'dense-urban' | 'indoor' | 'rural' | 'suburban';
+export type LosClassification = 'los' | 'partial' | 'nlos';
+export type FresnelClearanceThresholdPercent = 0 | 50 | 60 | 100;
+export type WalfischIkegamiMode = 'los' | 'nlos';
+// 'itm' only — mirrors ITM's own radio climate zones and MDVAR modes.
+export type ItmRadioClimate = 'equatorial' | 'continental-subtropical' | 'maritime-subtropical' | 'desert'
+  | 'continental-temperate' | 'maritime-temperate-land' | 'maritime-temperate-sea';
+export type ItmPolarization = 'horizontal' | 'vertical';
+export type ItmVariabilityMode = 'single-message' | 'accidental' | 'mobile' | 'broadcast';
 
 export interface LinkBudgetInput {
   txPowerDbm: number;
@@ -80,6 +89,15 @@ export interface LinkBudgetInput {
   // exponent (LOS 2.0 / NLOS 3.1) when pathLossExponent isn't given.
   pathLossExponent?: number;
   isLineOfSight?: boolean;
+  // 'log-distance' only.
+  logDistanceEnvironment?: LogDistanceEnvironment;
+  // 'walfisch-ikegami' only. Reuses txHeightM/rxHeightM and cityType (already
+  // present above).
+  walfischIkegamiMode?: WalfischIkegamiMode;
+  buildingHeightM?: number;
+  streetWidthM?: number;
+  buildingSeparationM?: number;
+  streetOrientationDeg?: number;
 }
 
 export interface LinkBudgetResult {
@@ -99,6 +117,8 @@ export interface PointAnalysisInput {
   electricalDowntiltDeg?: number;
   useTerrainData?: boolean;
   terrainSampleCount?: number;
+  earthCurvatureKFactor?: number;
+  fresnelClearanceThresholdPercent?: FresnelClearanceThresholdPercent;
 }
 
 export interface PointAnalysisResult {
@@ -111,6 +131,8 @@ export interface PointAnalysisResult {
   targetGroundElevationM?: number;
   isLineOfSight?: boolean;
   diffractionLossDb?: number;
+  losClassification?: LosClassification;
+  fresnelClearancePercent?: number | null;
 }
 
 export interface LteBandDefinition {
@@ -157,10 +179,35 @@ export interface CoverageGridInput {
   propagationModel?: PropagationModel;
   environment?: HataEnvironment;
   cityType?: Cost231CityType;
+  // Hata/COST-231-Hata/Walfisch-Ikegami only, and only when environment/
+  // cityType aren't given explicitly — auto-detects them from the site's
+  // real ESA WorldCover land-cover class instead of defaulting to urban/
+  // medium (a coarse built-up-vs-not convention, disclosed via the
+  // returned Assumption when it fires).
+  autoDetectEnvironment?: boolean;
   useTerrainData?: boolean;
   terrainSampleCount?: number;
   pathLossExponent?: number;
   isLineOfSight?: boolean;
+  logDistanceEnvironment?: LogDistanceEnvironment;
+  earthCurvatureKFactor?: number;
+  fresnelClearanceThresholdPercent?: FresnelClearanceThresholdPercent;
+  walfischIkegamiMode?: WalfischIkegamiMode;
+  buildingHeightM?: number;
+  streetWidthM?: number;
+  buildingSeparationM?: number;
+  streetOrientationDeg?: number;
+  // 'itm' only — requires useTerrainData:true. All fields default to real
+  // "average ground"/"average atmosphere" reference values when omitted.
+  groundConductivity?: number;
+  groundPermittivity?: number;
+  surfaceRefractivityN0?: number;
+  radioClimate?: ItmRadioClimate;
+  polarization?: ItmPolarization;
+  modeOfVariability?: ItmVariabilityMode;
+  timePercent?: number;
+  locationPercent?: number;
+  situationPercent?: number;
 }
 
 export interface CoverageGridCell {
@@ -171,6 +218,8 @@ export interface CoverageGridCell {
   distanceM: number;
   totalReceivedPowerDbm: number;
   insideTargetPolygon?: boolean;
+  losClassification?: LosClassification;
+  fresnelClearancePercent?: number | null;
 }
 
 export interface CoverageRequirement {
@@ -200,6 +249,13 @@ export interface RfPlanningSurveyPoint {
 export interface RfPlanningSite {
   id: string;
   name: string;
+  // Shared by every sector of a "Quick Add 3-Sector Site" tower so the
+  // Coverage Map can treat them as one draggable object. Absent entirely
+  // for a standalone radio, or after "Ungroup Tower" — plain coordinate
+  // co-location alone was deliberately not used to infer grouping (two
+  // radios could coincide in location for unrelated reasons, and an
+  // ungroup action needs to stick even though the sectors stay co-located).
+  towerId?: string;
   surveyPoints?: RfPlanningSurveyPoint[];
   siteLat: number;
   siteLon: number;
@@ -226,9 +282,29 @@ export interface RfPlanningSite {
   propagationModel?: PropagationModel;
   environment?: HataEnvironment;
   cityType?: Cost231CityType;
+  // See the matching comment on CoverageGridInput.
+  autoDetectEnvironment?: boolean;
+  logDistanceEnvironment?: LogDistanceEnvironment;
   useTerrainData?: boolean;
   pathLossExponent?: number;
   isLineOfSight?: boolean;
+  earthCurvatureKFactor?: number;
+  fresnelClearanceThresholdPercent?: FresnelClearanceThresholdPercent;
+  walfischIkegamiMode?: WalfischIkegamiMode;
+  buildingHeightM?: number;
+  streetWidthM?: number;
+  buildingSeparationM?: number;
+  streetOrientationDeg?: number;
+  // 'itm' only — see the matching comment on CoverageGridInput.
+  groundConductivity?: number;
+  groundPermittivity?: number;
+  surfaceRefractivityN0?: number;
+  radioClimate?: ItmRadioClimate;
+  polarization?: ItmPolarization;
+  modeOfVariability?: ItmVariabilityMode;
+  timePercent?: number;
+  locationPercent?: number;
+  situationPercent?: number;
 }
 
 export interface RfPlanningProject {
@@ -260,6 +336,8 @@ export interface InterferenceCell {
   servingSiteId: string | null;
   servingDbm: number | null;
   sinrDb: number | null;
+  losClassification?: LosClassification;
+  fresnelClearancePercent?: number | null;
 }
 
 export interface InterferenceGridResult {

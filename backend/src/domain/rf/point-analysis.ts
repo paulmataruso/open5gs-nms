@@ -19,6 +19,8 @@ export async function calculatePointAnalysis(input: PointAnalysisInput, logger?:
   let targetGroundElevationM: number | undefined;
   let isLineOfSight: boolean | undefined;
   let diffractionLossDb: number | undefined;
+  let losClassification: PointAnalysisResult['losClassification'];
+  let fresnelClearancePercent: PointAnalysisResult['fresnelClearancePercent'];
 
   // Real ground elevation, when requested, replaces the flat-earth
   // assumption that both ends sit at the same ground level — siteHeightM/
@@ -50,9 +52,14 @@ export async function calculatePointAnalysis(input: PointAnalysisInput, logger?:
       // as an informational preview; the real, frequency-accurate diffraction
       // number for an actual link comes from coverage-grid.ts/linkbudget.ts.
       const referenceFrequencyHz = 2_000_000_000;
-      const diffraction = computeDiffractionLossDb(resolved, input.siteHeightM, input.targetHeightM, referenceFrequencyHz);
+      const diffraction = computeDiffractionLossDb(
+        resolved, input.siteHeightM, input.targetHeightM, referenceFrequencyHz,
+        input.earthCurvatureKFactor, input.fresnelClearanceThresholdPercent,
+      );
       isLineOfSight = diffraction.isLineOfSight;
       diffractionLossDb = diffraction.totalLossDb;
+      losClassification = diffraction.losClassification;
+      fresnelClearancePercent = diffraction.fresnelClearancePercent;
     } else {
       warnings.push({
         code: 'TERRAIN_DATA_UNAVAILABLE',
@@ -80,11 +87,6 @@ export async function calculatePointAnalysis(input: PointAnalysisInput, logger?:
     });
   } else if (siteGroundElevationM != null) {
     warnings.push({
-      code: 'ASSUMPTION_USED',
-      message: 'Earth curvature still not modeled (flat-plane geometry beyond real point-to-point ground elevation) — true curvature correction is a further-out limitation.',
-      severity: 'info',
-    });
-    warnings.push({
       code: 'REFERENCE_FREQUENCY_USED',
       message: 'isLineOfSight/diffractionLossDb here use a representative 2 GHz reference (Point Analysis has no frequency input of its own) — for a frequency-accurate diffraction number, use the Coverage Map or Link Budget tab with useTerrainData enabled.',
       severity: 'info',
@@ -94,6 +96,7 @@ export async function calculatePointAnalysis(input: PointAnalysisInput, logger?:
   const result: PointAnalysisResult = {
     distanceM, bearingDeg, elevationAngleDeg: elevDeg, geometricDowntiltDeg: geoDowntiltDeg,
     siteGroundElevationM, targetGroundElevationM, isLineOfSight, diffractionLossDb,
+    losClassification, fresnelClearancePercent,
   };
 
   if (input.mechanicalDowntiltDeg != null && input.electricalDowntiltDeg != null) {

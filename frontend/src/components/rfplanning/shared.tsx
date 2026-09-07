@@ -1,7 +1,22 @@
 import { useState } from 'react';
 import { ChevronDown, AlertTriangle, Info } from 'lucide-react';
 import { clsx } from 'clsx';
+import * as L from 'leaflet';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 import type { CalculationResult, EquationRecord } from '../../api/rfPlanning';
+
+// Leaflet's default marker icon paths break under bundlers (the CSS
+// references relative image URLs that don't resolve the way Leaflet
+// expects) — the standard fix: point the default icon at the bundler-
+// resolved asset URLs instead. Shared by every RF Planning tab with its
+// own map (CoverageMapTab, PointAnalysisTab) so the fix isn't duplicated —
+// idempotent, safe to call once per tab.
+export function fixLeafletDefaultIcon(): void {
+  delete (L.Icon.Default.prototype as unknown as { _getIconUrl?: unknown })._getIconUrl;
+  L.Icon.Default.mergeOptions({ iconUrl: markerIcon, iconRetinaUrl: markerIcon2x, shadowUrl: markerShadow });
+}
 
 export function NumField({ label, value, onChange, unit, placeholder }: {
   label: string; value: string; onChange: (v: string) => void; unit?: string; placeholder?: string;
@@ -23,13 +38,13 @@ export function NumField({ label, value, onChange, unit, placeholder }: {
   );
 }
 
-export function SelectField({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
+export function SelectField({ label, value, onChange, options, disabled }: {
+  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; disabled?: boolean;
 }) {
   return (
     <div>
       <label className="block text-xs text-nms-text-dim mb-1">{label}</label>
-      <select className="nms-input w-full" value={value} onChange={e => onChange(e.target.value)}>
+      <select className="nms-input w-full disabled:opacity-50" value={value} disabled={disabled} onChange={e => onChange(e.target.value)}>
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </div>

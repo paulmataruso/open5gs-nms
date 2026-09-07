@@ -4,6 +4,100 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.57] - 2026-09-07
+
+### Added — RF Planning: ITM/Longley-Rice model, ESA WorldCover land-cover data, Point Analysis map
+
+- **ITM (Longley-Rice) propagation model, Phase C**, completing the propagation-model
+  set to 7 total. Vendored NTIA's own public-domain reference implementation
+  (`backend/vendor/itm-src`) rather than reimplementing it, compiled to WASM
+  (`backend/src/domain/rf/wasm/itm`) and called from `itm-model.ts`. Verified across
+  all 7 propagation models via direct API calls, including one real ITM edge-case bug
+  found and fixed along the way.
+- **ESA WorldCover land-cover pipeline** (`landcover-provider.ts`): fetches 3°×3°
+  Cloud-Optimized GeoTIFF tiles from the public `esa-worldcover` S3 bucket on demand,
+  caches raw tiles on the host disk (mirroring `elevation-provider.ts`'s existing SRTM
+  cache pattern), and does windowed single-pixel reads rather than decoding a whole
+  ~1GB+ tile per query. Feeds an "auto-detect environment from real land cover" option
+  for the Hata/COST-231-Hata/Walfisch-Ikegami models' environment/city-type inputs,
+  clearly disclosed as an `Assumption` distinct from an ordinary unset-input default.
+- **Point Analysis now has a real map** (`PointAnalysisTab.tsx`, extracted out of
+  `RfPlanningPage.tsx` to its own file to match `CoverageMapTab.tsx`'s precedent) —
+  draggable Site/Target markers with a Placing toggle, replacing plain lat/lon fields.
+
+### Fixed — RF Planning Coverage Map: multi-radio selection, drag, and delete
+
+A real, multi-round bug arc on the multi-radio Coverage Map: selecting a radio,
+dragging it, and deleting it were all unreliable once more than one radio (especially
+a 3-sector tower, where every sector shares one exact coordinate) was on the map.
+
+- **Root cause**: the currently-selected radio was rendered twice — the real
+  draggable marker, plus an un-excluded ghost cone/dot from the "other saved sites"
+  loop at the same coordinate — so clicks could land on the wrong layer. Fixed by
+  excluding the loaded site from that loop.
+- Removed the map-click-relocates-the-active-radio handler entirely (it fired on any
+  empty-space click, silently relocating whatever was currently loaded); moving a
+  radio is drag-only now, placing a new one goes through Add Radio / Quick Add.
+  The selected radio now renders with a distinct gold halo marker instead of
+  Leaflet's plain default pin, so "which radio is selected and draggable" is visible
+  at a glance instead of relying on remembering a previous click.
+- **Found the actual cause of "the delete button does nothing"**: left-clicking a
+  not-yet-selected radio's dot both opened its bound popup *and* triggered a reload
+  that immediately re-rendered the "other sites" layer group with that same dot now
+  excluded (since it just became the loaded one) — destroying the dot, and the popup
+  that had just opened on it, before it could be clicked. Added right-click as a
+  direct, popup-independent delete on any radio (dot or active marker) — no
+  selection step, no dependency on popup timing.
+  `deleteSite` also now re-syncs the marker/form state when the deleted radio was the
+  loaded one — it previously left the marker sitting exactly where it was after a
+  successful delete, which looked exactly like the delete had silently failed.
+- **Replaced leaflet-draw's own Edit/Delete toolbar** (a real leaflet-draw 1.0.4 +
+  Leaflet 1.9.x rough edge, not just a mislabeled button) with a single custom
+  "Clear Drawn Area" map control backed by plain code instead of a 3rd-party
+  edit-mode state machine.
+- **Quick Add 3-Sector Site** now opens a small dialog for tower name, starting
+  azimuth, sector spacing, and beamwidth instead of hardcoding an even 120° split and
+  silently inheriting whatever beamwidth happened to already be in the main form.
+
+### Added — RF Planning Coverage Map: tower grouping
+
+`RfPlanningSite` gained an optional `towerId`, shared by every sector a 3-Sector Site
+creates together. Dragging any one sector now moves the whole tower as one object
+(uniform lat/lon delta applied to every member, persisted in one update); "Ungroup
+Tower" clears it so sectors can be moved independently again. As a side effect,
+dragging any radio (grouped or not) now always persists immediately instead of
+risking a silent loss if a different radio was loaded before the drag was ever
+explicitly saved.
+
+### Added — Traffic History: split Up/Down graphs, drag-to-zoom
+
+Upload and Download are now two separate graphs, each with its own scale, instead of
+one shared chart with two overlaid areas — a large burst in one direction no longer
+visually flattens the other. Added Grafana-style click-and-drag zoom (shared across
+both graphs, so dragging either one zooms both), via a new reusable
+`useZoomableChartData` hook.
+
+### Fixed — TWAMP History: RTT spike drowning out smaller values, drag-to-zoom
+
+Added the same drag-to-zoom to the RTT/Jitter graph, plus a Linear/Log toggle for the
+ms axis — an occasional real RTT spike (a retry, brief congestion) was stretching the
+linear scale enough that Avg RTT/Min RTT/Jitter flattened to near-zero. Log scale
+floors values to a tiny epsilon only for its own render (never the underlying data or
+the linear view), since recharts' log scale breaks on an exact 0.
+
+### Fixed — Drag-to-zoom selection box invisible at exactly 24 hours
+
+Both new drag-to-zoom charts formatted labels as time-only ("HH:MM", no date) for any
+range under ~1.5 days. At exactly 24 hours — the default range on both pages — the
+first point (~24h ago) and the last point (now) land on the identical wall-clock
+minute, so dragging across the chart (the obvious way to try the feature) landed the
+selection on two identically-labeled points that Recharts' category axis couldn't
+tell apart, and the highlight box never rendered. Fixed by showing the date once a
+range reaches 24 hours instead of waiting until 36, which is the point at which the
+collision becomes possible at all.
+
+---
+
 ## [v2.0-beta_0.56] - 2026-09-06
 
 ### Added — SNMP Monitoring module, hardened from community PR #31

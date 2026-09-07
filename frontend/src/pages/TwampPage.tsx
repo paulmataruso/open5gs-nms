@@ -2,10 +2,10 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   Gauge, CheckCircle, XCircle, AlertCircle, RefreshCw, Terminal, Trash2,
   Plus, Play, Clock, Network, Server, Settings, RotateCw, ListTree, Users, Activity,
-  History, TrendingUp, ExternalLink,
+  History, TrendingUp, ExternalLink, RotateCcw,
 } from 'lucide-react';
 import {
-  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceArea,
 } from 'recharts';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -15,6 +15,7 @@ import type {
   TwampServerConnection, TwampMetricSample, TwampHistorySummaryRow, TwampHistorySeriesPoint,
 } from '../api/twamp';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
+import { useZoomableChartData } from '../hooks/useZoomableChartData';
 
 function LogTerminal({ lines }: { lines: string }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -798,7 +799,16 @@ function HistorySection() {
 
   const chartPoints = useMemo(() => {
     const { from, to } = resolveRange();
-    const showDate = to - from > 36 * 60 * 60 * 1000;
+    // >= 24h, not "wider than ~1.5 days" — see the matching comment in
+    // TrafficHistoryPage.tsx. Same latent bug here (a date-less "HH:MM"
+    // label lets the first and last point of an exactly-24h window collide,
+    // breaking the drag-to-zoom ReferenceArea) — this page's own default
+    // history range is also exactly 24h. It happens not to have been hit
+    // yet only because the server-side auto-bucketing here doesn't always
+    // land the first/last bucket on the same wall-clock minute the way
+    // Traffic History's clean 15-minute-aligned buckets do — that's luck,
+    // not a fix, so it gets the same threshold.
+    const showDate = to - from >= 24 * 60 * 60 * 1000;
     return series.map(p => ({
       label: new Date(p.ts).toLocaleString(undefined, showDate
         ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
@@ -807,6 +817,26 @@ function HistorySection() {
       lossPct: p.packetLossRatio !== null ? Number((p.packetLossRatio * 100).toFixed(2)) : null,
     }));
   }, [series, resolveRange]);
+
+  const zoom = useZoomableChartData(chartPoints);
+
+  // An occasional real spike (a retry, a brief congestion event) on Max RTT
+  // stretches a linear ms axis so far that Avg RTT / Jitter / Min RTT —
+  // normally a couple ms — flatten into the bottom pixel row, indistinguishable
+  // from zero. Log scale fixes that, but recharts' log scale breaks on an
+  // exact 0 (log(0) is undefined) — real "0.00ms" samples do happen, so
+  // values are floored to a tiny epsilon only for the log-scale render, never
+  // for the underlying data (the linear view and the tooltip/summary table
+  // are unaffected).
+  const [msScale, setMsScale] = useState<'linear' | 'log'>('linear');
+  const LOG_EPSILON_MS = 0.01;
+  const chartDisplayData = useMemo(() => {
+    if (msScale !== 'log') return zoom.displayData;
+    const floor = (v: number | null) => (v == null ? v : Math.max(v, LOG_EPSILON_MS));
+    return zoom.displayData.map(p => ({
+      ...p, avgRttMs: floor(p.avgRttMs), minRttMs: floor(p.minRttMs), maxRttMs: floor(p.maxRttMs), jitterMs: floor(p.jitterMs),
+    }));
+  }, [zoom.displayData, msScale]);
 
   const selectedTarget = summary.find(s => s.targetId === selectedTargetId);
 
@@ -921,12 +951,37 @@ function HistorySection() {
 
       {/* Drill-down graph */}
       <div className="nms-card">
-        <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
-          <TrendingUp className="w-4 h-4 text-nms-accent" />
-          {selectedTarget ? `${selectedTarget.name} (${selectedTarget.host}) — RTT / Jitter Over Time` : 'Select a target above'}
-        </h2>
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-1">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-nms-accent" />
+            {selectedTarget ? `${selectedTarget.name} (${selectedTarget.host}) — RTT / Jitter Over Time` : 'Select a target above'}
+          </h2>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 text-xs">
+              <span className="text-nms-text-dim mr-0.5">ms scale:</span>
+              <button
+                type="button" onClick={() => setMsScale('linear')}
+                className={clsx('px-2 py-1 rounded', msScale === 'linear' ? 'bg-nms-accent/15 text-nms-accent' : 'text-nms-text-dim hover:text-nms-text')}
+              >
+                Linear
+              </button>
+              <button
+                type="button" onClick={() => setMsScale('log')}
+                className={clsx('px-2 py-1 rounded', msScale === 'log' ? 'bg-nms-accent/15 text-nms-accent' : 'text-nms-text-dim hover:text-nms-text')}
+                title="Log scale keeps a big RTT spike from flattening Avg/Min RTT and Jitter down near zero"
+              >
+                Log
+              </button>
+            </div>
+            {zoom.isZoomed && (
+              <button onClick={zoom.resetZoom} className="nms-btn-ghost flex items-center gap-1.5 text-xs px-2 py-1">
+                <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
+              </button>
+            )}
+          </div>
+        </div>
         <p className="text-xs text-nms-text-dim mb-4">
-          Auto-bucketed server-side to stay readable across any range up to the full retention window.
+          Auto-bucketed server-side to stay readable across any range up to the full retention window. Drag across the chart to zoom into a time range.
         </p>
         {!selectedTargetId ? (
           <p className="text-sm text-nms-text-dim py-10 text-center">No target selected yet.</p>
@@ -936,18 +991,29 @@ function HistorySection() {
           <p className="text-sm text-nms-text-dim py-10 text-center">No history recorded yet for this target in this range.</p>
         ) : (
           <ResponsiveContainer width="100%" height={320}>
-            <ComposedChart data={chartPoints} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+            <ComposedChart
+              data={chartDisplayData}
+              margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+              onMouseDown={zoom.onMouseDown}
+              onMouseMove={zoom.onMouseMove}
+              onMouseUp={zoom.onMouseUp}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} minTickGap={40} />
-              <YAxis yAxisId="ms" tick={{ fontSize: 11, fill: '#94a3b8' }} label={{ value: 'ms', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }} />
-              <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 11, fill: '#94a3b8' }} label={{ value: 'loss %', angle: 90, position: 'insideRight', fill: '#94a3b8', fontSize: 11 }} />
+              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} minTickGap={40} allowDataOverflow />
+              <YAxis
+                yAxisId="ms" tick={{ fontSize: 11, fill: '#94a3b8' }} allowDataOverflow
+                scale={msScale} domain={msScale === 'log' ? [LOG_EPSILON_MS, 'auto'] : [0, 'auto']}
+                label={{ value: msScale === 'log' ? 'ms (log)' : 'ms', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+              />
+              <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 11, fill: '#94a3b8' }} allowDataOverflow label={{ value: 'loss %', angle: 90, position: 'insideRight', fill: '#94a3b8', fontSize: 11 }} />
               <Tooltip contentStyle={{ background: '#1a2236', border: '1px solid #1e293b', fontSize: 12 }} labelStyle={{ color: '#e2e8f0' }} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line yAxisId="ms" type="monotone" dataKey="maxRttMs" name="Max RTT" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} />
-              <Line yAxisId="ms" type="monotone" dataKey="avgRttMs" name="Avg RTT" stroke="#38bdf8" strokeWidth={2} dot={false} />
-              <Line yAxisId="ms" type="monotone" dataKey="minRttMs" name="Min RTT" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} />
-              <Line yAxisId="ms" type="monotone" dataKey="jitterMs" name="Jitter" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
-              <Line yAxisId="pct" type="monotone" dataKey="lossPct" name="Loss %" stroke="#ef4444" strokeWidth={1.5} dot={false} />
+              <Line yAxisId="ms" type="monotone" dataKey="maxRttMs" name="Max RTT" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+              <Line yAxisId="ms" type="monotone" dataKey="avgRttMs" name="Avg RTT" stroke="#38bdf8" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line yAxisId="ms" type="monotone" dataKey="minRttMs" name="Min RTT" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+              <Line yAxisId="ms" type="monotone" dataKey="jitterMs" name="Jitter" stroke="#f59e0b" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Line yAxisId="pct" type="monotone" dataKey="lossPct" name="Loss %" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              {zoom.selection && <ReferenceArea yAxisId="ms" x1={zoom.selection.x1} x2={zoom.selection.x2} strokeOpacity={0.3} fill="#38bdf8" fillOpacity={0.15} />}
             </ComposedChart>
           </ResponsiveContainer>
         )}

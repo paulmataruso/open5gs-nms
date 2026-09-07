@@ -26,7 +26,19 @@ import { earfcnToFrequencyMhz } from './lte-bands';
 import { pointInPolygon } from './polygon';
 import { hataPathLossDb, cost231HataPathLossDb, HATA_FREQ_RANGE_MHZ, HATA_TX_HEIGHT_RANGE_M, HATA_RX_HEIGHT_RANGE_M, COST231_FREQ_RANGE_MHZ } from './hata-model';
 import { closeInEquation, UMI_SC_LOS_PLE, UMI_SC_NLOS_PLE } from './close-in-model';
+import { logDistanceEquation, LOG_DISTANCE_ENVIRONMENT_PRESETS } from './log-distance-model';
+import {
+  walfischIkegamiPathLossDb, WI_FREQ_RANGE_MHZ, WI_BASE_HEIGHT_RANGE_M, WI_MOBILE_HEIGHT_RANGE_M,
+  WI_DEFAULT_BUILDING_SEPARATION_M, WI_DEFAULT_STREET_ORIENTATION_DEG, wiDefaultStreetWidthM,
+} from './walfisch-ikegami-model';
+import {
+  ITM_FREQ_RANGE_MHZ, ITM_HEIGHT_RANGE_M, ITM_REFRACTIVITY_RANGE_N0, ITM_VARIABILITY_PERCENT_RANGE,
+  ITM_DEFAULT_GROUND_CONDUCTIVITY_S_PER_M, ITM_DEFAULT_GROUND_PERMITTIVITY, ITM_DEFAULT_SURFACE_REFRACTIVITY_N0,
+  ITM_DEFAULT_RADIO_CLIMATE, ITM_DEFAULT_POLARIZATION, ITM_DEFAULT_VARIABILITY_MODE,
+  ITM_DEFAULT_TIME_PERCENT, ITM_DEFAULT_LOCATION_PERCENT, ITM_DEFAULT_SITUATION_PERCENT,
+} from './itm-model';
 import { computeSiteSignalAtPoint, ResolvedSiteParams, SiteSignalAtPoint } from './site-signal';
+import { getLandCoverClass, environmentFromWorldCoverClass, WorldCoverClass } from './landcover-provider';
 
 export const MAX_GRID_CELLS = 10_000;
 const MAX_RESOLUTION = Math.floor(Math.sqrt(MAX_GRID_CELLS));
@@ -97,13 +109,135 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
   const frontToBackDb = resolveWithDefault(input.frontToBackDb, 'frontToBackDb', 'dB', DEFAULT_FRONT_TO_BACK_DB, 'Typical sector-antenna front-to-back/sidelobe attenuation — not a verified spec constant for your specific antenna', assumptions);
 
   const propagationModel = input.propagationModel ?? 'fspl';
-  const environment = input.environment ?? 'urban';
-  const cityType = input.cityType ?? 'medium';
-  if (propagationModel === 'hata' && input.environment == null) {
+  let environment = input.environment ?? 'urban';
+  let cityType = input.cityType ?? 'medium';
+  let environmentAutoDetected = false;
+  let cityTypeAutoDetected = false;
+  const usesEnvironment = propagationModel === 'hata';
+  const usesCityType = propagationModel === 'cost231-hata' || propagationModel === 'walfisch-ikegami';
+  if (input.autoDetectEnvironment && input.environment == null && input.cityType == null && (usesEnvironment || usesCityType)) {
+    const worldCoverClass = await getLandCoverClass(input.siteLat, input.siteLon, logger);
+    if (worldCoverClass != null) {
+      const detected = environmentFromWorldCoverClass(worldCoverClass);
+      environment = detected.environment;
+      cityType = detected.cityType;
+      environmentAutoDetected = true;
+      cityTypeAutoDetected = true;
+      assumptions.push({
+        parameter: usesEnvironment ? 'environment' : 'cityType',
+        assumedValue: usesEnvironment ? environment : cityType,
+        reason: `Auto-detected from ESA WorldCover land cover at the site's location (classified as ${WorldCoverClass[worldCoverClass]}) — a coarse built-up-vs-not convention this tool applies (WorldCover doesn't distinguish clutter density beyond that), not a WorldCover- or 3GPP-specified mapping`,
+        overridable: true,
+      });
+    } else {
+      warnings.push({
+        code: 'LAND_COVER_UNAVAILABLE',
+        message: 'Auto-detect environment from land cover was requested, but no ESA WorldCover data was available for this location — fell back to the standard default instead.',
+        severity: 'warning',
+      });
+    }
+  }
+  if (propagationModel === 'hata' && input.environment == null && !environmentAutoDetected) {
     assumptions.push({ parameter: 'environment', assumedValue: environment, reason: 'Not provided by caller', overridable: true });
   }
-  if (propagationModel === 'cost231-hata' && input.cityType == null) {
+  if (propagationModel === 'cost231-hata' && input.cityType == null && !cityTypeAutoDetected) {
     assumptions.push({ parameter: 'cityType', assumedValue: cityType, reason: 'Not provided by caller', overridable: true });
+  }
+  const logDistanceEnvironment = input.logDistanceEnvironment ?? 'urban';
+  if (propagationModel === 'log-distance') {
+    if (input.logDistanceEnvironment == null) {
+      assumptions.push({ parameter: 'logDistanceEnvironment', assumedValue: logDistanceEnvironment, reason: 'Not provided by caller', overridable: true });
+    }
+    if (!LOG_DISTANCE_ENVIRONMENT_PRESETS[logDistanceEnvironment].verified && input.pathLossExponent == null) {
+      warnings.push({
+        code: 'UNVERIFIED_PRESET_VALUE',
+        message: `The "${logDistanceEnvironment}" log-distance preset (n=${LOG_DISTANCE_ENVIRONMENT_PRESETS[logDistanceEnvironment].pathLossExponent}) is unverified — no single citable reference was found for it. Provide an explicit pathLossExponent to use a value you trust.`,
+        severity: 'warning',
+      });
+    }
+  }
+  const walfischIkegamiMode = input.walfischIkegamiMode ?? 'nlos';
+  let buildingSeparationM = input.buildingSeparationM;
+  let streetWidthM = input.streetWidthM;
+  const streetOrientationDeg = input.streetOrientationDeg ?? WI_DEFAULT_STREET_ORIENTATION_DEG;
+  if (propagationModel === 'walfisch-ikegami') {
+    if (input.walfischIkegamiMode == null) {
+      assumptions.push({ parameter: 'walfischIkegamiMode', assumedValue: walfischIkegamiMode, reason: 'Not provided by caller — defaulted to the more conservative NLOS case', overridable: true });
+    }
+    if (walfischIkegamiMode === 'nlos' && input.buildingHeightM == null) {
+      return errResult({
+        reason: "propagationModel 'walfisch-ikegami' in NLOS mode requires buildingHeightM (representative rooftop height) — no honest default exists for site-specific building geometry",
+        missingInputs: ['buildingHeightM'],
+      });
+    }
+    if (input.cityType == null && !cityTypeAutoDetected) {
+      assumptions.push({ parameter: 'cityType', assumedValue: cityType, reason: 'Not provided by caller', overridable: true });
+    }
+    if (buildingSeparationM == null) {
+      buildingSeparationM = WI_DEFAULT_BUILDING_SEPARATION_M;
+      assumptions.push({
+        parameter: 'buildingSeparationM', assumedValue: buildingSeparationM, unit: 'm',
+        reason: "Not provided by caller — COST-231 only specifies a 20-50m range, not a single value; 35m is this tool's own midpoint convention, not a standard-specified default",
+        overridable: true,
+      });
+    }
+    if (streetWidthM == null) {
+      streetWidthM = wiDefaultStreetWidthM(buildingSeparationM);
+      assumptions.push({
+        parameter: 'streetWidthM', assumedValue: streetWidthM, unit: 'm',
+        reason: "Not provided by caller — defaulted to buildingSeparationM/2, the COST-231 standard's own recommended relationship",
+        overridable: true,
+      });
+    }
+    if (input.streetOrientationDeg == null) {
+      assumptions.push({
+        parameter: 'streetOrientationDeg', assumedValue: streetOrientationDeg, unit: 'deg',
+        reason: "Not provided by caller — 90° is the COST-231 standard's own recommended default", overridable: true,
+      });
+    }
+  }
+
+  // ITM has no abstract-distance fallback — its entire algorithm is
+  // terrain-profile-shaped (see itm-model.ts's header comment), unlike
+  // every other model here. Reject up front rather than silently computing
+  // a grid where every cell fell back to null (skippedOutOfModelRange would
+  // equal every cell sampled, which is a confusing way to report this).
+  if (propagationModel === 'itm' && !input.useTerrainData) {
+    return errResult({
+      reason: "propagationModel 'itm' requires useTerrainData:true — ITM's entire algorithm operates on a real terrain profile between the site and each point, not an abstract distance",
+      missingInputs: ['useTerrainData'],
+    });
+  }
+  const groundConductivity = input.groundConductivity ?? ITM_DEFAULT_GROUND_CONDUCTIVITY_S_PER_M;
+  const groundPermittivity = input.groundPermittivity ?? ITM_DEFAULT_GROUND_PERMITTIVITY;
+  const surfaceRefractivityN0 = input.surfaceRefractivityN0 ?? ITM_DEFAULT_SURFACE_REFRACTIVITY_N0;
+  const radioClimate = input.radioClimate ?? ITM_DEFAULT_RADIO_CLIMATE;
+  const polarization = input.polarization ?? ITM_DEFAULT_POLARIZATION;
+  const modeOfVariability = input.modeOfVariability ?? ITM_DEFAULT_VARIABILITY_MODE;
+  const timePercent = input.timePercent ?? ITM_DEFAULT_TIME_PERCENT;
+  const locationPercent = input.locationPercent ?? ITM_DEFAULT_LOCATION_PERCENT;
+  const situationPercent = input.situationPercent ?? ITM_DEFAULT_SITUATION_PERCENT;
+  if (propagationModel === 'itm') {
+    const itmDefaults: [unknown, string, number | string, string][] = [
+      [input.groundConductivity, 'groundConductivity', groundConductivity, 'S/m'],
+      [input.groundPermittivity, 'groundPermittivity', groundPermittivity, 'dimensionless'],
+      [input.surfaceRefractivityN0, 'surfaceRefractivityN0', surfaceRefractivityN0, 'N-units'],
+      [input.radioClimate, 'radioClimate', radioClimate, ''],
+      [input.polarization, 'polarization', polarization, ''],
+      [input.modeOfVariability, 'modeOfVariability', modeOfVariability, ''],
+      [input.timePercent, 'timePercent', timePercent, '%'],
+      [input.locationPercent, 'locationPercent', locationPercent, '%'],
+      [input.situationPercent, 'situationPercent', situationPercent, '%'],
+    ];
+    for (const [provided, parameter, assumedValue, unit] of itmDefaults) {
+      if (provided == null) {
+        assumptions.push({
+          parameter, assumedValue, ...(unit ? { unit } : {}),
+          reason: "Not provided by caller — standard \"average ground\"/\"average atmosphere\" reference value (cross-checked against two independent technical sources, not a COST-231-style tool-invented default)",
+          overridable: true,
+        });
+      }
+    }
   }
 
   // Fail fast on frequency/height ranges (constant across the whole grid) —
@@ -123,6 +257,26 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
     if (input.siteHeightM < tMin || input.siteHeightM > tMax) problems.push(`siteHeightM ${input.siteHeightM} outside COST-231-Hata's valid range [${tMin}, ${tMax}] m`);
     if (receiverHeightM < rMin || receiverHeightM > rMax) problems.push(`receiverHeightM ${receiverHeightM} outside COST-231-Hata's valid range [${rMin}, ${rMax}] m`);
     if (problems.length > 0) return errResult({ reason: `COST-231-Hata model: ${problems.join('; ')}`, missingInputs: [] });
+  } else if (propagationModel === 'walfisch-ikegami') {
+    const [fMin, fMax] = WI_FREQ_RANGE_MHZ, [tMin, tMax] = WI_BASE_HEIGHT_RANGE_M, [rMin, rMax] = WI_MOBILE_HEIGHT_RANGE_M;
+    const problems: string[] = [];
+    if (frequencyMhz < fMin || frequencyMhz > fMax) problems.push(`frequencyMhz ${frequencyMhz} outside Walfisch-Ikegami's valid range [${fMin}, ${fMax}] MHz`);
+    if (input.siteHeightM < tMin || input.siteHeightM > tMax) problems.push(`siteHeightM ${input.siteHeightM} outside Walfisch-Ikegami's valid range [${tMin}, ${tMax}] m`);
+    if (receiverHeightM < rMin || receiverHeightM > rMax) problems.push(`receiverHeightM ${receiverHeightM} outside Walfisch-Ikegami's valid range [${rMin}, ${rMax}] m`);
+    if (problems.length > 0) return errResult({ reason: `Walfisch-Ikegami model: ${problems.join('; ')}`, missingInputs: [] });
+  } else if (propagationModel === 'itm') {
+    const [fMin, fMax] = ITM_FREQ_RANGE_MHZ, [hMin, hMax] = ITM_HEIGHT_RANGE_M, [n0Min, n0Max] = ITM_REFRACTIVITY_RANGE_N0, [pMin, pMax] = ITM_VARIABILITY_PERCENT_RANGE;
+    const problems: string[] = [];
+    if (frequencyMhz < fMin || frequencyMhz > fMax) problems.push(`frequencyMhz ${frequencyMhz} outside ITM's valid range [${fMin}, ${fMax}] MHz`);
+    if (input.siteHeightM < hMin || input.siteHeightM > hMax) problems.push(`siteHeightM ${input.siteHeightM} outside ITM's valid range [${hMin}, ${hMax}] m`);
+    if (receiverHeightM < hMin || receiverHeightM > hMax) problems.push(`receiverHeightM ${receiverHeightM} outside ITM's valid range [${hMin}, ${hMax}] m`);
+    if (surfaceRefractivityN0 < n0Min || surfaceRefractivityN0 > n0Max) problems.push(`surfaceRefractivityN0 ${surfaceRefractivityN0} outside ITM's valid range [${n0Min}, ${n0Max}] N-units`);
+    if (groundPermittivity < 1) problems.push(`groundPermittivity ${groundPermittivity} must be >= 1`);
+    if (groundConductivity <= 0) problems.push(`groundConductivity ${groundConductivity} must be > 0 S/m`);
+    if (timePercent <= pMin || timePercent >= pMax) problems.push(`timePercent ${timePercent} outside ITM's valid range (${pMin}, ${pMax})%`);
+    if (locationPercent <= pMin || locationPercent >= pMax) problems.push(`locationPercent ${locationPercent} outside ITM's valid range (${pMin}, ${pMax})%`);
+    if (situationPercent <= pMin || situationPercent >= pMax) problems.push(`situationPercent ${situationPercent} outside ITM's valid range (${pMin}, ${pMax})%`);
+    if (problems.length > 0) return errResult({ reason: `ITM model: ${problems.join('; ')}`, missingInputs: [] });
   }
 
   const siteParams: ResolvedSiteParams = {
@@ -132,9 +286,13 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
     txPowerDbm: input.txPowerDbm, cableLossDb: input.cableLossDb, connectorLossDb: input.connectorLossDb, filterLossDb,
     antennaGainDbi: input.antennaGainDbi, frequencyMhz, frequencyHz,
     buildingLossDb, foliageLossDb, miscLossDb, ueAntennaGainDbi, receiverHeightM,
-    propagationModel, environment, cityType,
+    propagationModel, environment, cityType, logDistanceEnvironment,
     useTerrainData: !!input.useTerrainData, terrainSampleCount: input.terrainSampleCount ?? DEFAULT_TERRAIN_SAMPLE_COUNT,
     pathLossExponent: input.pathLossExponent, isLineOfSight: input.isLineOfSight,
+    earthCurvatureKFactor: input.earthCurvatureKFactor, fresnelClearanceThresholdPercent: input.fresnelClearanceThresholdPercent,
+    walfischIkegamiMode, buildingHeightM: input.buildingHeightM, streetWidthM, buildingSeparationM, streetOrientationDeg,
+    groundConductivity, groundPermittivity, surfaceRefractivityN0, radioClimate, polarization,
+    modeOfVariability, timePercent, locationPercent, situationPercent,
   };
 
   const metersPerDegLat = (2 * Math.PI * EARTH_RADIUS_M) / 360;
@@ -149,6 +307,7 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
   let skippedOutOfModelRange = 0;
   let terrainUnavailableCount = 0;
   let terrainAppliedCount = 0;
+  const itmModelWarnings = new Set<string>();
 
   for (let row = 0; row < resolution; row++) {
     const northOffsetM = -input.radiusM + (row + 0.5) * stepM;
@@ -165,6 +324,7 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
       if (!signal) { skippedOutOfModelRange++; continue; }
       if (signal.terrainDataResolved === true) terrainAppliedCount++;
       else if (signal.terrainDataResolved === false) terrainUnavailableCount++;
+      if (signal.modelWarnings) for (const w of signal.modelWarnings) itmModelWarnings.add(w);
 
       const insideTargetPolygon = hasPolygon
         ? pointInPolygon({ lat: cellLat, lon: cellLon }, input.targetPolygon as LatLon[])
@@ -172,6 +332,7 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
 
       const cell: CoverageGridCell = {
         lat: cellLat, lon: cellLon, row, col, distanceM: signal.distanceM, totalReceivedPowerDbm: signal.totalReceivedPowerDbm,
+        losClassification: signal.losClassification, fresnelClearancePercent: signal.fresnelClearancePercent,
         ...(insideTargetPolygon !== undefined ? { insideTargetPolygon } : {}),
       };
       cells.push(cell);
@@ -187,7 +348,7 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
   }
 
   if (!bestCell) {
-    return errResult({ reason: 'No valid grid cells were computed — check radiusM, resolution, and (if using Hata/COST-231-Hata) that the radius stays within the model\'s valid distance range', missingInputs: [] });
+    return errResult({ reason: 'No valid grid cells were computed — check radiusM, resolution, and (if using Hata/COST-231-Hata/Walfisch-Ikegami) that the radius stays within the model\'s valid distance range, or (if using ITM) that terrain elevation data is actually resolvable for this location', missingInputs: [] });
   }
 
   warnings.push({
@@ -201,7 +362,13 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
       ? 'Free-space propagation model only — no terrain, shadowing margin, clutter, or interference modeled beyond the loss values you supplied.'
       : propagationModel === 'close-in'
         ? 'Close-In model uses a measured UMi Street Canyon path-loss exponent — a real average for low-height small-cell deployments, not a site-specific fit for your exact deployment.'
-        : `${propagationModel === 'hata' ? 'Hata' : 'COST-231-Hata'} empirical model — average clutter loss for the ${propagationModel === 'hata' ? environment : cityType} environment class, not necessarily this exact deployment's real clutter.`,
+        : propagationModel === 'log-distance'
+          ? `Log-Distance model uses the "${logDistanceEnvironment}" environment preset's path-loss exponent — a general starting point, not a site-specific fit for your exact deployment.`
+          : propagationModel === 'walfisch-ikegami'
+            ? `Walfisch-Ikegami model (${walfischIkegamiMode.toUpperCase()}) — mean error ±3dB (σ 4-8dB) for base stations above rooftop level; error grows large as base station height approaches or falls below rooftop height, and the model is not physically meaningful for micro-cells.`
+            : propagationModel === 'itm'
+              ? `NTIA Irregular Terrain Model (Longley-Rice), point-to-point mode, ${radioClimate} climate — a real statistical terrain model (not a fixed clutter-class average like Hata/WI), but still does not model building interiors or channel/waveform behavior.`
+              : `${propagationModel === 'hata' ? 'Hata' : 'COST-231-Hata'} empirical model — average clutter loss for the ${propagationModel === 'hata' ? environment : cityType} environment class, not necessarily this exact deployment's real clutter.`,
     severity: 'warning',
   });
   warnings.push({
@@ -210,9 +377,10 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
     severity: 'warning',
   });
   if (skippedOutOfModelRange > 0) {
+    const modelLabel = propagationModel === 'hata' ? 'Hata' : propagationModel === 'cost231-hata' ? 'COST-231-Hata' : propagationModel === 'walfisch-ikegami' ? 'Walfisch-Ikegami' : propagationModel === 'itm' ? 'ITM' : 'the selected';
     warnings.push({
       code: 'CELLS_SKIPPED_OUT_OF_MODEL_RANGE',
-      message: `${skippedOutOfModelRange} grid cell(s) were skipped because their distance fell outside the ${propagationModel === 'hata' ? 'Hata' : 'COST-231-Hata'} model's valid range — reduce radiusM or switch to the FSPL model to cover those points.`,
+      message: `${skippedOutOfModelRange} grid cell(s) were skipped because they fell outside the ${modelLabel} model's valid range (or, for ITM, had no resolvable terrain profile) — reduce radiusM or switch to the FSPL model to cover those points.`,
       severity: 'warning',
     });
   }
@@ -220,7 +388,9 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
     if (terrainAppliedCount > 0) {
       warnings.push({
         code: 'TERRAIN_DIFFRACTION_APPLIED',
-        message: `Terrain-based diffraction loss (ITU-R P.526 Deygout method) was evaluated on top of the base propagation model for ${terrainAppliedCount} cell(s)${terrainUnavailableCount > 0 ? `; ${terrainUnavailableCount} cell(s) fell back to no terrain adjustment (elevation data unavailable for part of that path)` : ''}.`,
+        message: propagationModel === 'itm'
+          ? `Real terrain profiles were resolved and passed directly into the ITM model for ${terrainAppliedCount} cell(s) — ITM computes diffraction/troposcatter loss internally from this same profile, so the separate ITU-R P.526 Deygout figure is diagnostic only (see each cell's losClassification/fresnelClearancePercent) and is not added on top${terrainUnavailableCount > 0 ? `; ${terrainUnavailableCount} cell(s) had no resolvable terrain profile and were skipped` : ''}.`
+          : `Terrain-based diffraction loss (ITU-R P.526 Deygout method) was evaluated on top of the base propagation model for ${terrainAppliedCount} cell(s)${terrainUnavailableCount > 0 ? `; ${terrainUnavailableCount} cell(s) fell back to no terrain adjustment (elevation data unavailable for part of that path)` : ''}.`,
         severity: 'info',
       });
     } else {
@@ -230,6 +400,13 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
         severity: 'warning',
       });
     }
+  }
+  if (itmModelWarnings.size > 0) {
+    warnings.push({
+      code: 'ITM_MODEL_WARNING',
+      message: `ITM raised the following near-limit warning(s) on at least one cell: ${[...itmModelWarnings].join('; ')}.`,
+      severity: 'warning',
+    });
   }
 
   let coverageRequirement: CoverageRequirement | undefined;
@@ -279,6 +456,24 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
   } else if (propagationModel === 'close-in') {
     const n = input.pathLossExponent ?? (bestCell.isLineOfSight ? UMI_SC_LOS_PLE : UMI_SC_NLOS_PLE);
     pathLossEquation = closeInEquation(bestCell.distanceM, frequencyHz, n, bestCell.isLineOfSight, bestCell.basePathLossDb);
+  } else if (propagationModel === 'log-distance') {
+    const n = input.pathLossExponent ?? LOG_DISTANCE_ENVIRONMENT_PRESETS[logDistanceEnvironment].pathLossExponent;
+    pathLossEquation = logDistanceEquation(bestCell.distanceM, frequencyHz, n, logDistanceEnvironment, bestCell.basePathLossDb);
+  } else if (propagationModel === 'walfisch-ikegami') {
+    const distanceKm = bestCell.distanceM / 1000;
+    const r = walfischIkegamiPathLossDb(
+      frequencyMhz, input.siteHeightM, receiverHeightM, distanceKm, walfischIkegamiMode,
+      input.buildingHeightM ?? 0, streetWidthM as number, buildingSeparationM as number, streetOrientationDeg, cityType,
+    );
+    // bestCell was only ever selected from cells that already passed this
+    // exact model/range check, so this is always ok:true here.
+    pathLossEquation = r.ok ? r.equation : fsplEquation(bestCell.distanceM, frequencyHz, bestCell.basePathLossDb);
+  } else if (propagationModel === 'itm') {
+    // bestCell.equation was threaded all the way back from the actual WASM
+    // call made for this exact cell (see BasePathLossResult's comment) —
+    // recomputing it here would mean a second, redundant WASM invocation
+    // AND would need the cell's full terrain profile, which isn't retained.
+    pathLossEquation = bestCell.equation ?? fsplEquation(bestCell.distanceM, frequencyHz, bestCell.basePathLossDb);
   } else {
     const distanceKm = bestCell.distanceM / 1000;
     const r = propagationModel === 'hata'
@@ -317,7 +512,7 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
     calculation,
     {
       assumptions, warnings,
-      model: `Directional ${propagationModel === 'fspl' ? 'Free-Space' : propagationModel === 'hata' ? 'Hata' : propagationModel === 'cost231-hata' ? 'COST-231-Hata' : 'Close-In'} Coverage Grid${input.useTerrainData ? ' (terrain-aware)' : ''}`,
+      model: `Directional ${propagationModel === 'fspl' ? 'Free-Space' : propagationModel === 'hata' ? 'Hata' : propagationModel === 'cost231-hata' ? 'COST-231-Hata' : propagationModel === 'log-distance' ? 'Log-Distance' : propagationModel === 'walfisch-ikegami' ? 'Walfisch-Ikegami' : propagationModel === 'itm' ? 'ITM (Longley-Rice)' : 'Close-In'} Coverage Grid${input.useTerrainData ? ' (terrain-aware)' : ''}`,
     },
   );
 }

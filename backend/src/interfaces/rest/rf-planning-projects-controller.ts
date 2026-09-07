@@ -217,7 +217,7 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       if (!site) { res.status(404).json({ success: false, error: 'Site not found' }); return; }
 
       const assumptions: Assumption[] = [];
-      const resolved = resolveSite(site, assumptions);
+      const resolved = await resolveSite(site, assumptions, logger);
       if ('error' in resolved) { res.status(400).json({ success: false, error: resolved.error }); return; }
 
       const result = await calculateCalibrationOffset(site.surveyPoints ?? [], resolved.params, logger);

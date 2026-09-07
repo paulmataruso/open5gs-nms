@@ -73,6 +73,11 @@ COPY src/config/qci-hw-test-templates ./dist/config/qci-hw-test-templates
 # time — see ue-detach-runner.ts) into dist
 COPY src/config/ue-detach-templates ./dist/config/ue-detach-templates
 
+# Copy the pre-compiled ITM (Longley-Rice) WASM module into dist — built
+# once via backend/vendor/itm-src/build-wasm.sh (Docker + Emscripten, never
+# needed on this image), loaded at runtime by itm-model.ts
+COPY src/domain/rf/wasm ./dist/domain/rf/wasm
+
 RUN mkdir -p /var/log/open5gs-nms && mkdir -p /app/data
 
 ENV NODE_ENV=production

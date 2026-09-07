@@ -7,6 +7,10 @@ import { fsplDb, fsplEquation } from './pathloss-fspl';
 import { earfcnToFrequencyMhz } from './lte-bands';
 import { hataPathLossDb, cost231HataPathLossDb } from './hata-model';
 import { closeInPathLossDb, closeInEquation, UMI_SC_LOS_PLE, UMI_SC_NLOS_PLE } from './close-in-model';
+import { logDistancePathLossDb, logDistanceEquation, LOG_DISTANCE_ENVIRONMENT_PRESETS } from './log-distance-model';
+import {
+  walfischIkegamiPathLossDb, WI_DEFAULT_BUILDING_SEPARATION_M, WI_DEFAULT_STREET_ORIENTATION_DEG, wiDefaultStreetWidthM,
+} from './walfisch-ikegami-model';
 
 function resolveWithDefault(value: number | undefined, parameter: string, unit: string, assumptions: Assumption[]): number {
   if (value != null) return value;
@@ -57,6 +61,18 @@ export function calculateLinkBudget(input: LinkBudgetInput): CalculationResult<L
   const frequencyHz = frequencyMhz * 1_000_000;
 
   const propagationModel = input.propagationModel ?? 'fspl';
+  if (propagationModel === 'itm') {
+    // ITM's entire algorithm is terrain-profile-shaped (see itm-model.ts) —
+    // this tab only has an abstract distanceM with no lat/lon, so there is
+    // no real terrain profile to build. Coverage Map / Interference (which
+    // do have real coordinates) are the only supported entry points for
+    // this model — reject explicitly rather than silently substituting FSPL
+    // or another model, which would look like a real ITM result but isn't.
+    return errResult({
+      reason: "propagationModel 'itm' requires a real terrain profile (latitude/longitude coordinates) and is not supported in the Link Budget tool — use the Coverage Map or Interference tools instead, which compute a real terrain profile between sites",
+      missingInputs: ['siteLat/siteLon/targetLat/targetLon (not applicable to this tool)'],
+    });
+  }
   let pathLossDb: number;
   let pathLossEquation: EquationRecord;
   let modelName: string;
@@ -79,6 +95,26 @@ export function calculateLinkBudget(input: LinkBudgetInput): CalculationResult<L
     pathLossDb = closeInPathLossDb(input.distanceM, frequencyHz, n);
     pathLossEquation = closeInEquation(input.distanceM, frequencyHz, n, input.isLineOfSight, pathLossDb);
     modelName = 'Close-In Free-Space Reference-Distance Link Budget';
+  } else if (propagationModel === 'log-distance') {
+    const environment = input.logDistanceEnvironment ?? 'urban';
+    let n = input.pathLossExponent;
+    if (n == null) {
+      if (input.logDistanceEnvironment == null) {
+        assumptions.push({ parameter: 'logDistanceEnvironment', assumedValue: environment, reason: 'Not provided by caller', overridable: true });
+      }
+      const preset = LOG_DISTANCE_ENVIRONMENT_PRESETS[environment];
+      n = preset.pathLossExponent;
+      if (!preset.verified) {
+        warnings.push({
+          code: 'UNVERIFIED_PRESET_VALUE',
+          message: `The "${environment}" log-distance preset (n=${preset.pathLossExponent}) is unverified — no single citable reference was found for it. Provide an explicit pathLossExponent to use a value you trust.`,
+          severity: 'warning',
+        });
+      }
+    }
+    pathLossDb = logDistancePathLossDb(input.distanceM, frequencyHz, n);
+    pathLossEquation = logDistanceEquation(input.distanceM, frequencyHz, n, environment, pathLossDb);
+    modelName = `Log-Distance Link Budget (${environment})`;
   } else {
     if (input.txHeightM == null || input.rxHeightM == null) {
       return errResult({
@@ -97,7 +133,7 @@ export function calculateLinkBudget(input: LinkBudgetInput): CalculationResult<L
       pathLossDb = hataResult.pathLossDb;
       pathLossEquation = hataResult.equation;
       modelName = `Hata Model Link Budget (${environment})`;
-    } else {
+    } else if (propagationModel === 'cost231-hata') {
       const cityType = input.cityType ?? 'medium';
       if (input.cityType == null) {
         assumptions.push({ parameter: 'cityType', assumedValue: cityType, reason: 'Not provided by caller', overridable: true });
@@ -107,6 +143,55 @@ export function calculateLinkBudget(input: LinkBudgetInput): CalculationResult<L
       pathLossDb = c231Result.pathLossDb;
       pathLossEquation = c231Result.equation;
       modelName = `COST-231-Hata Model Link Budget (${cityType})`;
+    } else {
+      // walfisch-ikegami
+      const mode = input.walfischIkegamiMode ?? 'nlos';
+      if (input.walfischIkegamiMode == null) {
+        assumptions.push({ parameter: 'walfischIkegamiMode', assumedValue: mode, reason: 'Not provided by caller — defaulted to the more conservative NLOS case', overridable: true });
+      }
+      if (mode === 'nlos' && input.buildingHeightM == null) {
+        return errResult({
+          reason: "propagationModel 'walfisch-ikegami' in NLOS mode requires buildingHeightM (representative rooftop height) — no honest default exists for site-specific building geometry",
+          missingInputs: ['buildingHeightM'],
+        });
+      }
+      const cityType = input.cityType ?? 'medium';
+      if (input.cityType == null) {
+        assumptions.push({ parameter: 'cityType', assumedValue: cityType, reason: 'Not provided by caller', overridable: true });
+      }
+      let buildingSeparationM = input.buildingSeparationM;
+      if (buildingSeparationM == null) {
+        buildingSeparationM = WI_DEFAULT_BUILDING_SEPARATION_M;
+        assumptions.push({
+          parameter: 'buildingSeparationM', assumedValue: buildingSeparationM, unit: 'm',
+          reason: "Not provided by caller — COST-231 only specifies a 20-50m range, not a single value; 35m is this tool's own midpoint convention, not a standard-specified default",
+          overridable: true,
+        });
+      }
+      let streetWidthM = input.streetWidthM;
+      if (streetWidthM == null) {
+        streetWidthM = wiDefaultStreetWidthM(buildingSeparationM);
+        assumptions.push({
+          parameter: 'streetWidthM', assumedValue: streetWidthM, unit: 'm',
+          reason: "Not provided by caller — defaulted to buildingSeparationM/2, the COST-231 standard's own recommended relationship",
+          overridable: true,
+        });
+      }
+      const streetOrientationDeg = input.streetOrientationDeg ?? WI_DEFAULT_STREET_ORIENTATION_DEG;
+      if (input.streetOrientationDeg == null) {
+        assumptions.push({
+          parameter: 'streetOrientationDeg', assumedValue: streetOrientationDeg, unit: 'deg',
+          reason: "Not provided by caller — 90° is the COST-231 standard's own recommended default", overridable: true,
+        });
+      }
+      const wiResult = walfischIkegamiPathLossDb(
+        frequencyMhz, input.txHeightM, input.rxHeightM, distanceKm, mode,
+        input.buildingHeightM ?? 0, streetWidthM, buildingSeparationM, streetOrientationDeg, cityType,
+      );
+      if (!wiResult.ok) return errResult(wiResult.error);
+      pathLossDb = wiResult.pathLossDb;
+      pathLossEquation = wiResult.equation;
+      modelName = `Walfisch-Ikegami Model Link Budget (${mode}, ${cityType})`;
     }
   }
 

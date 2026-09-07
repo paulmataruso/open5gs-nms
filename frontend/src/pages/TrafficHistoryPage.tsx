@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { TrendingUp, RefreshCw, Gauge } from 'lucide-react';
+import { TrendingUp, RefreshCw, Gauge, RotateCcw, ArrowUp, ArrowDown } from 'lucide-react';
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceArea,
 } from 'recharts';
 import { trafficHistoryApi, type TrafficHistorySubscriber } from '../api';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
 import { SpeedTestServerModal } from '../components/trafficHistory/SpeedTestServerModal';
+import { useZoomableChartData, type ZoomableChartData } from '../hooks/useZoomableChartData';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
@@ -25,6 +26,50 @@ interface ChartPoint {
   label: string;
   upMbps: number;
   downMbps: number;
+}
+
+// Up and Down used to share one chart with two overlaid Areas — split so
+// each direction gets its own full-height scale (a busy upload burst no
+// longer visually flattens a much smaller download trace, or vice versa).
+// Both charts share one `zoom` instance (lifted to the parent) so dragging
+// on either one zooms both together, matching Grafana's linked-panel feel.
+function DirectionChart({ dataKey, name, color, gradientId, zoom, height = 240 }: {
+  dataKey: 'upMbps' | 'downMbps'; name: string; color: string; gradientId: string;
+  zoom: ZoomableChartData<ChartPoint>; height?: number;
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart
+        data={zoom.displayData}
+        margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+        onMouseDown={zoom.onMouseDown}
+        onMouseMove={zoom.onMouseMove}
+        onMouseUp={zoom.onMouseUp}
+      >
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor={color} stopOpacity={0.4} />
+            <stop offset="95%" stopColor={color} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+        <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} minTickGap={40} allowDataOverflow />
+        <YAxis
+          tick={{ fontSize: 11, fill: '#94a3b8' }} allowDataOverflow
+          label={{ value: 'Mbps', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+        />
+        <Tooltip contentStyle={{ background: '#1a2236', border: '1px solid #1e293b', fontSize: 12 }} labelStyle={{ color: '#e2e8f0' }} />
+        <Area type="monotone" dataKey={dataKey} name={name} stroke={color} fill={`url(#${gradientId})`} strokeWidth={2} isAnimationActive={false} />
+        {/* Deliberately NOT `color` (this series' own fill) — a same-hue
+            translucent box on top of an already similarly-colored gradient
+            has almost no contrast and is easy to miss mid-drag. A neutral
+            light tone shows up clearly against any series color. */}
+        {zoom.selection && (
+          <ReferenceArea x1={zoom.selection.x1} x2={zoom.selection.x2} stroke="#e2e8f0" strokeOpacity={0.8} strokeWidth={1} fill="#e2e8f0" fillOpacity={0.25} />
+        )}
+      </AreaChart>
+    </ResponsiveContainer>
+  );
 }
 
 export function TrafficHistoryPage() {
@@ -81,7 +126,15 @@ export function TrafficHistoryPage() {
         byTs.set(ts, acc);
       }
 
-      const showDate = ms > 36 * 60 * 60 * 1000; // wider than ~1.5 days — dates start being useful
+      // >= 24h, not the "wider than ~1.5 days" it used to be: at exactly 24h
+      // (the default range), a date-less "HH:MM" label makes the very first
+      // point (~24h ago) and the very last point (now) collide on the same
+      // wall-clock minute. Recharts' drag-to-zoom matches the ReferenceArea
+      // against these label strings, so dragging across the chart — the
+      // obvious way to try the feature — landed both ends on identical
+      // labels and the selection box couldn't render at all. Any window
+      // that can wrap a full day needs the date to keep every label unique.
+      const showDate = ms >= 24 * 60 * 60 * 1000;
       const merged: ChartPoint[] = Array.from(byTs.entries())
         .sort(([a], [b]) => a - b)
         .map(([ts, v]) => ({
@@ -108,6 +161,8 @@ export function TrafficHistoryPage() {
     const last = points[points.length - 1];
     return { upMbps: last.upMbps, downMbps: last.downMbps };
   }, [points]);
+
+  const zoom = useZoomableChartData(points);
 
   return (
     <div className="space-y-6">
@@ -181,7 +236,7 @@ export function TrafficHistoryPage() {
         )}
       </div>
 
-      {/* Chart */}
+      {/* Charts — Up and Down split into their own scales, zoom shared across both */}
       <div className="nms-card">
         {loading ? (
           <div className="p-12 text-center text-nms-text-dim">Loading traffic history...</div>
@@ -190,30 +245,30 @@ export function TrafficHistoryPage() {
             No data yet for this range{imsi ? ' / subscriber' : ''}. Data accumulates as Prometheus scrapes the backend's metrics endpoint.
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={points} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="upGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#38bdf8" stopOpacity={0} />
-                </linearGradient>
-                <linearGradient id="downGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} minTickGap={40} />
-              <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} label={{ value: 'Mbps', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{ background: '#1a2236', border: '1px solid #1e293b', fontSize: 12 }}
-                labelStyle={{ color: '#e2e8f0' }}
-              />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Area type="monotone" dataKey="upMbps" name="Up" stroke="#38bdf8" fill="url(#upGradient)" strokeWidth={2} />
-              <Area type="monotone" dataKey="downMbps" name="Down" stroke="#10b981" fill="url(#downGradient)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
+          <>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-nms-text-dim">Drag across either chart to zoom into a time range.</p>
+              {zoom.isZoomed && (
+                <button onClick={zoom.resetZoom} className="nms-btn-ghost flex items-center gap-1.5 text-xs px-2 py-1">
+                  <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
+                </button>
+              )}
+            </div>
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                  <ArrowUp className="w-3 h-3 text-[#38bdf8]" /> Upload
+                </p>
+                <DirectionChart dataKey="upMbps" name="Up" color="#38bdf8" gradientId="upGradient" zoom={zoom} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                  <ArrowDown className="w-3 h-3 text-[#10b981]" /> Download
+                </p>
+                <DirectionChart dataKey="downMbps" name="Down" color="#10b981" gradientId="downGradient" zoom={zoom} />
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>

@@ -83,7 +83,7 @@ export function createRfPlanningReportsRouter(repo: IRfPlanningProjectRepository
 
         if (site.surveyPoints && site.surveyPoints.length > 0) {
           const assumptions: Assumption[] = [];
-          const resolved = resolveSite(site, assumptions);
+          const resolved = await resolveSite(site, assumptions, logger);
           doc.fontSize(12).text('Field-Survey Calibration', { underline: true });
           doc.fontSize(10);
           if ('params' in resolved) {

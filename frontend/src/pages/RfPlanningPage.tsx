@@ -4,11 +4,12 @@ import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { rfPlanningApi } from '../api/rfPlanning';
 import type {
-  LinkBudgetInput, LinkBudgetResult, PointAnalysisInput, PointAnalysisResult,
-  CalculationResult, PropagationModel, HataEnvironment, Cost231CityType,
+  LinkBudgetInput, LinkBudgetResult,
+  CalculationResult, PropagationModel, HataEnvironment, Cost231CityType, LogDistanceEnvironment, WalfischIkegamiMode,
 } from '../api/rfPlanning';
 import { NumField, SelectField, EquationDisclosure, AssumptionsWarnings, ResultLine } from '../components/rfplanning/shared';
 import { CoverageMapTab } from '../components/rfplanning/CoverageMapTab';
+import { PointAnalysisTab } from '../components/rfplanning/PointAnalysisTab';
 
 type Tab = 'link-budget' | 'point-analysis' | 'coverage-map';
 
@@ -36,9 +37,13 @@ function LinkBudgetTab() {
   });
   const [model, setModel] = useState<{
     propagationModel: PropagationModel; environment: HataEnvironment; cityType: Cost231CityType;
-    isLineOfSight: boolean; pathLossExponent: string;
+    isLineOfSight: boolean; pathLossExponent: string; logDistanceEnvironment: LogDistanceEnvironment;
+    walfischIkegamiMode: WalfischIkegamiMode; buildingHeightM: string; streetWidthM: string;
+    buildingSeparationM: string; streetOrientationDeg: string;
   }>({
     propagationModel: 'fspl', environment: 'urban', cityType: 'medium', isLineOfSight: false, pathLossExponent: '',
+    logDistanceEnvironment: 'urban',
+    walfischIkegamiMode: 'nlos', buildingHeightM: '', streetWidthM: '', buildingSeparationM: '', streetOrientationDeg: '',
   });
   const [loading, setLoading] = useState(false);
   const [res, setRes] = useState<CalculationResult<LinkBudgetResult> | null>(null);
@@ -65,9 +70,16 @@ function LinkBudgetTab() {
         txHeightM: form.txHeightM ? Number(form.txHeightM) : undefined,
         rxHeightM: form.rxHeightM ? Number(form.rxHeightM) : undefined,
         environment: model.propagationModel === 'hata' ? model.environment : undefined,
-        cityType: model.propagationModel === 'cost231-hata' ? model.cityType : undefined,
+        cityType: (model.propagationModel === 'cost231-hata' || model.propagationModel === 'walfisch-ikegami') ? model.cityType : undefined,
         isLineOfSight: model.propagationModel === 'close-in' ? model.isLineOfSight : undefined,
-        pathLossExponent: model.propagationModel === 'close-in' && model.pathLossExponent ? Number(model.pathLossExponent) : undefined,
+        pathLossExponent: (model.propagationModel === 'close-in' || model.propagationModel === 'log-distance') && model.pathLossExponent
+          ? Number(model.pathLossExponent) : undefined,
+        logDistanceEnvironment: model.propagationModel === 'log-distance' ? model.logDistanceEnvironment : undefined,
+        walfischIkegamiMode: model.propagationModel === 'walfisch-ikegami' ? model.walfischIkegamiMode : undefined,
+        buildingHeightM: model.propagationModel === 'walfisch-ikegami' && model.buildingHeightM ? Number(model.buildingHeightM) : undefined,
+        streetWidthM: model.propagationModel === 'walfisch-ikegami' && model.streetWidthM ? Number(model.streetWidthM) : undefined,
+        buildingSeparationM: model.propagationModel === 'walfisch-ikegami' && model.buildingSeparationM ? Number(model.buildingSeparationM) : undefined,
+        streetOrientationDeg: model.propagationModel === 'walfisch-ikegami' && model.streetOrientationDeg ? Number(model.streetOrientationDeg) : undefined,
       };
       const result = await rfPlanningApi.linkBudget(input);
       setRes(result);
@@ -80,8 +92,8 @@ function LinkBudgetTab() {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="nms-card space-y-4">
+    <div className="space-y-6">
+      <div className="nms-card space-y-4 max-w-3xl w-full mx-auto">
         <p className="text-sm font-semibold text-nms-text">Radio & Path Inputs</p>
         <div className="grid grid-cols-2 gap-3">
           <NumField label="TX Power" value={form.txPowerDbm} onChange={set('txPowerDbm')} unit="dBm" />
@@ -105,12 +117,14 @@ function LinkBudgetTab() {
               { value: 'hata', label: 'Hata (150-1500 MHz, 30-200m towers)' },
               { value: 'cost231-hata', label: 'COST-231-Hata (1500-2000 MHz, 30-200m towers)' },
               { value: 'close-in', label: 'Close-In (any frequency/height — CBRS/small cell)' },
+              { value: 'log-distance', label: 'Log-Distance (configurable exponent, general-purpose)' },
+              { value: 'walfisch-ikegami', label: 'Walfisch-Ikegami (800-2000 MHz, urban street-level)' },
             ]}
           />
-          {(model.propagationModel === 'hata' || model.propagationModel === 'cost231-hata') && (
+          {(model.propagationModel === 'hata' || model.propagationModel === 'cost231-hata' || model.propagationModel === 'walfisch-ikegami') && (
             <>
-              <NumField label="TX (Base Station) Height" value={form.txHeightM} onChange={set('txHeightM')} unit="m" placeholder="30-200" />
-              <NumField label="RX (Mobile) Height" value={form.rxHeightM} onChange={set('rxHeightM')} unit="m" placeholder="1-10" />
+              <NumField label="TX (Base Station) Height" value={form.txHeightM} onChange={set('txHeightM')} unit="m" placeholder={model.propagationModel === 'walfisch-ikegami' ? '4-50' : '30-200'} />
+              <NumField label="RX (Mobile) Height" value={form.rxHeightM} onChange={set('rxHeightM')} unit="m" placeholder={model.propagationModel === 'walfisch-ikegami' ? '1-3' : '1-10'} />
             </>
           )}
           {model.propagationModel === 'hata' && (
@@ -128,12 +142,54 @@ function LinkBudgetTab() {
             />
           )}
           {model.propagationModel === 'close-in' && (
+            <label className="flex items-center gap-2 text-xs text-nms-text mt-5">
+              <input type="checkbox" checked={model.isLineOfSight} onChange={e => setModel(m => ({ ...m, isLineOfSight: e.target.checked }))} className="nms-checkbox" />
+              Line of sight (unchecked = NLOS, more conservative)
+            </label>
+          )}
+          {model.propagationModel === 'log-distance' && (
+            <SelectField
+              label="Environment Preset" value={model.logDistanceEnvironment}
+              onChange={v => setModel(m => ({ ...m, logDistanceEnvironment: v as LogDistanceEnvironment }))}
+              options={[
+                { value: 'free-space', label: 'Free Space (n=2.0)' },
+                { value: 'urban', label: 'Urban (n=3.0)' },
+                { value: 'dense-urban', label: 'Dense/Shadowed Urban (n=4.0)' },
+                { value: 'indoor', label: 'Indoor LOS (n=1.7)' },
+                { value: 'rural', label: 'Rural (n=3.5, unverified)' },
+                { value: 'suburban', label: 'Suburban (n=3.0, unverified)' },
+              ]}
+            />
+          )}
+          {(model.propagationModel === 'close-in' || model.propagationModel === 'log-distance') && (
+            <NumField
+              label="Path-Loss Exponent Override" value={model.pathLossExponent} onChange={v => setModel(m => ({ ...m, pathLossExponent: v }))}
+              placeholder={model.propagationModel === 'close-in' ? 'auto (2.0 LOS / 3.1 NLOS)' : 'auto (from preset)'}
+            />
+          )}
+          {model.propagationModel === 'walfisch-ikegami' && (
             <>
-              <label className="flex items-center gap-2 text-xs text-nms-text mt-5">
-                <input type="checkbox" checked={model.isLineOfSight} onChange={e => setModel(m => ({ ...m, isLineOfSight: e.target.checked }))} className="nms-checkbox" />
-                Line of sight (unchecked = NLOS, more conservative)
-              </label>
-              <NumField label="Path-Loss Exponent Override" value={model.pathLossExponent} onChange={v => setModel(m => ({ ...m, pathLossExponent: v }))} placeholder="auto (2.0 LOS / 3.1 NLOS)" />
+              <SelectField
+                label="LOS / NLOS" value={model.walfischIkegamiMode}
+                onChange={v => setModel(m => ({ ...m, walfischIkegamiMode: v as WalfischIkegamiMode }))}
+                options={[
+                  { value: 'los', label: 'LOS (street canyon)' },
+                  { value: 'nlos', label: 'NLOS (rooftop diffraction)' },
+                ]}
+              />
+              <SelectField
+                label="City Type" value={model.cityType}
+                onChange={v => setModel(m => ({ ...m, cityType: v as Cost231CityType }))}
+                options={[{ value: 'medium', label: 'Medium City / Suburban' }, { value: 'metropolitan', label: 'Metropolitan Center' }]}
+              />
+              {model.walfischIkegamiMode === 'nlos' && (
+                <>
+                  <NumField label="Building/Rooftop Height" value={model.buildingHeightM} onChange={v => setModel(m => ({ ...m, buildingHeightM: v }))} unit="m" placeholder="required, > RX height" />
+                  <NumField label="Street Width" value={model.streetWidthM} onChange={v => setModel(m => ({ ...m, streetWidthM: v }))} unit="m" placeholder="auto (building separation / 2)" />
+                  <NumField label="Building Separation" value={model.buildingSeparationM} onChange={v => setModel(m => ({ ...m, buildingSeparationM: v }))} unit="m" placeholder="auto (35, COST-231 range is 20-50)" />
+                  <NumField label="Street Orientation" value={model.streetOrientationDeg} onChange={v => setModel(m => ({ ...m, streetOrientationDeg: v }))} unit="deg" placeholder="auto (90)" />
+                </>
+              )}
             </>
           )}
         </div>
@@ -142,125 +198,13 @@ function LinkBudgetTab() {
         </button>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-4 max-w-3xl w-full mx-auto">
         {res?.ok && res.result && (
           <div className="nms-card space-y-2">
             <p className="text-sm font-semibold text-nms-text mb-1">Result</p>
             <ResultLine label="EIRP" value={res.result.eirpDbm} unit="dBm" />
             <ResultLine label="Path Loss" value={res.result.pathLossDb} unit="dB" />
             <ResultLine label="Total Received Power" value={res.result.totalReceivedPowerDbm} unit="dBm" />
-          </div>
-        )}
-        {res && !res.ok && (
-          <div className="nms-card border-red-500/30">
-            <p className="text-sm text-red-400">{res.error?.reason}</p>
-            {res.error?.missingInputs && res.error.missingInputs.length > 0 && (
-              <p className="text-xs text-nms-text-dim mt-1">Missing: {res.error.missingInputs.join(', ')}</p>
-            )}
-          </div>
-        )}
-        {res && res.calculation.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Calculation Chain</p>
-            {res.calculation.map((eq, i) => <EquationDisclosure key={i} eq={eq} />)}
-          </div>
-        )}
-        {res && <AssumptionsWarnings res={res} />}
-      </div>
-    </div>
-  );
-}
-
-function PointAnalysisTab() {
-  const [form, setForm] = useState({
-    siteLat: '', siteLon: '', siteHeightM: '30',
-    targetLat: '', targetLon: '', targetHeightM: '1.5',
-    mechanicalDowntiltDeg: '', electricalDowntiltDeg: '',
-  });
-  const [useTerrainData, setUseTerrainData] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [res, setRes] = useState<CalculationResult<PointAnalysisResult> | null>(null);
-
-  const set = (k: keyof typeof form) => (v: string) => setForm(f => ({ ...f, [k]: v }));
-
-  const submit = async () => {
-    setLoading(true);
-    setRes(null);
-    try {
-      const input: PointAnalysisInput = {
-        siteLat: Number(form.siteLat),
-        siteLon: Number(form.siteLon),
-        siteHeightM: Number(form.siteHeightM),
-        targetLat: Number(form.targetLat),
-        targetLon: Number(form.targetLon),
-        targetHeightM: Number(form.targetHeightM),
-        mechanicalDowntiltDeg: form.mechanicalDowntiltDeg ? Number(form.mechanicalDowntiltDeg) : undefined,
-        electricalDowntiltDeg: form.electricalDowntiltDeg ? Number(form.electricalDowntiltDeg) : undefined,
-        useTerrainData,
-      };
-      const result = await rfPlanningApi.pointAnalysis(input);
-      setRes(result);
-      if (!result.ok) toast.error(result.error?.reason || 'Calculation failed');
-    } catch (err: any) {
-      toast.error(err?.response?.data?.error?.reason || 'Request failed');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="nms-card space-y-4">
-        <p className="text-sm font-semibold text-nms-text">Site & Target</p>
-        <div className="grid grid-cols-3 gap-3">
-          <NumField label="Site Lat" value={form.siteLat} onChange={set('siteLat')} unit="deg" />
-          <NumField label="Site Lon" value={form.siteLon} onChange={set('siteLon')} unit="deg" />
-          <NumField label="Site Height" value={form.siteHeightM} onChange={set('siteHeightM')} unit="m" />
-          <NumField label="Target Lat" value={form.targetLat} onChange={set('targetLat')} unit="deg" />
-          <NumField label="Target Lon" value={form.targetLon} onChange={set('targetLon')} unit="deg" />
-          <NumField label="Target Height" value={form.targetHeightM} onChange={set('targetHeightM')} unit="m" />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <NumField label="Mechanical Downtilt" value={form.mechanicalDowntiltDeg} onChange={set('mechanicalDowntiltDeg')} unit="deg" placeholder="0" />
-          <NumField label="Electrical Downtilt" value={form.electricalDowntiltDeg} onChange={set('electricalDowntiltDeg')} unit="deg" placeholder="0" />
-        </div>
-        <label className="flex items-center gap-2 text-xs text-nms-text">
-          <input type="checkbox" checked={useTerrainData} onChange={e => setUseTerrainData(e.target.checked)} className="nms-checkbox" />
-          Use real terrain (ground elevation + line-of-sight)
-        </label>
-        <button onClick={submit} disabled={loading} className="nms-btn-primary w-full">
-          {loading ? 'Calculating…' : 'Calculate Point Analysis'}
-        </button>
-      </div>
-
-      <div className="space-y-4">
-        {res?.ok && res.result && (
-          <div className="nms-card space-y-2">
-            <p className="text-sm font-semibold text-nms-text mb-1">Result</p>
-            <ResultLine label="Distance" value={res.result.distanceM} unit="m" />
-            <ResultLine label="Bearing" value={res.result.bearingDeg} unit="deg" />
-            <ResultLine label="Elevation Angle" value={res.result.elevationAngleDeg} unit="deg" />
-            <ResultLine label="Geometric Downtilt Required" value={res.result.geometricDowntiltDeg} unit="deg" />
-            {res.result.totalConfiguredDowntiltDeg !== undefined && (
-              <ResultLine label="Total Configured Downtilt" value={res.result.totalConfiguredDowntiltDeg} unit="deg" />
-            )}
-            {res.result.siteGroundElevationM !== undefined && (
-              <ResultLine label="Site Ground Elevation" value={res.result.siteGroundElevationM} unit="m" />
-            )}
-            {res.result.targetGroundElevationM !== undefined && (
-              <ResultLine label="Target Ground Elevation" value={res.result.targetGroundElevationM} unit="m" />
-            )}
-            {res.result.diffractionLossDb !== undefined && (
-              <ResultLine label="Diffraction Loss (preview)" value={res.result.diffractionLossDb} unit="dB" />
-            )}
-            {res.result.isLineOfSight !== undefined && (
-              <div className="flex items-center justify-between px-3 py-2 bg-nms-bg border border-nms-border rounded-lg">
-                <span className="text-sm text-nms-text-dim">Line of Sight</span>
-                <span className={clsx('text-sm font-semibold', res.result.isLineOfSight ? 'text-green-400' : 'text-red-400')}>
-                  {res.result.isLineOfSight ? 'Clear' : 'Blocked'}
-                </span>
-              </div>
-            )}
           </div>
         )}
         {res && !res.ok && (

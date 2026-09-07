@@ -20,6 +20,10 @@ export interface RfPlanningSurveyPoint {
 export interface RfPlanningSite {
   id: string;
   name: string;
+  // Shared by every sector of a "Quick Add 3-Sector Site" tower so the
+  // frontend Coverage Map can treat them as one draggable object. Absent
+  // for a standalone radio, or after "Ungroup Tower".
+  towerId?: string;
   surveyPoints?: RfPlanningSurveyPoint[];
   siteLat: number;
   siteLon: number;
@@ -43,12 +47,36 @@ export interface RfPlanningSite {
   miscLossDb?: number;
   ueAntennaGainDbi?: number;
   receiverHeightM?: number;
-  propagationModel?: 'fspl' | 'hata' | 'cost231-hata' | 'close-in';
+  propagationModel?: 'fspl' | 'hata' | 'cost231-hata' | 'close-in' | 'log-distance' | 'walfisch-ikegami' | 'itm';
   environment?: 'urban' | 'suburban' | 'open';
   cityType?: 'medium' | 'metropolitan';
+  // Hata/COST-231-Hata/Walfisch-Ikegami only — see rf-types.ts's
+  // CoverageGridInput for the full comment.
+  autoDetectEnvironment?: boolean;
+  logDistanceEnvironment?: 'free-space' | 'urban' | 'dense-urban' | 'indoor' | 'rural' | 'suburban';
   useTerrainData?: boolean;
   pathLossExponent?: number;
   isLineOfSight?: boolean;
+  earthCurvatureKFactor?: number;
+  fresnelClearanceThresholdPercent?: 0 | 50 | 60 | 100;
+  walfischIkegamiMode?: 'los' | 'nlos';
+  buildingHeightM?: number;
+  streetWidthM?: number;
+  buildingSeparationM?: number;
+  streetOrientationDeg?: number;
+  // 'itm' only — see rf-types.ts's CoverageGridInput for the authoritative
+  // comment on these fields and their real "average ground"/"average
+  // atmosphere" default values.
+  groundConductivity?: number;
+  groundPermittivity?: number;
+  surfaceRefractivityN0?: number;
+  radioClimate?: 'equatorial' | 'continental-subtropical' | 'maritime-subtropical' | 'desert'
+    | 'continental-temperate' | 'maritime-temperate-land' | 'maritime-temperate-sea';
+  polarization?: 'horizontal' | 'vertical';
+  modeOfVariability?: 'single-message' | 'accidental' | 'mobile' | 'broadcast';
+  timePercent?: number;
+  locationPercent?: number;
+  situationPercent?: number;
 }
 
 export interface RfPlanningProject {

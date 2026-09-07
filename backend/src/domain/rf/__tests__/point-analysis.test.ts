@@ -51,6 +51,10 @@ describe('point-analysis', () => {
     // top of identical AGL heights — the terrain-aware elevation angle
     // must be steeper (more negative) than the flat-earth one.
     expect(terrain.result!.elevationAngleDeg).toBeLessThan(flat.result!.elevationAngleDeg);
+    // Curvature/Fresnel classification is only meaningful once a real
+    // terrain profile is resolved.
+    expect(flat.result!.losClassification).toBeUndefined();
+    expect(terrain.result!.losClassification).toBeDefined();
   });
 
   test('when elevation data is unavailable, falls back to flat-earth with an explicit warning, not a crash', async () => {

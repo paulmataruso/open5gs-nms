@@ -69,6 +69,7 @@ import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
 import { AutoAssignIPsUseCase } from './application/use-cases/auto-assign-ips-usecase';
 import { SyncPrometheusConfigUseCase } from './application/use-cases/sync-prometheus-config';
 import { SyncGenieacsProvisionsUseCase } from './application/use-cases/sync-genieacs-provisions';
+import { refreshStaleLandCoverTiles } from './domain/rf/landcover-provider';
 import { createSuciRouter } from './interfaces/rest/suci-controller';
 import { createDockerRouter } from './interfaces/rest/docker-controller';
 import { SqliteRadioTagRepository } from './infrastructure/auth/sqlite-radio-tag-repository';
@@ -280,6 +281,17 @@ async function main() {
   const syncGenieacsProvisionsUseCase = new SyncGenieacsProvisionsUseCase(config.genieacsNbiUrl, logger);
   const genieacsSyncResult = await syncGenieacsProvisionsUseCase.execute();
   logger.info({ result: genieacsSyncResult }, 'GenieACS provisions synced on startup');
+
+  // Re-checks whatever ESA WorldCover land-cover tiles a previous run
+  // already cached against the live S3 ETag — a no-op on a fresh install
+  // (nothing cached yet) or once every cached tile is already current, and
+  // never blocks startup on a network issue (see landcover-provider.ts).
+  try {
+    const landCoverRefreshResult = await refreshStaleLandCoverTiles(logger);
+    logger.info({ result: landCoverRefreshResult }, 'Land-cover tile cache freshness check completed on startup');
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'Land-cover tile freshness check on startup failed (non-fatal)');
+  }
 
   const applyConfigUseCase = new ApplyConfigUseCase(
     configRepo,
