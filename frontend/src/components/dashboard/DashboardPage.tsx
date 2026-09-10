@@ -11,6 +11,8 @@ import { secgwApi, type SecGwStatus } from '../../api/secgw';
 import { mmsApi, type MmsStatus } from '../../api/mms';
 import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorcoreSmsc';
 import type { ValidationResult, ServiceStatus } from '../../types';
+import { gsmApi } from '../../api/gsm';
+import { FEATURES } from '../../config/features';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
@@ -92,7 +94,10 @@ function StatCard({
 // Open5GS's own software; mongodb and the osmo-* trio are not, and were
 // previously both getting the blanket "Open5GS" fallback below, mislabeling
 // real Osmocom services as this project's own code.
-const SERVICES_OSMO = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
+const SERVICES_OSMO = [
+  'osmo-stp', 'osmo-hlr', 'osmo-msc',
+  'osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db',
+];
 function vendorLabel(serviceName: string): string {
   if (serviceName === 'mongodb') return 'MongoDB';
   if (SERVICES_OSMO.includes(serviceName)) return 'Osmocom';
@@ -153,7 +158,13 @@ export function DashboardPage(): JSX.Element {
   const [sasStats, setSasStats] = useState<{ activeGrants: number; authorizedGrants: number; registeredCbsds: number } | null>(null);
   const [sasRfStatus, setSasRfStatus] = useState<{ rfOn: number; rfOff: number; unknown: number } | null>(null);
   const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
-  const [activeUes, setActiveUes] = useState<number | null>(null);
+  // Per-RAT UE counts, each { active, total } where active = communicating
+  // right now (ECM/RR-connected), total = registered on that RAT (idle +
+  // connected). NOT denominated against the whole subscriber pool — a UE
+  // attached on 5G isn't a "4G UE".
+  const [ues4G, setUes4G] = useState<{ active: number; total: number }>({ active: 0, total: 0 });
+  const [ues5G, setUes5G] = useState<{ active: number; total: number }>({ active: 0, total: 0 });
+  const [ues2G, setUes2G] = useState<{ active: number; total: number }>({ active: 0, total: 0 });
   const [imsStatus, setImsStatus] = useState<ImsStatus | null>(null);
   const [imsCallStats, setImsCallStats] = useState<ImsCallStats | null>(null);
   const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
@@ -201,9 +212,15 @@ export function DashboardPage(): JSX.Element {
     // Active UEs — InterfaceStatus has no top-level count field, it returns
     // activeUEs4G/activeUEs5G arrays (see get-interface-status.ts); sum their lengths.
     interfaceApi.getStatus().then((s: any) => {
-      const count = (s?.activeUEs4G?.length ?? 0) + (s?.activeUEs5G?.length ?? 0);
-      setActiveUes(count);
+      const u4 = (s?.activeUEs4G ?? []) as Array<{ cmState?: string }>;
+      const u5 = (s?.activeUEs5G ?? []) as Array<{ cmState?: string }>;
+      setUes4G({ active: u4.filter(u => u.cmState === 'connected').length, total: u4.length });
+      setUes5G({ active: u5.filter(u => u.cmState === 'connected').length, total: u5.length });
     }).catch(() => {});
+    if (FEATURES.gsm) {
+      gsmApi.getSignalOverview().then(r => setUes2G(p => ({ ...p, active: r.samples.length }))).catch(() => {});
+      gsmApi.listSubscribers().then(r => setUes2G(p => ({ ...p, total: r.subscribers.length }))).catch(() => {});
+    }
     // IMS status — service health, live S-CSCF registrar count, active IPsec SAs
     imsApi.getStatus().then(setImsStatus).catch(() => {});
     // VoWiFi status — service health, for the split half of the IMS Status card below.
@@ -649,15 +666,21 @@ export function DashboardPage(): JSX.Element {
             close to its 3 siblings instead of standing out short. */}
         <div className="flex flex-col gap-4">
           <div className="nms-card animate-fade-in">
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="text-xs text-nms-text-dim uppercase tracking-wider">UEs</p>
-                <p className="text-2xl font-semibold font-display mt-1">{activeUes ?? '—'}/{subscriberTotal ?? '—'}</p>
-                <p className="text-xs text-nms-text-dim mt-1">Active / total subscribers</p>
-              </div>
-              <div className="p-2.5 rounded-lg bg-nms-accent/10">
-                <Users className="w-5 h-5 text-nms-accent" />
-              </div>
+            <p className="text-xs text-nms-text-dim uppercase tracking-wider mb-1.5">UEs — active / total</p>
+            <div className="grid grid-cols-4 divide-x divide-nms-border">
+              {[
+                { label: 'Total', active: ues4G.active + ues5G.active + ues2G.active, total: subscriberTotal, tone: 'text-nms-text' },
+                { label: '2G', active: ues2G.active, total: ues2G.total, tone: 'text-teal-400' },
+                { label: '4G', active: ues4G.active, total: ues4G.total, tone: 'text-purple-400' },
+                { label: '5G', active: ues5G.active, total: ues5G.total, tone: 'text-nms-accent' },
+              ].map((c, i) => (
+                <div key={c.label} className={i === 0 ? 'pr-3' : 'px-3'}>
+                  <p className="text-[10px] text-nms-text-dim uppercase tracking-wider">{c.label}</p>
+                  <p className={`text-base font-semibold font-display leading-tight ${c.tone}`}>
+                    {c.active}<span className="text-nms-text-dim text-xs font-normal">/{c.total ?? '—'}</span>
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
 

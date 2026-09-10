@@ -80,6 +80,10 @@ s.close()
 const VTY_UPSERT_ESME_SCRIPT = `
 import socket, sys, time
 host, port, name, password = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+# argv[5] (optional): '1' -> also set this ESME as osmo-msc's MO default-route
+# (used by the VectorCore SMSC 2G<->4G bridge so every 2G MO SMS is handed to
+# VectorCore for routing). Absent/'0' -> plain ESME, as SMS-over-SGs / MMS use.
+defroute = len(sys.argv) > 5 and sys.argv[5] == '1'
 s = socket.create_connection((host, port), timeout=5)
 s.settimeout(2)
 def drain():
@@ -93,7 +97,11 @@ def drain():
         pass
     return out
 drain()
-for cmd in ['enable', 'configure terminal', 'smpp', 'esme ' + name, 'password ' + password, 'dcs-transparent', 'end', 'write']:
+cmds = ['enable', 'configure terminal', 'smpp', 'esme ' + name, 'password ' + password, 'dcs-transparent']
+if defroute:
+    cmds += ['default-route']
+cmds += ['end', 'write']
+for cmd in cmds:
     s.sendall((cmd + '\\r\\n').encode())
     time.sleep(0.3)
 print(drain().decode(errors='replace'))
@@ -103,13 +111,50 @@ s.close()
 // ─── Config templates ──────────────────────────────────────────────────────────
 
 function osmostpCfg(): string {
+  // `xua rkm routing-key-allocation dynamic-permitted` — found live (2G GSM
+  // module bring-up): `accept-asp-connections dynamic-permitted` above only
+  // lets a NEW ASP connect at all; it does NOT let that ASP dynamically
+  // allocate its own routing-key/AS, which is a separate RKM (Routing Key
+  // Management) policy. Without this, a new SIGTRAN client that doesn't have
+  // a pre-defined `as`/routing-key entry here (e.g. osmo-bsc's A-interface
+  // connection, auto-generated with routing context 1) gets rejected with
+  // "RCTX 1 not found in configuration, and dynamic RKM allocation not
+  // permitted" on every registration attempt, retried forever — confirmed
+  // live via osmo-stp's own journal. Safe to enable unconditionally: SGs-SMS
+  // (osmo-msc's only current consumer of this file) talks direct SCTP to
+  // the MME and GSUP to osmo-hlr, neither through this STP at all, so
+  // nothing about existing SMS-over-SGs behavior changes.
+  //
+  // point-code 0.24.1, not 0.23.1 — found live (2G GSM module bring-up,
+  // real BSSMAP RESET testing): 0.23.1 is the conventional example "MSC"
+  // point-code used throughout Osmocom's own docs/tutorials, and osmo-bsc's
+  // auto-configuration (when its own cs7 instance isn't given explicitly)
+  // defaults to assuming the MSC lives there. This file's own STP was
+  // ALSO given 0.23.1 (presumably copied from the same convention without
+  // registering that it's "the MSC's" address, not a generic STP one) —
+  // meaning the STP and the real MSC (osmo-msc.cfg's own separately-set
+  // `cs7 instance 0 / point-code 0.23.1`) were colliding on the identical
+  // point-code. That's invalid SCCP topology (the STP needs its own
+  // distinct address to route BSSAP messages *to* the MSC rather than
+  // treating them as addressed to itself) and was silently swallowing
+  // every real BSSAP message between osmo-bsc and osmo-msc — confirmed:
+  // before this fix, no BSSMAP RESET ever completed between them despite
+  // both sides showing a healthy SIGTRAN AS_ACTIVE state; after moving
+  // only the STP to 0.24.1 (leaving osmo-msc.cfg's own real, hand-maintained
+  // point-code untouched — it was already correct), a real "RESET ACK from
+  // MSC" / "BSSMAP association is up" appeared immediately. Deliberately
+  // fixed by moving the STP rather than editing osmo-msc.cfg itself — that
+  // file carries real production config (SMPP/VectorCore, codec defaults,
+  // SMSC retention policy) this module's own simplified config generator
+  // does not model and must never overwrite.
   return `log stderr
  logging filter all 1
  logging print extended-timestamp 1
  logging print category 1
  logging print level 1
 cs7 instance 0
- point-code 0.23.1
+ point-code 0.24.1
+ xua rkm routing-key-allocation dynamic-permitted
  listen m3ua 2905
   accept-asp-connections dynamic-permitted
  listen sua 14001
@@ -136,7 +181,73 @@ line vty
 `;
 }
 
-function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: string): string {
+// Sidecar marker, not part of osmo-msc.cfg itself — see setMscMgwPeer() below
+// for why this exists instead of a second module writing osmo-msc.cfg directly.
+const HOST_MSC_MGW_MARKER = `${HOST_OSMOCOM_DIR}/.nms-msc-mgw.json`;
+
+// The 2G GSM module (osmo-bsc, real A-interface voice) needs osmo-msc to have
+// its own MGCP connection to an osmo-mgw for real voice bearers — SGs-SMS
+// alone never needed one, so osmomscCfg() never wrote one. Rather than a
+// second module writing osmo-msc.cfg directly (the exact class of bug
+// CLAUDE.md's BIND9 shared-ownership lesson warns about — named.conf.options
+// there, osmo-msc.cfg here), this module stays the *sole* writer of the
+// file; other modules ask for something to be included via a small,
+// targeted, persisted request instead. This marker is that request: any
+// future configureSms() run — triggered from this module's own /configure,
+// or from plmn-migration-usecase.ts, or anything else that calls it —
+// re-reads it and keeps the mgw block included, so a GSM-module-unaware
+// reconfigure (e.g. just changing MCC/MNC from the SMS page) can't silently
+// drop it.
+export function setMscMgwPeer(mgwBindIp: string | null): void {
+  fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
+  if (mgwBindIp) fs.writeFileSync(HOST_MSC_MGW_MARKER, JSON.stringify({ mgwBindIp }), 'utf-8');
+  else if (fs.existsSync(HOST_MSC_MGW_MARKER)) fs.unlinkSync(HOST_MSC_MGW_MARKER);
+}
+
+function readMscMgwPeer(): string | null {
+  try {
+    if (!fs.existsSync(HOST_MSC_MGW_MARKER)) return null;
+    return JSON.parse(fs.readFileSync(HOST_MSC_MGW_MARKER, 'utf-8')).mgwBindIp ?? null;
+  } catch { return null; }
+}
+
+export interface HlrSubscriberStatus {
+  imsi: string;
+  msisdn: string | null;
+  hasAuthKeys: boolean;
+  lastLuSeenCs: string | null;
+  lastLuSeenPs: string | null;
+}
+
+// Read-only cross-module accessor (same pattern as readCurrentSmsConfig) —
+// the 2G GSM module's own subscriber-status view needs this, but hlr.db
+// stays solely written by this file, per the BIND9-style shared-ownership
+// convention this project uses for every other shared config/DB.
+export async function listHlrSubscriberStatus(): Promise<HlrSubscriberStatus[]> {
+  try {
+    const { stdout } = await nsenter('sqlite3', [
+      HOST_HLR_DB,
+      `SELECT s.imsi || '|' || COALESCE(s.msisdn,'') || '|' || ` +
+      `(CASE WHEN a.subscriber_id IS NULL THEN '0' ELSE '1' END) || '|' || ` +
+      `COALESCE(s.last_lu_seen,'') || '|' || COALESCE(s.last_lu_seen_ps,'') ` +
+      `FROM subscriber s LEFT JOIN auc_3g a ON a.subscriber_id = s.id ORDER BY s.imsi;`,
+    ]);
+    return stdout.split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+      const [imsi, msisdn, hasKeys, luCs, luPs] = line.split('|');
+      return {
+        imsi,
+        msisdn: msisdn || null,
+        hasAuthKeys: hasKeys === '1',
+        lastLuSeenCs: luCs || null,
+        lastLuSeenPs: luPs || null,
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: string, mgwBindIp?: string | null): string {
   // Note: osmo-msc v1.9.0 does not accept 'mncc-internal' under 'msc' — omit that line,
   // but 'assign-tmsi' alone under 'msc' is accepted fine (TMSI allocation for identity
   // privacy on the SGs link — was dropped along with the rejected mncc-internal line).
@@ -153,6 +264,11 @@ function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: stri
   // must re-apply its ESME live after every osmo-msc process start, not rely
   // on it surviving in this file.
   const epcDomain = `epc.mnc${mnc.padStart(3, '0')}.mcc${mcc}.3gppnetwork.org`;
+  // ports/field placement confirmed against osmo-msc 1.9.0's own
+  // --vty-ref-xml output (config-msc node) and osmo-bsc's shipped default
+  // config, which anchors its own mgw connection the same way — 2427 is
+  // osmo-mgw's own default MGCP listen port.
+  const mgwLines = mgwBindIp ? ` mgw remote-ip ${mgwBindIp}\n mgw remote-port 2427\n mgw local-port 2727\n mgw endpoint-domain msc\n` : '';
   return `log stderr
  logging filter all 1
  logging print extended-timestamp 1
@@ -164,7 +280,7 @@ network
  mm info 1
 msc
  assign-tmsi
-hlr
+${mgwLines}hlr
  remote-ip ${hlrBindIp}
  remote-port 4222
 sgs
@@ -351,6 +467,23 @@ export function readCurrentSmsConfig(): SmsConfigureInput | null {
   }
 }
 
+// ⚠️ REAL RISK, found live (2G GSM module bring-up, 2026-09-09) reading the
+// actual production osmo-msc.cfg on this host: it is a *hand/VTY-maintained*
+// file carrying real config this function's own osmomscCfg() template does
+// not model at all — SMPP/esme (VectorCore MMSC), mncc-int codec defaults,
+// full encryption/authentication settings, smsc retention policy, extended
+// per-category logging levels. This function *fully regenerates the file
+// from scratch* on every call — if it is ever actually invoked against a
+// deployment whose osmo-msc.cfg has accumulated any such extra config (this
+// one has), it silently destroys all of it. This was never actually
+// triggered this session (every verification here was done via direct file
+// inspection/targeted edits specifically to avoid calling this), but it is
+// a latent landmine in the existing SMS module, not something introduced by
+// the GSM module — anyone calling the SMS page's own "Configure" button
+// carries the same risk today. Fixing it properly (teaching osmomscCfg() to
+// preserve unknown directives, i.e. a real merge instead of blind
+// regeneration) is real, separate work — flagging clearly rather than
+// papering over it, and specifically *not* attempting that merge here.
 export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: string; mnc: string; tac: number }> {
   const { mscBindIp, hlrBindIp, mmeLocalIp, previousMcc, previousMnc } = input;
 
@@ -372,11 +505,17 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
   // Write Osmocom config files
   fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
   fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-stp.cfg`, osmostpCfg(), 'utf-8');
-  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-msc.cfg`, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp), 'utf-8');
+  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-msc.cfg`, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp, readMscMgwPeer()), 'utf-8');
 
   // Update MME sgsap section — preserve any other PLMN's existing map
   // entry (e.g. a roaming PLMN configured separately) rather than
-  // wiping the whole section down to just this one PLMN.
+  // wiping the whole section down to just this one PLMN. Only write +
+  // restart the MME when the file content actually changes: this function
+  // is also called as a side effect of the 2G GSM module's Configure
+  // (shared osmo-stp/hlr/msc foundation), and an unconditional MME restart
+  // there drops S1AP on every 4G eNB for ~10-30s every time — a real,
+  // user-visible "my 4G radios vanished" with no actual sgsap change.
+  let mmeChanged = false;
   if (fs.existsSync(HOST_MME_YAML)) {
     const raw     = fs.readFileSync(HOST_MME_YAML, 'utf-8');
     let existing = extractExistingMapEntries(raw);
@@ -386,11 +525,14 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
     const entries  = mergeMapEntry(existing, { mcc, mnc, tac });
     const block    = sgsapYamlBlock(mscBindIp, mmeLocalIp, entries);
     const newRaw   = replaceSgsapSection(raw, block);
-    fs.writeFileSync(HOST_MME_YAML, newRaw, 'utf-8');
+    if (newRaw !== raw) {
+      fs.writeFileSync(HOST_MME_YAML, newRaw, 'utf-8');
+      mmeChanged = true;
+    }
   }
 
-  // Restart MME to pick up the new sgsap config
-  await nsenter('systemctl', ['restart', 'open5gs-mmed']);
+  // Restart MME only if its sgsap config actually changed.
+  if (mmeChanged) await nsenter('systemctl', ['restart', 'open5gs-mmed']);
 
   return { mcc, mnc, tac };
 }
@@ -418,7 +560,11 @@ function getMscVtyHost(): string {
   return raw.match(/line vty[\s\S]*?\n\s*bind\s+(\S+)/)?.[1] ?? '127.0.0.1';
 }
 
-export async function upsertSmppEsme(name: string, password: string): Promise<{ success: boolean; output: string }> {
+export async function upsertSmppEsme(
+  name: string,
+  password: string,
+  opts: { defaultRoute?: boolean } = {},
+): Promise<{ success: boolean; output: string }> {
   requireEsmeName(name);
   // Max 8: SMPP 3.4's bind PDU password field is capped at 8 characters by
   // the protocol spec itself — osmo-msc's VTY will accept a longer string
@@ -433,7 +579,7 @@ export async function upsertSmppEsme(name: string, password: string): Promise<{ 
 
   const { stdout, stderr } = await nsenter(
     'python3',
-    ['-c', VTY_UPSERT_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name, password],
+    ['-c', VTY_UPSERT_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name, password, opts.defaultRoute ? '1' : '0'],
     10000,
   );
   const output = (stdout + stderr).trim();
@@ -670,10 +816,16 @@ export function createSmsRouter(
     const user = (req as any).user?.username ?? 'unknown';
     try {
       const allSubs = await subscriberRepo.findAllFull();
-      const toSync  = allSubs.filter(s => s.msisdn && s.msisdn.length > 0);
+      // Eligible if it has an MSISDN (original purpose — SMS-over-SGs
+      // routing needs one; unchanged) OR the subscriber has explicitly
+      // opted in via the "2G/GSM" checkbox on the Subscribers page
+      // (gsmEnabled) — an additional, not replacement, inclusion path so a
+      // subscriber can get real 2G/3G auth keys synced without needing an
+      // MSISDN at all, but only when the operator actually asked for it.
+      const toSync = allSubs.filter(s => (s.msisdn && s.msisdn.length > 0) || s.gsmEnabled === true);
 
       if (toSync.length === 0) {
-        return res.json({ success: true, synced: 0, message: 'No subscribers with MSISDN found.' });
+        return res.json({ success: true, synced: 0, message: 'No eligible subscribers found.' });
       }
 
       // Stop OsmoHLR before direct DB writes to avoid lock conflicts
@@ -684,21 +836,54 @@ export function createSmsRouter(
 
       for (const sub of toSync) {
         const imsi   = sub.imsi;
-        const msisdn = sub.msisdn![0];
-        // Basic sanitisation: IMSI and MSISDN must be numeric only
-        if (!/^\d+$/.test(imsi) || !/^\d+$/.test(msisdn)) {
+        const msisdn = sub.msisdn?.[0];
+        // Basic sanitisation: IMSI and (if present) MSISDN must be numeric only
+        if (!/^\d+$/.test(imsi) || (msisdn && !/^\d+$/.test(msisdn))) {
           failed.push(imsi);
           continue;
         }
         try {
-          // Clear the MSISDN from any other subscriber first to avoid the UNIQUE constraint,
-          // then upsert this subscriber's MSISDN.
-          await nsenter('sqlite3', [
-            HOST_HLR_DB,
-            `UPDATE subscriber SET msisdn=NULL WHERE msisdn='${msisdn}' AND imsi!='${imsi}'; ` +
-            `INSERT OR IGNORE INTO subscriber (imsi) VALUES ('${imsi}'); ` +
-            `UPDATE subscriber SET msisdn='${msisdn}' WHERE imsi='${imsi}';`,
-          ]);
+          let sql = `INSERT OR IGNORE INTO subscriber (imsi) VALUES ('${imsi}');`;
+          if (msisdn) {
+            // Clear the MSISDN from any other subscriber first to avoid the UNIQUE constraint,
+            // then upsert this subscriber's MSISDN.
+            sql +=
+              ` UPDATE subscriber SET msisdn=NULL WHERE msisdn='${msisdn}' AND imsi!='${imsi}'; ` +
+              `UPDATE subscriber SET msisdn='${msisdn}' WHERE imsi='${imsi}';`;
+          }
+
+          // Real 2G/3G authentication (osmo-bsc's A-interface, not just the
+          // SGs peering this loop originally existed for) needs actual key
+          // material in OsmoHLR, not just the imsi/msisdn mapping above.
+          // Open5GS subscribers are already Milenage (K + OPc) — the same
+          // algorithm OsmoHLR's auc_3g table supports (algo_id_3g=5) — and
+          // OsmoHLR derives 2G vectors from a Milenage auc_3g row via the
+          // standard 3G->2G conversion functions when no separate auc_2g
+          // row exists, so this one upsert is enough to authenticate the
+          // same real SIM over 2G *and* 3G/4G-style AKA. sqn/ind_bitlen are
+          // deliberately left untouched on conflict — OsmoHLR tracks its
+          // own independent SQN state for this subscriber (same as any
+          // second, independent core authenticating the same SIM would),
+          // and resetting it on every re-sync would risk a spurious
+          // SQN-resync each time an operator just re-runs this sync.
+          // Gated on gsmEnabled specifically, NOT just "has an MSISDN" —
+          // every Open5GS subscriber always has valid k/opc, so without
+          // this check every MSISDN-only (SMS-over-SGs) subscriber would
+          // silently get real 2G/3G auth capability pushed too, regardless
+          // of whether its "Enable 2G/GSM" checkbox was ever checked. Real
+          // bug, caught live 2026-09-10: a batch of MSISDN-only subscribers
+          // ended up with real auc_3g keys after nothing but an ordinary
+          // SMS-page re-sync.
+          const k = sub.security?.k;
+          const opc = sub.security?.opc;
+          if (sub.gsmEnabled === true && k && opc && /^[0-9a-fA-F]{32}$/.test(k) && /^[0-9a-fA-F]{32}$/.test(opc)) {
+            sql +=
+              ` INSERT INTO auc_3g (subscriber_id, algo_id_3g, k, opc, sqn, ind_bitlen) ` +
+              `SELECT id, 5, '${k.toLowerCase()}', '${opc.toLowerCase()}', 0, 5 FROM subscriber WHERE imsi='${imsi}' ` +
+              `ON CONFLICT(subscriber_id) DO UPDATE SET algo_id_3g=excluded.algo_id_3g, k=excluded.k, opc=excluded.opc;`;
+          }
+
+          await nsenter('sqlite3', [HOST_HLR_DB, sql]);
           synced++;
         } catch (e) {
           failed.push(imsi);
@@ -727,6 +912,15 @@ export function createSmsRouter(
         }
       } catch (e) {
         logger.warn({ err: String(e) }, 'Could not query OsmoHLR subscriber list for cleanup — skipping');
+      }
+
+      // auc_3g.subscriber_id has no FK/cascade in OsmoHLR's own schema, so a
+      // subscriber row deleted above would otherwise leave its key material
+      // behind forever — clean up any orphaned auc_3g rows too.
+      try {
+        await nsenter('sqlite3', [HOST_HLR_DB, 'DELETE FROM auc_3g WHERE subscriber_id NOT IN (SELECT id FROM subscriber);']);
+      } catch (e) {
+        logger.warn({ err: String(e) }, 'OsmoHLR auc_3g orphan cleanup failed');
       }
 
       await nsenter('systemctl', ['start', 'osmo-hlr']).catch(() => {});

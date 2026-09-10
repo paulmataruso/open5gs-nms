@@ -381,6 +381,7 @@ export interface SubscriberDto {
   operator_determined_barring?: number;
   access_restriction_data?: number;
   network_access_mode?: number;
+  gsmEnabled?: boolean;
 }
 
 // ── Service DTOs ──

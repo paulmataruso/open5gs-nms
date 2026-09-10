@@ -454,6 +454,7 @@ export interface Subscriber {
   operator_determined_barring?: number;  // Bitmask
   access_restriction_data?: number;  // Bitmask (32 = default)
   network_access_mode?: number;  // 0=PACKET_AND_CIRCUIT, 2=ONLY_PACKET
+  gsmEnabled?: boolean;  // Opt-in: sync this subscriber's K/OPc into OsmoHLR (2G/3G auth) even without an MSISDN
 }
 
 export interface SubscriberListItem {

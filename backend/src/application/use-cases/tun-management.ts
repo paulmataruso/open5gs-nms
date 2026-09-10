@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'fs';
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
@@ -20,6 +21,11 @@ export interface TunInterface {
   fromUpfConfig: boolean;
   dnn: string | null;
   subnet: string | null;
+  // Owned by a non-Open5GS daemon that creates the device itself (currently
+  // only osmo-ggsn's GPRS/EDGE APN tun) — surfaced here for visibility but
+  // not editable/deletable from this page, since that daemon recreates it.
+  external?: boolean;
+  externalOwner?: string;
 }
 
 export interface TunCreateInput { name: string; ip: string; prefix: number; }
@@ -27,6 +33,20 @@ export interface TunEditInput   { ip: string;  prefix: number; }
 
 const NETWORKD_DIR = '/etc/systemd/network';
 const NMS_PREFIX   = '10-nms-';
+// The 2G GSM module's own state file (osmo-ggsn's GPRS APN tun device is
+// created by osmo-ggsn itself, not via a .netdev or upf.yaml, so it's
+// otherwise invisible on this page).
+const GSM_STATE_FILE = '/proc/1/root/etc/osmocom/.nms-gsm-bts-state.json';
+
+interface GprsTunInfo { name: string; subnet: string | null; }
+function readGprsTun(): GprsTunInfo | null {
+  try {
+    if (!existsSync(GSM_STATE_FILE)) return null;
+    const s = JSON.parse(readFileSync(GSM_STATE_FILE, 'utf-8'));
+    if (!s.gprsEnabled) return null;
+    return { name: s.ggsnTunDevice || 'apn-gprs', subnet: s.ggsnPoolCidr || null };
+  } catch { return null; }
+}
 
 // Valid Linux interface name: starts with a letter, 1–15 chars, letters/digits/hyphen/underscore.
 function validateName(name: string): void {
@@ -160,18 +180,26 @@ export class TunManagementUseCase {
     // Always include ogstun even if UPF isn't running yet
     allNames.add('ogstun');
 
-    return [...allNames].sort().map(name => ({
-      name,
-      ip:      addrMap.get(name)?.ip     || '',
-      prefix:  addrMap.get(name)?.prefix || 0,
-      state:   stateMap.get(name) || 'down',
-      managed: managedNames.has(name),
-      default: name === 'ogstun',
-      exists:  stateMap.has(name),
-      fromUpfConfig: upfConfigDevs.has(name),
-      dnn:     devInfo.get(name)?.dnn ?? null,
-      subnet:  devInfo.get(name)?.subnet ?? null,
-    }));
+    const gprsTun = readGprsTun();
+    if (gprsTun) allNames.add(gprsTun.name);
+
+    return [...allNames].sort().map(name => {
+      const isGprs = gprsTun?.name === name;
+      return {
+        name,
+        ip:      addrMap.get(name)?.ip     || '',
+        prefix:  addrMap.get(name)?.prefix || 0,
+        state:   stateMap.get(name) || 'down',
+        managed: managedNames.has(name),
+        default: name === 'ogstun',
+        exists:  stateMap.has(name),
+        fromUpfConfig: upfConfigDevs.has(name),
+        dnn:     isGprs ? '2G GPRS/EDGE' : (devInfo.get(name)?.dnn ?? null),
+        subnet:  isGprs ? gprsTun!.subnet : (devInfo.get(name)?.subnet ?? null),
+        external: isGprs || undefined,
+        externalOwner: isGprs ? 'osmo-ggsn' : undefined,
+      };
+    });
   }
 
   async create(input: TunCreateInput): Promise<void> {

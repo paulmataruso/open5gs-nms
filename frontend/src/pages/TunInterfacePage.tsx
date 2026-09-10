@@ -193,6 +193,7 @@ export function TunInterfacePage() {
           Use <strong>New Interface</strong> to create additional TUN interfaces for multi-APN setups not managed by Open5GS.
           NMS-created interfaces are persisted via a <span className="font-mono text-nms-text">.netdev</span> +{' '}
           <span className="font-mono text-nms-text">.network</span> pair in <span className="font-mono text-nms-text">/etc/systemd/network/</span>.
+          The <span className="font-mono text-nms-text">osmo-ggsn</span> row is the 2G GPRS/EDGE APN pool — created and owned by osmo-ggsn itself, shown here read-only.
         </span>
       </div>
 
@@ -250,7 +251,9 @@ export function TunInterfacePage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {iface.default || (!iface.managed && iface.fromUpfConfig) ? (
+                      {iface.external ? (
+                        <span className="text-xs bg-teal-500/10 border border-teal-500/20 text-teal-400 rounded px-2 py-0.5">{iface.externalOwner || 'external'}</span>
+                      ) : iface.default || (!iface.managed && iface.fromUpfConfig) ? (
                         <span className="text-xs bg-nms-surface-2 border border-nms-border text-nms-text-dim rounded px-2 py-0.5">Open5GS</span>
                       ) : iface.managed ? (
                         <span className="text-xs bg-nms-accent/10 border border-nms-accent/20 text-nms-accent rounded px-2 py-0.5">NMS (persistent)</span>
@@ -261,7 +264,10 @@ export function TunInterfacePage() {
                     {isAdmin && (
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-2">
-                          {iface.exists && (
+                          {iface.external && (
+                            <span className="text-xs text-nms-text-dim italic">read-only</span>
+                          )}
+                          {!iface.external && iface.exists && (
                             <button
                               onClick={() => handleToggle(iface)}
                               disabled={acting}
@@ -271,7 +277,7 @@ export function TunInterfacePage() {
                               {iface.state === 'up' ? <ArrowDown className="w-4 h-4" /> : <ArrowUp className="w-4 h-4" />}
                             </button>
                           )}
-                          {iface.exists && (
+                          {!iface.external && iface.exists && (
                             <button onClick={() => setModal({ mode: 'edit', iface })} disabled={acting} title="Edit IP" className="p-1.5 rounded text-nms-text-dim hover:text-nms-text hover:bg-nms-surface-2 transition-colors">
                               <Pencil className="w-4 h-4" />
                             </button>

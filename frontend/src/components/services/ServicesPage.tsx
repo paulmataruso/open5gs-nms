@@ -20,7 +20,11 @@ import { clsx } from 'clsx';
 const SERVICES_5G     = ['nrf', 'scp', 'amf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1'];
 const SERVICES_4G     = ['mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 const SERVICES_SHARED = ['mongodb', 'smf', 'upf'];
-const SERVICES_OSMO   = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
+const SERVICES_OSMO_SGS = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
+// osmo-hlr/osmo-msc/osmo-stp are shared with the SMS-over-SGs module — these
+// are the 2G GSM module's own daemons, layered on top (see gsm-controller.ts).
+const SERVICES_OSMO_GSM = ['osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db'];
+const SERVICES_OSMO   = [...SERVICES_OSMO_SGS, ...SERVICES_OSMO_GSM];
 
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || bytes === 0) return '—';
@@ -53,7 +57,8 @@ function formatUptime(timestamp: string | null | undefined): string {
 // mongodb has no config page of its own but its backups are managed on
 // Backup.
 function serviceManageTarget(name: string): { label: string; target: string } {
-  if (SERVICES_OSMO.includes(name)) return { label: 'SMS', target: 'sms' };
+  if (SERVICES_OSMO_SGS.includes(name)) return { label: 'SMS', target: 'sms' };
+  if (SERVICES_OSMO_GSM.includes(name)) return { label: '2G GSM', target: 'gsm' };
   if (name === 'mongodb') return { label: 'Backup', target: 'backup' };
   return { label: 'Config', target: 'config' };
 }

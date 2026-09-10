@@ -24,6 +24,11 @@ export const FEATURES = {
   // a live radio's real S1/N2 backhaul, a bigger blast radius than a broken lab
   // feature, so it stays off until explicitly enabled.
   secgw: import.meta.env.VITE_ENABLE_SECGW === 'true',
+  // Opt-in like secgw — real 2G GSM radio access (BSC/BTS) on top of the
+  // sms module's already-running osmo-hlr/osmo-msc/osmo-stp. Same posture:
+  // misconfiguring live radio (and, for a real BTS, actual spectrum
+  // transmission) is a bigger blast radius than a broken lab feature.
+  gsm: import.meta.env.VITE_ENABLE_GSM === 'true',
   // Opt-in like pstn/mms/secgw (not default-on like sms/ims) — not yet meant for
   // general/public deployments, only for hosts that explicitly enable it.
   rfPlanning: import.meta.env.VITE_ENABLE_RF_PLANNING === 'true',

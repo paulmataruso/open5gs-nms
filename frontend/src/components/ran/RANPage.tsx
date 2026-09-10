@@ -8,6 +8,9 @@ import { imsApi } from '../../api/ims';
 import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
+import { FEATURES } from '../../config/features';
+import { gsmApi, type BtsEntry, type GsmSignalSample } from '../../api/gsm';
+import { Signal } from 'lucide-react';
 
 interface RANPageProps {
   onNavigateToSubscriber?: (imsi: string) => void;
@@ -1364,12 +1367,310 @@ function IPPlumbingModal({ onClose, configs }: { onClose: () => void; configs: a
 
 // ── Section header ────────────────────────────────────────────────────────────
 
-function SectionHeader({ label, color }: { label: string; color: '4G' | '5G' }): JSX.Element {
-  const is5G = color === '5G';
+// ── 2G / GSM ────────────────────────────────────────────────────────────────
+// 2G has no S1-MME/N2-style split control/user-plane interface pair — the BSC
+// talks one A-interface to the MSC — so this is a single section, not two
+// InterfaceCards. Data comes from the GSM module's own API (BTS entries +
+// osmo-bsc meas-feed signal samples), not Open5GS's active-session model, so
+// InterfaceCard (heavily 4G/5G-session-coupled) is deliberately not reused —
+// only its visual language is.
+function useGsm2GData() {
+  const [btsEntries, setBtsEntries] = useState<BtsEntry[]>([]);
+  const [services, setServices] = useState<Record<string, boolean>>({});
+  const [samples, setSamples] = useState<GsmSignalSample[]>([]);
+  // Per-BTS live OML/RSL link state, keyed by BtsEntry.id — the A-interface
+  // (osmo-bsc/mgw) can be up while a radio's Abis link is down, so the
+  // section shows real per-radio state, not just "are the daemons running".
+  const [linkStatus, setLinkStatus] = useState<Record<string, { omlConnected: boolean; rslConnected: boolean }>>({});
+
+  useEffect(() => {
+    if (!FEATURES.gsm) return;
+    let cancelled = false;
+    const load = () => {
+      gsmApi.getStatus().then(s => {
+        if (cancelled) return;
+        const entries = s.btsEntries || [];
+        setBtsEntries(entries);
+        setServices(s.services || {});
+        Promise.all(entries.map(e =>
+          gsmApi.getBtsLinkStatus(e.id).then(ls => [e.id, { omlConnected: ls.omlConnected, rslConnected: ls.rslConnected }] as const).catch(() => null),
+        )).then(pairs => { if (!cancelled) setLinkStatus(Object.fromEntries(pairs.filter(Boolean) as [string, any][])); });
+      }).catch(() => {});
+      gsmApi.getSignalOverview().then(r => { if (!cancelled) setSamples(r.samples || []); }).catch(() => {});
+    };
+    load();
+    const t = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
+  return { btsEntries, services, samples, linkStatus };
+}
+
+type Gsm2GUe = GsmSignalSample & { onChannel: boolean };
+interface Gsm2GRow { bts: BtsEntry; index: number; ues: Gsm2GUe[]; omlUp: boolean | null }
+
+// Attribute each measurement sample to a BTS. `s.bts` (from a live `show
+// lchan`) is only set while the UE holds a dedicated channel right now — an
+// idle-but-registered UE has `bts: null` and MUST still be shown (the old
+// build regressed this by filtering on `s.bts === i`). With a single BTS,
+// null-bts samples belong to it; with several, they go to an "unknown radio"
+// bucket rather than vanishing.
+function build2gRows(
+  btsEntries: BtsEntry[], samples: GsmSignalSample[],
+  linkStatus: Record<string, { omlConnected: boolean; rslConnected: boolean }>,
+): { rows: Gsm2GRow[]; unassigned: Gsm2GUe[] } {
+  const rows: Gsm2GRow[] = btsEntries.map((bts, index) => {
+    const ls = linkStatus[bts.id];
+    return { bts, index, ues: [], omlUp: ls ? ls.omlConnected && ls.rslConnected : null };
+  });
+  const unassigned: Gsm2GUe[] = [];
+  const single = btsEntries.length === 1;
+  for (const s of samples) {
+    const ue: Gsm2GUe = { ...s, onChannel: s.bts != null };
+    if (s.bts != null && rows[s.bts]) rows[s.bts].ues.push(ue);
+    else if (single) rows[0].ues.push(ue);
+    else unassigned.push(ue);
+  }
+  return { rows, unassigned };
+}
+
+const GSM2G_UE_HEADER = (
+  <div className="flex items-center gap-2 px-3 py-1.5 border-b border-nms-border bg-nms-surface-2/30 text-[10px] font-semibold text-nms-text-dim uppercase tracking-wider">
+    <span className="w-3 flex-shrink-0" />
+    <span className="flex-1">IMSI / Subscriber</span>
+    <span className="w-24 text-center flex-shrink-0">MSISDN</span>
+    <span className="w-16 text-center flex-shrink-0">UL RxLev</span>
+    <span className="w-14 text-center flex-shrink-0">RxQual</span>
+    <span className="w-10 text-center flex-shrink-0">TA</span>
+    <span className="w-16 text-right flex-shrink-0">State</span>
+  </div>
+);
+
+function Gsm2GUeRow({ ue, onNavigate }: { ue: Gsm2GUe; onNavigate?: (imsi: string) => void }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2/40 transition-colors">
+      <ChevronRight className="w-3 h-3 text-nms-text-dim flex-shrink-0" />
+      <div className="flex-1 min-w-0">
+        <button onClick={() => onNavigate?.(ue.imsi)} className="text-xs font-mono text-nms-accent hover:underline text-left truncate block">{ue.imsi}</button>
+        {ue.nickname && <span className="text-xs text-nms-text-dim block truncate">{ue.nickname}</span>}
+      </div>
+      <span className="w-24 text-center text-xs font-mono text-nms-text flex-shrink-0">{ue.msisdn || '—'}</span>
+      <span className="w-16 text-center text-xs font-mono text-nms-text flex-shrink-0">{ue.ulRxLevDbm !== null ? ue.ulRxLevDbm : '—'}</span>
+      <span className="w-14 text-center text-xs font-mono text-nms-text-dim flex-shrink-0">{ue.ulRxQual !== null ? ue.ulRxQual : '—'}</span>
+      <span className="w-10 text-center text-xs font-mono text-nms-text-dim flex-shrink-0">{ue.timingAdvance !== null ? ue.timingAdvance : '—'}</span>
+      <span className="w-16 text-right flex-shrink-0">
+        <span className={clsx('inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium',
+          ue.onChannel ? 'bg-nms-green/10 text-nms-green' : 'bg-nms-text-dim/10 text-nms-text-dim')}>
+          <Circle className="w-1.5 h-1.5 fill-current" />{ue.onChannel ? 'active' : 'idle'}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function Gsm2GBtsMeta({ b }: { b: BtsEntry }): JSX.Element {
+  return (
+    <span className="text-xs text-nms-text-dim">
+      {b.remoteIp || 'local'} · LAC {b.locationAreaCode} · CI {b.cellIdentity}
+      {b.gprsMode && b.gprsMode !== 'none' ? ` · ${b.gprsMode.toUpperCase()}` : ''}
+    </span>
+  );
+}
+
+function Gsm2GAbisDot({ omlUp, fallbackUp }: { omlUp: boolean | null; fallbackUp: boolean }): JSX.Element {
+  const up = omlUp ?? fallbackUp;
+  return (
+    <span className="inline-flex items-center gap-1.5" title={omlUp === null ? 'Abis link state unknown — showing A-interface state' : up ? 'OML + RSL connected' : 'Abis link down'}>
+      <Circle className={clsx('w-2 h-2', up ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
+      <span className={clsx('text-xs', up ? 'text-nms-green' : 'text-nms-red')}>{up ? 'Up' : 'Down'}</span>
+    </span>
+  );
+}
+
+function Gsm2GBandTag({ b }: { b: BtsEntry }): JSX.Element {
+  return <span className="text-[10px] font-mono text-teal-400 bg-teal-500/10 border border-teal-500/30 px-1.5 py-0.5 rounded">{b.band} · ARFCN {b.arfcn}</span>;
+}
+
+// ── 2G Layout A: Table (dense rows + inline nested UE list) ───────────────────
+function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate }: {
+  rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
+}): JSX.Element {
+  return (
+    <div className="border border-nms-border rounded-md overflow-hidden">
+      <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-3 text-xs font-semibold text-nms-text uppercase tracking-wider">
+        <span>BTS / Band</span><span className="text-center">UEs</span><span className="text-right">Abis</span>
+      </div>
+      {rows.map((r, i) => (
+        <div key={r.bts.id}>
+          <div className="grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border bg-nms-surface-2/20">
+            <div>
+              <div className="flex items-center gap-1.5"><span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span><Gsm2GBandTag b={r.bts} /></div>
+              <Gsm2GBtsMeta b={r.bts} />
+            </div>
+            <div className="text-center self-center"><span className="text-sm font-bold text-teal-400" title="Registered UEs seen on this BTS">{r.ues.length}</span></div>
+            <div className="flex items-center justify-end self-center"><Gsm2GAbisDot omlUp={r.omlUp} fallbackUp={aIfaceUp} /></div>
+          </div>
+          {r.ues.length > 0 ? (
+            <div className="bg-nms-surface-2/10">{i === 0 && GSM2G_UE_HEADER}{r.ues.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
+          ) : (
+            <div className="px-6 py-1.5 border-b border-nms-border/50 last:border-b-0"><span className="text-xs text-nms-text-dim italic">No registered UEs</span></div>
+          )}
+        </div>
+      ))}
+      {unassigned.length > 0 && (
+        <div>
+          <div className="px-3 py-2 border-b border-nms-border bg-nms-surface-2/20"><span className="text-sm font-mono font-semibold text-nms-text-dim">Radio not identified</span></div>
+          <div className="bg-nms-surface-2/10">{GSM2G_UE_HEADER}{unassigned.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 2G Layout B: Collapsible list ────────────────────────────────────────────
+function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate }: {
+  rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState<Set<string>>(() => new Set(rows.filter(r => r.ues.length > 0).map(r => r.bts.id)));
+  const toggle = (id: string) => setOpen(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  return (
+    <div className="border border-nms-border rounded-md overflow-hidden divide-y divide-nms-border">
+      {rows.map(r => {
+        const isOpen = open.has(r.bts.id);
+        return (
+          <div key={r.bts.id}>
+            <button onClick={() => toggle(r.bts.id)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-nms-surface-2/50 transition-colors text-left">
+              <ChevronRight className={clsx('w-3.5 h-3.5 text-nms-text-dim flex-shrink-0 transition-transform', isOpen && 'rotate-90')} />
+              <span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span>
+              <Gsm2GBandTag b={r.bts} />
+              <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+                <span className="text-xs font-semibold text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded-full">{r.ues.length} UE{r.ues.length === 1 ? '' : 's'}</span>
+                <Gsm2GAbisDot omlUp={r.omlUp} fallbackUp={aIfaceUp} />
+              </span>
+            </button>
+            {isOpen && (
+              <div className="px-3 pb-3 pl-9 bg-nms-surface-2/10 space-y-2">
+                <Gsm2GBtsMeta b={r.bts} />
+                {r.ues.length > 0 ? (
+                  <div className="border border-nms-border/50 rounded overflow-hidden">{GSM2G_UE_HEADER}{r.ues.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
+                ) : (
+                  <p className="text-xs text-nms-text-dim italic">No registered UEs</p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {unassigned.length > 0 && (
+        <div className="px-3 py-2 bg-nms-surface-2/10">
+          <p className="text-xs font-semibold text-nms-text-dim mb-1">Radio not identified ({unassigned.length})</p>
+          <div className="border border-nms-border/50 rounded overflow-hidden">{GSM2G_UE_HEADER}{unassigned.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 2G Layout C: List + detail panel ────────────────────────────────────────
+function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate }: {
+  rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
+}): JSX.Element {
+  const [sel, setSel] = useState<string | null>(null);
+  const selected = rows.find(r => r.bts.id === sel) ?? rows[0];
+  return (
+    <div className="border border-nms-border rounded-md overflow-hidden flex" style={{ minHeight: '180px' }}>
+      <div className="w-48 flex-shrink-0 border-r border-nms-border divide-y divide-nms-border overflow-y-auto max-h-96">
+        {rows.map(r => (
+          <button key={r.bts.id} onClick={() => setSel(r.bts.id)}
+            className={clsx('w-full flex items-center gap-1.5 px-2.5 py-2 text-left transition-colors', selected?.bts.id === r.bts.id ? 'bg-teal-500/10' : 'hover:bg-nms-surface-2/50')}>
+            <Circle className={clsx('w-1.5 h-1.5 flex-shrink-0', (r.omlUp ?? aIfaceUp) ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
+            <span className="text-xs font-mono text-nms-text truncate flex-1">{r.bts.name}</span>
+            <span className="text-[10px] font-semibold text-teal-400 flex-shrink-0">{r.ues.length}</span>
+          </button>
+        ))}
+        {unassigned.length > 0 && (
+          <button onClick={() => setSel('__unassigned__')}
+            className={clsx('w-full flex items-center gap-1.5 px-2.5 py-2 text-left transition-colors', sel === '__unassigned__' ? 'bg-teal-500/10' : 'hover:bg-nms-surface-2/50')}>
+            <Circle className="w-1.5 h-1.5 flex-shrink-0 fill-nms-text-dim text-nms-text-dim" />
+            <span className="text-xs text-nms-text-dim truncate flex-1 italic">Radio not identified</span>
+            <span className="text-[10px] font-semibold text-nms-text-dim flex-shrink-0">{unassigned.length}</span>
+          </button>
+        )}
+      </div>
+      <div className="flex-1 p-3 min-w-0">
+        {sel === '__unassigned__' ? (
+          <>
+            <div className="text-xs text-nms-text-dim mb-2"><span className="font-bold text-nms-text-dim">{unassigned.length}</span> registered UE{unassigned.length === 1 ? '' : 's'} — not currently matched to a BTS</div>
+            <div className="border border-nms-border/50 rounded overflow-hidden">{GSM2G_UE_HEADER}{unassigned.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
+          </>
+        ) : selected && (
+          <>
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <div>
+                <div className="flex items-center gap-1.5 flex-wrap"><span className="text-base font-mono font-semibold text-nms-text">{selected.bts.name}</span><Gsm2GBandTag b={selected.bts} /></div>
+                <Gsm2GBtsMeta b={selected.bts} />
+              </div>
+              <Gsm2GAbisDot omlUp={selected.omlUp} fallbackUp={aIfaceUp} />
+            </div>
+            <div className="text-xs text-nms-text-dim mb-2"><span className="font-bold text-teal-400">{selected.ues.length}</span> registered UE{selected.ues.length === 1 ? '' : 's'}</div>
+            {selected.ues.length > 0 ? (
+              <div className="border border-nms-border/50 rounded overflow-hidden">{GSM2G_UE_HEADER}{selected.ues.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
+            ) : (
+              <p className="text-xs text-nms-text-dim italic">No registered UEs</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Gsm2GSection({ btsEntries, services, samples, linkStatus, layout, onNavigateToSubscriber }: {
+  btsEntries: BtsEntry[]; services: Record<string, boolean>; samples: GsmSignalSample[];
+  linkStatus: Record<string, { omlConnected: boolean; rslConnected: boolean }>;
+  layout: RadioLayoutKind;
+  onNavigateToSubscriber?: (imsi: string) => void;
+}): JSX.Element {
+  const aIfaceUp = services['osmo-bsc'] === true && services['osmo-mgw'] === true;
+  const { rows, unassigned } = build2gRows(btsEntries, samples, linkStatus);
+  const body = btsEntries.length === 0
+    ? <p className="text-sm text-nms-text-dim py-6 text-center">No BTS configured — add one on the 2G GSM page.</p>
+    : layout === 'accordion' ? <Gsm2GAccordion rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} />
+    : layout === 'split'     ? <Gsm2GSplit     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} />
+    :                          <Gsm2GTable     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} />;
+  return (
+    <div>
+      <SectionHeader label="2G GSM" color="2G" />
+      <div className="nms-card">
+        <div className="flex items-center gap-3 mb-4">
+          <div className={clsx('p-2 rounded-lg', aIfaceUp ? 'bg-teal-500/10' : 'bg-nms-surface-2')}>
+            <Signal className={clsx('w-5 h-5', aIfaceUp ? 'text-teal-400' : 'text-nms-text-dim')} />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold font-display text-nms-text">A-interface</h2>
+            <p className="text-xs text-nms-text-dim">Control + User Plane (osmo-bsc ↔ osmo-msc / osmo-mgw)</p>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <span className={clsx('text-xs font-mono px-2 py-0.5 rounded-full border flex items-center gap-1',
+              aIfaceUp ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
+              <span className={clsx('w-1.5 h-1.5 rounded-full', aIfaceUp ? 'bg-green-400 animate-pulse' : 'bg-red-500')} />
+              {aIfaceUp ? 'Up' : 'Down'}
+            </span>
+          </div>
+        </div>
+        {body}
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({ label, color }: { label: string; color: '4G' | '5G' | '2G' }): JSX.Element {
+  const cls = color === '5G' ? 'bg-nms-accent/15 text-nms-accent'
+    : color === '2G' ? 'bg-teal-500/15 text-teal-400'
+    : 'bg-purple-500/15 text-purple-400';
   return (
     <div className="flex items-center gap-3 mb-3">
-      <span className={clsx('text-xs font-bold uppercase tracking-widest px-2.5 py-1 rounded',
-        is5G ? 'bg-nms-accent/15 text-nms-accent' : 'bg-purple-500/15 text-purple-400')}>{label}</span>
+      <span className={clsx('text-xs font-bold uppercase tracking-widest px-2.5 py-1 rounded', cls)}>{label}</span>
       <div className="flex-1 h-px bg-nms-border" />
     </div>
   );
@@ -1540,6 +1841,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const n3Radios    = withBlockedRadios((interfaceStatus?.n3?.connectedGnodebs || []) as ConnectedRadio[], blockedGnbIps).filter(r => matchesFilter(r.ip));
   const activeUEs4G = (interfaceStatus?.activeUEs4G || []) as ActiveUE[];
   const activeUEs5G = (interfaceStatus?.activeUEs5G || []) as ActiveUE[];
+  const gsm2g = useGsm2GData();
 
   const [sortCol, setSortCol] = useState<'imsi' | 'ip' | 'apn'>('imsi');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -1556,12 +1858,24 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
     const combined = [
       ...activeUEs4G.map(ue => ({ ...ue, gen: '4G' as const })),
       ...activeUEs5G.map(ue => ({ ...ue, gen: '5G' as const })),
-    ];
+      // 2G CS has no PDP-context IP — ip is '—'. "Active" here means a
+      // subscriber with a recent dedicated-channel measurement report;
+      // radioIp carries the BTS name (not an IP — 2G radios are named, not
+      // IP-keyed here) so the shared Radio column populates.
+      ...gsm2g.samples.map(s => ({
+        ip: '—', imsi: s.imsi, nickname: s.nickname ?? undefined,
+        cmState: s.bts != null ? 'connected' : 'idle',
+        radioIp: s.bts != null ? (gsm2g.btsEntries[s.bts]?.name ?? undefined) : undefined,
+        gen: '2G' as const,
+      })),
+    ] as Array<ActiveUE & { gen: '4G' | '5G' | '2G' }>;
     // Same band/partial-IP filter as the radio cards, applied via each
     // session's own radioIp — a UE whose radio isn't in the filtered set
     // shouldn't show up here either. A UE with no known radioIp (metrics
     // fallback) always passes through, since there's nothing to filter on.
-    const filtered = combined.filter(ue => !ue.radioIp || matchesFilter(ue.radioIp));
+    // 2G rows carry a BTS name (not an IP) in radioIp and aren't part of the
+    // IP/band tagging system the filter works against — always pass them.
+    const filtered = combined.filter(ue => ue.gen === '2G' || !ue.radioIp || matchesFilter(ue.radioIp));
     return filtered.sort((a, b) => {
       let av = '', bv = '';
       if (sortCol === 'imsi')      { av = a.imsi || '';        bv = b.imsi || ''; }
@@ -1570,7 +1884,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       const cmp = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [activeUEs4G, activeUEs5G, sortCol, sortDir, matchesFilter]);
+  }, [activeUEs4G, activeUEs5G, gsm2g.samples, sortCol, sortDir, matchesFilter]);
 
   const isMetricsFallback = allSessions.some(s => s.metricsOnly);
 
@@ -1664,13 +1978,17 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
         </div>
       </div>
 
+      {FEATURES.gsm && (
+        <Gsm2GSection btsEntries={gsm2g.btsEntries} services={gsm2g.services} samples={gsm2g.samples} linkStatus={gsm2g.linkStatus} layout={radioLayout} onNavigateToSubscriber={onNavigateToSubscriber} />
+      )}
+
       {/* All Sessions */}
       <div className="nms-card">
         <div className="flex items-center gap-3 mb-4">
           <div className="p-2 rounded-lg bg-nms-accent/10"><Users className="w-5 h-5 text-nms-accent" /></div>
           <div>
             <h2 className="text-lg font-semibold font-display text-nms-text">All Active UE Sessions</h2>
-            <p className="text-xs text-nms-text-dim">Combined 4G + 5G session summary</p>
+            <p className="text-xs text-nms-text-dim">Combined 4G + 5G{FEATURES.gsm ? ' + 2G' : ''} session summary</p>
           </div>
           <div className="ml-auto flex items-center gap-3">
             {isMetricsFallback && (
@@ -1678,6 +1996,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
             )}
             {activeUEs4G.length > 0 && <span className="text-xs font-medium text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded">{activeUEs4G.length} 4G</span>}
             {activeUEs5G.length > 0 && <span className="text-xs font-medium text-nms-accent bg-nms-accent/10 px-2 py-0.5 rounded">{activeUEs5G.length} 5G</span>}
+            {gsm2g.samples.length > 0 && <span className="text-xs font-medium text-teal-400 bg-teal-500/10 px-2 py-0.5 rounded">{gsm2g.samples.length} 2G</span>}
             <span className="text-sm font-semibold text-nms-accent">{allSessions.length} {allSessions.length === 1 ? 'session' : 'sessions'}</span>
           </div>
         </div>
@@ -1740,7 +2059,8 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                       ) : <span className="text-nms-text-dim">—</span>}
                     </td>
                     <td className="px-3 py-2.5 text-center">
-                      <span className={clsx('inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold', ue.gen === '5G' ? 'bg-nms-accent/10 text-nms-accent' : 'bg-purple-500/10 text-purple-400')}>{ue.gen}</span>
+                      <span className={clsx('inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold',
+                        ue.gen === '5G' ? 'bg-nms-accent/10 text-nms-accent' : ue.gen === '2G' ? 'bg-teal-500/10 text-teal-400' : 'bg-purple-500/10 text-purple-400')}>{ue.gen}</span>
                     </td>
                     <td className="px-3 py-2.5 text-center">
                       {ue.cmState ? (

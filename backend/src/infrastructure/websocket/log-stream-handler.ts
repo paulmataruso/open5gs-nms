@@ -6,7 +6,7 @@ import { DockerLogStreamingUseCase } from '../../application/use-cases/docker-lo
 import { classifyMajorEvent, MajorEvent, MajorEventType, MAJOR_EVENT_GREP_PATTERNS, EVENT_TYPE_SERVICES } from '../../application/use-cases/major-event-classifier';
 
 interface LogStreamSubscription {
-  source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims';
+  source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm';
   services: Set<string>;
   processes: Map<string, ChildProcess>;
   filter?: string; // optional line-content filter
@@ -88,7 +88,7 @@ export class LogStreamHandler {
   }
 
   private async sendRecentLogs(
-    ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims', services: string[], limit: number, filter?: string,
+    ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm', services: string[], limit: number, filter?: string,
     majorEventsOnly?: boolean, imsisArr?: string[], radioIpsArr?: string[], eventTypesArr?: string[],
   ): Promise<void> {
     try {
@@ -165,10 +165,11 @@ export class LogStreamHandler {
           .filter((l): l is LogEntry => l !== null)
           .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
           .slice(-limit);
-      } else if (source === 'ims') {
-        // IMS components (Kamailio P/I/S-CSCF+SMSC, PyHSS, MariaDB) log to the host
-        // journal only, one unit per service — fetch each, then merge chronologically
-        // same as the GenieACS/FRR multi-source-merge above.
+      } else if (source === 'ims' || source === 'gsm') {
+        // IMS components (Kamailio P/I/S-CSCF+SMSC, PyHSS, MariaDB) and Osmocom 2G/GSM
+        // daemons (osmo-stp/hlr/msc/mgw/bsc/bts-*) both log to the host journal only,
+        // one unit per service — fetch each, then merge chronologically same as the
+        // GenieACS/FRR multi-source-merge above.
         const perService = await Promise.all(
           services.map(svc => this.logStreamingUseCase.getRecentJournalLogs(svc, limit)),
         );
@@ -191,7 +192,7 @@ export class LogStreamHandler {
   }
 
   private subscribe(
-    ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims', services: string[], filter?: string,
+    ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm', services: string[], filter?: string,
     majorEventsOnly?: boolean, imsisArr?: string[], radioIpsArr?: string[], eventTypesArr?: string[],
   ): void {
     // Unsubscribe existing streams
@@ -232,8 +233,8 @@ export class LogStreamHandler {
         this.startGenieacsStream(ws, service, subscription);
       } else if (source === 'frr') {
         this.startFrrStream(ws, subscription);
-      } else if (source === 'ims') {
-        this.startImsStream(ws, service, subscription);
+      } else if (source === 'ims' || source === 'gsm') {
+        this.startJournalStream(ws, service, subscription);
       } else {
         this.startServiceStream(ws, service, subscription);
       }
@@ -440,11 +441,12 @@ export class LogStreamHandler {
     });
   }
 
-  // IMS components (Kamailio P/I/S-CSCF+SMSC, PyHSS, MariaDB) have no discrete log file —
-  // they log to the host's systemd journal only — so live tailing goes through
+  // Components with no discrete log file — IMS (Kamailio P/I/S-CSCF+SMSC, PyHSS,
+  // MariaDB) and Osmocom 2G/GSM daemons (osmo-stp/hlr/msc/mgw/bsc/bts-*) alike — log
+  // to the host's systemd journal only, so live tailing goes through
   // `journalctl -u <unit> -f` in the host's own namespace via nsenter, same pattern as
   // every other host-side command in this project (see IHostExecutor).
-  private startImsStream(ws: WebSocket, service: string, subscription: LogStreamSubscription): void {
+  private startJournalStream(ws: WebSocket, service: string, subscription: LogStreamSubscription): void {
     const process = spawn('nsenter', [
       '-t', '1', '-m', '-u', '-i', '-p', '--',
       'journalctl', '-u', service, '-f', '-n', '0', '--no-pager', '-o', 'short-iso',
@@ -456,24 +458,24 @@ export class LogStreamHandler {
       for (const line of lines) {
         const logEntry = this.logStreamingUseCase.parseJournalLine(line, service);
         if (logEntry && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'log_entry', source: 'ims', log: logEntry }));
+          ws.send(JSON.stringify({ type: 'log_entry', source: subscription.source, log: logEntry }));
         }
       }
     });
 
     process.stderr.on('data', (data: Buffer) => {
-      this.logger.warn({ service, stderr: data.toString() }, 'ims journalctl stderr');
+      this.logger.warn({ service, stderr: data.toString() }, 'journal stream stderr');
     });
 
     process.on('close', (code) => {
       if (code !== 0 && code !== null) {
-        this.logger.warn({ service, code }, 'ims journalctl process closed with error');
+        this.logger.warn({ service, code }, 'journal stream process closed with error');
       }
       subscription.processes.delete(service);
     });
 
     process.on('error', (err) => {
-      this.logger.error({ service, err: String(err) }, 'ims journalctl process error');
+      this.logger.error({ service, err: String(err) }, 'journal stream process error');
       subscription.processes.delete(service);
     });
   }

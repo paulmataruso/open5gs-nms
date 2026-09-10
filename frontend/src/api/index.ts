@@ -143,6 +143,10 @@ export interface TunInterface {
   fromUpfConfig: boolean;
   dnn: string | null;
   subnet: string | null;
+  // Created by a non-Open5GS daemon (currently only osmo-ggsn's GPRS APN
+  // tun) — shown read-only; that daemon owns its lifecycle.
+  external?: boolean;
+  externalOwner?: string;
 }
 
 export const subscriberApi = {

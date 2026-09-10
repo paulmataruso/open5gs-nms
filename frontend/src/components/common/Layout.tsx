@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge, ServerCog,
+  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge, ServerCog, Signal, Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
@@ -20,7 +20,7 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'dashboard', label: 'Dashboard', icon: Activity },
   { id: 'topology', label: 'Topology', icon: Network },
   { id: 'ran', label: 'RAN Network', icon: Radio },
-  ...(FEATURES.ueSignal ? [{ id: 'radio-signal', label: 'UE Signal', icon: Wifi }] : []),
+  ...(FEATURES.ueSignal ? [{ id: 'radio-signal', label: '4G/5G UE Signal', icon: Wifi }] : []),
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
@@ -38,6 +38,9 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'frr', label: 'L3 Routing', icon: GitBranch },
   { id: 'bind', label: 'DNS (BIND9)', icon: Globe },
   ...(FEATURES.sms ? [{ id: 'sms', label: FEATURES.mms ? 'SMS/MMS' : 'SMS', icon: MessageSquare }] : []),
+  ...(FEATURES.gsm ? [{ id: 'gsm', label: '2G GSM', icon: Signal }] : []),
+  ...(FEATURES.gsm ? [{ id: 'gsm-subscribers', label: '2G Subscribers', icon: Smartphone }] : []),
+  ...(FEATURES.gsm ? [{ id: 'gsm-signal', label: '2G UE Signal', icon: Wifi }] : []),
   ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
   ...(FEATURES.pstn ? [{ id: 'pstn', label: 'PSTN Gateway', icon: PhoneCall }] : []),
   ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),

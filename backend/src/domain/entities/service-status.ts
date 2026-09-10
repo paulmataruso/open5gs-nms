@@ -24,7 +24,16 @@ export type ServiceName =
   // Osmocom (SMS over SGs)
   | 'osmo-stp'  // Signalling Transfer Point
   | 'osmo-hlr'  // Home Location Register
-  | 'osmo-msc'; // Mobile Switching Centre
+  | 'osmo-msc'  // Mobile Switching Centre
+  // Osmocom (2G GSM module — may be absent on deployments without it, same
+  // as the SGs trio above; the monitor tolerates a missing unit)
+  | 'osmo-bsc'          // Base Station Controller
+  | 'osmo-mgw'          // Media Gateway
+  | 'osmo-bts-virtual'  // Virtual BTS (protocol testing)
+  | 'osmo-pcu'          // Packet Control Unit (GPRS/EDGE)
+  | 'osmo-sgsn'         // Serving GPRS Support Node
+  | 'osmo-ggsn'         // Gateway GPRS Support Node
+  | 'osmo-meas-udp2db'; // Per-UE measurement-report -> SQLite bridge
 
 export const SERVICE_UNIT_MAP: Record<ServiceName, string> = {
   // Infrastructure
@@ -52,6 +61,13 @@ export const SERVICE_UNIT_MAP: Record<ServiceName, string> = {
   'osmo-stp': 'osmo-stp',
   'osmo-hlr': 'osmo-hlr',
   'osmo-msc': 'osmo-msc',
+  'osmo-bsc': 'osmo-bsc',
+  'osmo-mgw': 'osmo-mgw',
+  'osmo-bts-virtual': 'osmo-bts-virtual',
+  'osmo-pcu': 'osmo-pcu',
+  'osmo-sgsn': 'osmo-sgsn',
+  'osmo-ggsn': 'osmo-ggsn',
+  'osmo-meas-udp2db': 'osmo-meas-udp2db',
 };
 
 // Proper restart order: Control plane BEFORE user plane to avoid PFCP errors

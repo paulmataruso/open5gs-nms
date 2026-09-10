@@ -92,6 +92,7 @@ import { createSpeedtestRouter } from './interfaces/rest/speedtest-controller';
 import { createFrrRouter } from './interfaces/rest/frr-controller';
 import { createFrrSourceBuildRouter } from './interfaces/rest/frr-source-build-controller';
 import { createSmsRouter } from './interfaces/rest/sms-controller';
+import { createGsmRouter } from './interfaces/rest/gsm-controller';
 import { createMmsRouter, MmsMsisdnMapRefresher } from './interfaces/rest/mms-controller';
 import { createVectorcoreSmscRouter } from './interfaces/rest/vectorcore-smsc-controller';
 import { createImsRouter } from './interfaces/rest/ims-controller';
@@ -501,6 +502,7 @@ async function main() {
   app.use('/api/frr/source-build', createFrrSourceBuildRouter(logger, auditLogger));
   app.use('/api/frr',      createFrrRouter(logger, auditLogger));
   app.use('/api/sms',        createSmsRouter(subscriberRepo, logger, auditLogger));
+  app.use('/api/gsm',        createGsmRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/mms',        createMmsRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/vectorcore-smsc', createVectorcoreSmscRouter(logger, auditLogger));
   app.use('/api/ims',        createImsRouter(subscriberRepo, logger, auditLogger, imsCallStatsMonitor));

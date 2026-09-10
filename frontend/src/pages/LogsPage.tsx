@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { RotateCw, Trash2, CheckSquare, Square, Circle, Server, Box, Download, Radio, ScrollText, FileText, Gauge, Zap, RadioTower } from 'lucide-react';
+import { RotateCw, Trash2, CheckSquare, Square, Circle, Server, Box, Download, Radio, ScrollText, FileText, Gauge, Zap, RadioTower, Signal } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useLogStream, LogEntry } from '../hooks/useLogStream';
 import { LogDownloadModal } from '../components/logs/LogDownloadModal';
@@ -9,6 +9,7 @@ import { MajorEventsView } from '../components/logs/MajorEventsView';
 import { configApi } from '../api';
 import type { AllConfigs } from '../types';
 import axios from 'axios';
+import { FEATURES } from '../config/features';
 
 const ALL_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 const GENIEACS_SERVICES = ['genieacs-cwmp-access', 'genieacs-nbi-access'];
@@ -16,11 +17,16 @@ const GENIEACS_SERVICES = ['genieacs-cwmp-access', 'genieacs-nbi-access'];
 // split like the other sources, so this is a single pseudo-service.
 const FRR_SERVICES = ['frr'];
 const SAS_CONTAINER = 'open5gs-nms-backend'; // SAS logs live here
-// IMS components log to the host's systemd journal only (no discrete file), streamed via
-// `journalctl -u <unit> -f` — see log-stream-handler.ts's startImsStream.
+// IMS components and Osmocom 2G/GSM daemons both log to the host's systemd journal
+// only (no discrete file), streamed via `journalctl -u <unit> -f` — see
+// log-stream-handler.ts's startJournalStream.
 const IMS_SERVICES = [
   'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-smsc',
   'pyhss-api', 'pyhss-diameter', 'pyhss-hss', 'mariadb', 'rtpengine-daemon',
+];
+const GSM_SERVICES = [
+  'osmo-stp', 'osmo-hlr', 'osmo-msc', 'osmo-mgw', 'osmo-bsc', 'osmo-bts-virtual',
+  'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn',
 ];
 
 // Matches the per-NF logger level options in ConfigPage's LoggerSection.
@@ -42,7 +48,7 @@ interface GenieDevice {
 
 export const LogsPage: React.FC = () => {
   const [pageTab, setPageTab] = useState<'logs' | 'audit' | 'events'>('logs');
-  const [logSource, setLogSource] = useState<'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims'>('open5gs');
+  const [logSource, setLogSource] = useState<'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm'>('open5gs');
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
   const [logFilter, setLogFilter] = useState<string | undefined>(undefined); // server-side content filter
   const [dockerContainers, setDockerContainers] = useState<string[]>([]);
@@ -101,7 +107,7 @@ export const LogsPage: React.FC = () => {
   // Switches source and resets selection/filter — each source picks its own sensible
   // default selection instead of always clearing (FRR/GenieACS have a small fixed service
   // list, so there's no reason to make the user re-select them every time).
-  const switchSource = (source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims', defaultServices: string[] = []) => {
+  const switchSource = (source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm', defaultServices: string[] = []) => {
     setLogSource(source);
     setSelectedServices(new Set(defaultServices));
     setLogFilter(undefined);
@@ -157,7 +163,7 @@ export const LogsPage: React.FC = () => {
   }, [showTaskQueue, taskQueueDevice]);
 
   // Determine available services based on source
-  const availableServices = logSource === 'docker' ? dockerContainers : logSource === 'genieacs' ? GENIEACS_SERVICES : logSource === 'frr' ? FRR_SERVICES : logSource === 'ims' ? IMS_SERVICES : ALL_SERVICES;
+  const availableServices = logSource === 'docker' ? dockerContainers : logSource === 'genieacs' ? GENIEACS_SERVICES : logSource === 'frr' ? FRR_SERVICES : logSource === 'ims' ? IMS_SERVICES : logSource === 'gsm' ? GSM_SERVICES : ALL_SERVICES;
 
   // Memoize services array to prevent re-subscription on every render
   const servicesArray = useMemo(() => Array.from(selectedServices), [selectedServices]);
@@ -223,6 +229,9 @@ export const LogsPage: React.FC = () => {
     }
     if (logSource === 'ims') {
       return 'bg-pink-500/10 text-pink-400 border-pink-500/30';
+    }
+    if (logSource === 'gsm') {
+      return 'bg-teal-500/10 text-teal-400 border-teal-500/30';
     }
 
     // Cycle through some accent colors for service badges
@@ -365,7 +374,7 @@ export const LogsPage: React.FC = () => {
         <LogDownloadModal
           onClose={() => setShowDownloadModal(false)}
           initialServices={Array.from(selectedServices)}
-          initialSource={logSource === 'frr' || logSource === 'ims' ? 'open5gs' : logSource}
+          initialSource={logSource === 'frr' || logSource === 'ims' || logSource === 'gsm' ? 'open5gs' : logSource}
           dockerContainers={dockerContainers}
         />
       )}
@@ -473,6 +482,21 @@ export const LogsPage: React.FC = () => {
               <Server className="w-4 h-4" />
               IMS Logs
             </button>
+            {/* GSM quick-select — same idea as IMS above, jumps straight to the 2G/GSM
+                journal source with every Osmocom unit selected at once. */}
+            {FEATURES.gsm && (
+              <button
+                onClick={() => switchSource('gsm', GSM_SERVICES)}
+                className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
+                  logSource === 'gsm'
+                    ? 'bg-teal-500/20 text-teal-300 border border-teal-500/40'
+                    : 'bg-nms-bg text-teal-400 hover:text-teal-300 border border-teal-500/30 hover:border-teal-400/50'
+                }`}
+              >
+                <Signal className="w-4 h-4" />
+                GSM Logs
+              </button>
+            )}
           </div>
         </div>
 
@@ -498,7 +522,7 @@ export const LogsPage: React.FC = () => {
                   }`}
                 >
                   {isSelected ? <CheckSquare className="w-3 h-3" /> : <Square className="w-3 h-3" />}
-                  <span className="font-mono">{logSource === 'docker' || logSource === 'genieacs' || logSource === 'ims' ? service : service.toUpperCase()}</span>
+                  <span className="font-mono">{logSource === 'docker' || logSource === 'genieacs' || logSource === 'ims' || logSource === 'gsm' ? service : service.toUpperCase()}</span>
                 </button>
               );
             })}

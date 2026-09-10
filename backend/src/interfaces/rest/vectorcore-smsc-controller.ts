@@ -6,6 +6,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
+import { upsertSmppEsme, isSmppEsmeActive } from './sms-controller';
 
 // ── SMS via VectorCore SMSC ──────────────────────────────────────────────────
 //
@@ -106,6 +107,174 @@ const DIAMETER_PORT = 3868;
 // just a theoretical one. 2776 confirmed free.
 const SMPP_PORT     = 2776;
 const GO_VERSION = '1.25.0'; // matches vectorcore-smsc's go.mod `go` directive — avoids Go's automatic-toolchain-download reaching proxy.golang.org mid-build on a host with restricted egress
+
+// ── 2G ↔ 4G SMS interworking bridge ──────────────────────────────────────────
+//
+// VectorCore SMSC is the single SMSC brain: it takes SMS from IMS (SIP/3GPP
+// ISC, via S-CSCF) AND from the 2G/CS core (osmo-msc, over SMPP), and routes
+// each message to whichever side the destination is on. Wiring, all made to
+// survive a fresh install by this module:
+//   1. an osmo-msc `esme` (default-route) so every 2G MO SMS is handed to
+//      VectorCore  — applied live via sms-controller.ts's upsertSmppEsme()
+//      (never persisted to osmo-msc.cfg, self-healed in GET /status)
+//   2. a VectorCore outbound SMPP client back to osmo-msc:2775 + a
+//      catch-all fallback routing rule (egress smpp) — created via
+//      VectorCore's own /api/v1, idempotently
+//   3. seven source patches to the upstream VectorCore SMSC tree, applied
+//      during Install before `make` (idempotent, fail-soft) — see
+//      BRIDGE_SOURCE_PATCH_PY. Without them the SMPP-client path
+//      self-deadlocks / uses the wrong PDU / mis-encodes GSM 7-bit / sends
+//      MT to the wrong S-CSCF port — each found and fixed live 2026-09-10.
+//   4. an S-CSCF routing patch (a MESSAGE whose From-user is "smsc" is an
+//      MT delivery from VectorCore and must take the terminating path, not
+//      be bounced back) — lives in the kamailio_scscf.cfg template, gated
+//      by the existing ROUTE_SMS_TO_VECTORCORE #!define.
+const BRIDGE_ESME_NAME     = 'vcsmsc';
+const BRIDGE_ESME_PASSWORD = 'vc2msc99'; // 8 chars max — SMPP 3.4 bind PDU limit (see upsertSmppEsme)
+const OSMO_MSC_SMPP        = { host: '127.0.0.1', port: 2775 };
+
+// Idempotent, fail-soft. Each hunk: skip if its marker is already present;
+// apply if its anchor is present; warn (do not fail the build) if neither —
+// upstream drifted and the patch needs a human. Mirrors ims-controller.ts's
+// PyHSS crash-guard patch style.
+const BRIDGE_SOURCE_PATCH_PY = String.raw`
+import sys, os
+D = sys.argv[1]
+def patch(rel, marker, anchor, repl):
+    p = os.path.join(D, rel)
+    try:
+        s = open(p).read()
+    except FileNotFoundError:
+        print("  SKIP  %s (file not found)" % rel); return
+    if marker in s:
+        print("  ok    %s (already patched)" % rel); return
+    if anchor not in s:
+        print("  WARN  %s (anchor not found — upstream changed, patch skipped)" % rel); return
+    open(p, "w").write(s.replace(anchor, repl, 1))
+    print("  PATCH %s" % rel)
+
+# 1. dispatch the forwarder off the SMPP client read loop (self-deadlock otherwise)
+patch("cmd/smsc/main.go", "go fwd.Dispatch(ctx, msg)",
+    "\t\tmsg.IngressPeer = clientName\n\t\tfwd.Dispatch(ctx, msg)\n\t})",
+    "\t\tmsg.IngressPeer = clientName\n\t\tgo fwd.Dispatch(ctx, msg) // NMS: don't block the SMPP client read loop\n\t})")
+
+# 2. MT hand-off from an ESME to an upstream SMSC is submit_sm, not deliver_sm
+patch("internal/forwarder/forwarder.go", "MT hand-off from an ESME to an SMSC is",
+    "pdu, err := smppcodec.EncodeDeliverSM(msg)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"encode deliver_sm: %w\", err)\n\t}",
+    "// NMS patch: an outbound SMPP client acts as an ESME toward an upstream\n"
+    "\t// SMSC (here: osmo-msc). MT hand-off from an ESME to an SMSC is\n"
+    "\t// submit_sm, not deliver_sm. osmo-msc silently drops an inbound\n"
+    "\t// deliver_sm from a bound ESME, which made every routed message time out.\n"
+    "\tpdu, err := smppcodec.EncodeSubmitSM(msg)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"encode submit_sm: %w\", err)\n\t}")
+
+# 3. single-part GSM7 goes out UNPACKED (osmo-msc packs it itself for data_coding=0)
+patch("internal/codec/smpp/encode.go", "single-part GSM7 goes out UNPACKED",
+    "packed, _ := tpdu.EncodeGSM7(msg.Text)\n\t\t\tpdu.ShortMessage = packed",
+    "// NMS patch: single-part GSM7 goes out UNPACKED (one septet\n"
+    "\t\t\t// per octet). osmo-msc, on data_coding=0, packs short_message\n"
+    "\t\t\t// itself for the GSM TPDU - sending pre-packed septets makes it\n"
+    "\t\t\t// double-pack and the handset shows garbage. Concatenated parts\n"
+    "\t\t\t// (UDH branch above) still use packed, per the standard.\n"
+    "\t\t\tpdu.ShortMessage = []byte(msg.Text)")
+
+# 4. keep the Via port in the stored S-CSCF address (else MT MESSAGE -> dead :5060)
+patch("internal/sip/isc/register.go", "via.Port != 0",
+    "\tscscf := \"\"\n\tif via := req.Via(); via != nil {\n\t\tscscf = via.Host\n\t}",
+    "\tscscf := \"\"\n\tif via := req.Via(); via != nil {\n\t\tscscf = via.Host\n\t\tif via.Port != 0 { // NMS: S-CSCF listens on 6060, not the default 5060\n\t\t\tscscf = via.Host + \":\" + strconv.Itoa(via.Port)\n\t\t}\n\t}")
+
+# 5. don't block forever if the ISC client transaction times out with no response
+patch("internal/sip/isc/sender.go", "case <-tx.Done():",
+    "\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\t}\n\t}\n}",
+    "\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\tcase <-tx.Done(): // NMS: Timer F etc. - don't hang the forwarder goroutine\n\t\t\tif e := tx.Err(); e != nil {\n\t\t\t\treturn fmt.Errorf(\"SIP MESSAGE transaction ended: %w\", e)\n\t\t\t}\n\t\t\treturn fmt.Errorf(\"SIP MESSAGE transaction ended with no response\")\n\t\t}\n\t}\n}")
+
+# 6. an UNPACKED GSM7 decoder (osmo-msc sends unpacked in deliver_sm for dc=0)
+patch("internal/codec/tpdu/dcs.go", "func DecodeGSM7Unpacked",
+    "func EncodeGSM7(text string) (packed []byte, septets int) {",
+    "// DecodeGSM7Unpacked maps UNPACKED GSM 7-bit octets (one septet per byte)\n"
+    "// straight to text (osmo-msc's deliver_sm short_message shape for dc=0).\n"
+    "func DecodeGSM7Unpacked(b []byte) string {\n"
+    "\trunes := make([]rune, 0, len(b))\n"
+    "\tfor i := 0; i < len(b); i++ {\n"
+    "\t\tc := b[i]\n"
+    "\t\tif c == 0x1B && i+1 < len(b) {\n"
+    "\t\t\ti++\n"
+    "\t\t\tif ext := b[i]; ext < 128 && gsm7Ext[ext] != 0 {\n"
+    "\t\t\t\trunes = append(runes, gsm7Ext[ext])\n"
+    "\t\t\t} else {\n"
+    "\t\t\t\trunes = append(runes, ' ')\n"
+    "\t\t\t}\n"
+    "\t\t} else if c < 128 {\n"
+    "\t\t\trunes = append(runes, gsm7Basic[c])\n"
+    "\t\t}\n"
+    "\t}\n"
+    "\treturn string(runes)\n"
+    "}\n\n"
+    "func EncodeGSM7(text string) (packed []byte, septets int) {")
+
+# 7. use the unpacked decoder for single-part GSM7 deliver_sm
+patch("internal/codec/smpp/decode.go", "tpdu.DecodeGSM7Unpacked(payload)",
+    "\tcase codec.EncodingGSM7:\n\t\t// UDL in submit_sm is byte count",
+    "\tcase codec.EncodingGSM7:\n\t\tif !hasUDHI && msg.Concat == nil {\n\t\t\tmsg.Text = tpdu.DecodeGSM7Unpacked(payload) // NMS: osmo-msc sends unpacked for dc=0\n\t\t\tbreak\n\t\t}\n\t\t// UDL in submit_sm is byte count")
+`;
+
+// Idempotently ensure the CS bridge: osmo-msc ESME (default-route) + the
+// VectorCore SMPP client + fallback routing rule. Safe to call repeatedly and
+// safe when osmo-msc isn't present (it just skips the ESME half). `log` is
+// optional streaming output.
+async function ensureCsBridge(log: (s: string) => void = () => {}): Promise<void> {
+  // 1. osmo-msc ESME (live VTY, self-heals on restart via GET /status)
+  try {
+    const r = await upsertSmppEsme(BRIDGE_ESME_NAME, BRIDGE_ESME_PASSWORD, { defaultRoute: true });
+    log(r.success
+      ? `  osmo-msc esme "${BRIDGE_ESME_NAME}" (default-route) applied`
+      : `  WARN: osmo-msc esme apply returned: ${r.output.slice(0, 200)}`);
+  } catch (err) {
+    // osmo-msc not configured (no 2G/SGs core) — the bridge simply has no
+    // CS side to talk to. Not an error for a pure-4G deployment.
+    log(`  osmo-msc esme skipped (${err instanceof Error ? err.message : String(err)})`);
+  }
+
+  // 2. VectorCore's own SMPP client + fallback routing rule, via its REST API
+  const api = `http://127.0.0.1:${API_PORT}/api/v1`;
+  const curlJson = async (method: string, path: string, body?: unknown): Promise<string> => {
+    const args = ['-fsS', '-X', method, `${api}${path}`];
+    if (body !== undefined) args.push('-H', 'Content-Type: application/json', '-d', JSON.stringify(body));
+    const { stdout } = await nsenter('curl', args, 8000);
+    return stdout;
+  };
+  try {
+    const clients: any[] = JSON.parse(await curlJson('GET', '/smpp/clients').catch(() => '[]') || '[]');
+    if (!clients.some(c => c.name === 'osmo-msc' || c.system_id === BRIDGE_ESME_NAME)) {
+      await curlJson('POST', '/smpp/clients', {
+        name: 'osmo-msc', host: OSMO_MSC_SMPP.host, port: OSMO_MSC_SMPP.port,
+        transport: 'tcp', verify_server_cert: false,
+        system_id: BRIDGE_ESME_NAME, password: BRIDGE_ESME_PASSWORD,
+        bind_type: 'transceiver', reconnect_interval: '10s', throughput_limit: 0, enabled: true,
+      });
+      log('  VectorCore SMPP client -> osmo-msc:2775 created');
+    } else {
+      log('  VectorCore SMPP client already present');
+    }
+
+    const policies: any[] = JSON.parse(await curlJson('GET', '/routing/policies').catch(() => '[]') || '[]');
+    const sfPolicyId = policies[0]?.id ?? '';
+    const rules: any[] = JSON.parse(await curlJson('GET', '/routing/rules').catch(() => '[]') || '[]');
+    if (!rules.some(r => r.name === 'fallback-to-cs')) {
+      await curlJson('POST', '/routing/rules', {
+        name: 'fallback-to-cs', priority: 100,
+        match_src_iface: '', match_src_peer: '', match_dst_prefix: '',
+        match_msisdn_min: '', match_msisdn_max: '',
+        egress_iface: 'smpp', egress_peer: 'osmo-msc',
+        sf_policy_id: sfPolicyId, enabled: true,
+      });
+      log('  VectorCore fallback routing rule (-> smpp:osmo-msc) created');
+    } else {
+      log('  VectorCore fallback routing rule already present');
+    }
+  } catch (err) {
+    log(`  WARN: VectorCore API bridge config failed (${err instanceof Error ? err.message : String(err)}) — retried on next /status`);
+  }
+}
 
 interface VectorcoreSmscState {
   imsDomain: string;
@@ -239,6 +408,9 @@ export async function installVectorcoreSmsc(write: (s: string) => void): Promise
       const SRC_PARENT_DIR = SRC_DIR.slice(0, SRC_DIR.lastIndexOf('/'));
       await spawnStream(`mkdir -p ${SRC_PARENT_DIR} 2>/dev/null; [ -d ${SRC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-smsc.git ${SRC_DIR}`);
 
+      write('\n=== Applying NMS 2G↔4G SMS bridge patches ===');
+      await spawnStream(`python3 - ${SRC_DIR} <<'PYEOF'\n${BRIDGE_SOURCE_PATCH_PY}\nPYEOF`);
+
       write('\n=== Building (web UI + Go binary) ===');
       const buildExit = await spawnStream(
         `set -e\n` +
@@ -315,6 +487,10 @@ export async function configureVectorcoreSmsc(): Promise<{ success: boolean; err
 
       await nsenter('systemctl', ['enable', '--now', SYSTEMD_UNIT]);
 
+      // Give the API a moment to come up, then wire the 2G↔4G CS bridge.
+      await new Promise(r => setTimeout(r, 4000));
+      await ensureCsBridge();
+
       writeState({ imsDomain, configuredWithVersion: getAppVersion(), installedWithVersion: readState()?.installedWithVersion });
 
       return { success: true, imsDomain, sipAddress: `${SIP_BIND_IP}:${SIP_PORT}` };
@@ -368,6 +544,19 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
         } catch { /* not up yet or crashed — reported via serviceActive/healthy separately */ }
       }
 
+      // Self-heal the 2G↔4G CS bridge. The osmo-msc ESME password never
+      // survives an osmo-msc restart (upsertSmppEsme is live-VTY only), and a
+      // fresh VectorCore DB has no SMPP client / routing rule — re-apply both
+      // whenever we notice the ESME is gone. Same pattern as mms-controller.ts.
+      let bridgeEsmeActive = false;
+      if (healthy) {
+        bridgeEsmeActive = await isSmppEsmeActive(BRIDGE_ESME_NAME).catch(() => false);
+        if (!bridgeEsmeActive) {
+          await ensureCsBridge(s => logger.info({ msg: s.trim() }, 'vectorcore-smsc: bridge self-heal'));
+          bridgeEsmeActive = await isSmppEsmeActive(BRIDGE_ESME_NAME).catch(() => false);
+        }
+      }
+
       const state = readState();
       const appVersion = getAppVersion();
       const configStale = !!state && state.configuredWithVersion !== appVersion;
@@ -378,6 +567,9 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
         installed,
         serviceActive,
         healthy,
+        // 2G↔4G CS bridge: is the osmo-msc ESME live? (false on a pure-4G
+        // deployment with no 2G/SGs core — that's expected, not an error.)
+        bridgeEsmeActive,
         hasSavedConfig: !!state,
         installedWithVersion: state?.installedWithVersion,
         installStale,
@@ -478,6 +670,15 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
     try {
       write('=== Stopping and disabling VectorCore SMSC ===');
       await nsenter('systemctl', ['disable', '--now', SYSTEMD_UNIT]).catch(() => {});
+
+      write('\n=== Removing the 2G↔4G CS bridge from osmo-msc ===');
+      try {
+        const { removeSmppEsme } = await import('./sms-controller');
+        await removeSmppEsme(BRIDGE_ESME_NAME);
+        write(`  osmo-msc esme "${BRIDGE_ESME_NAME}" removed (2G MO SMS returns to native osmo-msc delivery)`);
+      } catch (err) {
+        write(`  osmo-msc esme removal skipped (${err instanceof Error ? err.message : String(err)})`);
+      }
 
       write('\n=== Removing systemd unit ===');
       if (fs.existsSync(`${HOST_ROOT}${SYSTEMD_UNIT_PATH}`)) {

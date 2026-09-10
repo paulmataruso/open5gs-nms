@@ -9,6 +9,7 @@ import { subscriberApi, subscriberGroupsApi } from '../../api';
 import type { SubscriberGroup } from '../../api';
 import { apnProfilesApi, type ApnProfileListEntry } from '../../api/apnProfiles';
 import { useAuth } from '../../contexts/AuthContext';
+import { FEATURES } from '../../config/features';
 import type { Subscriber, SubscriberListItem, SubscriberSession, PccRule, FramedRouteEntry } from '../../types';
 import toast from 'react-hot-toast';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
@@ -1931,14 +1932,25 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
             </div>
             <div>
               <label className="nms-label">IMEISV (auto-generated on first attach)</label>
-              <input 
-                className="nms-input font-mono text-sm bg-nms-surface-2/50" 
+              <input
+                className="nms-input font-mono text-sm bg-nms-surface-2/50"
                 value={form.imeisv || 'Not yet attached'}
                 disabled
                 placeholder="Auto-generated"
               />
             </div>
           </div>
+          {FEATURES.gsm && (
+            <label className="flex items-center gap-2 mt-4 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!(form as any).gsmEnabled}
+                onChange={e => setForm({ ...form, gsmEnabled: e.target.checked } as any)}
+                className="w-4 h-4 accent-nms-accent shrink-0"
+              />
+              <span className="text-sm text-nms-text">Enable 2G/GSM (sync K/OPc into OsmoHLR)</span>
+            </label>
+          )}
         </div>
 
         {/* Security */}

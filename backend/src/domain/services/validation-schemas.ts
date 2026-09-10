@@ -260,4 +260,5 @@ export const subscriberSchema = z.object({
   access_restriction_data: z.number().int().min(0).optional(),  // Bitmask (32 = default)
   network_access_mode: z.number().int().min(0).max(2).optional(),  // 0=PACKET_AND_CIRCUIT, 2=ONLY_PACKET
   schema_version: z.number().optional(),
+  gsmEnabled: z.boolean().optional(),
 });

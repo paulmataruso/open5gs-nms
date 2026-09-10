@@ -71,6 +71,13 @@ export interface Subscriber {
   network_access_mode?: number;  // 0=PACKET_AND_CIRCUIT, 1=Reserved, 2=ONLY_PACKET
   schema_version?: number;
   __v?: number;
+  // App-level only — Open5GS itself has no notion of this. Explicit opt-in
+  // for the 2G GSM module's sync-subscribers: this subscriber's K/OPc gets
+  // pushed into OsmoHLR's auc_3g table on next sync, independent of whether
+  // it also has an MSISDN (SMS-over-SGs sync keeps working the same way it
+  // always has, on MSISDN alone — this is an additional, not replacement,
+  // inclusion path).
+  gsmEnabled?: boolean;
 }
 
 export interface SubscriberListItem {
