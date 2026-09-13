@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import {
   Play, Square, RotateCw, Zap, Radio, Wifi, Container, AlertCircle,
-  Power, PowerOff, Gauge, Settings2,
+  Power, PowerOff, Gauge, Settings2, RadioTower,
 } from 'lucide-react';
 import { useServiceStore } from '../../stores';
 import { serviceApi } from '../../api';
 import { vowifiApi, type VowifiStatus } from '../../api/vowifi';
 import { mmsApi, type MmsStatus } from '../../api/mms';
 import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorcoreSmsc';
+import { asterisk2gApi, type Asterisk2gStatus } from '../../api/asterisk-2g';
 import { SpeedTestServerModal } from '../trafficHistory/SpeedTestServerModal';
 import type { ServiceStatus } from '../../types';
 import axios from 'axios';
@@ -23,7 +24,7 @@ const SERVICES_SHARED = ['mongodb', 'smf', 'upf'];
 const SERVICES_OSMO_SGS = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
 // osmo-hlr/osmo-msc/osmo-stp are shared with the SMS-over-SGs module — these
 // are the 2G GSM module's own daemons, layered on top (see gsm-controller.ts).
-const SERVICES_OSMO_GSM = ['osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db'];
+const SERVICES_OSMO_GSM = ['osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db', 'osmo-sip-connector'];
 const SERVICES_OSMO   = [...SERVICES_OSMO_SGS, ...SERVICES_OSMO_GSM];
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -222,12 +223,14 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
   const [bulkActing, setBulkActing] = useState(false);
   const [acting4G, setActing4G] = useState(false);
   const [acting5G, setActing5G] = useState(false);
+  const [acting2G, setActing2G] = useState(false);
   const [actingByName, setActingByName] = useState<Record<string, boolean>>({});
   const [chrony, setChrony] = useState<{ installed: boolean; active: boolean; refSource?: string } | null>(null);
   const [chronyActing, setChronyActing] = useState(false);
   const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
   const [mmsStatus, setMmsStatus] = useState<MmsStatus | null>(null);
   const [vectorcoreSmscStatus, setVectorcoreSmscStatus] = useState<VectorcoreSmscStatus | null>(null);
+  const [asterisk2gStatus, setAsterisk2gStatus] = useState<Asterisk2gStatus | null>(null);
   const [speedtest, setSpeedtest] = useState<SpeedTestStatus | null>(null);
   const [speedtestActing, setSpeedtestActing] = useState(false);
   const [showSpeedtestModal, setShowSpeedtestModal] = useState(false);
@@ -262,6 +265,11 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
     vowifiApi.getStatus().then(setVowifiStatus).catch(() => {});
     mmsApi.getStatus().then(setMmsStatus).catch(() => {});
     vectorcoreSmscApi.getStatus().then(setVectorcoreSmscStatus).catch(() => {});
+    // Asterisk-2G (2G-to-2G internal voice, GSM page's own "2G Voice" tab) —
+    // a real, separate Asterisk instance from PSTN Gateway's own, so it gets
+    // its own status fetch here rather than folding into the Osmocom section
+    // above (it isn't Osmocom software).
+    asterisk2gApi.getStatus().then(setAsterisk2gStatus).catch(() => {});
   }, []);
 
   const handleChronyAction = async (action: 'start' | 'stop' | 'restart') => {
@@ -303,9 +311,14 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
     }
   };
 
-  // Derive running state for 4G and 5G groups
+  // Derive running state for 4G, 5G, and 2G groups. 2G also counts
+  // Asterisk-2G (2G-to-2G voice) even though it isn't in SERVICES_OSMO_GSM
+  // (deliberately excluded there — it's Asterisk, not Osmocom software; see
+  // the Asterisk section above) — from an operator's "is 2G running" view,
+  // it's still part of the same group.
   const is5GAnyRunning = statuses.some(s => SERVICES_5G.includes(s.name) && s.active);
   const is4GAnyRunning = statuses.some(s => SERVICES_4G.includes(s.name) && s.active);
+  const is2GAnyRunning = statuses.some(s => SERVICES_OSMO_GSM.includes(s.name) && s.active) || !!asterisk2gStatus?.serviceActive;
 
   const doBulkAction = async (action: 'start' | 'stop' | 'restart'): Promise<void> => {
     if (!confirm(`Are you sure you want to ${action} ALL services?`)) return;
@@ -319,26 +332,33 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
     finally { setBulkActing(false); }
   };
 
-  const doGroupToggle = async (group: '4g' | '5g'): Promise<void> => {
-    const services = group === '5g' ? SERVICES_5G : SERVICES_4G;
-    const anyRunning = group === '5g' ? is5GAnyRunning : is4GAnyRunning;
+  const GROUP_SERVICES: Record<'4g' | '5g' | '2g', string[]> = { '5g': SERVICES_5G, '4g': SERVICES_4G, '2g': SERVICES_OSMO_GSM };
+  const GROUP_RUNNING:  Record<'4g' | '5g' | '2g', boolean>  = { '5g': is5GAnyRunning, '4g': is4GAnyRunning, '2g': is2GAnyRunning };
+  const GROUP_SET_ACTING: Record<'4g' | '5g' | '2g', (v: boolean) => void> = { '5g': setActing5G, '4g': setActing4G, '2g': setActing2G };
+
+  const doGroupToggle = async (group: '4g' | '5g' | '2g'): Promise<void> => {
+    const services = GROUP_SERVICES[group];
+    const anyRunning = GROUP_RUNNING[group];
     const action = anyRunning ? 'stop' : 'start';
     const label = group.toUpperCase();
 
     if (!confirm(`${anyRunning ? 'Stop' : 'Start'} all ${label} services?`)) return;
 
-    if (group === '5g') setActing5G(true);
-    else setActing4G(true);
+    GROUP_SET_ACTING[group](true);
 
     try {
       const result = await serviceApi.bulkAction(action, services);
+      // Asterisk-2G isn't a systemd unit this global bulk-action mechanism
+      // knows about (see is2GAnyRunning's comment) — start/stop it the same
+      // way its own tab does, alongside the Osmocom 2G services above.
+      if (group === '2g') await asterisk2gApi[action]().catch(() => {});
       if (result.success) toast.success(`${label} services ${action} successful`);
       else toast.error(result.message);
       await fetchStatuses();
+      if (group === '2g') asterisk2gApi.getStatus().then(setAsterisk2gStatus).catch(() => {});
     } catch { toast.error(`Failed to ${action} ${label} services`); }
     finally {
-      if (group === '5g') setActing5G(false);
-      else setActing4G(false);
+      GROUP_SET_ACTING[group](false);
     }
   };
 
@@ -506,6 +526,25 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
             {acting4G ? '...' : is4GAnyRunning ? 'Stop 4G' : 'Start 4G'}
           </button>
 
+          {/* 2G group toggle — osmo-bsc/mgw/GPRS/osmo-sip-connector + Asterisk-2G.
+              Deliberately excludes the shared osmo-hlr/osmo-msc/osmo-stp trio
+              (SERVICES_OSMO_SGS) — those also serve SMS-over-SGs, same
+              boundary the GSM module's own Stop button already respects. */}
+          <button
+            onClick={() => doGroupToggle('2g')}
+            disabled={acting2G || bulkActing}
+            className={clsx(
+              'flex items-center gap-2 text-sm font-medium px-3 py-2 rounded-lg border transition-all',
+              is2GAnyRunning
+                ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30 hover:bg-cyan-500/20'
+                : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text',
+            )}
+            title={is2GAnyRunning ? 'Stop all 2G services (not shared SMS-over-SGs core)' : 'Start all 2G services'}
+          >
+            <RadioTower className="w-4 h-4" />
+            {acting2G ? '...' : is2GAnyRunning ? 'Stop 2G' : 'Start 2G'}
+          </button>
+
           <div className="w-px bg-nms-border mx-1" />
 
           <button
@@ -581,6 +620,17 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
             Chrony not installed — click to install
           </button>
         )}
+      </div>
+
+      {/* Asterisk — real, separate instances, not Osmocom software (kept out
+          of the Osmocom section above on purpose). PSTN Gateway's own
+          Asterisk instance isn't tracked here yet — a pre-existing gap,
+          unrelated to this one, left alone for now. */}
+      <div>
+        <SectionHeader label="Asterisk" color="text-orange-400" />
+        <ServiceTable rows={[
+          vectorCoreRow('2G Voice', 'asterisk-2g', !!asterisk2gStatus?.serviceActive, !asterisk2gStatus, '2G GSM', 'gsm'),
+        ]} />
       </div>
 
       {/* VectorCore */}

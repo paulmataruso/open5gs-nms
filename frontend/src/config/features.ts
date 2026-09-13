@@ -29,6 +29,11 @@ export const FEATURES = {
   // misconfiguring live radio (and, for a real BTS, actual spectrum
   // transmission) is a bigger blast radius than a broken lab feature.
   gsm: import.meta.env.VITE_ENABLE_GSM === 'true',
+  // Opt-in like gsm itself — a second, isolated Asterisk instance (own config
+  // tree, own systemd unit, own loopback IP) dedicated to real 2G-to-2G
+  // internal voice, shown as its own tab on the GSM page. Never touches the
+  // separate Asterisk instance the pstn module owns.
+  asterisk2g: import.meta.env.VITE_ENABLE_ASTERISK_2G === 'true',
   // Opt-in like pstn/mms/secgw (not default-on like sms/ims) — not yet meant for
   // general/public deployments, only for hosts that explicitly enable it.
   rfPlanning: import.meta.env.VITE_ENABLE_RF_PLANNING === 'true',

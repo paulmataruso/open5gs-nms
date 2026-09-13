@@ -24,6 +24,10 @@ export interface BtsEntry {
   gprsBvci?: number;
   // LTE neighbour EARFCNs broadcast in SI2quater (CSFB return-to-LTE).
   lteEarfcns?: number[];
+  // Administratively locked via osmo-bsc's OML admin-state (see gsmApi.
+  // blockBts). Persisted here because osmo-bsc itself forgets it on
+  // restart — the backend reapplies it every time osmo-bsc comes back up.
+  blocked?: boolean;
 }
 
 export interface GsmStatus {
@@ -140,6 +144,13 @@ export interface BtsLinkStatus {
   omlConnected: boolean; rslConnected: boolean;
 }
 
+// Active GPRS/EDGE PDP context, straight from osmo-ggsn's own live state —
+// the actual IP allocator (osmo-sgsn only relays GTP-C signaling, it never
+// owns the address). A UE with no active data session simply has none.
+export interface PdpContext {
+  imsi: string; nsapi: number; msisdn: string | null; apnInUse: string | null; ipv4: string | null;
+}
+
 export const BTS_BAND_OPTIONS = ['GSM900', 'DCS1800', 'GSM850', 'PCS1900'];
 
 // Verified against libosmocore's own gsm_arfcn2band_rc() range table (not
@@ -193,6 +204,10 @@ export const gsmApi = {
     const { data } = await api.get('/signal/history', { params: { imsi } });
     return data;
   },
+  getPdpContexts: async (): Promise<{ success: boolean; contexts: PdpContext[] }> => {
+    const { data } = await api.get('/pdp-contexts');
+    return data;
+  },
   addBts: async (input: Omit<BtsEntry, 'id' | 'unitId'> & { unitId?: number }): Promise<{ success: boolean; bts: BtsEntry; provisionWarning?: string }> => {
     const { data } = await api.post('/bts', input);
     return data;
@@ -219,6 +234,18 @@ export const gsmApi = {
   },
   getBtsLinkStatus: async (id: string): Promise<BtsLinkStatus> => {
     const { data } = await api.get(`/bts/${id}/link-status`);
+    return data;
+  },
+  // Administrative lock/unlock (osmo-bsc OML admin-state) — locking drops
+  // any camped UEs and stops the cell broadcasting/accepting new ones;
+  // unlocking brings it back on air. Both return the same shape as
+  // getBtsLinkStatus so callers can refresh state from the response directly.
+  blockBts: async (id: string): Promise<BtsLinkStatus> => {
+    const { data } = await api.post(`/bts/${id}/block`);
+    return data;
+  },
+  unblockBts: async (id: string): Promise<BtsLinkStatus> => {
+    const { data } = await api.post(`/bts/${id}/unblock`);
     return data;
   },
   getConfigs: async (): Promise<{ success: boolean; files: GsmConfigFile[] }> => {

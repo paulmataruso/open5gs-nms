@@ -100,6 +100,7 @@ import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
 import { createSecgwRouter } from './interfaces/rest/secgw-controller';
 import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controller';
 import { createPstnRouter } from './interfaces/rest/pstn-controller';
+import { createAsterisk2gRouter } from './interfaces/rest/asterisk-2g-controller';
 import { createBindRouter } from './interfaces/rest/bind-controller';
 import { createValidationRouter } from './interfaces/rest/validation-controller';
 import { createVolteValidationRouter } from './interfaces/rest/volte-validation-controller';
@@ -509,6 +510,7 @@ async function main() {
   app.use('/api/vowifi',     createVowifiRouter(logger, auditLogger));
   app.use('/api/secgw',      createSecgwRouter(logger, auditLogger));
   app.use('/api/pstn',       createPstnRouter(subscriberRepo, config.mongodbUri, logger, auditLogger));
+  app.use('/api/asterisk-2g', createAsterisk2gRouter(logger, auditLogger));
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/bind', createBindRouter(logger, auditLogger));
   app.use('/api/validation/volte', createVolteValidationRouter(logger, auditLogger));

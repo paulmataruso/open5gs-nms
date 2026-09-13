@@ -4,6 +4,120 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.59] - 2026-09-13
+
+### Added — Asterisk-2G: a second, fully isolated Asterisk instance for real 2G voice calling
+
+- New `asterisk-2g-controller.ts` module (own config tree `/etc/asterisk-2g`, own
+  systemd unit, own loopback IP `127.0.1.7`) — the SIP peer osmo-sip-connector needs
+  to actually complete 2G-to-2G calls in External MNCC mode (see v0.58's "explicit
+  call-routing control" — osmo-msc's internal MNCC handler signals but never bridges
+  audio). Its one-line dialplan recognizes a dialed number as a local subscriber and
+  re-originates the call back out through the same trunk, which is what lets the MT
+  leg complete via osmo-msc with no third SIP hop and no infinite loop. Shares only
+  the underlying apt package with the completely separate Asterisk instance the PSTN
+  Gateway module owns — never its config, service, or lifecycle.
+- **One button** (GSM page → new **2G Voice** tab, gated on
+  `ENABLE_ASTERISK_2G_MODULE`, defaults disabled) installs, configures, points the
+  SIP tab's remote peer at Asterisk-2G, and switches MNCC to External — all in one
+  action, with a symmetric reset back to Internal mode on uninstall. Reconsidered
+  from an initially-planned manual+helper-button design after confirming this
+  module's only real job is being that one specific peer.
+- PSTN Gateway's uninstall flow now skips purging the shared `asterisk` apt package
+  when Asterisk-2G is also installed, so removing one 2G-voice module can't break the
+  other's running instance.
+- Two real Asterisk bugs found and fixed via live install/uninstall/reinstall
+  cycles (verified against PSTN's own instance staying untouched throughout,
+  `NRestarts=0`): (1) `astdatadir`/`astagidir` pointed at this instance's own empty
+  runtime dir instead of the shared, package-installed `/usr/share/asterisk` —
+  Asterisk's Stasis subsystem needs real files there and refused to start
+  ("Stasis initialization failed. ASTERISK EXITING!"). (2) The stock `asterisk.conf`
+  template's `[directories](!)` marker — copied verbatim since the real stock config
+  has it — silently no-ops any directory override that differs from Asterisk's
+  compiled-in default, so this instance kept binding the *stock* instance's control
+  socket ("Asterisk already running on /var/run/asterisk/asterisk.ctl") until the
+  marker was removed.
+
+### Added — Services page / Dashboard: surface the new 2G voice stack
+
+- `osmo-sip-connector` added to the systemd-tracked service list (Services page +
+  Dashboard), alongside the existing Osmocom daemons.
+- New Asterisk-2G status section/mini-card on both pages (status-API-based, mirroring
+  the existing VectorCore pattern rather than the systemd-unit one, since this module
+  tracks its own install/configure state). The two Asterisk mini-cards are now
+  labeled identically ("Asterisk") with a subtitle disambiguating them ("IMS / 4G-5G"
+  vs. "2G GSM") rather than two differently-worded cards that didn't visually pair.
+- New "Stop 2G" / "Start 2G" bulk-action button next to the existing 4G/5G ones,
+  correctly excluding the shared SMS-core Osmocom services (osmo-stp/hlr/msc) that
+  SGs-mode SMS still depends on regardless of whether the 2G radio module is enabled.
+
+### Added — RAN page: per-BTS administrative lock/unlock ("Block radio")
+
+- New "Block"/"Unblock" control per BTS in the RAN page's 2G GSM section (all three
+  radio-list layouts), gated behind a confirm modal on Block since — unlike the
+  existing 4G/5G "Block" button, which only fires an nftables rule on this host and
+  never touches the radio — this sends a real command to osmo-bsc that takes the BTS
+  off the air: `change-adm-state locked/unlocked`, entered via
+  `bts <N> oml class bts instance 0 0 0`. Live-verified against this project's own
+  running osmo-bsc before wiring it up.
+- Locking has no persisted equivalent in `osmo-bsc.cfg` (confirmed by inspecting the
+  real `bts <N>` config node's full command list) — osmo-bsc forgets it on its own
+  restart. `BtsEntry.blocked` now persists the intended state, and a new
+  `reapplyBtsLocks()` replays it over VTY after every osmo-bsc restart this module
+  triggers (config regen from any BTS add/edit/remove, Configure, or this module's
+  own Start/Restart), so a locked BTS can no longer silently come back on the air.
+- `bscVtyCommand()` (`gsm-controller.ts`) now accepts multiple commands in one VTY
+  session instead of exactly one, needed to enter the `(oml)` node and issue
+  `change-adm-state` together without racing a fresh reconnect between them.
+- A blocked BTS row now flashes red the same way a blocked 4G/5G radio row already
+  did (`animate-flash-red`, matching styling per layout — ring highlight on the Table
+  layout, plain flash on Accordion/Split), instead of only showing the static
+  "BTS BLOCKED" badge.
+
+### Added — RAN page: per-UE GPRS/EDGE data-session IP
+
+- New "Data IP" column in the RAN page's 2G GSM UE list (all three layouts) showing
+  each UE's live PDP context IP — previously this was hardcoded to always show `—`,
+  since 2G's CS side genuinely has no PDP-context IP of its own. Sourced from a new
+  `GET /api/gsm/pdp-contexts`, which queries osmo-ggsn's own VTY directly (port 4260,
+  `show pdp-context ggsn ggsn0`) — osmo-ggsn is the actual address allocator;
+  osmo-sgsn only relays the GTP-C signaling. `parsePdpContexts()`'s field layout was
+  pulled from osmo-ggsn 1.9.0's own source (`apt-get source osmo-ggsn` →
+  `ggsn/ggsn_vty.c`'s `show_one_pdp_v4only()`) and read directly rather than guessed
+  from the VTY reference PDF, which turned out to be an auto-generated command-syntax
+  tree with no sample output at all. `bscVtyCommand()` generalized to `osmoVtyCommand
+  (port, cmd)` so this and any future daemon's VTY can reuse the same connection
+  script instead of duplicating it per daemon.
+
+### Fixed — BTS Block/Unblock: wrong OML object-instance address took the real radio off the air
+
+**Real production incident, found live**: Block then Unblock against the real nanoBTS
+left it off the air for ~45 minutes — Unblock reported success but nothing changed.
+Root cause confirmed via `osmo-bsc`'s own `journalctl` output: the OML object-instance
+triple used for `change-adm-state` was `(idx, 0, 0)`; the correct one for NM object
+class "bts" is `(idx, 255, 255)` (trx/ts wildcarded — the top-level BTS object has no
+specific trx/timeslot). The real radio NACK'd the wrong address
+(`CHANGE ADMINISTRATIVE STATE NACK CAUSE=Object Instance unknown`), and `osmo-bsc`'s
+own reaction to any such NACK is to immediately drop the whole OML link — cascading
+every child NM object into a locked/not-installed state. The NACK never surfaces as
+VTY error text (only in `osmo-bsc`'s own log), which is why Unblock silently did
+nothing. Recovery required a clean `systemctl restart osmo-bsc` to force a fresh OML
+handshake — the corrected code alone wasn't enough to un-wedge the already-broken
+session. Fixed: corrected instance address in both `setBtsBlocked()` and
+`reapplyBtsLocks()`; `setBtsBlocked()` now re-reads `show bts <idx>` after the command
+and fails loudly (502, does not persist `blocked`) if the real reported `adminState`
+doesn't match what was requested, instead of trusting the VTY prompt returning
+cleanly.
+
+### Docs
+
+- `docs/features.md` gained the "2G GSM (Osmocom)" section it never had (covering
+  the module as a whole, not just this release's additions), the RAN-page lock/
+  unlock feature, and the per-UE data-IP column; `CLAUDE.md`'s feature-inventory
+  table gained the matching row.
+
+---
+
 ## [v2.0-beta_0.58] - 2026-09-13
 
 ### Fixed — 2G GSM/Osmocom module: config-ownership landmine, MGW codec routing, explicit call-routing control

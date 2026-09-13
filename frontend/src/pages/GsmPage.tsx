@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import {
   Play, Square, RotateCw, Terminal, Trash2, Plus, Settings, FileText, RadioTower, AlertTriangle, ShieldAlert,
-  Pencil, Radar, CheckCircle, CheckCircle2, XCircle, Phone,
+  Pencil, Radar, CheckCircle, CheckCircle2, XCircle, Phone, PhoneCall,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -10,6 +10,8 @@ import {
   gsmApi, BTS_BAND_OPTIONS, BTS_BAND_ARFCN_RANGE,
   type GsmStatus, type BtsEntry, type BtsBackend, type GsmConfigFile, type DiscoveredRadio, type BtsLinkStatus,
 } from '../api/gsm';
+import { asterisk2gApi, type Asterisk2gStatus } from '../api/asterisk-2g';
+import { FEATURES } from '../config/features';
 
 function LogTerminal({ lines }: { lines: string }) {
   return (
@@ -951,6 +953,15 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [mnccBusy, setMnccBusy] = useState(false);
+  const [a2gStatus, setA2gStatus] = useState<Asterisk2gStatus | null>(null);
+
+  useEffect(() => {
+    if (!FEATURES.asterisk2g) return;
+    const poll = () => asterisk2gApi.getStatus().then(setA2gStatus).catch(() => {});
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => clearInterval(t);
+  }, []);
 
   const seeded = useRef(false);
   useEffect(() => {
@@ -1109,7 +1120,18 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
               <input type="number" className="nms-input font-mono text-xs" value={localPort} onChange={e => setLocalPort(Number(e.target.value))} placeholder="5060" />
             </div>
             <div>
-              <label className="nms-label">Remote SIP peer (host/IP)</label>
+              <div className="flex items-center justify-between gap-2">
+                <label className="nms-label !mb-0">Remote SIP peer (host/IP)</label>
+                {FEATURES.asterisk2g && a2gStatus?.installed && a2gStatus.hasSavedConfig && (
+                  <button
+                    type="button"
+                    onClick={() => { setRemoteHost(a2gStatus.bindIp); setRemotePort(a2gStatus.bindPort); }}
+                    className="text-[11px] text-nms-accent hover:underline"
+                  >
+                    Use Asterisk-2G ({a2gStatus.bindIp}:{a2gStatus.bindPort})
+                  </button>
+                )}
+              </div>
               <input className="nms-input font-mono text-xs" value={remoteHost} onChange={e => setRemoteHost(e.target.value)} placeholder="e.g. 10.0.1.178" />
               <p className="text-[11px] text-nms-text-dim mt-1">Where 2G calls are sent to / received from. Required.</p>
             </div>
@@ -1118,6 +1140,16 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
               <input type="number" className="nms-input font-mono text-xs" value={remotePort} onChange={e => setRemotePort(Number(e.target.value))} placeholder="5060" />
             </div>
           </div>
+          {FEATURES.asterisk2g && a2gStatus?.installed && a2gStatus.serviceActive &&
+            (remoteHost !== a2gStatus.bindIp || remotePort !== a2gStatus.bindPort) && (
+            <div className="mt-3 flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>
+                The Asterisk-2G module (2G Voice tab) is installed and running at {a2gStatus.bindIp}:{a2gStatus.bindPort}, but this
+                remote peer points somewhere else — 2G-to-2G calls won't reach it. Use the button above to fix, then Save & Apply.
+              </span>
+            </div>
+          )}
           <button onClick={handleSave} disabled={saving || !sip?.installedOnDisk} className="nms-btn-primary text-sm mt-4 flex items-center gap-2">
             <Phone className="w-4 h-4" /> {saving ? 'Saving…' : 'Save & Apply'}
           </button>
@@ -1127,9 +1159,180 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
   );
 }
 
+// A second, fully isolated Asterisk instance dedicated to real 2G-to-2G
+// internal voice — see backend/src/interfaces/rest/asterisk-2g-controller.ts's
+// module header for the full "why" (osmo-msc's own internal MNCC handler
+// never implements MNCC_RTP_CREATE, confirmed live 2026-09-13). Never
+// touches the separate Asterisk instance the PSTN Gateway page owns.
+function Asterisk2gTab() {
+  const [status, setStatus] = useState<Asterisk2gStatus | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installLog, setInstallLog] = useState('');
+  const [configuring, setConfiguring] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [bindIp, setBindIp] = useState('127.0.1.7');
+  const [bindPort, setBindPort] = useState(5060);
+  const [msisdnMatchPattern, setMsisdnMatchPattern] = useState('_X.');
+
+  const refresh = useCallback(() => {
+    asterisk2gApi.getStatus().then(setStatus).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const t = setInterval(refresh, 5000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!status || seeded.current) return;
+    seeded.current = true;
+    setBindIp(status.bindIp);
+    setBindPort(status.bindPort);
+    setMsisdnMatchPattern(status.msisdnMatchPattern);
+  }, [status]);
+
+  // Single button does install (idempotent) then configure, in sequence —
+  // same "never split this again" convention as the Setup tab's own
+  // handleInstallAndConfigure, per explicit past user feedback.
+  const handleInstallAndConfigure = async () => {
+    setInstalling(true);
+    setInstallLog('');
+    try {
+      const res = await asterisk2gApi.install();
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          setInstallLog(prev => prev + decoder.decode(value));
+        }
+      }
+    } catch {
+      toast.error('Install failed');
+      setInstalling(false);
+      return;
+    }
+    setInstalling(false);
+    setConfiguring(true);
+    try {
+      await asterisk2gApi.configure({ bindIp, bindPort, msisdnMatchPattern });
+      toast.success('Asterisk-2G installed and configured — SIP tab remote and MNCC mode set to External automatically.');
+      refresh();
+    } catch (err: any) {
+      toast.error(`Configure failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setConfiguring(false);
+    }
+  };
+
+  const handleAction = async (action: 'start' | 'stop' | 'restart') => {
+    setBusy(true);
+    try {
+      await asterisk2gApi[action]();
+      toast.success(`Asterisk-2G ${action}ed`);
+      refresh();
+    } catch (err: any) {
+      toast.error(`${action} failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!status) {
+    return <div className="nms-card text-sm text-nms-text-dim">Loading…</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex gap-2">
+        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>
+          A second, fully isolated Asterisk instance (own config, own systemd unit, own loopback IP — never touches the PSTN
+          Gateway's Asterisk) whose only job is letting osmo-sip-connector complete a real 2G-to-2G call: when one 2G
+          subscriber calls another, this instance recognizes the destination as a local number and re-dials it back through
+          osmo-sip-connector, which is what actually lets osmo-msc ring the second phone. Install & Configure below also
+          points the SIP tab's remote at this instance and switches osmo-msc to External call routing automatically — this
+          module's only job is being that peer, so there's nothing to wire up by hand afterward.
+        </span>
+      </div>
+
+      {!status.installed && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300">
+          Not installed yet — this shares the same apt Asterisk package the PSTN Gateway uses (if already installed there,
+          this step is a fast no-op) but builds its own separate, isolated instance on top of it.
+        </div>
+      )}
+
+      <div className="nms-card space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-sm font-semibold text-nms-text">Asterisk-2G</p>
+            <p className="text-xs text-nms-text-dim mt-1">Isolated instance — bound to {status.bindIp}:{status.bindPort}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <SvcBadge label="asterisk-2g" active={status.serviceActive} />
+            <SvcBadge label="codec_gsm" active={status.codecGsmLoaded} />
+            {status.installed && (
+              <>
+                <div className="h-5 w-px bg-nms-border" />
+                <button onClick={() => handleAction('start')} disabled={busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+                  <Play className="w-3 h-3" /> Start
+                </button>
+                <button onClick={() => handleAction('stop')} disabled={busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+                  <Square className="w-3 h-3" /> Stop
+                </button>
+                <button onClick={() => handleAction('restart')} disabled={busy} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+                  <RotateCw className="w-3 h-3" /> Restart
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {!status.sipConnPeer && (
+          <div className="flex items-start gap-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>osmo-sip-connector has no concrete local SIP address configured yet — set one on the SIP tab before installing/configuring this.</span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="nms-label">Bind IP</label>
+            <input className="nms-input font-mono text-xs" value={bindIp} onChange={e => setBindIp(e.target.value)} placeholder="127.0.1.7" />
+            <p className="text-[11px] text-nms-text-dim mt-1">This project's own dedicated-loopback-per-SIP-daemon convention — 127.0.1.7 is the next free one.</p>
+          </div>
+          <div>
+            <label className="nms-label">Bind port</label>
+            <input type="number" className="nms-input font-mono text-xs" value={bindPort} onChange={e => setBindPort(Number(e.target.value))} placeholder="5060" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="nms-label">MSISDN match pattern</label>
+            <input className="nms-input font-mono text-xs" value={msisdnMatchPattern} onChange={e => setMsisdnMatchPattern(e.target.value)} placeholder="_X." />
+            <p className="text-[11px] text-nms-text-dim mt-1">
+              Asterisk dialplan pattern for "this dialed number is a local 2G subscriber." The default (<code className="font-mono">_X.</code>, any
+              number) is safe as-is — this instance has exactly one trunk to route to either way — but you can tighten it to your real
+              numbering plan (e.g. <code className="font-mono">_1555X.</code>) any time.
+            </p>
+          </div>
+        </div>
+
+        <button onClick={handleInstallAndConfigure} disabled={installing || configuring || !status.sipConnPeer} className="nms-btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
+          <PhoneCall className="w-4 h-4" /> {installing ? 'Installing…' : configuring ? 'Configuring…' : status.hasSavedConfig ? 'Reconfigure' : 'Install & Configure'}
+        </button>
+
+        {installLog && <LogTerminal lines={installLog} />}
+      </div>
+    </div>
+  );
+}
+
 export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const [status, setStatus] = useState<GsmStatus | null>(null);
-  const [tab, setTab] = useState<'setup' | 'bts' | 'sip' | 'configs'>('setup');
+  const [tab, setTab] = useState<'setup' | 'bts' | 'sip' | 'voice2g' | 'configs'>('setup');
   const [svcBusy, setSvcBusy] = useState(false);
 
   const refresh = useCallback(() => {
@@ -1159,6 +1362,7 @@ export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
     { id: 'setup',   label: 'Setup',         icon: <Settings className="w-4 h-4" /> },
     { id: 'bts',     label: 'BTS / Radios',  icon: <RadioTower className="w-4 h-4" /> },
     { id: 'sip',     label: 'SIP',           icon: <Phone className="w-4 h-4" /> },
+    ...(FEATURES.asterisk2g ? [{ id: 'voice2g' as const, label: '2G Voice', icon: <PhoneCall className="w-4 h-4" /> }] : []),
     { id: 'configs', label: 'Config Files',  icon: <FileText className="w-4 h-4" /> },
   ];
 
@@ -1217,6 +1421,7 @@ export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
       {tab === 'setup' && <SetupTab status={status} refresh={refresh} onNavigate={onNavigate} />}
       {tab === 'bts' && <BtsTab btsEntries={status?.btsEntries ?? []} refresh={refresh} defaultOmlIp={status?.bscMgwBindIp ?? '127.0.0.1'} />}
       {tab === 'sip' && <SipTab status={status} refresh={refresh} />}
+      {tab === 'voice2g' && FEATURES.asterisk2g && <Asterisk2gTab />}
       {tab === 'configs' && <ConfigFilesTab />}
     </div>
   );

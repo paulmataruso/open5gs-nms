@@ -7,6 +7,7 @@ import { sasApi } from '../../api/sas';
 import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
+import { asterisk2gApi, type Asterisk2gStatus } from '../../api/asterisk-2g';
 import { secgwApi, type SecGwStatus } from '../../api/secgw';
 import { mmsApi, type MmsStatus } from '../../api/mms';
 import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorcoreSmsc';
@@ -97,6 +98,7 @@ function StatCard({
 const SERVICES_OSMO = [
   'osmo-stp', 'osmo-hlr', 'osmo-msc',
   'osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db',
+  'osmo-sip-connector',
 ];
 function vendorLabel(serviceName: string): string {
   if (serviceName === 'mongodb') return 'MongoDB';
@@ -170,6 +172,7 @@ export function DashboardPage(): JSX.Element {
   const [vowifiStatus, setVowifiStatus] = useState<VowifiStatus | null>(null);
   const [vowifiStats, setVowifiStats] = useState<VectorcoreStats | null>(null);
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
+  const [asterisk2gStatus, setAsterisk2gStatus] = useState<Asterisk2gStatus | null>(null);
   const [secgwStatus, setSecgwStatus] = useState<SecGwStatus | null>(null);
   const [mmsStatus, setMmsStatus] = useState<MmsStatus | null>(null);
   const [vectorcoreSmscStatus, setVectorcoreSmscStatus] = useState<VectorcoreSmscStatus | null>(null);
@@ -228,6 +231,10 @@ export function DashboardPage(): JSX.Element {
     // PSTN Gateway status — just need services.asterisk for the Network
     // Functions grid below (P/I/S-CSCF come from imsStatus.services above).
     pstnApi.getStatus().then(setPstnStatus).catch(() => {});
+    // Asterisk-2G (2G-to-2G internal voice) — a real, separate Asterisk
+    // instance from PSTN Gateway's own (see the ASTERISK mini-card above),
+    // so it gets its own fetch/card rather than being folded into that one.
+    asterisk2gApi.getStatus().then(setAsterisk2gStatus).catch(() => {});
     // Security Gateway status — service health + radio/tunnel counts for its
     // own mini-card in the Network Functions grid below.
     secgwApi.getStatus().then(setSecgwStatus).catch(() => {});
@@ -765,7 +772,13 @@ export function DashboardPage(): JSX.Element {
           <AddonServiceMiniCard name="P-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.pcscf} loading={!imsStatus} />
           <AddonServiceMiniCard name="I-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.icscf} loading={!imsStatus} />
           <AddonServiceMiniCard name="S-CSCF" vendor="Kamailio" active={!!imsStatus?.services?.scscf} loading={!imsStatus} />
-          <AddonServiceMiniCard name="ASTERISK" vendor="Asterisk" active={!!pstnStatus?.services?.asterisk} loading={!pstnStatus} />
+          {/* Both are real, separate Asterisk instances (see asterisk-2g-
+              controller.ts's module header) — lead with the shared product
+              name and use the subtitle to tell them apart, rather than two
+              differently-named cards that don't visually read as "the same
+              software, two instances." */}
+          <AddonServiceMiniCard name="Asterisk" vendor="IMS / 4G-5G" active={!!pstnStatus?.services?.asterisk} loading={!pstnStatus} />
+          <AddonServiceMiniCard name="Asterisk" vendor="2G GSM" active={!!asterisk2gStatus?.serviceActive} loading={!asterisk2gStatus} />
           <AddonServiceMiniCard
             name="SECGW"
             vendor="strongSwan"

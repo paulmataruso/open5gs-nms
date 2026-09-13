@@ -858,6 +858,147 @@ working; Android real-phone VoLTE calling is unverified.
 
 ---
 
+## 2G GSM (Osmocom)
+
+> **Alpha.** Real GSM radio access on real nanoBTS hardware, layered on top of
+> the osmo-hlr/osmo-msc/osmo-stp trio the SMS-over-SGs module already runs.
+> `ENABLE_GSM_MODULE` defaults to **disabled** (opt-in) — misconfiguring a
+> live radio (and, for a real BTS, actual spectrum transmission) is a bigger
+> blast radius than a broken lab feature; check the module's own Setup tab
+> for a real spectrum-authorization acknowledgment before adding hardware.
+
+### What It Does
+
+Adds osmo-bsc/osmo-mgw (and, optionally, osmo-pcu/osmo-sgsn/osmo-ggsn for
+GPRS/EDGE) on top of the same osmo-hlr/osmo-msc/osmo-stp core the SMS module
+already runs — one shared CS core, two independent front ends (SGs-only vs.
+full radio access). **Stable**: CS attach/location-update/ciphering, GPRS/
+EDGE data, and 2G↔4G SMS delivery (via a SMPP bridge into the separate
+VectorCore SMSC module). **Alpha**: real 2G-to-2G voice calling.
+
+Real voice calling has a genuine, confirmed upstream limitation: osmo-msc's
+own built-in/internal call handler can drive signaling (paging, ringing,
+answering) but never implements the `MNCC_RTP_CREATE` primitive needed to
+actually bridge the two call legs' audio — every call in Internal mode
+(osmo-msc's default) hangs with no audio and eventually times out, regardless
+of anything in this project's own code. Getting real audio requires External
+MNCC mode, routed through **osmo-sip-connector** (a clean, unpatched build of
+the real upstream daemon) to a SIP peer that can complete the loop:
+
+1. Subscriber A calls subscriber B. osmo-msc, in External mode, hands the
+   call to osmo-sip-connector over a Unix socket instead of routing it
+   internally.
+2. osmo-sip-connector — a dumb, single-peer MNCC↔SIP signaling relay with no
+   dial-plan logic of its own — sends a SIP INVITE (destination = B's
+   MSISDN) to its one configured "remote" peer.
+3. That peer is **Asterisk-2G**: a second, fully isolated Asterisk instance
+   (own config tree at `/etc/asterisk-2g`, own systemd unit, own loopback IP
+   `127.0.1.7` — shares only the underlying apt package with the completely
+   separate Asterisk instance the [PSTN Gateway](#pstn-gateway) module owns,
+   never its config/service/lifecycle). Its one-line dialplan recognizes the
+   dialed number as a local subscriber and re-originates the call back out
+   through the same trunk.
+4. osmo-sip-connector receives that second INVITE and hands it to osmo-msc as
+   a mobile-terminated setup toward B — osmo-msc does its own normal
+   MSISDN→subscriber/HLR resolution and pages B exactly as it would for any
+   real call.
+5. RTP flows directly between osmo-mgw and Asterisk-2G — osmo-sip-connector
+   never touches media/codecs at all, so Asterisk-2G's endpoint is configured
+   for plain GSM Full Rate only, matching exactly what the real BTS/BSC/MSC
+   chain negotiates (confirmed live: `chan_mode=SPEECH_V1, chan_type=FR`).
+
+One button (GSM page → **2G Voice** tab, gated on `ENABLE_ASTERISK_2G_MODULE`,
+defaults **disabled**) installs Asterisk-2G, configures it, points the SIP
+tab's remote peer at it, and switches MNCC to External — all four steps in
+one action, since this module's only job is being that one specific peer
+(unlike the SIP tab's own remote field in general, which stays a fully manual,
+never-auto-written setting for anything else, on purpose — see
+`gsm-controller.ts`'s own `/sip/configure`). Internal vs. External MNCC mode
+is otherwise an explicit, persisted operator choice on the SIP tab (never
+flipped automatically by any other action) — see `POST /api/gsm/sip/mncc-mode`.
+
+**Per-BTS admin lock/unlock** (RAN page, 2G GSM section — one "Block"/"Unblock"
+button per BTS, gated behind a confirm modal on Block since it's a real,
+live-impact action): commands osmo-bsc's own OML Administrative State
+(`change-adm-state locked/unlocked`, entered via `bts <N> oml class bts
+instance 0 0 0`) — a genuine command to the radio itself over Abis, not a
+host-side traffic filter, so locking drops every camped UE immediately and
+takes the cell off the air until unlocked. Live-verified 2026-09-13 against
+this project's own running osmo-bsc. This has no persisted equivalent in
+`osmo-bsc.cfg` itself (confirmed by inspecting the real `bts <N>` config
+node's full command list) — osmo-bsc silently forgets the lock on its own
+restart, so the lock state is tracked in this module's own state file and
+`reapplyBtsLocks()` replays it over VTY every time osmo-bsc comes back up
+(config regen after any BTS add/edit/remove, or any of this module's own
+Start/Restart actions) so it never silently reverts to unlocked.
+
+**Per-UE GPRS/EDGE data-session IP** (RAN page, 2G GSM section — a "Data IP"
+column in the UE list, all three layouts): reads live active PDP contexts
+straight from osmo-ggsn's own VTY (`show pdp-context ggsn ggsn0`, port
+4260) — osmo-ggsn is the real address allocator; osmo-sgsn only relays the
+GTP-C signaling around it. `parsePdpContexts()`'s exact field layout came
+from reading osmo-ggsn 1.9.0's own source (`ggsn/ggsn_vty.c`'s
+`show_one_pdp_v4only()`, pulled via `apt-get source osmo-ggsn`), not the VTY
+reference PDF — that turned out to be an auto-generated command-syntax tree
+with no actual sample output to verify a parser against. A UE with no active
+data session (CS-only, or GPRS/EDGE not enabled) just shows `—`, same as
+before this existed.
+
+### Components
+
+- **Backend**: `gsm-controller.ts` — osmo-bsc/osmo-mgw/GPRS lifecycle, BTS
+  management (discovery, add/edit real or virtual radios, admin lock/unlock),
+  live PDP-context lookup (`osmoVtyCommand()`, generalized from the
+  osmo-bsc-only `bscVtyCommand()` so any daemon's VTY can reuse the same
+  connection script), the SIP tab's osmo-sip-connector lifecycle + MNCC mode
+  endpoint. `osmo-sip-connector-build.ts` — clean upstream source build (tag
+  pinned to match this host's installed `libosmocore-dev`), no custom
+  patches. `asterisk-2g-controller.ts` — the isolated second Asterisk
+  instance's full install/configure/status/start/stop/restart/uninstall
+  lifecycle. `sms-controller.ts` owns the shared osmo-hlr/osmo-msc/osmo-stp
+  config via an ownership-based VTY-config merge (never a blind full-file
+  regeneration — see its own module comments).
+- **Frontend**: `GsmPage.tsx` — Setup / BTS-Radios / SIP / 2G Voice / Config
+  Files tabs, all following this project's standard centered-pill-tab layout.
+  `RANPage.tsx`'s 2G GSM section — per-BTS admin lock/unlock button and
+  per-UE Data IP column (all three layout variants), separate from the
+  module's own management page since this is where an operator monitoring
+  live traffic actually looks to act on it.
+
+### Real bugs found and fixed getting this working end-to-end
+
+- **osmo-bsc and osmo-stp collided on the same example SS7 point-code**
+  (`0.23.1`, a conventional "the MSC" placeholder copied from Osmocom's own
+  docs) — OML/RSL/SIGTRAN all showed fully healthy while zero real signaling
+  (location update, call, SMS) ever completed between BSC and MSC. Fixed by
+  giving osmo-stp its own distinct point-code.
+- **A5 cipher mismatch**: `osmo-bsc.cfg` allowed only `a5 0` (no encryption)
+  while `osmo-msc.cfg` required real ciphering — every real attach was
+  rejected outright with a clear cipher-negotiation error once found.
+- **`osmo-msc`/`osmo-bsc`'s `mgw endpoint-domain` were set to their own
+  component names** (`msc`/`bsc`) instead of `mgw` — osmo-mgw itself has no
+  explicit domain override and defaults to expecting literally `mgw`, so
+  every real call's MGCP CRCX was silently rejected. Invisible until an
+  actual voice call was attempted, since attach/SMS/GPRS never touch MGW.
+- **A leftover `mncc external <path>`** from an earlier, fully-reverted
+  2G↔IMS voice-interop attempt was silently routing every 2G call — including
+  a plain call between two local subscribers — out to a socket with nothing
+  useful listening, with no operator-visible cause. This is what motivated
+  making MNCC mode an explicit, visible operator control instead of an
+  accidental config value.
+- **Asterisk-2G's own `asterisk.conf` `[directories]` overrides were silently
+  no-ops** with the `(!)` template marker present (copied verbatim from the
+  real stock config) — Asterisk kept checking the *stock* instance's control
+  socket path instead of its own, failing every launch. The stock instance
+  never surfaced this because its own override values happen to be identical
+  to Asterisk's compiled-in defaults. A second, related bug in the same area:
+  `astdatadir`/`astagidir` were pointed at this instance's own empty runtime
+  directory instead of the real, shared, package-installed `/usr/share/
+  asterisk` — Asterisk's Stasis subsystem needs real documentation files
+  there and refused to start without them ("Stasis initialization failed").
+
+---
+
 ## PSTN Gateway
 
 > **Beta.** This module has **no public SIP trunk connectivity** — no provider

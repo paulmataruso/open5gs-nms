@@ -51,6 +51,7 @@ export const EXTRA_BACKUP_FILES = [
   '/etc/open5gs/.ims-install.json',
   '/etc/open5gs/.mms-config.json',
   '/etc/open5gs/.pstn-config.json',
+  '/etc/open5gs/.asterisk2g-config.json',
   '/etc/open5gs/.vectorcore-smsc-config.json',
   '/etc/open5gs/.twamp-config.json',
   '/etc/open5gs-nms/.vowifi-state.json',

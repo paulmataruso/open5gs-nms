@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin } from 'lucide-react';
+import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin, Lock, Unlock } from 'lucide-react';
 import { useTopologyStore } from '../../stores';
 import { radioTagsApi, radioBlockApi, gnbBlockApi, configApi } from '../../api';
 import { getBlockedUes, blockUe, unblockUe } from '../../api/ueBlock';
@@ -9,7 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { FEATURES } from '../../config/features';
-import { gsmApi, type BtsEntry, type GsmSignalSample } from '../../api/gsm';
+import { gsmApi, type BtsEntry, type GsmSignalSample, type PdpContext } from '../../api/gsm';
 import { Signal } from 'lucide-react';
 
 interface RANPageProps {
@@ -1382,6 +1382,9 @@ function useGsm2GData() {
   // (osmo-bsc/mgw) can be up while a radio's Abis link is down, so the
   // section shows real per-radio state, not just "are the daemons running".
   const [linkStatus, setLinkStatus] = useState<Record<string, { omlConnected: boolean; rslConnected: boolean }>>({});
+  // IMSI -> active GPRS/EDGE PDP context (straight from osmo-ggsn's own live
+  // state) — a UE with no active data session just has no entry.
+  const [pdpContexts, setPdpContexts] = useState<Record<string, PdpContext>>({});
 
   useEffect(() => {
     if (!FEATURES.gsm) return;
@@ -1397,16 +1400,26 @@ function useGsm2GData() {
         )).then(pairs => { if (!cancelled) setLinkStatus(Object.fromEntries(pairs.filter(Boolean) as [string, any][])); });
       }).catch(() => {});
       gsmApi.getSignalOverview().then(r => { if (!cancelled) setSamples(r.samples || []); }).catch(() => {});
+      gsmApi.getPdpContexts().then(r => {
+        if (cancelled) return;
+        setPdpContexts(Object.fromEntries((r.contexts || []).map(c => [c.imsi, c])));
+      }).catch(() => {});
     };
     load();
     const t = setInterval(load, 15000);
     return () => { cancelled = true; clearInterval(t); };
   }, []);
 
-  return { btsEntries, services, samples, linkStatus };
+  // Applied optimistically right after a successful block/unblock call so the
+  // section reflects it immediately, rather than waiting up to 15s for the
+  // next poll — the poll still reconciles with ground truth afterward.
+  const setBtsBlocked = (id: string, blocked: boolean) =>
+    setBtsEntries(prev => prev.map(e => (e.id === id ? { ...e, blocked } : e)));
+
+  return { btsEntries, services, samples, linkStatus, pdpContexts, setBtsBlocked };
 }
 
-type Gsm2GUe = GsmSignalSample & { onChannel: boolean };
+type Gsm2GUe = GsmSignalSample & { onChannel: boolean; pdpIp: string | null; pdpApn: string | null };
 interface Gsm2GRow { bts: BtsEntry; index: number; ues: Gsm2GUe[]; omlUp: boolean | null }
 
 // Attribute each measurement sample to a BTS. `s.bts` (from a live `show
@@ -1418,6 +1431,7 @@ interface Gsm2GRow { bts: BtsEntry; index: number; ues: Gsm2GUe[]; omlUp: boolea
 function build2gRows(
   btsEntries: BtsEntry[], samples: GsmSignalSample[],
   linkStatus: Record<string, { omlConnected: boolean; rslConnected: boolean }>,
+  pdpContexts: Record<string, PdpContext>,
 ): { rows: Gsm2GRow[]; unassigned: Gsm2GUe[] } {
   const rows: Gsm2GRow[] = btsEntries.map((bts, index) => {
     const ls = linkStatus[bts.id];
@@ -1426,7 +1440,8 @@ function build2gRows(
   const unassigned: Gsm2GUe[] = [];
   const single = btsEntries.length === 1;
   for (const s of samples) {
-    const ue: Gsm2GUe = { ...s, onChannel: s.bts != null };
+    const pdp = pdpContexts[s.imsi];
+    const ue: Gsm2GUe = { ...s, onChannel: s.bts != null, pdpIp: pdp?.ipv4 ?? null, pdpApn: pdp?.apnInUse ?? null };
     if (s.bts != null && rows[s.bts]) rows[s.bts].ues.push(ue);
     else if (single) rows[0].ues.push(ue);
     else unassigned.push(ue);
@@ -1439,6 +1454,7 @@ const GSM2G_UE_HEADER = (
     <span className="w-3 flex-shrink-0" />
     <span className="flex-1">IMSI / Subscriber</span>
     <span className="w-24 text-center flex-shrink-0">MSISDN</span>
+    <span className="w-28 text-center flex-shrink-0">Data IP</span>
     <span className="w-16 text-center flex-shrink-0">UL RxLev</span>
     <span className="w-14 text-center flex-shrink-0">RxQual</span>
     <span className="w-10 text-center flex-shrink-0">TA</span>
@@ -1455,6 +1471,7 @@ function Gsm2GUeRow({ ue, onNavigate }: { ue: Gsm2GUe; onNavigate?: (imsi: strin
         {ue.nickname && <span className="text-xs text-nms-text-dim block truncate">{ue.nickname}</span>}
       </div>
       <span className="w-24 text-center text-xs font-mono text-nms-text flex-shrink-0">{ue.msisdn || '—'}</span>
+      <span className="w-28 text-center text-xs font-mono text-nms-text flex-shrink-0" title={ue.pdpIp ? `APN: ${ue.pdpApn || 'unknown'}` : 'No active GPRS/EDGE data session'}>{ue.pdpIp || '—'}</span>
       <span className="w-16 text-center text-xs font-mono text-nms-text flex-shrink-0">{ue.ulRxLevDbm !== null ? ue.ulRxLevDbm : '—'}</span>
       <span className="w-14 text-center text-xs font-mono text-nms-text-dim flex-shrink-0">{ue.ulRxQual !== null ? ue.ulRxQual : '—'}</span>
       <span className="w-10 text-center text-xs font-mono text-nms-text-dim flex-shrink-0">{ue.timingAdvance !== null ? ue.timingAdvance : '—'}</span>
@@ -1487,14 +1504,56 @@ function Gsm2GAbisDot({ omlUp, fallbackUp }: { omlUp: boolean | null; fallbackUp
   );
 }
 
+// Deliberately distinct from RadioBlockButton above (Lock/Unlock icons, not
+// Shield*) even though the label reuses "Block"/"Unblock" to match the
+// user's own vocabulary for this page — the mechanism and blast radius are
+// very different. RadioBlockButton fires an nftables rule on this host only
+// ("the radio itself is not touched"); this fires a real osmo-bsc OML
+// command AT the BTS itself, dropping every camped UE immediately. Reusing
+// the exact same icon for both risked an operator assuming 2G Block is the
+// same mild, fully-reversible-with-no-service-impact action 4G/5G's is.
+function Gsm2GBlockButton({ bts, isAdmin, onRequestBlock, onUnblock }: {
+  bts: BtsEntry; isAdmin: boolean;
+  onRequestBlock: (bts: BtsEntry) => void; onUnblock: (id: string) => void;
+}): JSX.Element | null {
+  if (!isAdmin) return null;
+  const blocked = !!bts.blocked;
+  const cls = 'flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors border flex-shrink-0';
+  return blocked ? (
+    <button onClick={(e) => { e.stopPropagation(); onUnblock(bts.id); }} title="Unlock this BTS at osmo-bsc — resumes broadcasting and accepting UEs"
+      className={clsx(cls, 'text-nms-text-dim hover:text-nms-text border-nms-border hover:border-nms-text-dim')}>
+      <Unlock className="w-2.5 h-2.5" />Unblock
+    </button>
+  ) : (
+    <button onClick={(e) => { e.stopPropagation(); onRequestBlock(bts); }} title="Administratively lock this BTS at osmo-bsc — drops camped UEs immediately and takes it off the air"
+      className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red border-nms-red/40 hover:border-nms-red')}>
+      <Lock className="w-2.5 h-2.5" />Block
+    </button>
+  );
+}
+
 function Gsm2GBandTag({ b }: { b: BtsEntry }): JSX.Element {
   return <span className="text-[10px] font-mono text-teal-400 bg-teal-500/10 border border-teal-500/30 px-1.5 py-0.5 rounded">{b.band} · ARFCN {b.arfcn}</span>;
 }
 
+function Gsm2GBlockedBadge(): JSX.Element {
+  return (
+    <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded" title="Locked at osmo-bsc — off the air until Unblocked">
+      <Lock className="w-2.5 h-2.5" />BTS BLOCKED
+    </span>
+  );
+}
+
+interface Gsm2GBlockProps {
+  isAdmin: boolean;
+  onRequestBlock: (bts: BtsEntry) => void;
+  onUnblock: (id: string) => void;
+}
+
 // ── 2G Layout A: Table (dense rows + inline nested UE list) ───────────────────
-function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate }: {
+function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
   rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
-}): JSX.Element {
+} & Gsm2GBlockProps): JSX.Element {
   return (
     <div className="border border-nms-border rounded-md overflow-hidden">
       <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-3 text-xs font-semibold text-nms-text uppercase tracking-wider">
@@ -1502,13 +1561,16 @@ function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate }: {
       </div>
       {rows.map((r, i) => (
         <div key={r.bts.id}>
-          <div className="grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border bg-nms-surface-2/20">
+          <div className={clsx(
+            'grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border',
+            r.bts.blocked ? 'animate-flash-red ring-1 ring-inset ring-nms-red/40' : 'bg-nms-surface-2/20',
+          )}>
             <div>
-              <div className="flex items-center gap-1.5"><span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span><Gsm2GBandTag b={r.bts} /></div>
+              <div className="flex items-center gap-1.5 flex-wrap"><span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span><Gsm2GBandTag b={r.bts} />{r.bts.blocked && <Gsm2GBlockedBadge />}</div>
               <Gsm2GBtsMeta b={r.bts} />
             </div>
             <div className="text-center self-center"><span className="text-sm font-bold text-teal-400" title="Registered UEs seen on this BTS">{r.ues.length}</span></div>
-            <div className="flex items-center justify-end self-center"><Gsm2GAbisDot omlUp={r.omlUp} fallbackUp={aIfaceUp} /></div>
+            <div className="flex items-center justify-end gap-2 self-center"><Gsm2GAbisDot omlUp={r.omlUp} fallbackUp={aIfaceUp} /><Gsm2GBlockButton bts={r.bts} {...block} /></div>
           </div>
           {r.ues.length > 0 ? (
             <div className="bg-nms-surface-2/10">{i === 0 && GSM2G_UE_HEADER}{r.ues.map(ue => <Gsm2GUeRow key={ue.imsi} ue={ue} onNavigate={onNavigate} />)}</div>
@@ -1528,9 +1590,9 @@ function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate }: {
 }
 
 // ── 2G Layout B: Collapsible list ────────────────────────────────────────────
-function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate }: {
+function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
   rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
-}): JSX.Element {
+} & Gsm2GBlockProps): JSX.Element {
   const [open, setOpen] = useState<Set<string>>(() => new Set(rows.filter(r => r.ues.length > 0).map(r => r.bts.id)));
   const toggle = (id: string) => setOpen(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   return (
@@ -1538,14 +1600,16 @@ function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate }: {
       {rows.map(r => {
         const isOpen = open.has(r.bts.id);
         return (
-          <div key={r.bts.id}>
+          <div key={r.bts.id} className={r.bts.blocked ? 'animate-flash-red' : undefined}>
             <button onClick={() => toggle(r.bts.id)} className="w-full flex items-center gap-2 px-3 py-2 hover:bg-nms-surface-2/50 transition-colors text-left">
               <ChevronRight className={clsx('w-3.5 h-3.5 text-nms-text-dim flex-shrink-0 transition-transform', isOpen && 'rotate-90')} />
               <span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span>
               <Gsm2GBandTag b={r.bts} />
+              {r.bts.blocked && <Gsm2GBlockedBadge />}
               <span className="ml-auto flex items-center gap-2 flex-shrink-0">
                 <span className="text-xs font-semibold text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded-full">{r.ues.length} UE{r.ues.length === 1 ? '' : 's'}</span>
                 <Gsm2GAbisDot omlUp={r.omlUp} fallbackUp={aIfaceUp} />
+                <Gsm2GBlockButton bts={r.bts} {...block} />
               </span>
             </button>
             {isOpen && (
@@ -1572,9 +1636,9 @@ function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate }: {
 }
 
 // ── 2G Layout C: List + detail panel ────────────────────────────────────────
-function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate }: {
+function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
   rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
-}): JSX.Element {
+} & Gsm2GBlockProps): JSX.Element {
   const [sel, setSel] = useState<string | null>(null);
   const selected = rows.find(r => r.bts.id === sel) ?? rows[0];
   return (
@@ -1582,9 +1646,12 @@ function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate }: {
       <div className="w-48 flex-shrink-0 border-r border-nms-border divide-y divide-nms-border overflow-y-auto max-h-96">
         {rows.map(r => (
           <button key={r.bts.id} onClick={() => setSel(r.bts.id)}
-            className={clsx('w-full flex items-center gap-1.5 px-2.5 py-2 text-left transition-colors', selected?.bts.id === r.bts.id ? 'bg-teal-500/10' : 'hover:bg-nms-surface-2/50')}>
+            className={clsx('w-full flex items-center gap-1.5 px-2.5 py-2 text-left transition-colors',
+              selected?.bts.id === r.bts.id ? 'bg-teal-500/10' : 'hover:bg-nms-surface-2/50',
+              r.bts.blocked && 'animate-flash-red')}>
             <Circle className={clsx('w-1.5 h-1.5 flex-shrink-0', (r.omlUp ?? aIfaceUp) ? 'fill-nms-green text-nms-green' : 'fill-nms-red text-nms-red')} />
             <span className="text-xs font-mono text-nms-text truncate flex-1">{r.bts.name}</span>
+            {r.bts.blocked && <Lock className="w-2.5 h-2.5 text-nms-red flex-shrink-0" aria-label="Blocked" />}
             <span className="text-[10px] font-semibold text-teal-400 flex-shrink-0">{r.ues.length}</span>
           </button>
         ))}
@@ -1607,10 +1674,10 @@ function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate }: {
           <>
             <div className="flex items-start justify-between gap-2 mb-2">
               <div>
-                <div className="flex items-center gap-1.5 flex-wrap"><span className="text-base font-mono font-semibold text-nms-text">{selected.bts.name}</span><Gsm2GBandTag b={selected.bts} /></div>
+                <div className="flex items-center gap-1.5 flex-wrap"><span className="text-base font-mono font-semibold text-nms-text">{selected.bts.name}</span><Gsm2GBandTag b={selected.bts} />{selected.bts.blocked && <Gsm2GBlockedBadge />}</div>
                 <Gsm2GBtsMeta b={selected.bts} />
               </div>
-              <Gsm2GAbisDot omlUp={selected.omlUp} fallbackUp={aIfaceUp} />
+              <div className="flex items-center gap-2 flex-shrink-0"><Gsm2GAbisDot omlUp={selected.omlUp} fallbackUp={aIfaceUp} /><Gsm2GBlockButton bts={selected.bts} {...block} /></div>
             </div>
             <div className="text-xs text-nms-text-dim mb-2"><span className="font-bold text-teal-400">{selected.ues.length}</span> registered UE{selected.ues.length === 1 ? '' : 's'}</div>
             {selected.ues.length > 0 ? (
@@ -1625,19 +1692,21 @@ function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate }: {
   );
 }
 
-function Gsm2GSection({ btsEntries, services, samples, linkStatus, layout, onNavigateToSubscriber }: {
+function Gsm2GSection({ btsEntries, services, samples, linkStatus, pdpContexts, layout, onNavigateToSubscriber, isAdmin, onRequestBlock, onUnblock }: {
   btsEntries: BtsEntry[]; services: Record<string, boolean>; samples: GsmSignalSample[];
   linkStatus: Record<string, { omlConnected: boolean; rslConnected: boolean }>;
+  pdpContexts: Record<string, PdpContext>;
   layout: RadioLayoutKind;
   onNavigateToSubscriber?: (imsi: string) => void;
-}): JSX.Element {
+} & Gsm2GBlockProps): JSX.Element {
   const aIfaceUp = services['osmo-bsc'] === true && services['osmo-mgw'] === true;
-  const { rows, unassigned } = build2gRows(btsEntries, samples, linkStatus);
+  const { rows, unassigned } = build2gRows(btsEntries, samples, linkStatus, pdpContexts);
+  const blockProps = { isAdmin, onRequestBlock, onUnblock };
   const body = btsEntries.length === 0
     ? <p className="text-sm text-nms-text-dim py-6 text-center">No BTS configured — add one on the 2G GSM page.</p>
-    : layout === 'accordion' ? <Gsm2GAccordion rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} />
-    : layout === 'split'     ? <Gsm2GSplit     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} />
-    :                          <Gsm2GTable     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} />;
+    : layout === 'accordion' ? <Gsm2GAccordion rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} />
+    : layout === 'split'     ? <Gsm2GSplit     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} />
+    :                          <Gsm2GTable     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} />;
   return (
     <div>
       <SectionHeader label="2G GSM" color="2G" />
@@ -1843,6 +1912,27 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const activeUEs5G = (interfaceStatus?.activeUEs5G || []) as ActiveUE[];
   const gsm2g = useGsm2GData();
 
+  // 2G BTS admin-lock — a real osmo-bsc OML command to the radio itself (see
+  // Gsm2GBlockButton's comment), so it gets the same confirm-modal gating as
+  // the nftables blocks above even though the underlying mechanism differs.
+  const [pendingBlockBts, setPendingBlockBts] = useState<BtsEntry | null>(null);
+
+  const handleBlockBts = useCallback(async (id: string) => {
+    try {
+      await gsmApi.blockBts(id);
+      gsm2g.setBtsBlocked(id, true);
+      toast.success('BTS locked');
+    } catch { toast.error('Failed to lock BTS'); }
+  }, [gsm2g]);
+
+  const handleUnblockBts = useCallback(async (id: string) => {
+    try {
+      await gsmApi.unblockBts(id);
+      gsm2g.setBtsBlocked(id, false);
+      toast.success('BTS unlocked');
+    } catch { toast.error('Failed to unlock BTS'); }
+  }, [gsm2g]);
+
   const [sortCol, setSortCol] = useState<'imsi' | 'ip' | 'apn'>('imsi');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const handleSort = (col: 'imsi' | 'ip' | 'apn') => {
@@ -1979,7 +2069,8 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       </div>
 
       {FEATURES.gsm && (
-        <Gsm2GSection btsEntries={gsm2g.btsEntries} services={gsm2g.services} samples={gsm2g.samples} linkStatus={gsm2g.linkStatus} layout={radioLayout} onNavigateToSubscriber={onNavigateToSubscriber} />
+        <Gsm2GSection btsEntries={gsm2g.btsEntries} services={gsm2g.services} samples={gsm2g.samples} linkStatus={gsm2g.linkStatus} pdpContexts={gsm2g.pdpContexts} layout={radioLayout} onNavigateToSubscriber={onNavigateToSubscriber}
+          isAdmin={isAdmin} onRequestBlock={setPendingBlockBts} onUnblock={handleUnblockBts} />
       )}
 
       {/* All Sessions */}
@@ -2153,6 +2244,16 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
         danger
         onConfirm={() => { const imsi = pendingBlockUeImsi!; setPendingBlockUeImsi(null); handleBlockUe(imsi); }}
         onCancel={() => setPendingBlockUeImsi(null)}
+      />
+
+      <ConfirmModal
+        open={pendingBlockBts !== null}
+        title={`Block ${pendingBlockBts?.name}?`}
+        message="This administratively locks the BTS at osmo-bsc — a real command to the radio itself, not just a host-side traffic filter. Every camped UE is dropped immediately and it stops broadcasting/accepting new ones until Unblocked."
+        confirmLabel="Block"
+        danger
+        onConfirm={() => { const id = pendingBlockBts!.id; setPendingBlockBts(null); handleBlockBts(id); }}
+        onCancel={() => setPendingBlockBts(null)}
       />
     </div>
   );

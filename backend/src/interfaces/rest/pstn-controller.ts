@@ -8,6 +8,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
+import { isAsterisk2gInstalled } from './asterisk-2g-controller';
 
 // ── PSTN Gateway (Asterisk) ─────────────────────────────────────────────────
 //
@@ -778,6 +779,22 @@ export function createPstnRouter(
       write('\n=== Removing generated config files ===');
       for (const f of [HOST_PJSIP_INC, HOST_EXTENSIONS_INC, HOST_PSTN_STATE]) {
         if (fs.existsSync(f)) { fs.unlinkSync(f); write(`Removed: ${f}`); }
+      }
+
+      // The Asterisk-2G module (2G<->2G internal voice) shares this same apt
+      // package/binary with an entirely separate, isolated instance of its
+      // own (see asterisk-2g-controller.ts's module header) — purging it
+      // here would take that instance down too, even though nothing else
+      // about this uninstall touches its files/service. Skip the purge (just
+      // leave the package installed) if it's present, rather than silently
+      // breaking a module this code has no other relationship with.
+      if (isAsterisk2gInstalled()) {
+        write('\n=== Skipping asterisk/asterisk-modules purge — the Asterisk-2G module (2G-to-2G internal voice) is installed and shares this same package ===');
+        write('Uninstall it first (its own page) if you actually want these packages removed.');
+        await auditLogger.log({ action: 'pstn_uninstall', user, details: 'apt purge skipped — shared with asterisk-2g', success: true });
+        write('\n✅ PSTN Gateway removed (Asterisk package kept — still in use by Asterisk-2G).');
+        res.end();
+        return;
       }
 
       write('\n=== Purging asterisk packages ===');

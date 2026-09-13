@@ -51,15 +51,24 @@ const MEAS_UDP2DB_BIN       = '/usr/bin/osmo-meas-udp2db';
 // this exact installed version (osmo-bsc 1.9.0-3build2), same as how
 // sms-controller.ts's MSC_VTY_PORT was confirmed for osmo-msc.
 const BSC_VTY_PORT = 4242;
+// osmo-ggsn's own VTY — confirmed live (2026-09-13, `ss -tlnp` against the
+// real running process, osmo-ggsn 1.9.0-3.1build1) — and separately not in
+// the sysmocom default-port table this project's own memory already has, so
+// this is the authoritative source, not documentation. GGSN_NAME is the
+// literal instance name osmoggsnCfg() below always generates (`ggsn ggsn0`)
+// — never parameterized, safe to hardcode rather than re-discover per call.
+const GGSN_VTY_PORT = 4260;
+const GGSN_NAME = 'ggsn0';
 
 // Same injection-safe pattern as sms-controller.ts's VTY_SEND_SMS_SCRIPT —
-// argv-only, never a shell string — generalized to run any single VTY
-// command and return the drained response, since this module needs several
-// different read-only VTY queries (bts link status today, more as the
-// point-code/BSSAP work continues) rather than one fixed command.
+// argv-only, never a shell string — generalized to run one or more VTY
+// commands in the SAME session (needed for e.g. entering the "oml" node
+// with one command, then issuing change-adm-state within it — a plain node
+// context that only persists within one connection) and return the
+// concatenated drained response.
 const VTY_RUN_COMMAND_SCRIPT = `
 import socket, sys, time
-host, port, cmd = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+host, port, cmds = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
 s = socket.create_connection((host, port), timeout=5)
 s.settimeout(2)
 def drain():
@@ -76,15 +85,62 @@ drain()
 s.sendall(b'enable\\r\\n')
 time.sleep(0.3)
 drain()
-s.sendall((cmd + '\\r\\n').encode())
-time.sleep(0.5)
-print(drain().decode(errors='replace'))
+out = b''
+for cmd in cmds:
+    s.sendall((cmd + '\\r\\n').encode())
+    time.sleep(0.5)
+    out += drain()
+print(out.decode(errors='replace'))
 s.close()
 `;
 
-async function bscVtyCommand(cmd: string): Promise<string> {
-  const { stdout } = await nsenter('python3', ['-c', VTY_RUN_COMMAND_SCRIPT, '127.0.0.1', String(BSC_VTY_PORT), cmd], 10000);
+async function osmoVtyCommand(port: number, cmd: string | string[]): Promise<string> {
+  const cmds = Array.isArray(cmd) ? cmd : [cmd];
+  const { stdout } = await nsenter('python3', ['-c', VTY_RUN_COMMAND_SCRIPT, '127.0.0.1', String(port), ...cmds], 10000);
   return stdout;
+}
+
+async function bscVtyCommand(cmd: string | string[]): Promise<string> {
+  return osmoVtyCommand(BSC_VTY_PORT, cmd);
+}
+
+// GGSN's own PDP-context IMSI<->IP mapping — the actual IP allocator for
+// GPRS/EDGE data sessions (osmo-sgsn only relays the GTP signaling, it never
+// owns the address itself). Format below is copied exactly from osmo-ggsn
+// 1.9.0's own show_one_pdp_v4only() (ggsn/ggsn_vty.c) — pulled via `apt-get
+// source osmo-ggsn` and read directly, not guessed or reasoned from the
+// VTY reference PDF (which is an auto-generated command-syntax tree with no
+// sample output at all):
+//   IMSI: <imsi>, NSAPI: <n>, MSISDN: <msisdn|(NONE)>
+//    Version: <v>[, Primary, Num Secondaries: <n>|, Secondary]
+//    Control: <ip>:<hex> <-> <ip>:<hex>
+//    Data: <ip>:<hex> <-> <ip>:<hex>
+//    APN requested: <name|(NONE)>
+//    APN in use: <name|(NONE)>
+//    End-User Address (IPv4): <ip>
+//    Transmit GTP Sequence Number for G-PDU: Yes|No
+// Multiple contexts print back-to-back with no separator, each starting
+// fresh with its own "IMSI: " line — that's what block-splits on.
+interface PdpContext {
+  imsi: string; nsapi: number; msisdn: string | null; apnInUse: string | null; ipv4: string | null;
+}
+function parsePdpContexts(raw: string): PdpContext[] {
+  const blocks = raw.split(/(?=IMSI: )/).filter(b => b.startsWith('IMSI:'));
+  return blocks
+    .map((block): PdpContext | null => {
+      const head = block.match(/IMSI:\s*(\S+),\s*NSAPI:\s*(\d+),\s*MSISDN:\s*(\S+)/);
+      if (!head) return null;
+      const apn = block.match(/APN in use:\s*([^\r\n]+)/);
+      const ip = block.match(/End-User Address \(IPv4\):\s*(\S+)/);
+      return {
+        imsi: head[1],
+        nsapi: parseInt(head[2], 10),
+        msisdn: head[3] === '(NONE)' ? null : head[3],
+        apnInUse: apn && apn[1].trim() !== '(NONE)' ? apn[1].trim() : null,
+        ipv4: ip ? ip[1] : null,
+      };
+    })
+    .filter((c): c is PdpContext => c !== null);
 }
 
 interface BtsLinkStatus {
@@ -369,6 +425,14 @@ export interface BtsEntry {
   // SI2quater params (thresh-hi/lo, prio, qrxlv, meas) are fixed at sane
   // LTE-preferred defaults rather than exposed per carrier.
   lteEarfcns?: number[];
+  // Administrative lock (osmo-bsc's own OML "Admin 'Locked'" state — see
+  // reapplyBtsLocks() below for why this needs to be tracked here at all
+  // rather than just fired at the VTY once and forgotten: confirmed live
+  // 2026-09-13 by inspecting the real `bts <N>` config node's full `list`
+  // output that there is NO persisted equivalent directive in osmo-bsc.cfg —
+  // change-adm-state is a runtime-VTY-only toggle that silently reverts to
+  // Unlocked on every osmo-bsc restart.
+  blocked?: boolean;
 }
 
 interface GsmState {
@@ -1017,6 +1081,51 @@ async function deriveSgsnGbIp(btsEntries: BtsEntry[]): Promise<string> {
   return '';
 }
 
+// Re-locks every BTS marked blocked in state, over VTY. Needed because
+// change-adm-state has no persisted config-file equivalent (see BtsEntry.
+// blocked's comment) — every osmo-bsc restart silently drops back to
+// Unlocked unless this replays the lock. osmo-bsc's VTY isn't necessarily
+// up the instant `systemctl restart` returns, so this retries briefly
+// rather than racing it.
+//
+// The OML object-instance triple for NM object class "bts" is
+// (bts_nr, 0xff, 0xff) — trx/ts wildcarded, since the top-level BTS object
+// has no specific trx/timeslot of its own — NOT (bts_nr, 0, 0). Real,
+// confirmed live incident (2026-09-13): using (idx, 0, 0) got a real
+// nanoBTS's own NACK ("CHANGE ADMINISTRATIVE STATE NACK CAUSE=Object
+// Instance unknown"), and osmo-bsc's own reaction to ANY change-adm-state
+// NACK is to immediately drop the whole OML link
+// (osmo_bsc_main.c:"Got CHANGE ADMINISTRATIVE STATE NACK going to drop the
+// OML links") — cascading every child NM object into Locked/Not-installed
+// and taking the radio off the air until a full osmo-bsc restart forced a
+// clean OML re-handshake. Confirmed correct instance from the SAME
+// journalctl output's own successful state-change lines afterward:
+// "OC=BTS(01) INST=(00,ff,ff): STATE CHG: ...".
+async function reapplyBtsLocks(state: GsmState): Promise<void> {
+  const lockedIdx = state.btsEntries.map((e, i) => (e.blocked ? i : -1)).filter(i => i >= 0);
+  if (lockedIdx.length === 0) return;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await new Promise(r => setTimeout(r, 1500));
+    try {
+      for (const idx of lockedIdx) {
+        await bscVtyCommand([`bts ${idx} oml class bts instance ${idx} 255 255`, 'change-adm-state locked']);
+      }
+      return;
+    } catch {
+      // VTY not up yet — retry
+    }
+  }
+}
+
+// Every call site that restarts osmo-bsc (config regen after a BTS
+// add/edit/remove/configure, or the module-level Start/Restart buttons)
+// should go through this so a blocked BTS never silently comes back
+// unlocked — see reapplyBtsLocks() above.
+async function restartOsmoBsc(state: GsmState): Promise<void> {
+  await nsenter('systemctl', ['restart', 'osmo-bsc']);
+  await reapplyBtsLocks(state);
+}
+
 async function regenerateGsmConfigs(state: GsmState): Promise<void> {
   const { mcc, mnc } = readMccMnc();
   fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
@@ -1261,7 +1370,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       saveGsmState(state);
       await regenerateGsmConfigs(state);
       await nsenter('systemctl', ['restart', 'osmo-mgw']);
-      await nsenter('systemctl', ['restart', 'osmo-bsc']);
+      await restartOsmoBsc(state);
       let eigrpApplied: string | null = null;
       const wantCidr = state.gprsEnabled && state.ggsnPoolCidr ? state.ggsnPoolCidr : null;
       if (wantCidr) {
@@ -1549,6 +1658,20 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     }
   });
 
+  // GET /api/gsm/pdp-contexts — live IMSI<->IP mapping for active GPRS/EDGE
+  // data sessions, straight from osmo-ggsn (see parsePdpContexts' comment).
+  // Same graceful-empty-on-failure shape as /signal/history right above —
+  // GPRS simply being disabled (osmo-ggsn not running) is a routine state
+  // here, not an error worth a 500.
+  router.get('/pdp-contexts', async (_req: Request, res: Response) => {
+    try {
+      const raw = await osmoVtyCommand(GGSN_VTY_PORT, `show pdp-context ggsn ${GGSN_NAME}`);
+      res.json({ success: true, contexts: parsePdpContexts(raw) });
+    } catch {
+      res.json({ success: true, contexts: [] });
+    }
+  });
+
   // GET /api/gsm/bts
   router.get('/bts', async (_req: Request, res: Response) => {
     res.json({ success: true, btsEntries: loadGsmState().btsEntries });
@@ -1623,7 +1746,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       state.btsEntries.push(entry);
       saveGsmState(state);
       await regenerateGsmConfigs(state);
-      await nsenter('systemctl', ['restart', 'osmo-bsc']).catch(() => {});
+      await restartOsmoBsc(state).catch(() => {});
       const svc = btsBackendServiceName(backend);
       if (svc) {
         await nsenter('systemctl', ['enable', '--now', svc]).catch(() => {});
@@ -1690,7 +1813,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       state.btsEntries[idx] = updated;
       saveGsmState(state);
       await regenerateGsmConfigs(state);
-      await nsenter('systemctl', ['restart', 'osmo-bsc']).catch(() => {});
+      await restartOsmoBsc(state).catch(() => {});
 
       // Unit-id or remote-IP changes only matter for real hardware — a
       // changed remote IP means re-pointing the *new* address; the unit-id
@@ -1794,6 +1917,65 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     }
   });
 
+  // POST /api/gsm/bts/:id/block | /unblock — administratively lock/unlock a
+  // BTS via osmo-bsc's own OML Administrative State. Live-verified
+  // 2026-09-12/13 against the real running osmo-bsc: entering
+  // `bts <idx> oml class bts instance <idx> 255 255` drops into the "(oml)"
+  // VTY node, where `change-adm-state locked/unlocked` is the real command —
+  // it's the same Admin 'Locked'/'Unlocked' field parseBtsLinkStatus already
+  // reads back from `show bts N`. This is an osmo-bsc-side state, not a
+  // radio-backend one, so unlike /restart above it applies uniformly to
+  // virtual/trx/real units. The flag is persisted in state (see BtsEntry.
+  // blocked's comment) and reapplied by reapplyBtsLocks() after every
+  // osmo-bsc restart, since osmo-bsc itself forgets it on restart.
+  //
+  // Real incident (2026-09-13): the object instance triple originally used
+  // here was (idx, 0, 0) instead of the correct (idx, 255, 255) — trx/ts
+  // must be wildcarded to 0xff for the "bts" NM object class, which has no
+  // specific trx/timeslot of its own. A real nanoBTS NACK'd (idx,0,0) with
+  // "Object Instance unknown", and osmo-bsc's own reaction to ANY
+  // change-adm-state NACK is to immediately drop the whole OML link — which
+  // took the radio off the air until a full osmo-bsc restart forced a clean
+  // re-handshake. The NACK itself never surfaces as VTY command-line error
+  // text (only in osmo-bsc's own journalctl), so the fix is two-part: the
+  // corrected instance address below, AND verifying the real reported
+  // adminState afterward rather than trusting the VTY prompt returning
+  // cleanly — see CLAUDE.md's "Verify, don't trust 'success'" convention.
+  const setBtsBlocked = (blocked: boolean) => async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const action = blocked ? 'gsm_bts_block' : 'gsm_bts_unblock';
+    const state = loadGsmState();
+    const idx = state.btsEntries.findIndex(e => e.id === req.params.id);
+    if (idx === -1) { res.status(404).json({ success: false, error: 'BTS entry not found' }); return; }
+    try {
+      await bscVtyCommand([
+        `bts ${idx} oml class bts instance ${idx} 255 255`,
+        `change-adm-state ${blocked ? 'locked' : 'unlocked'}`,
+      ]);
+      const raw = await bscVtyCommand(`show bts ${idx}`);
+      const status = parseBtsLinkStatus(raw);
+      const expected = blocked ? 'Locked' : 'Unlocked';
+      if (status.adminState !== expected) {
+        await auditLogger.log({ action, user, details: `verify failed: adminState=${status.adminState}, expected ${expected}`, success: false });
+        res.status(502).json({
+          success: false,
+          error: `osmo-bsc reports '${status.adminState}', not ${expected}, after the command — not applied as intended. Don't retry blindly: check the BTS's link status and osmo-bsc's own journalctl first, since a stuck state here can mean the OML link needs a clean osmo-bsc restart to recover.`,
+          ...status,
+        });
+        return;
+      }
+      state.btsEntries[idx].blocked = blocked;
+      saveGsmState(state);
+      await auditLogger.log({ action, user, details: state.btsEntries[idx].name, success: true });
+      res.json({ success: true, ...status });
+    } catch (err) {
+      await auditLogger.log({ action, user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  };
+  router.post('/bts/:id/block', requireAdmin, setBtsBlocked(true));
+  router.post('/bts/:id/unblock', requireAdmin, setBtsBlocked(false));
+
   // DELETE /api/gsm/bts/:id
   router.delete('/bts/:id', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
@@ -1803,7 +1985,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       state.btsEntries = state.btsEntries.filter(e => e.id !== req.params.id);
       saveGsmState(state);
       await regenerateGsmConfigs(state);
-      await nsenter('systemctl', ['restart', 'osmo-bsc']).catch(() => {});
+      await restartOsmoBsc(state).catch(() => {});
       if (removed) {
         const svc = btsBackendServiceName(removed.backend);
         if (svc) await nsenter('systemctl', ['disable', '--now', svc]).catch(() => {});
@@ -1831,7 +2013,9 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      for (const svc of lifecycleServices(loadGsmState())) await nsenter('systemctl', ['start', svc]);
+      const state = loadGsmState();
+      for (const svc of lifecycleServices(state)) await nsenter('systemctl', ['start', svc]);
+      await reapplyBtsLocks(state);
       await auditLogger.log({ action: 'gsm_start', user, details: 'gsm services started', success: true });
       res.json({ success: true });
     } catch (err) {
@@ -1851,7 +2035,9 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      for (const svc of lifecycleServices(loadGsmState())) await nsenter('systemctl', ['restart', svc]);
+      const state = loadGsmState();
+      for (const svc of lifecycleServices(state)) await nsenter('systemctl', ['restart', svc]);
+      await reapplyBtsLocks(state);
       await auditLogger.log({ action: 'gsm_restart', user, details: 'gsm services restarted', success: true });
       res.json({ success: true });
     } catch (err) {
@@ -1895,6 +2081,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     const services = (req.body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);
+      if (services.includes('osmo-bsc')) await reapplyBtsLocks(loadGsmState());
       await auditLogger.log({ action: 'gsm_config_restart', user, details: services.join(','), success: true });
       res.json({ success: true });
     } catch (err) {
