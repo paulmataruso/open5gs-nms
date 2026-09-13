@@ -10,6 +10,10 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { setMscMgwPeer, readCurrentSmsConfig, listHlrSubscriberStatus } from './sms-controller';
 import { cidrRange, numToIp } from '../../domain/services/ip-utils';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
+import {
+  buildOsmoSipConnectorScript, verifyOsmoSipConnectorBuild, osmoSipConnectorSystemdUnit, osmoSipConnectorCfg,
+  BIN as SIPCONN_BIN, UNIT_PATH as SIPCONN_UNIT_PATH, CFG_PATH as SIPCONN_CFG_PATH, MNCC_SOCKET_PATH as SIPCONN_MNCC_SOCKET_PATH,
+} from '../../application/use-cases/osmo-sip-connector-build';
 
 const execFileAsync = promisify(execFile);
 
@@ -280,6 +284,7 @@ const GSM_CONFIG_MANIFEST: Omit<GsmConfigFile, 'exists'>[] = [
   { path: `${HOST_OSMOCOM_DIR}/osmo-pcu.cfg`,           label: 'osmo-pcu.cfg',          group: 'GPRS/EDGE', language: 'ini', restartServices: ['osmo-pcu'] },
   { path: `${HOST_OSMOCOM_DIR}/osmo-sgsn.cfg`,          label: 'osmo-sgsn.cfg',         group: 'GPRS/EDGE', language: 'ini', restartServices: ['osmo-sgsn'] },
   { path: `${HOST_OSMOCOM_DIR}/osmo-ggsn.cfg`,          label: 'osmo-ggsn.cfg',         group: 'GPRS/EDGE', language: 'ini', restartServices: ['osmo-ggsn'] },
+  { path: `/proc/1/root${SIPCONN_CFG_PATH}`,             label: 'osmo-sip-connector.cfg', group: 'SIP',      language: 'ini', restartServices: ['osmo-sip-connector'] },
   {
     path: `${HOST_OSMOCOM_DIR}/osmo-stp.cfg`, label: 'osmo-stp.cfg', group: 'Shared with SMS over SGs', language: 'ini',
     restartServices: ['osmo-stp'], shared: true,
@@ -409,12 +414,32 @@ interface GsmState {
   appliedGprsEigrpCidr?: string;
   // Ditto for the MASQUERADE rule when in NAT mode.
   appliedGprsNatCidr?: string;
+  // SIP tab (osmo-sip-connector) — deliberately minimal, matching upstream's
+  // own config surface exactly (see osmo-sip-connector-build.ts). There is
+  // no MSISDN routing, dial plan, or automatic 2G<->IMS call bridging here
+  // by design (product decision, 2026-09-12, after the earlier attempt at
+  // that was fully reverted — signaling never reliably completed and audio
+  // was never confirmed working in either direction). "remote" is wherever
+  // the operator wants 2G calls to go — this project's own P-CSCF, an
+  // external SIP trunk, anything — configuring it to actually complete
+  // calls is entirely on them.
+  sip?: { localIp: string; localPort: number; remoteHost: string; remotePort: number };
 }
 
 const GSM_STATE_DEFAULTS: GsmState = {
   btsEntries: [], bscMgwBindIp: '127.0.0.1', mscMgwBindIp: '127.0.0.1', mgwRtpBindIp: '127.0.0.1',
   gprsEnabled: false, gprsMode: 'gprs', sgsnGtpLocalIp: '127.0.0.1', sgsnGbRemoteIp: '', ggsnGtpBindIp: '127.0.0.5',
   ggsnApn: 'gprs', ggsnTunDevice: 'apn-gprs', ggsnPoolCidr: '', ggsnDns1: '1.1.1.1', ggsnDns2: '9.9.9.9', gprsNat: false,
+  // 0.0.0.0 (upstream's own doc example default) does NOT work on this
+  // host — confirmed live 2026-09-12: kamailio-pcscf (10.0.1.178:5060),
+  // Asterisk (127.0.1.4:5060), and the VectorCore SMSC (127.0.1.5:5060) are
+  // already bound to port 5060 on their own specific addresses, and a
+  // wildcard bind conflicts with any existing specific-address bind on the
+  // same port (crash-looped with "Address already in use" / "Failed to
+  // initialize SIP" until fixed). 127.0.1.6 follows this project's own
+  // one-dedicated-loopback-alias-per-SIP-daemon convention and is confirmed
+  // free.
+  sip: { localIp: '127.0.1.6', localPort: 5060, remoteHost: '', remotePort: 5060 },
 };
 
 // GTP-C/GTP-U ports (2123/2152) are fixed by the protocol — the only lever
@@ -635,6 +660,38 @@ function osmobscCfg(mcc: string, mnc: string, btsEntries: BtsEntry[], mgwBindIp:
   // real UE could never attach even though OML/RSL/BSSMAP were all
   // healthy. The previous `a5 0` (no encryption only) shared no bit at all
   // with the MSC's requested set.
+  //
+  // mgw endpoint-domain below must be 'mgw' — osmo-mgw itself has no
+  // explicit `domain` override in its own config, so it uses its
+  // compiled-in default of literally 'mgw' for every endpoint name it will
+  // accept. This used to say 'bsc' (a reasonable-looking per-peer label,
+  // matching sms-controller.ts's osmo-msc side using 'msc') but neither was
+  // ever actually valid. Confirmed live 2026-09-13 via a real call attempt:
+  // osmo-mgw rejected the MGCP CRCX with "wrong domain name ... expecting
+  // mgw", so no voice bearer could ever be created — invisible until now
+  // since attach/SMS/GPRS never touch MGW at all.
+  //
+  // DO NOT forbid every amr-config mode below (tried live 2026-09-13, real
+  // outage): osmo-bsc's own startup validation (codec_pref.c) requires at
+  // least one AMR mode to intersect between the BTS's own AMR mode-set and
+  // this msc-0 block's amr-config — an empty allowed-set here can never
+  // intersect with anything, so osmo-bsc refuses to start at all ("network
+  // amr tch-f mode config of BTS 0 does not intersect with amr-config of
+  // MSC 0" / "Configuration contains mutually exclusive codec settings"),
+  // taking down the entire BTS, not just voice calls. Keep exactly one mode
+  // allowed.
+  //
+  // This block is NOT the reason 2G<->2G calls don't complete end to end —
+  // confirmed live 2026-09-13 with 5_90k allowed (as below): channel
+  // assignment succeeds, the far end rings and can answer, but osmo-msc's
+  // own internal/built-in MNCC handler (mncc_builtin.c, upstream Osmocom,
+  // not this project's code) never implements MNCC_RTP_CREATE — it logs
+  // "Message 'MNCC_RTP_CREATE' unhandled" and never actually bridges the
+  // two RTP legs, so the call hangs and both channels eventually time out.
+  // Real 2G<->2G audio needs the external MNCC path (osmo-sip-connector,
+  // see the SIP tab) — internal mode only ever completes signaling, never
+  // audio, on this osmo-msc version. Don't re-diagnose this as a codec/BSC
+  // config issue without re-checking that assumption first.
   const btsBlocks = btsEntries.map((e, i) => btsBlock(e, i, sgsnGbRemoteIp)).join('');
   return `log stderr
  logging filter all 1
@@ -666,7 +723,7 @@ ${btsBlocks}msc 0
  mgw remote-ip ${mgwBindIp}
  mgw remote-port 2427
  mgw local-port 2728
- mgw endpoint-domain bsc
+ mgw endpoint-domain mgw
 bsc
  mid-call-timeout 0
 `;
@@ -1003,9 +1060,23 @@ async function regenerateGsmConfigs(state: GsmState): Promise<void> {
   }
 
   // osmo-msc needs to know about the MGW too (real voice bearers) — this
-  // module never writes osmo-msc.cfg itself, it only asks sms-controller.ts
-  // (the file's sole owner) to include the block. See setMscMgwPeer()'s own
-  // comment for why.
+  // module never writes osmo-msc.cfg itself, it only ever asked
+  // sms-controller.ts (the file's sole owner) to include the block via
+  // setMscMgwPeer() + a configureSms() call to make it take effect
+  // immediately.
+  //
+  // Real incident, 2026-09-12: the configureSms() call here was briefly
+  // removed (same night, earlier) because configureSms() used to fully
+  // regenerate osmo-msc.cfg from its own simplified template, which
+  // silently destroyed this host's real hand/VTY-maintained config (SS7
+  // point-code, A5 ciphering, the mncc external socket path
+  // osmo-sip-connector depends on, and the entire smpp/esme block incl.
+  // live VectorCore MMSC + 2G-SMS-bridge passwords) on a real run — MMS,
+  // the SMS bridge, and 2G ciphering all broke in one shot. That underlying
+  // bug is now actually fixed (see vty-config-ownership.ts): configureSms()
+  // upserts only the directives it owns and preserves everything else
+  // byte-for-byte, verified against this exact file's real content. The
+  // call is restored here now that it's genuinely safe.
   setMscMgwPeer(state.mscMgwBindIp);
   const { configureSms, readCurrentSmsConfig } = await import('./sms-controller');
   const currentSms = readCurrentSmsConfig();
@@ -1014,7 +1085,7 @@ async function regenerateGsmConfigs(state: GsmState): Promise<void> {
     // precondition getMscVtyHost()/upsertSmppEsme() already enforce for
     // SMPP. A 2G module with no working SGs-SMS core underneath it isn't
     // meaningful (osmo-hlr/osmo-msc/osmo-stp are the shared foundation both
-    // depend on), so this isn't a new requirement, just a explicit one.
+    // depend on), so this isn't a new requirement, just an explicit one.
     await configureSms(currentSms);
   }
 }
@@ -1027,11 +1098,13 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // GET /api/gsm/status
   router.get('/status', async (_req: Request, res: Response) => {
     try {
-      const [bscWhich, mgwWhich, btsWhich, sgsnWhich] = await Promise.all([
+      const [bscWhich, mgwWhich, btsWhich, sgsnWhich, sipConnBuild, sipConnActive] = await Promise.all([
         nsenter('which', ['osmo-bsc']).catch(() => ({ stdout: '', stderr: '' })),
         nsenter('which', ['osmo-mgw']).catch(() => ({ stdout: '', stderr: '' })),
         nsenter('which', ['osmo-bts-virtual']).catch(() => ({ stdout: '', stderr: '' })),
         nsenter('which', ['osmo-sgsn']).catch(() => ({ stdout: '', stderr: '' })),
+        verifyOsmoSipConnectorBuild(),
+        nsenter('systemctl', ['is-active', 'osmo-sip-connector']).catch(() => ({ stdout: '', stderr: '' })),
       ]);
       const installedOnDisk = bscWhich.stdout.trim().length > 0 && mgwWhich.stdout.trim().length > 0;
       const btsInstalled = btsWhich.stdout.trim().length > 0;
@@ -1051,6 +1124,21 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       });
 
       const configured = fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-bsc.cfg`) && fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-mgw.cfg`);
+      const sip = { ...GSM_STATE_DEFAULTS.sip, ...state.sip } as NonNullable<GsmState['sip']>;
+      const { getMscMnccMode } = await import('./sms-controller');
+      const sipStatus = {
+        installedOnDisk: sipConnBuild.installed,
+        version: sipConnBuild.version,
+        configured: fs.existsSync(`/proc/1/root${SIPCONN_CFG_PATH}`),
+        running: sipConnActive.stdout.trim() === 'active',
+        localIp: sip.localIp,
+        localPort: sip.localPort,
+        remoteHost: sip.remoteHost,
+        remotePort: sip.remotePort,
+        mnccSocketPath: SIPCONN_MNCC_SOCKET_PATH,
+        // Live off osmo-msc.cfg itself, not cached state — see getMscMnccMode().
+        mnccMode: getMscMnccMode(),
+      };
 
       // Read-only on this page — hlrBindIp/mscBindIp are owned and edited on
       // the SMS (SGs) page's own Configure form; shown here purely so the
@@ -1086,6 +1174,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
         appliedGprsEigrpCidr: state.appliedGprsEigrpCidr || '',
         appliedGprsNatCidr: state.appliedGprsNatCidr || '',
         sgsShared: sgsShared ? { hlrBindIp: sgsShared.hlrBindIp, mscBindIp: sgsShared.mscBindIp } : null,
+        sip: sipStatus,
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'gsm status error');
@@ -1104,18 +1193,38 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-    const child = spawn('nsenter', [
-      '-t', '1', '-m', '-u', '-i', '-p', '--',
-      'bash', '-c', "DEBIAN_FRONTEND=noninteractive apt-get install -y osmo-bsc osmo-mgw osmo-bts osmo-bsc-meas-utils osmo-pcu osmo-sgsn osmo-ggsn 2>&1",
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout?.on('data', (d: Buffer) => write(d.toString()));
-    child.stderr?.on('data', (d: Buffer) => write(d.toString()));
-    child.on('close', async (code) => {
-      const ok = code === 0;
-      await auditLogger.log({ action: 'gsm_install', user, details: `exit code ${code}`, success: ok });
-      write(ok ? '\n✅ osmo-bsc, osmo-mgw, osmo-bts, osmo-bsc-meas-utils, osmo-pcu, osmo-sgsn, osmo-ggsn installed.' : `\n❌ Install failed (exit ${code}).`);
-      res.end();
+    // Runs an nsenter'd bash script to completion, streaming its output,
+    // resolving with its exit code — same shape as ims-controller.ts's own
+    // spawnStream, kept local here since this is this file's first
+    // multi-phase streamed install (previously a single one-shot apt-get).
+    const spawnStream = (bashScript: string): Promise<number> => new Promise((resolve) => {
+      const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout?.on('data', (d: Buffer) => write(d.toString()));
+      child.stderr?.on('data', (d: Buffer) => write(d.toString()));
+      child.on('close', (code) => resolve(code ?? 1));
     });
+    const baseExitCode = await spawnStream(
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y osmo-bsc osmo-mgw osmo-bts osmo-bsc-meas-utils osmo-pcu osmo-sgsn osmo-ggsn 2>&1"
+    );
+    write(baseExitCode === 0
+      ? '✅ osmo-bsc, osmo-mgw, osmo-bts, osmo-bsc-meas-utils, osmo-pcu, osmo-sgsn, osmo-ggsn installed.'
+      : `❌ Base 2G/GSM package install failed (exit ${baseExitCode}).`);
+
+    // osmo-sip-connector (SIP tab) — built from clean upstream source, no
+    // package exists for it. Built alongside the rest of the module on every
+    // Install so a fresh/re-run install always ends up with it available,
+    // same as everything else on this page — actually wiring it into a real
+    // call path (the "remote" SIP target) happens on the SIP tab's own
+    // Configure, not here.
+    write('\n=== Building osmo-sip-connector (SIP tab) ===');
+    const sipConnExitCode = await spawnStream(buildOsmoSipConnectorScript());
+    write(sipConnExitCode === 0
+      ? '✅ osmo-sip-connector built.'
+      : `⚠️ WARNING: osmo-sip-connector build FAILED (see errors above) — the SIP tab will show as not installed. Fix the underlying issue and re-run Install; the build is idempotent and will retry automatically.`);
+
+    const ok = baseExitCode === 0 && sipConnExitCode === 0;
+    await auditLogger.log({ action: 'gsm_install', user, details: `base exit ${baseExitCode}, sipconn exit ${sipConnExitCode}`, success: ok });
+    res.end();
   });
 
   // POST /api/gsm/configure — Body: { bscMgwBindIp?, mscMgwBindIp?, mgwRtpBindIp? }
@@ -1204,6 +1313,118 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       res.json({ success: true, eigrpApplied });
     } catch (err) {
       await auditLogger.log({ action: 'gsm_configure', user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // SIP tab (osmo-sip-connector) — deliberately its own small lifecycle,
+  // separate from the main /configure above, rather than folded into
+  // regenerateGsmConfigs(). Two reasons: (1) the "remote" SIP target is
+  // free-form operator input with no relationship to BTS/GPRS state, so
+  // there's nothing to auto-derive or regenerate it from; (2) an unrelated
+  // BTS/GPRS Configure save should never silently rewrite or restart a
+  // separately-managed SIP daemon the operator is mid-way through wiring up.
+  // POST /api/gsm/sip/configure — Body: { localIp, localPort, remoteHost, remotePort }
+  router.post('/sip/configure', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      const state = loadGsmState();
+      const current = { ...GSM_STATE_DEFAULTS.sip, ...state.sip } as NonNullable<GsmState['sip']>;
+      const remoteHost = ((req.body.remoteHost as string) ?? current.remoteHost ?? '').trim();
+      if (!remoteHost) {
+        res.status(400).json({ success: false, error: 'remoteHost is required — this is the SIP peer 2G calls will be sent to/received from.' });
+        return;
+      }
+      const sip = {
+        localIp: ((req.body.localIp as string) || current.localIp || '0.0.0.0').trim(),
+        localPort: Number(req.body.localPort ?? current.localPort ?? 5060),
+        remoteHost,
+        remotePort: Number(req.body.remotePort ?? current.remotePort ?? 5060),
+      };
+      state.sip = sip;
+      saveGsmState(state);
+
+      fs.mkdirSync('/proc/1/root/etc/osmocom', { recursive: true });
+      writeHostCfg(`/proc/1/root${SIPCONN_CFG_PATH}`, osmoSipConnectorCfg(sip.localIp, sip.localPort, sip.remoteHost, sip.remotePort));
+      fs.writeFileSync(`/proc/1/root${SIPCONN_UNIT_PATH}`, osmoSipConnectorSystemdUnit(), 'utf-8');
+      await nsenter('systemctl', ['daemon-reload']);
+      const wasActive = (await nsenter('systemctl', ['is-active', 'osmo-sip-connector']).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+      if (wasActive) {
+        await nsenter('systemctl', ['restart', 'osmo-sip-connector']);
+      } else {
+        await nsenter('systemctl', ['enable', '--now', 'osmo-sip-connector']);
+      }
+
+      // Deliberately does NOT touch osmo-msc's MNCC mode — that's an
+      // explicit, separate operator choice (POST /sip/mncc-mode below), not
+      // an automatic side effect of editing the connector's own local/remote
+      // address. Configuring this daemon and actually routing live calls to
+      // it are two different decisions.
+      await auditLogger.log({ action: 'gsm_sip_configure', user, details: `local=${sip.localIp}:${sip.localPort} remote=${sip.remoteHost}:${sip.remotePort}`, success: true });
+      res.json({ success: true });
+    } catch (err) {
+      await auditLogger.log({ action: 'gsm_sip_configure', user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.post('/sip/start', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      await nsenter('systemctl', ['start', 'osmo-sip-connector']);
+      await auditLogger.log({ action: 'gsm_sip_start', user, details: '', success: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.post('/sip/stop', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      await nsenter('systemctl', ['stop', 'osmo-sip-connector']);
+      // Deliberately does NOT touch osmo-msc's MNCC mode — if the operator
+      // has explicitly selected External, stopping the daemon here doesn't
+      // silently switch that back (they may be about to restart it). GET
+      // /status's mnccMode + running fields together are enough for the UI
+      // to show a clear "External selected but connector isn't running —
+      // calls will fail" warning instead of us guessing their intent.
+      await auditLogger.log({ action: 'gsm_sip_stop', user, details: '', success: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/gsm/sip/mncc-mode — Body: { mode: 'internal' | 'external' }
+  // The one explicit place call-routing mode changes — see setMscMnccMode()'s
+  // comment for the full incident this replaced (a leftover `mncc external`
+  // silently breaking plain 2G<->2G calling with no operator-visible cause).
+  router.post('/sip/mncc-mode', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const mode = req.body?.mode;
+    if (mode !== 'internal' && mode !== 'external') {
+      res.status(400).json({ success: false, error: "mode must be 'internal' or 'external'" });
+      return;
+    }
+    try {
+      const { setMscMnccMode } = await import('./sms-controller');
+      await setMscMnccMode(mode, SIPCONN_MNCC_SOCKET_PATH);
+      await auditLogger.log({ action: 'gsm_sip_mncc_mode', user, details: mode, success: true });
+      res.json({ success: true, mode });
+    } catch (err) {
+      await auditLogger.log({ action: 'gsm_sip_mncc_mode', user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.post('/sip/restart', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    try {
+      await nsenter('systemctl', ['restart', 'osmo-sip-connector']);
+      await auditLogger.log({ action: 'gsm_sip_restart', user, details: '', success: true });
+      res.json({ success: true });
+    } catch (err) {
       res.status(500).json({ success: false, error: String(err) });
     }
   });
@@ -1596,9 +1817,16 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   // POST /api/gsm/start | /stop | /restart
+  // Real gap found live 2026-09-12: this previously omitted GPRS
+  // (osmo-sgsn/osmo-ggsn/osmo-pcu) and osmo-sip-connector entirely, so
+  // Start/Stop/Restart and Uninstall's own stop-everything pass silently
+  // left them running/orphaned. Both are conditional on the state that
+  // actually turns them on, same as the BTS-backend service already was.
   const lifecycleServices = (state: GsmState): string[] => [
     'osmo-mgw', 'osmo-bsc',
     ...state.btsEntries.map(e => btsBackendServiceName(e.backend)).filter((s): s is string => !!s),
+    ...(state.gprsEnabled ? ['osmo-sgsn', 'osmo-ggsn'] : []),
+    ...(state.gprsEnabled && state.btsEntries.some(e => e.backend === 'virtual' || e.backend === 'trx') ? ['osmo-pcu'] : []),
   ];
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
@@ -1692,28 +1920,63 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       write('osmo-bsc, osmo-mgw, and any BTS backends stopped and disabled.');
 
       write('\n=== Removing this module\'s MGW peer from osmo-msc ===');
+      // Real incident, 2026-09-12: this call was briefly removed (same
+      // night, earlier) because configureSms() used to fully REGENERATE
+      // osmo-msc.cfg from its own simplified template, silently wiping this
+      // host's real hand/VTY-maintained config (SS7 point-code, A5
+      // ciphering, the mncc external socket path, the smpp/esme block with
+      // live VectorCore MMSC + 2G-SMS-bridge passwords) on a real run. That
+      // underlying bug is now fixed (see vty-config-ownership.ts) —
+      // configureSms() upserts only the directives it owns (the mgw block
+      // among them) and preserves everything else byte-for-byte. Restored
+      // here so Uninstall actually removes the mgw peer from the live file,
+      // not just the marker.
       setMscMgwPeer(null);
       const { configureSms, readCurrentSmsConfig } = await import('./sms-controller');
       const currentSms = readCurrentSmsConfig();
       if (currentSms) await configureSms(currentSms);
 
+      write('\n=== Stopping and removing osmo-sip-connector (SIP tab) ===');
+      await nsenter('systemctl', ['disable', '--now', 'osmo-sip-connector']).catch(() => {});
+      try { fs.unlinkSync(`/proc/1/root${SIPCONN_UNIT_PATH}`); } catch { /* may not exist */ }
+      try { fs.unlinkSync(`/proc/1/root${SIPCONN_BIN}`); } catch { /* may not exist */ }
+      await nsenter('rm', ['-rf', '/opt/osmo-sip-connector-build']).catch(() => {});
+      await nsenter('systemctl', ['daemon-reload']).catch(() => {});
+      // Removing the bridge entirely must not leave osmo-msc pointed at a
+      // socket nothing is listening on anymore — restore internal routing.
+      const { setMscMnccMode } = await import('./sms-controller');
+      await setMscMnccMode('internal', SIPCONN_MNCC_SOCKET_PATH).catch(() => {});
+
+      write('\n=== Stopping and removing osmo-meas-udp2db ===');
+      await nsenter('systemctl', ['disable', '--now', MEAS_UDP2DB_UNIT]).catch(() => {});
+      try { fs.unlinkSync(HOST_MEAS_UNIT_PATH); } catch { /* may not exist */ }
+      await nsenter('systemctl', ['daemon-reload']).catch(() => {});
+
       write('\n=== Removing GSM config files ===');
-      for (const f of GSM_CONFIG_MANIFEST) { try { fs.unlinkSync(f.path); } catch { /* may not exist */ } }
+      // Real bug found live 2026-09-12, fixed before this ever ran for real:
+      // this loop previously iterated the WHOLE manifest unconditionally,
+      // which includes osmo-stp.cfg/osmo-hlr.cfg/osmo-msc.cfg (marked
+      // shared: true purely for the Config Files tab's warning banner) —
+      // meaning Uninstall would have deleted the shared SMS-over-SGs config
+      // files it explicitly claims (in its own final message below) to
+      // leave untouched. Skip anything shared — this module never owns
+      // those files' lifecycle, only sms-controller.ts's configureSms() does.
+      for (const f of GSM_CONFIG_MANIFEST) { if (f.shared) continue; try { fs.unlinkSync(f.path); } catch { /* may not exist */ } }
       try { fs.unlinkSync(HOST_GSM_STATE); } catch { /* may not exist */ }
 
-      write('\n=== Purging osmo-bsc, osmo-mgw, osmo-bts ===');
+      write('\n=== Purging osmo-bsc, osmo-mgw, osmo-bts, osmo-bsc-meas-utils, osmo-pcu, osmo-sgsn, osmo-ggsn ===');
       await new Promise<void>((resolve) => {
         const purge = spawn('nsenter', [
           '-t', '1', '-m', '-u', '-i', '-p', '--',
-          'bash', '-c', 'DEBIAN_FRONTEND=noninteractive apt-get purge -y osmo-bsc osmo-mgw osmo-bts 2>&1 && apt-get autoremove -y 2>&1',
+          'bash', '-c', 'DEBIAN_FRONTEND=noninteractive apt-get purge -y osmo-bsc osmo-mgw osmo-bts osmo-bsc-meas-utils osmo-pcu osmo-sgsn osmo-ggsn 2>&1 && apt-get autoremove -y 2>&1',
         ], { stdio: ['ignore', 'pipe', 'pipe'] });
         purge.stdout?.on('data', (d: Buffer) => write(d.toString()));
         purge.stderr?.on('data', (d: Buffer) => write(d.toString()));
         purge.on('close', () => resolve());
       });
 
-      await auditLogger.log({ action: 'gsm_uninstall', user, details: 'osmo-bsc/mgw/bts removed', success: true });
-      write('\n✅ 2G GSM module uninstalled. osmo-stp/osmo-hlr/osmo-msc (shared with SMS over SGs) were left untouched.');
+      await auditLogger.log({ action: 'gsm_uninstall', user, details: 'osmo-bsc/mgw/bts/gprs/sip-connector removed', success: true });
+      write('\n✅ 2G GSM module uninstalled (CS, GPRS/EDGE, SIP tab). osmo-stp/osmo-hlr/osmo-msc (shared with SMS over SGs) were left untouched.');
     } catch (err) {
       await auditLogger.log({ action: 'gsm_uninstall', user, details: String(err), success: false });
       write(`\n❌ Uninstall failed: ${String(err)}`);

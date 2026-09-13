@@ -8,6 +8,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { convertRepeatedMapKeysToArray } from '../../infrastructure/yaml/yaml-config-repository';
+import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
 
 const execFileAsync = promisify(execFile);
 
@@ -268,7 +269,18 @@ function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: stri
   // --vty-ref-xml output (config-msc node) and osmo-bsc's shipped default
   // config, which anchors its own mgw connection the same way — 2427 is
   // osmo-mgw's own default MGCP listen port.
-  const mgwLines = mgwBindIp ? ` mgw remote-ip ${mgwBindIp}\n mgw remote-port 2427\n mgw local-port 2727\n mgw endpoint-domain msc\n` : '';
+  // endpoint-domain MUST be 'mgw', not this component's own name: osmo-mgw
+  // itself has no explicit `domain` override in its own config, so it uses
+  // its compiled-in default of 'mgw' for every endpoint it accepts. 'msc'
+  // (and osmo-bsc.cfg's matching 'bsc') looked like a reasonable per-peer
+  // label but was never actually valid — confirmed live 2026-09-13 via a
+  // real call attempt: osmo-mgw rejected every MGCP CRCX for
+  // "rtpbridge/*@msc" with "wrong domain name ... expecting mgw", so no
+  // voice bearer could ever be created and every 2G call failed at the
+  // MGCP layer regardless of MNCC mode. This one line is why 2G calling
+  // never worked, even though attach/SMS/GPRS (which never touch MGW) were
+  // fine.
+  const mgwLines = mgwBindIp ? ` mgw remote-ip ${mgwBindIp}\n mgw remote-port 2427\n mgw local-port 2727\n mgw endpoint-domain mgw\n` : '';
   return `log stderr
  logging filter all 1
  logging print extended-timestamp 1
@@ -502,10 +514,55 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
     if (tacM) tac = parseInt(tacM[1]);
   }
 
-  // Write Osmocom config files
+  // Write Osmocom config files.
   fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
-  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-stp.cfg`, osmostpCfg(), 'utf-8');
-  fs.writeFileSync(`${HOST_OSMOCOM_DIR}/osmo-msc.cfg`, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp, readMscMgwPeer()), 'utf-8');
+
+  // osmo-stp.cfg: osmostpCfg() is a fully static template (no parameters) —
+  // there is never a legitimate reason to rewrite it once it exists (nothing
+  // dynamic could have changed), so this only ever needs to happen once, on
+  // first install. Confirmed live 2026-09-12 this template's own output is
+  // already byte-identical to what's actually on disk on this host, but
+  // "skip once present" removes the risk entirely rather than relying on
+  // that staying true forever.
+  const stpPath = `${HOST_OSMOCOM_DIR}/osmo-stp.cfg`;
+  if (!fs.existsSync(stpPath)) fs.writeFileSync(stpPath, osmostpCfg(), 'utf-8');
+
+  // osmo-msc.cfg: real incident, 2026-09-12 — this used to be a blind
+  // fs.writeFileSync(path, osmomscCfg(...)) on every call, which silently
+  // destroyed every bit of this host's real hand/VTY-maintained config
+  // (SS7 point-code, A5/UEA ciphering, authentication policy, mncc
+  // guard-timeouts + the external MNCC socket path osmo-sip-connector
+  // depends on, and the entire smpp/esme block carrying live SMPP passwords
+  // for the VectorCore MMSC and 2G-SMS-bridge integrations) the very first
+  // time it ran for real. Now upserts only the specific directives this
+  // function actually owns — everything else in the file, known or
+  // unknown, passes through byte-for-byte untouched. See
+  // vty-config-ownership.ts for the full incident writeup and the general
+  // mechanism; see its test suite for verification against this exact
+  // file's real content.
+  const mscPath = `${HOST_OSMOCOM_DIR}/osmo-msc.cfg`;
+  const mgwBindIp = readMscMgwPeer();
+  const mscOwned: OwnedDirective[] = [
+    { node: 'network', prefix: /^\s*network country code\s+/, line: ` network country code ${mcc}` },
+    { node: 'network', prefix: /^\s*mobile network code\s+/, line: ` mobile network code ${mnc}` },
+    { node: 'network', prefix: /^\s*mm info\s+/, line: ' mm info 1' },
+    { node: 'msc', prefix: /^\s*assign-tmsi\s*$/, line: ' assign-tmsi' },
+    { node: 'msc', prefix: /^\s*mgw remote-ip\s+/, line: mgwBindIp ? ` mgw remote-ip ${mgwBindIp}` : null },
+    { node: 'msc', prefix: /^\s*mgw remote-port\s+/, line: mgwBindIp ? ' mgw remote-port 2427' : null },
+    { node: 'msc', prefix: /^\s*mgw local-port\s+/, line: mgwBindIp ? ' mgw local-port 2727' : null },
+    // Must be 'mgw' — osmo-mgw's own compiled-in default domain, not this
+    // component's name. See mgwLines' comment above for the full incident.
+    { node: 'msc', prefix: /^\s*mgw endpoint-domain\s+/, line: mgwBindIp ? ' mgw endpoint-domain mgw' : null },
+    { node: 'hlr', prefix: /^\s*remote-ip\s+/, line: ` remote-ip ${hlrBindIp}` },
+    { node: 'hlr', prefix: /^\s*remote-port\s+/, line: ' remote-port 4222' },
+    { node: 'sgs', prefix: /^\s*local-ip\s+/, line: ` local-ip ${mscBindIp}` },
+    { node: 'sgs', prefix: /^\s*local-port\s+/, line: ' local-port 29118' },
+    { node: 'sgs', prefix: /^\s*vlr-name\s+/, line: ` vlr-name vlr.epc.mnc${mnc.padStart(3, '0')}.mcc${mcc}.3gppnetwork.org` },
+    { node: 'line vty', prefix: /^\s*bind\s+/, line: ` bind ${hlrBindIp}` },
+    { node: 'line vty', prefix: /^\s*no login\s*$/, line: ' no login' },
+  ];
+  const currentMsc = fs.existsSync(mscPath) ? fs.readFileSync(mscPath, 'utf-8') : '';
+  fs.writeFileSync(mscPath, upsertVtyDirectives(currentMsc, mscOwned, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp, mgwBindIp)), 'utf-8');
 
   // Update MME sgsap section — preserve any other PLMN's existing map
   // entry (e.g. a roaming PLMN configured separately) rather than
@@ -560,6 +617,47 @@ function getMscVtyHost(): string {
   return raw.match(/line vty[\s\S]*?\n\s*bind\s+(\S+)/)?.[1] ?? '127.0.0.1';
 }
 
+// Flips osmo-msc's MNCC (Mobile Network Call Control) handler between
+// 'internal' (osmo-msc/osmo-mgw route calls themselves — plain 2G<->2G
+// calling, no external dependency) and 'external <path>' (hands EVERY call,
+// including a local 2G<->2G one, to osmo-sip-connector's Unix socket — see
+// gsm-controller.ts's SIP tab). Real incident, 2026-09-13: this line was
+// found stuck at `mncc external ...` on this host as a leftover from an
+// earlier, since-rolled-back 2G<->IMS voice-interop pass. configureSms()'s
+// ownership-merge correctly treats `mncc` as unmanaged/opaque and preserves
+// whatever's already there (right call — this is the SIP tab's directive,
+// not the SMS/2G core's), so nothing ever reset it back to internal, and
+// EVERY 2G call — including two local subscribers calling each other, with
+// no 4G/IMS involved at all — was being handed to a socket with no working
+// route out. Per the official VTY reference, this needs an actual osmo-msc
+// restart to take effect (no live-VTY-only path like upsertSmppEsme's).
+export async function setMscMnccMode(mode: 'internal' | 'external', mnccSocketPath: string): Promise<void> {
+  const mscCfgPath = `${HOST_OSMOCOM_DIR}/osmo-msc.cfg`;
+  if (!fs.existsSync(mscCfgPath)) return; // SMS/2G core not configured yet — nothing to flip
+  const raw = fs.readFileSync(mscCfgPath, 'utf-8');
+  const desired = mode === 'external' ? ` mncc external ${mnccSocketPath}` : ' mncc internal';
+  const mnccLine = /^ mncc (internal|external\b.*)$/m;
+  // If the line is genuinely absent, osmo-msc's own compiled-in default
+  // (internal) already applies — only ever insert when we're forcing
+  // external, right after the node's `mncc guard-timeout` line stays put.
+  const next = mnccLine.test(raw)
+    ? raw.replace(mnccLine, desired)
+    : (mode === 'external' ? raw.replace(/^(msc\n)/m, `$1${desired}\n`) : raw);
+  if (next === raw) return;
+  fs.writeFileSync(mscCfgPath, next, 'utf-8');
+  await nsenter('systemctl', ['restart', 'osmo-msc']);
+}
+
+// Live read counterpart to setMscMnccMode() — reads the actual file rather
+// than any cached state, so the UI can never drift from what osmo-msc is
+// really doing. Absent line -> osmo-msc's own compiled-in default (internal).
+export function getMscMnccMode(): 'internal' | 'external' {
+  const mscCfgPath = `${HOST_OSMOCOM_DIR}/osmo-msc.cfg`;
+  if (!fs.existsSync(mscCfgPath)) return 'internal';
+  const raw = fs.readFileSync(mscCfgPath, 'utf-8');
+  return /^ mncc external\b/m.test(raw) ? 'external' : 'internal';
+}
+
 export async function upsertSmppEsme(
   name: string,
   password: string,
@@ -585,11 +683,18 @@ export async function upsertSmppEsme(
   const output = (stdout + stderr).trim();
   const success = !/% ?Unknown command|%Command incomplete|Connection refused|Traceback/i.test(output);
 
-  // Deliberately does NOT persist this to osmo-msc.cfg — see osmomscCfg()'s
-  // header comment. This VTY apply is live-only: it takes effect instantly
-  // with no restart, but does not survive a future osmo-msc restart for any
-  // reason (manual, host reboot, etc). The caller is responsible for calling
-  // this again after any osmo-msc restart it becomes aware of.
+  // Stale-comment correction (2026-09-13): this WAS believed to be live-VTY-
+  // only and lost on restart, but VTY_UPSERT_ESME_SCRIPT's own last command is
+  // 'write' (see its comment above) — confirmed live against the real
+  // osmo-msc.cfg on this host, which has both esme blocks including their
+  // passwords in cleartext. It persists to disk and survives a normal
+  // osmo-msc restart AND configureSms()'s ownership-merge rewrite (smpp is an
+  // unmanaged/opaque node to that merge — see vty-config-ownership.ts). The
+  // one case this does NOT survive: osmo-msc.cfg being (re)created from
+  // scratch with no prior file to merge against (e.g. a genuinely first-ever
+  // install) — that's why callers still re-apply this defensively (see
+  // isSmppEsmeActive()'s self-heal usage) rather than treating one Configure-
+  // time apply as permanent.
   return { success, output };
 }
 
@@ -620,12 +725,14 @@ print('ESME_FOUND' if ('esme ' + name) in lines else 'ESME_MISSING')
 s.close()
 `;
 
-// Checks whether an ESME is CURRENTLY bound-capable on the live osmo-msc VTY
-// (i.e. survived since it was last applied via upsertSmppEsme()). Needed
-// because the password never persists across an osmo-msc restart (see
-// upsertSmppEsme()'s comment) — any module relying on SMPP should poll this
-// and re-call upsertSmppEsme() if it comes back false, rather than assuming
-// a one-time Configure-time apply is enough forever.
+// Checks whether an ESME is CURRENTLY bound-capable on the live osmo-msc VTY.
+// upsertSmppEsme() does persist across ordinary restarts/reconfigures (see its
+// updated comment) — this exists to guard the one case that doesn't: osmo-
+// msc.cfg being (re)created from scratch with no prior smpp/esme block to
+// carry forward (e.g. a first-ever install, or a hand-deleted config). Any
+// module relying on SMPP should poll this and re-call upsertSmppEsme() if it
+// comes back false, rather than assuming a one-time Configure-time apply
+// covers every possible state osmo-msc.cfg could be in.
 export async function isSmppEsmeActive(name: string): Promise<boolean> {
   requireEsmeName(name);
   let vtyHost: string;

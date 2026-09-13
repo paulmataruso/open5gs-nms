@@ -4,6 +4,60 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.58] - 2026-09-13
+
+### Fixed — 2G GSM/Osmocom module: config-ownership landmine, MGW codec routing, explicit call-routing control
+
+- **`configureSms()` no longer blindly regenerates `osmo-msc.cfg`/`osmo-stp.cfg`.**
+  Replaced full-file regeneration with a new, reusable ownership-based VTY-config
+  merge utility (`domain/services/vty-config-ownership.ts`) — each caller declares
+  only the directives it owns; everything else already on disk (SS7 point-code, A5
+  ciphering, SMPP/ESME entries incl. live passwords, `mncc-int` codec defaults) is
+  preserved byte-for-byte. Verified with a 16-case unit suite and a real live
+  uninstall→reinstall→reconfigure pipeline test with byte-exact prediction matching.
+- **osmo-sip-connector and the two Kamailio IMS module `.so` patches now have real,
+  reproducible build/install code** (`osmo-sip-connector-build.ts`,
+  `kamailio-ims-modules-build.ts`) wired into the 2G module's and IMS's own Install
+  steps, respectively — previously these existed only as manual, host-only artifacts
+  with no way to reproduce them on a fresh deployment.
+- **2G module uninstall was deleting shared `osmo-stp`/`osmo-hlr`/`osmo-msc` config
+  files** despite `GSM_CONFIG_MANIFEST` already flagging them `shared: true` — the
+  deletion loop never actually checked that flag. Fixed before it could cause damage
+  in a live pipeline test.
+- **Real, root-caused call-path bugs found via live end-to-end call testing on real
+  radio hardware** (all invisible until an actual voice call was attempted, since
+  attach/SMS/GPRS never exercise these paths):
+  - osmo-msc's and osmo-bsc's `mgw endpoint-domain` were set to `msc`/`bsc`
+    respectively — osmo-mgw itself defaults to expecting literally `mgw`, so every
+    real call's MGCP CRCX was rejected outright ("wrong domain name ... expecting
+    mgw"). Fixed both to `mgw`.
+  - A leftover `mncc external <path>` in `osmo-msc.cfg` (from an earlier, since-
+    reverted 2G↔IMS voice-interop attempt) was silently routing **every** 2G call,
+    including a plain call between two local subscribers, out to
+    osmo-sip-connector's socket with no operator-visible cause. Call-routing mode
+    (internal/external) is now an explicit, persisted operator choice — see below —
+    rather than an accidental leftover file value.
+  - **Confirmed, not yet worked around**: osmo-msc's own internal/built-in MNCC
+    handler (`mncc_builtin.c`, upstream Osmocom, not this project's code) never
+    implements `MNCC_RTP_CREATE` — real signaling (attach, ringing, answer) completes
+    but no actual RTP bridge is ever created, so a call hangs and times out. Real
+    2G↔2G audio needs the external MNCC path (osmo-sip-connector); internal mode is
+    signaling-only on this osmo-msc version.
+
+### Added — GSM page: explicit call-routing mode control
+
+- New "Call Routing" control on the SIP tab: **Internal** (default — osmo-msc/osmo-mgw
+  route calls themselves) vs. **External** (hand every call to osmo-sip-connector).
+  Backed by a new `POST /api/gsm/sip/mncc-mode` endpoint and a live-read
+  `getMscMnccMode()` (never cached state) so the UI can never drift from what
+  osmo-msc is actually doing, plus a warning banner when External is selected but the
+  connector isn't running.
+- BTS/Radios tab and the Add/Edit BTS modal rebuilt to match the rest of the app's
+  established table/modal conventions (was a single cramped wrapping row with no
+  scroll-safe modal — the edit dialog's top/bottom could be clipped by the browser).
+
+---
+
 ## [v2.0-beta_0.57] - 2026-09-07
 
 ### Added — RF Planning: ITM/Longley-Rice model, ESA WorldCover land-cover data, Point Analysis map

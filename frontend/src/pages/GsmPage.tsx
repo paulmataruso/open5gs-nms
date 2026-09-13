@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import {
   Play, Square, RotateCw, Terminal, Trash2, Plus, Settings, FileText, RadioTower, AlertTriangle, ShieldAlert,
-  Pencil, Radar, CheckCircle, CheckCircle2, XCircle,
+  Pencil, Radar, CheckCircle, CheckCircle2, XCircle, Phone,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -478,27 +478,34 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
 
   if (savedBtsId) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-        <div className="bg-nms-surface border border-nms-border rounded-xl p-6 max-w-lg w-full mx-4 shadow-2xl space-y-4">
-          <h2 className="text-base font-semibold text-nms-text">{name} — bringing up</h2>
-          <BringUpStatusPanel btsId={savedBtsId} onDone={onClose} />
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="bg-nms-surface border border-nms-border rounded-xl w-full max-w-lg max-h-[90vh] shadow-2xl flex flex-col">
+          <div className="px-6 py-4 border-b border-nms-border flex-shrink-0">
+            <h2 className="text-base font-semibold text-nms-text">{name} — bringing up</h2>
+          </div>
+          <div className="p-6 overflow-y-auto">
+            <BringUpStatusPanel btsId={savedBtsId} onDone={onClose} />
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-nms-surface border border-nms-border rounded-xl p-6 max-w-lg w-full mx-4 shadow-2xl space-y-4">
-        <h2 className="text-base font-semibold text-nms-text">
-          {isEdit ? `Edit ${existing!.name}` : prefill ? `Configure ${prefill.unitName || 'Discovered Radio'}` : 'Add BTS'}
-        </h2>
-        {prefill && !isEdit && (
-          <p className="text-xs text-nms-text-dim -mt-2">
-            Found at {prefill.ipAddress} (MAC {prefill.macAddress}, unit-id {prefill.unitId}, {prefill.location2 || 'unknown model'}).
-            Fields below are pre-filled — adjust anything, then Configure to repoint and bring it up.
-          </p>
-        )}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="bg-nms-surface border border-nms-border rounded-xl w-full max-w-lg max-h-[90vh] shadow-2xl flex flex-col">
+        <div className="px-6 py-4 border-b border-nms-border flex-shrink-0">
+          <h2 className="text-base font-semibold text-nms-text">
+            {isEdit ? `Edit ${existing!.name}` : prefill ? `Configure ${prefill.unitName || 'Discovered Radio'}` : 'Add BTS'}
+          </h2>
+          {prefill && !isEdit && (
+            <p className="text-xs text-nms-text-dim mt-1">
+              Found at {prefill.ipAddress} (MAC {prefill.macAddress}, unit-id {prefill.unitId}, {prefill.location2 || 'unknown model'}).
+              Fields below are pre-filled — adjust anything, then Configure to repoint and bring it up.
+            </p>
+          )}
+        </div>
+        <div className="p-6 space-y-4 overflow-y-auto">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="md:col-span-2">
             <label className="nms-label">Name</label>
@@ -591,7 +598,8 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
             </label>
           </>
         )}
-        <div className="flex gap-3 pt-1">
+        </div>
+        <div className="flex gap-3 px-6 py-4 border-t border-nms-border flex-shrink-0">
           <button onClick={onClose} className="flex-1 nms-btn-ghost text-sm py-2">Cancel</button>
           <button onClick={handleSave} disabled={saving || !canSave} className="flex-1 nms-btn-primary text-sm py-2 disabled:opacity-50">
             {saving ? 'Saving…' : isEdit ? 'Save Changes' : backend === 'remote-abis-ip' ? 'Configure' : 'Add BTS'}
@@ -771,47 +779,60 @@ function BtsTab({ btsEntries, refresh, defaultOmlIp }: { btsEntries: BtsEntry[];
           </button>
         </div>
       </div>
-      {btsEntries.length === 0 ? (
-        <div className="nms-card border-dashed border-nms-border text-center py-10">
-          <RadioTower className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
-          <p className="text-sm text-nms-text-dim">No BTS configured yet.</p>
-        </div>
-      ) : (
-        <div className="space-y-1.5">
-          {btsEntries.map(e => (
-            <div key={e.id} className="flex items-center justify-between gap-2 flex-wrap bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
-              <div className="text-xs flex items-center gap-2 min-w-0">
-                <BtsStatusBadge btsId={e.id} />
-                <div className="min-w-0">
-                  <span className="text-nms-text font-medium">{e.name}</span>
-                  <span className="text-nms-text-dim ml-2 break-words">
-                    {backendLabel(e.backend)} — {e.band} / ARFCN {e.arfcn} — unit-id {e.unitId} — LAC {e.locationAreaCode}
-                  </span>
-                  {e.remoteIp && <span className="text-nms-text-dim ml-2 font-mono">({e.remoteIp})</span>}
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
-                {e.backend === 'remote-abis-ip' && e.remoteIp && (
-                  <>
-                    <button onClick={() => handleRestart(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1" title="Reboot the radio in place (ipaccess-config -r)">
-                      <RotateCw className="w-3 h-3" /> Restart
-                    </button>
-                    <button onClick={() => handleReprovision(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1" title="Re-run the OML repoint against this radio's IP">
-                      <RotateCw className="w-3 h-3" /> Reprovision
-                    </button>
-                  </>
-                )}
-                <button onClick={() => setEditing(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1">
-                  <Pencil className="w-3 h-3" /> Edit
-                </button>
-                <button onClick={() => handleRemove(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1 text-red-400">
-                  <Trash2 className="w-3 h-3" /> Remove
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="nms-card overflow-x-auto">
+        {btsEntries.length === 0 ? (
+          <div className="text-center py-10">
+            <RadioTower className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
+            <p className="text-sm text-nms-text-dim">No BTS configured yet.</p>
+          </div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-nms-text-dim border-b border-nms-border">
+                <th className="pb-2 font-medium">Status</th>
+                <th className="pb-2 font-medium">Name</th>
+                <th className="pb-2 font-medium">Backend</th>
+                <th className="pb-2 font-medium">Band / ARFCN</th>
+                <th className="pb-2 font-medium">Unit ID / LAC</th>
+                <th className="pb-2 font-medium">Remote IP</th>
+                <th className="pb-2 font-medium text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {btsEntries.map(e => (
+                <tr key={e.id} className="border-b border-nms-border/50 last:border-0">
+                  <td className="py-2"><BtsStatusBadge btsId={e.id} /></td>
+                  <td className="py-2 text-nms-text font-medium whitespace-nowrap">{e.name}</td>
+                  <td className="py-2 text-nms-text-dim whitespace-nowrap">{backendLabel(e.backend)}</td>
+                  <td className="py-2 text-nms-text-dim font-mono whitespace-nowrap">{e.band} / {e.arfcn}</td>
+                  <td className="py-2 text-nms-text-dim font-mono whitespace-nowrap">{e.unitId} / {e.locationAreaCode}</td>
+                  <td className="py-2 text-nms-text-dim font-mono whitespace-nowrap">{e.remoteIp || '—'}</td>
+                  <td className="py-2">
+                    <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                      {e.backend === 'remote-abis-ip' && e.remoteIp && (
+                        <>
+                          <button onClick={() => handleRestart(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1" title="Reboot the radio in place (ipaccess-config -r)">
+                            <RotateCw className="w-3 h-3" /> Restart
+                          </button>
+                          <button onClick={() => handleReprovision(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1" title="Re-run the OML repoint against this radio's IP">
+                            <RotateCw className="w-3 h-3" /> Reprovision
+                          </button>
+                        </>
+                      )}
+                      <button onClick={() => setEditing(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1">
+                        <Pencil className="w-3 h-3" /> Edit
+                      </button>
+                      <button onClick={() => handleRemove(e)} className="nms-btn-ghost flex items-center gap-1 text-[11px] px-2 py-1 text-red-400">
+                        <Trash2 className="w-3 h-3" /> Remove
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </div>
   );
 }
@@ -912,9 +933,203 @@ function ConfigFilesTab() {
   );
 }
 
+// SIP tab (osmo-sip-connector) — deliberately minimal, matching the
+// daemon's own native config surface exactly (see osmo-sip-connector-build.ts
+// on the backend): where osmo-msc's MNCC socket is (fixed, shown read-only),
+// what local address to listen on, and one "remote" SIP peer. There is no
+// MSISDN routing, dial plan, or automatic 2G<->IMS call bridging here by
+// design — an earlier attempt at that was fully reverted on 2026-09-12
+// (signaling never reliably completed and audio was never confirmed working
+// in either direction). Wiring "remote" to something that actually completes
+// calls — this deployment's own P-CSCF/S-CSCF, an external SIP trunk,
+// anything — is entirely on whoever configures this tab.
+function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => void }) {
+  const [localIp, setLocalIp] = useState('127.0.1.6');
+  const [localPort, setLocalPort] = useState(5060);
+  const [remoteHost, setRemoteHost] = useState('');
+  const [remotePort, setRemotePort] = useState(5060);
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [mnccBusy, setMnccBusy] = useState(false);
+
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!status?.sip || seeded.current) return;
+    seeded.current = true;
+    setLocalIp(status.sip.localIp || '0.0.0.0');
+    setLocalPort(status.sip.localPort || 5060);
+    setRemoteHost(status.sip.remoteHost || '');
+    setRemotePort(status.sip.remotePort || 5060);
+  }, [status]);
+
+  if (!status) {
+    return <div className="nms-card text-sm text-nms-text-dim">Loading…</div>;
+  }
+
+  const sip = status.sip;
+
+  const handleSave = async () => {
+    if (!remoteHost.trim()) {
+      toast.error('Remote SIP peer is required.');
+      return;
+    }
+    setSaving(true);
+    try {
+      await gsmApi.sipConfigure({ localIp, localPort, remoteHost, remotePort });
+      toast.success('osmo-sip-connector configured and (re)started.');
+      refresh();
+    } catch (err: any) {
+      toast.error(`Configure failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleMnccMode = async (mode: 'internal' | 'external') => {
+    setMnccBusy(true);
+    try {
+      await gsmApi.setSipMnccMode(mode);
+      toast.success(`Call routing set to ${mode} (osmo-msc restarted).`);
+      refresh();
+    } catch (err: any) {
+      toast.error(`Failed to switch mode: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setMnccBusy(false);
+    }
+  };
+
+  const handleAction = async (action: 'sipStart' | 'sipStop' | 'sipRestart', label: string) => {
+    setBusy(true);
+    try {
+      await gsmApi[action]();
+      toast.success(`osmo-sip-connector ${label}`);
+      refresh();
+    } catch (err: any) {
+      toast.error(`${label} failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300 flex gap-2">
+        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+        <span>
+          There is no automatic call routing between 2G and IMS/4G here — only SMS/MMS is bridged, and that bridge is set
+          up separately: install &amp; configure IMS, then the SMS/MMS page's "VectorCore SMSC" delivery mode (not this
+          page) — that's what actually wires a 2G subscriber's SMS to/from IMS. This tab only installs and runs
+          osmo-sip-connector exactly as Osmocom ships it; the "remote" peer below is a real SIP address you control
+          (this deployment's own P-CSCF, an external SIP trunk, anything). Getting calls to actually complete end to end
+          is on you.
+        </span>
+      </div>
+
+      {!sip?.installedOnDisk && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-300">
+          Not built yet — osmo-sip-connector is built from source as part of this page's main Install action (Setup tab).
+        </div>
+      )}
+
+      <div className="nms-card space-y-4">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <p className="text-sm font-semibold text-nms-text">osmo-sip-connector</p>
+            <p className="text-xs text-nms-text-dim mt-1">{sip?.version || 'Not built'}</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <SvcBadge label="osmo-sip-connector" active={!!sip?.running} />
+            <div className="h-5 w-px bg-nms-border" />
+            <button onClick={() => handleAction('sipStart', 'started')} disabled={busy || !sip?.configured} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Play className="w-3 h-3" /> Start
+            </button>
+            <button onClick={() => handleAction('sipStop', 'stopped')} disabled={busy || !sip?.configured} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Square className="w-3 h-3" /> Stop
+            </button>
+            <button onClick={() => handleAction('sipRestart', 'restarted')} disabled={busy || !sip?.configured} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <RotateCw className="w-3 h-3" /> Restart
+            </button>
+          </div>
+        </div>
+
+        <div className="border-t border-nms-border pt-4">
+          <p className="text-sm font-semibold text-nms-text mb-1">Call Routing (osmo-msc's MNCC handler)</p>
+          <p className="text-[11px] text-nms-text-dim mb-3">
+            This controls how osmo-msc routes EVERY call it handles, not just ones headed to osmo-sip-connector — including a
+            plain call between two of its own 2G subscribers. Switching modes restarts osmo-msc.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button
+              onClick={() => handleMnccMode('internal')}
+              disabled={mnccBusy || sip?.mnccMode === 'internal'}
+              className={clsx(
+                'text-left rounded-lg border px-3 py-2.5 transition-colors disabled:cursor-default',
+                sip?.mnccMode === 'internal' ? 'border-nms-accent bg-nms-accent/10' : 'border-nms-border hover:bg-nms-surface-2',
+              )}
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-nms-text">
+                <RadioTower className="w-3.5 h-3.5" /> Internal <span className="text-[10px] font-normal text-nms-text-dim">(default)</span>
+              </div>
+              <p className="text-[11px] text-nms-text-dim mt-1">osmo-msc/osmo-mgw route calls themselves. Plain 2G-to-2G calling works with nothing else set up.</p>
+            </button>
+            <button
+              onClick={() => handleMnccMode('external')}
+              disabled={mnccBusy || sip?.mnccMode === 'external' || !sip?.installedOnDisk}
+              title={!sip?.installedOnDisk ? 'Build osmo-sip-connector first (Setup tab Install)' : undefined}
+              className={clsx(
+                'text-left rounded-lg border px-3 py-2.5 transition-colors disabled:cursor-default',
+                sip?.mnccMode === 'external' ? 'border-nms-accent bg-nms-accent/10' : 'border-nms-border hover:bg-nms-surface-2',
+                !sip?.installedOnDisk && sip?.mnccMode !== 'external' && 'opacity-50',
+              )}
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-nms-text">
+                <Phone className="w-3.5 h-3.5" /> External
+              </div>
+              <p className="text-[11px] text-nms-text-dim mt-1">Every call is handed to osmo-sip-connector ({sip?.mnccSocketPath}). Needs it configured and running below.</p>
+            </button>
+          </div>
+          {sip?.mnccMode === 'external' && !sip?.running && (
+            <div className="mt-3 flex items-start gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>External is selected but osmo-sip-connector isn't running — every call, including 2G-to-2G, will fail right now. Start it below, or switch back to Internal.</span>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-nms-border pt-4">
+          <p className="text-sm font-semibold text-nms-text mb-1">SIP</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="nms-label">Local bind IP</label>
+              <input className="nms-input font-mono text-xs" value={localIp} onChange={e => setLocalIp(e.target.value)} placeholder="127.0.1.6" />
+              <p className="text-[11px] text-nms-text-dim mt-1">Use a dedicated address, not 0.0.0.0 — this host already has other SIP daemons on port 5060 (P-CSCF, Asterisk, SMSC), and a wildcard bind conflicts with any of them.</p>
+            </div>
+            <div>
+              <label className="nms-label">Local port</label>
+              <input type="number" className="nms-input font-mono text-xs" value={localPort} onChange={e => setLocalPort(Number(e.target.value))} placeholder="5060" />
+            </div>
+            <div>
+              <label className="nms-label">Remote SIP peer (host/IP)</label>
+              <input className="nms-input font-mono text-xs" value={remoteHost} onChange={e => setRemoteHost(e.target.value)} placeholder="e.g. 10.0.1.178" />
+              <p className="text-[11px] text-nms-text-dim mt-1">Where 2G calls are sent to / received from. Required.</p>
+            </div>
+            <div>
+              <label className="nms-label">Remote port</label>
+              <input type="number" className="nms-input font-mono text-xs" value={remotePort} onChange={e => setRemotePort(Number(e.target.value))} placeholder="5060" />
+            </div>
+          </div>
+          <button onClick={handleSave} disabled={saving || !sip?.installedOnDisk} className="nms-btn-primary text-sm mt-4 flex items-center gap-2">
+            <Phone className="w-4 h-4" /> {saving ? 'Saving…' : 'Save & Apply'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const [status, setStatus] = useState<GsmStatus | null>(null);
-  const [tab, setTab] = useState<'setup' | 'bts' | 'configs'>('setup');
+  const [tab, setTab] = useState<'setup' | 'bts' | 'sip' | 'configs'>('setup');
   const [svcBusy, setSvcBusy] = useState(false);
 
   const refresh = useCallback(() => {
@@ -943,6 +1158,7 @@ export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
   const TABS: { id: typeof tab; label: string; icon: React.ReactNode }[] = [
     { id: 'setup',   label: 'Setup',         icon: <Settings className="w-4 h-4" /> },
     { id: 'bts',     label: 'BTS / Radios',  icon: <RadioTower className="w-4 h-4" /> },
+    { id: 'sip',     label: 'SIP',           icon: <Phone className="w-4 h-4" /> },
     { id: 'configs', label: 'Config Files',  icon: <FileText className="w-4 h-4" /> },
   ];
 
@@ -1000,6 +1216,7 @@ export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
 
       {tab === 'setup' && <SetupTab status={status} refresh={refresh} onNavigate={onNavigate} />}
       {tab === 'bts' && <BtsTab btsEntries={status?.btsEntries ?? []} refresh={refresh} defaultOmlIp={status?.bscMgwBindIp ?? '127.0.0.1'} />}
+      {tab === 'sip' && <SipTab status={status} refresh={refresh} />}
       {tab === 'configs' && <ConfigFilesTab />}
     </div>
   );

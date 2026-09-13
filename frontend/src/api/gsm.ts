@@ -54,6 +54,31 @@ export interface GsmStatus {
   appliedGprsNatCidr: string;
   // Read-only here — owned and edited on the SMS (SGs) page.
   sgsShared: { hlrBindIp: string; mscBindIp: string } | null;
+  sip: SipStatus;
+}
+
+// SIP tab (osmo-sip-connector) — deliberately minimal. There is no automatic
+// 2G<->IMS call routing in this module (product decision, 2026-09-12, after
+// the earlier attempt at that was fully reverted — signaling never reliably
+// completed and audio was never confirmed working). "remote" is wherever the
+// operator wants 2G calls to go; wiring it up to actually complete calls is
+// entirely on them.
+export interface SipStatus {
+  installedOnDisk: boolean;
+  version: string;
+  configured: boolean;
+  running: boolean;
+  localIp: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+  mnccSocketPath: string;
+  // Live off osmo-msc.cfg itself (not cached) — 'internal' is the default,
+  // plain 2G<->2G calling; 'external' hands every call, this MSC's own local
+  // ones included, to osmo-sip-connector. Explicit operator choice via
+  // gsmApi.setSipMnccMode() — never flipped as a side effect of Configure/
+  // Start/Stop.
+  mnccMode: 'internal' | 'external';
 }
 
 export interface GsmConfigFile {
@@ -210,6 +235,17 @@ export const gsmApi = {
   },
   restartServices: async (services: string[]) => {
     const { data } = await api.post('/configs/restart', { services });
+    return data;
+  },
+  sipConfigure: async (input: { localIp: string; localPort: number; remoteHost: string; remotePort: number }) => {
+    const { data } = await api.post('/sip/configure', input);
+    return data;
+  },
+  sipStart:   async () => { const { data } = await api.post('/sip/start');   return data; },
+  sipStop:    async () => { const { data } = await api.post('/sip/stop');    return data; },
+  sipRestart: async () => { const { data } = await api.post('/sip/restart'); return data; },
+  setSipMnccMode: async (mode: 'internal' | 'external') => {
+    const { data } = await api.post('/sip/mncc-mode', { mode });
     return data;
   },
 };

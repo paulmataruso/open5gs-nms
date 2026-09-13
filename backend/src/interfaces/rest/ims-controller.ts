@@ -13,6 +13,7 @@ import { parseKamcmdOutput } from '../../infrastructure/system/kamcmd-parser';
 import { ImsCallStatsMonitor } from '../../application/use-cases/ims/call-stats-monitor';
 import { loadState as loadVowifiState } from './vowifi-controller';
 import { buildSmfLateCsrPatchScript } from '../../application/use-cases/smf-late-csr-patch';
+import { buildKamailioImsModulesScript } from '../../application/use-cases/kamailio-ims-modules-build';
 import { VECTORCORE_SMSC_SIP_ADDRESS } from './vectorcore-smsc-controller';
 
 const execFileAsync = promisify(execFile);
@@ -2729,6 +2730,29 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
         'may hit "Process limit exceeded" and Cx/Rx Diameter (HSS/PCRF signaling) may be ' +
         'unstable. Fix the underlying issue and re-run Install — the patch is not marked ' +
         'complete, so it will retry automatically.\n');
+    }
+
+    // Two real C-level bugs in the stock (unmodified) ims_ipsec_pcscf/
+    // ims_registrar_pcscf Kamailio modules, root-caused and patched live
+    // 2026-09-12: a contact-promotion gap and a reg_state stomp on every
+    // re-auth cycle. Together these silently broke registration state for
+    // ANY real UE (not just 2G-interop ones) — confirmed as the actual root
+    // cause of a full "IMS to IMS is not working" regression, not anything
+    // in this project's own kamailio *.cfg scripts. Previously existed only
+    // as manually-patched .so files on one host with no way to reproduce
+    // them; see kamailio-ims-modules-build.ts for the full mechanism and
+    // patch content. Idempotent (checks in-binary markers + .apt-original
+    // presence), same build-now pattern as the cdp.so patch above.
+    write('\n=== Patching ims_ipsec_pcscf.so / ims_registrar_pcscf.so (P-CSCF reg_state fixes) ===\n');
+    const kamailioImsModulesExitCode = await spawnStream(buildKamailioImsModulesScript());
+    if (kamailioImsModulesExitCode !== 0) {
+      write('\n⚠️ WARNING: ims_ipsec_pcscf.so/ims_registrar_pcscf.so patch FAILED (see errors ' +
+        'above). Real UEs may intermittently fail to originate calls or may appear to ' +
+        'de-register (reg_state stuck/stomped to 0) even though their contact is otherwise ' +
+        'correct. Fix the underlying issue and re-run Install — the patch is idempotent and ' +
+        'will retry automatically.\n');
+    } else {
+      write('✅ ims_ipsec_pcscf.so / ims_registrar_pcscf.so patched.\n');
     }
 
     write('\n=== Installing PyHSS ===\n');
