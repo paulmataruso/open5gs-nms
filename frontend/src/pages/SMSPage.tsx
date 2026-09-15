@@ -885,57 +885,57 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
           </h1>
           <p className="text-sm text-nms-text-dim mt-1">UE-to-UE SMS via Osmocom STP + HLR + MSC over the LTE SGs interface</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {installed && (status?.smsEnabled || status?.hasSavedConfig) && (
             <button
               onClick={handleToggle}
               disabled={acting}
-              className={`flex items-center gap-2 text-sm px-4 py-2 rounded-lg border transition-all ${
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border transition-all ${
                 status?.smsEnabled
                   ? 'bg-green-500/15 text-green-400 border-green-500/30 hover:bg-green-500/25'
                   : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text'
               }`}
             >
-              <Power className="w-4 h-4" />
+              <Power className="w-3 h-3" />
               {acting ? '…' : status?.smsEnabled ? 'SMS Enabled' : 'SMS Disabled'}
             </button>
           )}
           {installed && (
             <>
-              <div className="w-px h-6 bg-nms-border" />
+              <div className="h-5 w-px bg-nms-border" />
               <button
                 onClick={() => handleSvcAction('start')}
                 disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-green-400 border-green-500/20 hover:border-green-500/40"
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-green-400 border-green-500/20 hover:border-green-500/40"
               >
-                <CheckCircle className="w-4 h-4" /> Start
+                <CheckCircle className="w-3 h-3" /> Start
               </button>
               <button
                 onClick={() => handleSvcAction('stop')}
                 disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400 border-red-500/20 hover:border-red-500/40"
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-red-400 border-red-500/20 hover:border-red-500/40"
               >
-                <XCircle className="w-4 h-4" /> Stop
+                <XCircle className="w-3 h-3" /> Stop
               </button>
               <button
                 onClick={() => handleSvcAction('restart')}
                 disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400 border-amber-500/20 hover:border-amber-500/40"
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400 border-amber-500/20 hover:border-amber-500/40"
               >
-                <RotateCw className={`w-4 h-4 ${acting ? 'animate-spin' : ''}`} /> Restart
+                <RotateCw className={`w-3 h-3 ${acting ? 'animate-spin' : ''}`} /> Restart
               </button>
               <button
                 onClick={() => setShowUninstallConfirm(true)}
                 disabled={acting || uninstalling}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
               >
-                <Trash2 className="w-4 h-4" /> Uninstall
+                <Trash2 className="w-3 h-3" /> Uninstall
               </button>
-              <div className="w-px h-6 bg-nms-border" />
+              <div className="h-5 w-px bg-nms-border" />
             </>
           )}
-          <button onClick={() => load()} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className="w-4 h-4" /> Refresh
+          <button onClick={() => load()} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className="w-3 h-3" /> Refresh
           </button>
         </div>
       </div>
@@ -1374,30 +1374,30 @@ function MmsTab({ onNavigate }: { onNavigate: (t: PageTab) => void }) {
           <h1 className="text-2xl font-semibold font-display">MMS</h1>
           <p className="text-sm text-nms-text-dim mt-1">Multimedia Messaging via VectorCore MMSC — delivery notifications ride on the SMS (SGs) SMPP interface</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {installed && (
             <>
               <button onClick={() => handleSvcAction('start')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-green-400 border-green-500/20 hover:border-green-500/40">
-                <CheckCircle className="w-4 h-4" /> Start
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-green-400 border-green-500/20 hover:border-green-500/40">
+                <CheckCircle className="w-3 h-3" /> Start
               </button>
               <button onClick={() => handleSvcAction('stop')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400 border-red-500/20 hover:border-red-500/40">
-                <XCircle className="w-4 h-4" /> Stop
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-red-400 border-red-500/20 hover:border-red-500/40">
+                <XCircle className="w-3 h-3" /> Stop
               </button>
               <button onClick={() => handleSvcAction('restart')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400 border-amber-500/20 hover:border-amber-500/40">
-                <RotateCw className={`w-4 h-4 ${acting ? 'animate-spin' : ''}`} /> Restart
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400 border-amber-500/20 hover:border-amber-500/40">
+                <RotateCw className={`w-3 h-3 ${acting ? 'animate-spin' : ''}`} /> Restart
               </button>
               <button onClick={() => setShowUninstallConfirm(true)} disabled={acting || uninstalling}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
-                <Trash2 className="w-4 h-4" /> Uninstall
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> Uninstall
               </button>
-              <div className="w-px h-6 bg-nms-border" />
+              <div className="h-5 w-px bg-nms-border" />
             </>
           )}
-          <button onClick={() => load()} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className="w-4 h-4" /> Refresh
+          <button onClick={() => load()} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className="w-3 h-3" /> Refresh
           </button>
         </div>
       </div>
@@ -1745,30 +1745,30 @@ function VectorcoreSmscTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDel
             A dedicated SMS center (github.com/vectorcore-mobile/vectorcore-smsc) integrated via SIP/3GPP-ISC — S-CSCF relays MESSAGE to it when selected as the active delivery mode
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {installed && (
             <>
               <button onClick={() => handleSvcAction('start')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-green-400 border-green-500/20 hover:border-green-500/40">
-                <CheckCircle className="w-4 h-4" /> Start
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-green-400 border-green-500/20 hover:border-green-500/40">
+                <CheckCircle className="w-3 h-3" /> Start
               </button>
               <button onClick={() => handleSvcAction('stop')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400 border-red-500/20 hover:border-red-500/40">
-                <XCircle className="w-4 h-4" /> Stop
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-red-400 border-red-500/20 hover:border-red-500/40">
+                <XCircle className="w-3 h-3" /> Stop
               </button>
               <button onClick={() => handleSvcAction('restart')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400 border-amber-500/20 hover:border-amber-500/40">
-                <RotateCw className={`w-4 h-4 ${acting ? 'animate-spin' : ''}`} /> Restart
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400 border-amber-500/20 hover:border-amber-500/40">
+                <RotateCw className={`w-3 h-3 ${acting ? 'animate-spin' : ''}`} /> Restart
               </button>
               <button onClick={() => setShowUninstallConfirm(true)} disabled={acting || uninstalling}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
-                <Trash2 className="w-4 h-4" /> Uninstall
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> Uninstall
               </button>
-              <div className="w-px h-6 bg-nms-border" />
+              <div className="h-5 w-px bg-nms-border" />
             </>
           )}
-          <button onClick={() => load()} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className="w-4 h-4" /> Refresh
+          <button onClick={() => load()} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className="w-3 h-3" /> Refresh
           </button>
         </div>
       </div>

@@ -8,7 +8,10 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
-import { isAsterisk2gInstalled } from './asterisk-2g-controller';
+import {
+  isAsterisk2gInstalled, setCrossRanPeer, listGsm2gShortCodesForCrossRan,
+  getAsterisk2gEchoTestNumber, getAsterisk2gBindAddress,
+} from './asterisk-2g-controller';
 
 // ── PSTN Gateway (Asterisk) ─────────────────────────────────────────────────
 //
@@ -46,6 +49,7 @@ const HOST_MODULES_CONF   = `${HOST_ASTERISK_DIR}/modules.conf`;
 const HOST_PJSIP_CONF     = `${HOST_ASTERISK_DIR}/pjsip.conf`;
 const HOST_EXTENSIONS_CONF = `${HOST_ASTERISK_DIR}/extensions.conf`;
 const HOST_RTP_CONF       = `${HOST_ASTERISK_DIR}/rtp.conf`;
+const HOST_ASTERISK_CONF  = `${HOST_ASTERISK_DIR}/asterisk.conf`;
 const HOST_DISPATCHER_LIST = `${HOST_ROOT}/etc/kamailio_scscf/dispatcher.list`;
 
 // This project's convention: each IMS component gets its own dedicated
@@ -54,14 +58,33 @@ const HOST_DISPATCHER_LIST = `${HOST_ROOT}/etc/kamailio_scscf/dispatcher.list`;
 // during the PoC this module formalizes).
 const DEFAULT_ASTERISK_IP = '127.0.1.4';
 const ASTERISK_PORT = 5060;
+// Short and distinct from Asterisk-2G's own "600" (a separate instance/
+// dialplan namespace, so no actual collision risk — just avoiding operator
+// confusion between the two). Real PSTN extensions assigned so far are all
+// 4-digit (1010/2020/3030/4040 — see extensionsPstnConf() below), so a
+// 3-digit code can't collide with one either.
+const DEFAULT_ECHO_TEST_NUMBER = '500';
 
 interface PstnState {
   asteriskIp: string;
+  // Exact-match dialplan extension for a local Answer()/Echo()/Hangup() test
+  // — dial it from any IMS-registered phone (VoLTE or VoWiFi) to hear your
+  // own audio looped back through this instance, no second phone needed.
+  // Unlike a subscriber extension this never Dial()s back out through
+  // S-CSCF/I-CSCF — it's answered locally, so it also exercises PSTN
+  // Gateway's own signaling path without depending on any other subscriber.
+  echoTestNumber?: string;
   // See app-version.ts / ims-controller.ts's identical field — lets /status
   // tell an operator their live deployment predates a template fix (e.g.
   // after a git pull + backend rebuild) instead of silently leaving a stale
   // config in place or auto-restarting Asterisk on every upgrade.
   configuredWithVersion?: string;
+  // Source of truth for the Cross-RAN Calling toggle — the UI button lives
+  // on this page's Extensions tab, backed by pstnApi, so this copy (not
+  // asterisk-2g-controller.ts's own follower copy) is what /status reports
+  // and setCrossRanCalling() below writes. See CLAUDE.md's Cross-RAN Calling
+  // entry for the full design.
+  crossRanEnabled?: boolean;
 }
 
 export function readPstnState(): PstnState | null {
@@ -123,6 +146,27 @@ function normalizeExtension(raw: string): string {
   return raw.replace(/^\+/, '');
 }
 
+export interface PstnConfigFile {
+  path: string; label: string; group: string; language: string;
+  restartServices: string[]; exists: boolean;
+}
+
+// This is the system-wide default `asterisk` service's own /etc/asterisk —
+// confirmed sole owner (nothing else in this codebase writes here; Asterisk-2G
+// is a fully separate instance at /etc/asterisk-2g), so no shared/sharedWith
+// flags needed the way gsm-controller.ts's manifest needs for its cross-module
+// osmo-* files.
+const PSTN_CONFIG_MANIFEST: Omit<PstnConfigFile, 'exists'>[] = [
+  { path: HOST_ASTERISK_CONF,  label: 'asterisk.conf',        group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+  { path: HOST_PJSIP_INC,      label: 'pjsip_pstn.conf',      group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+  { path: HOST_EXTENSIONS_INC, label: 'extensions_pstn.conf', group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+  { path: HOST_PJSIP_CONF,     label: 'pjsip.conf',           group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+  { path: HOST_EXTENSIONS_CONF, label: 'extensions.conf',     group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+  { path: HOST_MODULES_CONF,   label: 'modules.conf',         group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+  { path: HOST_RTP_CONF,       label: 'rtp.conf',              group: '4G/5G Voice Gateway', language: 'ini', restartServices: ['asterisk'] },
+];
+const PSTN_ALLOWED_PATHS = new Set(PSTN_CONFIG_MANIFEST.map(f => f.path));
+
 function getExtensionsCollection(mongoUri: string): { client: MongoClient; collection: Collection<PstnExtension> } {
   const client = new MongoClient(mongoUri);
   return { client, collection: client.db('open5gs').collection<PstnExtension>('pstn_extensions') };
@@ -140,7 +184,49 @@ async function withExtensions<T>(mongoUri: string, fn: (col: Collection<PstnExte
 
 // ── Asterisk config generation ──────────────────────────────────────────────
 
-function pjsipPstnConf(asteriskIp: string, icscfIp: string, icscfPort: number, scscfIp: string, mediaIp: string): string {
+function pjsipPstnConf(asteriskIp: string, icscfIp: string, icscfPort: number, scscfIp: string, mediaIp: string, crossRanPeer: { ip: string; port: number } | null): string {
+  // Cross-RAN Calling: peers with Asterisk-2G's own instance so a call to a
+  // 2G short code can be dialed from this side and vice versa. Written/
+  // removed only by setCrossRanCalling() below. Reuses transport-trunk (a
+  // PJSIP transport is the local UDP socket bound to asteriskIp:ASTERISK_PORT
+  // — every endpoint on this instance shares the one transport regardless of
+  // how many distinct peers reference it; a second type=transport on the
+  // same bind would just fail to load). allow= is ordered gsm before
+  // amrwb/amr — this endpoint ultimately feeds toward Asterisk-2G's
+  // GSM-only sipconn endpoint, so biasing negotiation toward GSM-FR here
+  // keeps the call to exactly one transcode hop rather than risking a
+  // double transcode. direct_media=no is a hard functional requirement
+  // here, not inherited B2BUA hardening habit: transcoding is only possible
+  // while Asterisk itself stays in the RTP path on both legs. See
+  // CLAUDE.md's Cross-RAN Calling pattern entry for the full design.
+  const crossRanBlock = crossRanPeer ? `
+[asterisk2g_trunk]
+type=identify
+endpoint=asterisk2g_trunk
+match=${crossRanPeer.ip}
+
+[asterisk2g_trunk]
+type=aor
+contact=sip:${crossRanPeer.ip}:${crossRanPeer.port}
+
+[asterisk2g_trunk]
+type=endpoint
+context=pstn-internal
+disallow=all
+allow=gsm
+allow=amrwb
+allow=amr
+aors=asterisk2g_trunk
+transport=transport-trunk
+direct_media=no
+trust_id_inbound=yes
+asymmetric_rtp_codec=yes
+codec_prefs_outgoing_offer=prefer:pending,operation:intersect,keep:all,transcode:allow
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+rtp_keepalive=5
+` : '';
   return `; Generated by the NMS's PSTN Gateway module — do not edit by hand,
 ; regenerated on every Configure call.
 
@@ -231,7 +317,21 @@ codec_prefs_outgoing_offer=prefer:pending,operation:intersect,keep:all,transcode
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-`;
+; Real bug found live (2026-09-14): confirmed via packet capture + live
+; Asterisk channel/bridge inspection that a call can complete signaling
+; perfectly (both legs answer, bridge forms, both channels show Up) while
+; Asterisk transmits zero RTP on either leg for the whole call — reproduced
+; identically twice for one specific direction while the reverse direction
+; worked every time, with every other aspect of the two calls (dialplan,
+; codec negotiation, bridge technology selection) proven byte-for-byte
+; identical. Given rtp_symmetric above means Asterisk MUST learn each leg's
+; real send destination from the first inbound packet rather than trusting
+; the SDP answer, a call whose very first learn-then-transmit attempt loses
+; a timing race (plausible given real, different devices/radio paths on
+; each end) has nothing to ever retry it without this. Matches a documented
+; Asterisk community fix for the identical simple_bridge/no-audio symptom.
+rtp_keepalive=5
+${crossRanBlock}`;
 }
 
 // One literal extension per mapping — matches this project's usual "regenerate
@@ -239,11 +339,22 @@ rewrite_contact=yes
 // could move this to Asterisk Realtime (ODBC-backed dialplan lookup) to avoid
 // a reload on every single mapping change — noted in the PSTN plan, not done
 // here since a reload is cheap and this list is expected to stay small.
-function extensionsPstnConf(imsDomain: string, extensions: PstnExtension[]): string {
+function extensionsPstnConf(imsDomain: string, extensions: PstnExtension[], echoTestNumber: string, crossRanPeerCodes: { extension: string; label?: string }[]): string {
   const header = `; Generated by the NMS's PSTN Gateway module — do not edit by hand,
 ; regenerated on every extension add/remove.
 
 [pstn-internal]
+; Exact literal match — Asterisk always tries this before any subscriber
+; extension pattern below, and it's answered locally (no Dial() back out
+; through S-CSCF), so it works even with zero subscriber extensions assigned.
+exten => ${echoTestNumber},1,NoOp(PSTN Gateway Echo Test)
+ same => n,Answer()
+ same => n,Wait(1)
+ same => n,Playback(demo-echotest)
+ same => n,Echo()
+ same => n,Playback(demo-echodone)
+ same => n,Hangup()
+
 `;
   const entries = extensions.map(e => {
     // Dial by bare IMSI@scscf_trunk, NOT a full "sip:imsi@domain@scscf_trunk"
@@ -275,15 +386,67 @@ function extensionsPstnConf(imsDomain: string, extensions: PstnExtension[]): str
 `;
     return `exten => ${e.extension},${body}\nexten => +${e.extension},${body}`;
   }).join('\n');
-  return header + entries;
+
+  // Cross-RAN Calling: forward, don't resolve — dial the SAME digit string
+  // out to asterisk2g_trunk so the call re-enters Asterisk-2G's own dialplan
+  // at the exact short code it already owns, where its own existing
+  // per-mapping Dial() logic completes it unchanged. This side never needs
+  // to know which subscriber a 2G short code actually resolves to.
+  const crossRanEntries = crossRanPeerCodes.map(e => {
+    const body = `1,NoOp(Cross-RAN -> 2G short code ${e.extension}${e.label ? ' (' + e.label + ')' : ''})
+ same => n,Dial(PJSIP/${e.extension}@asterisk2g_trunk,60)
+ same => n,Hangup()
+`;
+    return `exten => ${e.extension},${body}`;
+  }).join('\n');
+
+  return header + entries + '\n' + crossRanEntries;
 }
 
-async function regenerateDialplan(mongoUri: string): Promise<void> {
+// Direct Mongo read, no join needed — cross-RAN forwarding only needs the
+// CODE, not a resolved subscriber. Exported for asterisk-2g-controller.ts's
+// own extensions2gConf() generation path to consume via a lazy import (see
+// that file's isAsterisk2gInstalled() comment for why that direction has to
+// stay lazy while this one — pstn-controller.ts -> asterisk-2g-controller.ts
+// — is already a safe, pre-existing static import). See CLAUDE.md's
+// Cross-RAN Calling entry for the full ownership map.
+export async function listPstnShortCodesForCrossRan(mongoUri: string): Promise<{ extension: string; label?: string }[]> {
+  const extensions = await withExtensions(mongoUri, col => col.find({}).toArray());
+  return extensions.map(e => ({ extension: e.extension, label: e.label }));
+}
+
+export function getPstnEchoTestNumber(): string {
+  return readPstnState()?.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER;
+}
+
+export function getPstnBindAddress(): { ip: string; port: number } | null {
+  const state = readPstnState();
+  return state ? { ip: state.asteriskIp, port: ASTERISK_PORT } : null;
+}
+
+// Static import (the pre-existing safe direction) — no lazy import needed on
+// this side, unlike asterisk-2g-controller.ts's own copy of this helper.
+async function getCrossRanPeerCodes(mongoUri: string): Promise<{ extension: string; label?: string }[]> {
+  const state = readPstnState();
+  if (!state?.crossRanEnabled) return [];
+  return listGsm2gShortCodesForCrossRan(mongoUri);
+}
+
+async function isCodecGsmLoadedPstn(): Promise<boolean> {
+  try {
+    const { stdout } = await nsenter('asterisk', ['-rx', 'module show like codec_gsm']);
+    return /Running/.test(stdout);
+  } catch { return false; }
+}
+
+async function regenerateDialplan(mongoUri: string, echoTestNumber?: string): Promise<void> {
   const imsState = readImsState();
   if (!imsState) throw new Error('IMS is not configured yet — configure IMS before assigning PSTN extensions.');
   const extensions = await withExtensions(mongoUri, col => col.find({}).toArray());
+  const resolvedEchoTestNumber = echoTestNumber || readPstnState()?.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER;
+  const crossRanPeerCodes = await getCrossRanPeerCodes(mongoUri);
   fs.mkdirSync(HOST_ASTERISK_DIR, { recursive: true });
-  fs.writeFileSync(HOST_EXTENSIONS_INC, extensionsPstnConf(imsState.imsDomain, extensions), 'utf-8');
+  fs.writeFileSync(HOST_EXTENSIONS_INC, extensionsPstnConf(imsState.imsDomain, extensions, resolvedEchoTestNumber, crossRanPeerCodes), 'utf-8');
   await nsenter('asterisk', ['-rx', 'dialplan reload']).catch(() => {});
 }
 
@@ -452,6 +615,12 @@ export async function installPstn(write: (s: string) => void): Promise<{ success
           '   include it — check `asterisk -rx "module show like amr"` manually.');
       }
 
+      write('\n=== Verifying GSM-FR codec support (needed only if Cross-RAN Calling is enabled later) ===');
+      const codecGsmOk = await isCodecGsmLoadedPstn();
+      write(codecGsmOk
+        ? '✅ codec_gsm.so loaded and running.'
+        : '⚠️  codec_gsm.so did not load — Cross-RAN Calling to a 2G short code will not be available until it does.');
+
       write('\n✅ Asterisk installed. Run Configure next.');
       return { success: true, codecAmrLoaded: codecOk };
     } catch (err) {
@@ -465,7 +634,7 @@ export async function installPstn(write: (s: string) => void): Promise<{ success
 // asteriskIp explicitly rather than falling back to DEFAULT_ASTERISK_IP — a
 // re-Configure with defaults would silently reset a real per-deployment value.
 export async function configurePstn(
-  input: { asteriskIp: string },
+  input: { asteriskIp: string; echoTestNumber?: string },
   mongoUri: string,
 ): Promise<{ success: boolean; error?: string; message?: string; asteriskIp?: string }> {
   const asteriskIp = input.asteriskIp || DEFAULT_ASTERISK_IP;
@@ -475,14 +644,27 @@ export async function configurePstn(
         return { success: false, error: 'IMS is not configured yet — configure IMS first.' };
       }
 
+      const existing = readPstnState();
+      const echoTestNumber = input.echoTestNumber || existing?.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER;
+      const collision = await withExtensions(mongoUri, col => col.findOne({ extension: echoTestNumber })).catch(() => null);
+      if (collision) {
+        return { success: false, error: `Echo test number ${echoTestNumber} collides with an assigned subscriber extension — pick a different one.` };
+      }
+
       // Idempotent — matches the loopback-alias convention already used for
       // every other IMS component (I-CSCF/S-CSCF each have their own).
       await nsenter('ip', ['addr', 'add', `${asteriskIp}/8`, 'dev', 'lo']).catch(() => {});
 
       ensureIncludes();
-      fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(asteriskIp, imsState.config.icscfIp, imsState.config.icscfPort, imsState.config.scscfIp, imsState.config.pcscfIp), 'utf-8');
+      // Preserve the existing Cross-RAN Calling wiring across a routine
+      // Configure call — this rewrites pjsip_pstn.conf wholesale, so without
+      // re-deriving this, an unrelated re-Configure would silently drop the
+      // asterisk2g_trunk peer even though crossRanEnabled itself is
+      // untouched by this function. See CLAUDE.md's Cross-RAN Calling entry.
+      const crossRanPeer = existing?.crossRanEnabled ? getAsterisk2gBindAddress() : null;
+      fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(asteriskIp, imsState.config.icscfIp, imsState.config.icscfPort, imsState.config.scscfIp, imsState.config.pcscfIp, crossRanPeer), 'utf-8');
       await ensureStrictRtpDisabled();
-      await regenerateDialplan(mongoUri);
+      await regenerateDialplan(mongoUri, echoTestNumber);
 
       await nsenter('systemctl', ['enable', '--now', 'asterisk']);
       await nsenter('asterisk', ['-rx', 'module reload res_pjsip.so']).catch(() => {});
@@ -490,12 +672,116 @@ export async function configurePstn(
       await ensureNativeRtpBridgeSuspended();
       await writeDispatcherEntry(asteriskIp);
 
-      writePstnState({ asteriskIp, configuredWithVersion: getAppVersion() });
+      writePstnState({ asteriskIp, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, configuredWithVersion: getAppVersion() });
 
       return { success: true, message: 'Asterisk configured and wired into S-CSCF\'s dispatcher.', asteriskIp };
     } catch (err) {
       return { success: false, error: String(err) };
     }
+}
+
+// ── Cross-RAN Calling (4G/5G <-> 2G short-code bridging) ────────────────────
+//
+// One-time full sweep at enable time — catches any collision predating the
+// toggle (unlike the gated per-add guard in each POST /extensions handler,
+// which only prevents NEW collisions once cross-RAN is already live; the two
+// checks are complementary, neither is redundant with the other).
+async function findCrossRanCollisions(mongoUri: string): Promise<string[]> {
+  const [pstnExtensions, gsm2gCodes] = await Promise.all([
+    withExtensions(mongoUri, col => col.find({}).toArray()),
+    listGsm2gShortCodesForCrossRan(mongoUri),
+  ]);
+  const gsm2gSet = new Set(gsm2gCodes.map(c => c.extension));
+  const pstnEcho = readPstnState()?.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER;
+  const gsm2gEcho = getAsterisk2gEchoTestNumber();
+  const collisions = new Set<string>();
+  for (const e of pstnExtensions) {
+    if (gsm2gSet.has(e.extension)) collisions.add(e.extension);
+    if (e.extension === gsm2gEcho) collisions.add(e.extension);
+  }
+  if (gsm2gSet.has(pstnEcho)) collisions.add(pstnEcho);
+  return [...collisions];
+}
+
+// Sole orchestrator for the Cross-RAN Calling toggle — lives here (not in
+// asterisk-2g-controller.ts) because the Extensions-tab button that drives
+// it lives on the Voice Gateway page, whose primary API is pstnApi. Always
+// configures PSTN's own half directly, then delegates Asterisk-2G's own half
+// to setCrossRanPeer() via the pre-existing safe static import direction
+// (see isAsterisk2gInstalled()'s own comment in asterisk-2g-controller.ts) —
+// never the reverse. Deliberately never calls systemctl — both instances
+// must already be installed+configured (and therefore already running)
+// before this can be called; only live module/dialplan reloads, matching
+// this function's own configurePstn()'s "never a full restart" convention.
+//
+// No rollback on a partial failure, by design: both dialplans are
+// exact-match-only (this file has no catch-all at all; Asterisk-2G's _X.
+// pattern always loses to an exact match in the same context regardless of
+// declaration order), so a half-applied state just means a call fails to
+// route on one side — it can never misroute or corrupt an in-progress call.
+// Surfacing the specific inconsistency (rather than silently reverting) lets
+// an operator retry the same action to converge, instead of hiding a
+// half-wired trunk behind a UI that falsely claims "disabled".
+export async function setCrossRanCalling(
+  enabled: boolean,
+  mongoUri: string,
+  subscriberRepo: ISubscriberRepository,
+): Promise<{ success: boolean; error?: string; collisions?: string[] }> {
+  try {
+    const existing = readPstnState();
+    if (!existing) {
+      return { success: false, error: 'PSTN Gateway is not configured yet — configure it first.' };
+    }
+    if (!isAsterisk2gInstalled()) {
+      return { success: false, error: 'Asterisk-2G is not installed yet — install and configure it on the GSM page\'s 2G Voice tab first.' };
+    }
+
+    if (enabled) {
+      const collisions = await findCrossRanCollisions(mongoUri);
+      if (collisions.length > 0) {
+        return {
+          success: false,
+          error: `${collisions.length} short code(s) are assigned on both sides — resolve these before enabling Cross-RAN Calling: ${collisions.join(', ')}`,
+          collisions,
+        };
+      }
+      if (!(await isCodecGsmLoadedPstn())) {
+        return { success: false, error: 'codec_gsm.so is not loaded on this instance — required for Cross-RAN Calling\'s transcoding. Check `module show like codec_gsm`.' };
+      }
+    }
+
+    const asterisk2gPeer = enabled ? getAsterisk2gBindAddress() : null;
+    if (enabled && !asterisk2gPeer) {
+      return { success: false, error: 'Asterisk-2G is not configured yet — configure it first.' };
+    }
+
+    const imsState = readImsState();
+    if (!imsState) {
+      return { success: false, error: 'IMS is not configured — cannot regenerate the dialplan.' };
+    }
+
+    // Written BEFORE the regen below so regenerateDialplan()'s own
+    // getCrossRanPeerCodes() (which reads this same state) picks up the new
+    // value immediately.
+    writePstnState({ ...existing, crossRanEnabled: enabled });
+
+    fs.writeFileSync(HOST_PJSIP_INC, pjsipPstnConf(existing.asteriskIp, imsState.config.icscfIp, imsState.config.icscfPort, imsState.config.scscfIp, imsState.config.pcscfIp, asterisk2gPeer), 'utf-8');
+    await regenerateDialplan(mongoUri, existing.echoTestNumber);
+    await nsenter('asterisk', ['-rx', 'module reload res_pjsip.so']).catch(() => {});
+
+    const peerResult = await setCrossRanPeer(enabled, mongoUri, subscriberRepo);
+    if (!peerResult.success) {
+      return {
+        success: false,
+        error: `PSTN side ${enabled ? 'enabled' : 'disabled'} but Asterisk-2G side failed: ${peerResult.error} — ` +
+          `Cross-RAN Calling is now in an inconsistent state; retry ${enabled ? 'enabling' : 'disabling'} to converge.`,
+      };
+    }
+
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
 }
 
 export interface PstnStalenessResult {
@@ -545,11 +831,13 @@ export function createPstnRouter(
         r.status === 'fulfilled' && r.value.stdout.trim() === 'active';
 
       let codecAmrLoaded = false;
+      let codecGsmLoaded = false;
       if (installed) {
         try {
           const { stdout } = await nsenter('asterisk', ['-rx', 'module show like codec_amr']);
           codecAmrLoaded = /Running/.test(stdout);
         } catch { /* asterisk not running yet */ }
+        codecGsmLoaded = await isCodecGsmLoadedPstn();
       }
 
       const state = readPstnState();
@@ -574,12 +862,16 @@ export function createPstnRouter(
         installed,
         services: { asterisk: svcActive(asteriskRes), 'kamailio-scscf': svcActive(scscfRes) },
         codecAmrLoaded,
+        codecGsmLoaded,
+        crossRanEnabled: !!state?.crossRanEnabled,
         imsInstalled: await isImsInstalled(),
         imsConfigured: !!imsState,
         hasSavedConfig: !!state,
         dispatcherWired,
         pstnEnabled: dispatcherWired,
-        currentConfig: state ?? { asteriskIp: DEFAULT_ASTERISK_IP },
+        currentConfig: state
+          ? { ...state, echoTestNumber: state.echoTestNumber ?? DEFAULT_ECHO_TEST_NUMBER }
+          : { asteriskIp: DEFAULT_ASTERISK_IP, echoTestNumber: DEFAULT_ECHO_TEST_NUMBER },
         extensionCount: extensions.length,
         appVersion,
         configuredWithVersion: state?.configuredWithVersion,
@@ -610,11 +902,12 @@ export function createPstnRouter(
     res.end();
   });
 
-  // POST /api/pstn/configure — body: { asteriskIp? }
+  // POST /api/pstn/configure — body: { asteriskIp?, echoTestNumber? }
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     const asteriskIp = (req.body.asteriskIp as string) || DEFAULT_ASTERISK_IP;
-    const result = await configurePstn({ asteriskIp }, mongoUri);
+    const echoTestNumber = req.body.echoTestNumber as string | undefined;
+    const result = await configurePstn({ asteriskIp, echoTestNumber }, mongoUri);
     if (!result.success) {
       await auditLogger.log({ action: 'pstn_configure', user, details: result.error ?? 'failed', success: false });
       return res.status(400).json({ success: false, error: result.error });
@@ -655,6 +948,21 @@ export function createPstnRouter(
     const extension = normalizeExtension(rawExtension);
     if (!subscriberImsi || !/^\d{6,15}$/.test(subscriberImsi)) {
       return res.status(400).json({ success: false, error: 'subscriberImsi is required' });
+    }
+    const echoTestNumber = readPstnState()?.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER;
+    if (extension === echoTestNumber) {
+      return res.status(400).json({ success: false, error: `${extension} is reserved for the echo test — pick a different extension, or change the echo test number on the Asterisk page first.` });
+    }
+    // Cross-RAN Calling makes both sides' short codes reachable from either
+    // instance, so a number can't mean two different subscribers at once —
+    // gated on crossRanEnabled (not unconditional) so two unrelated,
+    // never-to-be-bridged deployments can still reuse the same extension
+    // freely on each side. See CLAUDE.md's Cross-RAN Calling entry.
+    if (readPstnState()?.crossRanEnabled) {
+      const peerCodes = await getCrossRanPeerCodes(mongoUri);
+      if (peerCodes.some(c => c.extension === extension) || extension === getAsterisk2gEchoTestNumber()) {
+        return res.status(409).json({ success: false, error: `${extension} collides with an existing 2G short code or its echo-test number — Cross-RAN Calling is enabled, so short codes must stay unique across both sides.` });
+      }
     }
     try {
       const subscriber = await subscriberRepo.findByImsi(subscriberImsi);
@@ -725,6 +1033,50 @@ export function createPstnRouter(
     }
   });
 
+  // ─── Config file editor (mirrors gsm-controller.ts's /configs endpoints) ──
+  router.get('/configs', async (_req: Request, res: Response) => {
+    const files: PstnConfigFile[] = PSTN_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
+    res.json({ success: true, files });
+  });
+
+  router.get('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+    const path = req.query.path as string;
+    if (!PSTN_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
+    try {
+      const content = fs.existsSync(path) ? fs.readFileSync(path, 'utf-8') : '';
+      res.json({ success: true, content });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { path, content } = req.body as { path: string; content: string };
+    if (!PSTN_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
+    try {
+      fs.mkdirSync(HOST_ASTERISK_DIR, { recursive: true });
+      fs.writeFileSync(path, content, 'utf-8');
+      await auditLogger.log({ action: 'pstn_config_save', user, details: path, success: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const services = (req.body.services as string[]) || [];
+    try {
+      for (const svc of services) await nsenter('systemctl', ['restart', svc]);
+      if (services.includes('asterisk')) await ensureNativeRtpBridgeSuspended();
+      await auditLogger.log({ action: 'pstn_config_restart', user, details: services.join(','), success: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
   // POST /api/pstn/disable — remove the dispatcher entry (S-CSCF stops routing
   // PSTN-bound calls to Asterisk) without uninstalling Asterisk itself.
   router.post('/disable', requireAdmin, async (req: Request, res: Response) => {
@@ -754,6 +1106,27 @@ export function createPstnRouter(
     }
   });
 
+  // POST /api/pstn/cross-ran/enable, /disable — the Voice Gateway page's
+  // Extensions-tab "Enable Cross-RAN Calling" toggle. Deliberately separate
+  // paths from /enable and /disable above — those already mean the
+  // pstnEnabled/dispatcher-wiring toggle, an unrelated concern on the same
+  // page. See setCrossRanCalling() for the full orchestration.
+  router.post('/cross-ran/enable', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const result = await setCrossRanCalling(true, mongoUri, subscriberRepo);
+    await auditLogger.log({ action: 'pstn_cross_ran_enable', user, details: result.error ?? 'enabled', success: result.success });
+    if (!result.success) return res.status(400).json({ success: false, error: result.error, collisions: result.collisions });
+    res.json({ success: true });
+  });
+
+  router.post('/cross-ran/disable', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const result = await setCrossRanCalling(false, mongoUri, subscriberRepo);
+    await auditLogger.log({ action: 'pstn_cross_ran_disable', user, details: result.error ?? 'disabled', success: result.success });
+    if (!result.success) return res.status(400).json({ success: false, error: result.error });
+    res.json({ success: true });
+  });
+
   // POST /api/pstn/uninstall
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
@@ -765,7 +1138,12 @@ export function createPstnRouter(
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
 
     try {
-      write('=== Removing S-CSCF dispatcher entry ===');
+      if (readPstnState()?.crossRanEnabled) {
+        write('=== Tearing down Cross-RAN Calling peer on Asterisk-2G (best-effort) ===');
+        await setCrossRanPeer(false, mongoUri, subscriberRepo).catch(() => {});
+      }
+
+      write('\n=== Removing S-CSCF dispatcher entry ===');
       await clearDispatcherEntry().catch(() => {});
       write('Dispatcher cleared, S-CSCF dispatcher reloaded (no restart — live registrations untouched).');
 

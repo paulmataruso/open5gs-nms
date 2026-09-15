@@ -999,6 +999,124 @@ before this existed.
 
 ---
 
+## 3G UMTS (OsmoHNBGW)
+
+> **Alpha.** Home NodeB Gateway — bridges a 3G femtocell's Iuh interface to
+> the existing 2G-era osmo-msc (IuCS, voice/SMS) and osmo-sgsn (IuPS, data)
+> over the already-running osmo-stp. `ENABLE_HNBGW_MODULE` defaults
+> **disabled** (opt-in), same posture as the 2G module.
+
+### What It Does
+
+```
+UE (3G phone) --Uu--> HNB --Iuh(HNBAP/RUA)--> OsmoHNBGW --Iu-CS/Iu-PS(SCCP/M3UA)--> OsmoSTP
+                                                   |                                    |
+                                               MGCP (own dedicated MGW)          routes by point-code
+                                                                                to osmo-msc (IuCS) /
+                                                                                osmo-sgsn (IuPS)
+```
+
+`osmo-hnbgw` is not an apt package on this host (Ubuntu's `universe` repo only
+has the supporting libraries — `libosmo-hnbap`/`libosmo-ranap`/`libosmo-rua`/
+`libosmo-sabp`/`libosmo-sigtran`) — it's built from source, same situation
+`osmo-sip-connector-build.ts` already solved for 2G voice. **Tag `1.3.0`**,
+not `1.9.0` — osmo-hnbgw's own version numbering is independent of the rest
+of this host's Osmocom stack, and `1.9.0` needs a newer `libosmocore` than
+what's installed; confirmed live by checking every tag's `configure.ac`
+dependency floor back to `1.2.0` and then actually building `1.3.0` from
+scratch (clean, zero errors, correct `--version` output).
+
+**No changes needed on the existing 2G-era daemons' SIGTRAN side.** This
+host's `osmo-stp.cfg` already has dynamic ASP registration enabled
+(`accept-asp-connections dynamic-permitted`), and `osmo-msc.cfg`'s existing
+SCCP/M3UA link (the same one A-interface traffic already uses) carries IuCS
+too by default. Both confirmed **live**, not just from documentation: a real
+`osmo-hnbgw` process registered a new ASP with the real STP (`AS Inactive` →
+`AS Active`, no `osmo-stp.cfg` edits), and MSC's own `journalctl` showed
+`Rx DAVA() for 0.23.5/0` — its M3UA stack seeing the new point-code become
+reachable, with zero `osmo-msc.cfg` edits and no disruption to its real
+A-interface traffic.
+
+**`osmo-sgsn.cfg` does need new content** — a `cs7 instance`/point-code block
+for IuPS, since that file has no SIGTRAN config at all today (2G's GPRS/EDGE
+only ever needed Gb). Added via ownership-merge (`vty-config-ownership.ts`'s
+`upsertVtyDirectives()`), never a blind overwrite — and as a prerequisite,
+`gsm-controller.ts`'s own `osmo-sgsn.cfg` writer was converted from a full-
+template regenerate to the same ownership-merge pattern first, so a 2G-side
+GPRS/EDGE reconfigure can never silently wipe this module's IuPS block.
+Verified with a real round-trip test against the live file before either
+change shipped.
+
+A **third, fully isolated OsmoMGW instance** (own config, own systemd unit,
+own loopback `127.0.1.8`) handles this module's RTP relay — same "give each
+purpose its own instance" precedent as Asterisk-2G, reusing the
+already-installed `osmo-mgw` binary rather than sharing the 2G-era instance.
+
+**No new subscriber provisioning.** OsmoHLR's `auc_3g` table — already
+populated by the 2G module's "Enable 2G/3G Auth" subscriber checkbox
+(`gsmEnabled`, via `sms-controller.ts`'s `sync-subscribers`) — serves both 2G
+and full 3G UMTS AKA from the exact same MILENAGE k/opc row, confirmed via
+OsmoHLR's own manual. 3G deliberately reuses this flag rather than adding a
+parallel one, to avoid two code paths racing the same database write.
+
+**OsmoHNodeB — a software test HNB**, direct parallel to the 2G module's
+virtual BTS. Also source-built (tag `0.1.0`, same version-floor-then-real-
+build verification as HNBGW), deployable from the "Virtual HNB" tab. Needs
+its own dedicated GTP-U bind (`127.0.1.9`) — its default (`0.0.0.0`, the
+fixed 3GPP port 2152) collides fatally with Open5GS's own UPF on this host,
+found live (the daemon exits outright rather than degrading gracefully).
+With that fixed, a real end-to-end test — both real binaries, both real
+configs — produced a complete HNBAP registration confirmed from both sides
+(`Iuh connected to HNBGW` / `Accepting HNB-REGISTER-REQ`) and a correctly
+populated `show hnb all`, all before the real hardware was ever touched.
+
+**Real hardware target: an ip.access nano3G** (same vendor family as this
+project's existing 2G nanoBTS). Unlike 2G's Abis/OML model, **Iuh/HNBAP has
+no remote-provisioning push** — there's no equivalent of `ipaccess-config
+-o` to repoint a unit at this gateway. A real HNB is pointed at OsmoHNBGW's
+Iuh IP:port via its own local/web config (out of band from this NMS), then
+self-registers. The RAN page's "3G UMTS" section and the module's own
+"Virtual HNB" tab both just read/display whatever OsmoHNBGW's own `show hnb
+all` reports — a passive list, not an active discover-then-push flow like
+2G's BTS tab. **Real RANAP-level call/attach signaling has not yet been
+exercised** — only HNBAP registration; that's the next thing to prove, with
+either the virtual HNB or the real nano3G.
+
+### Components
+
+- **Backend**: `hnbgw-controller.ts` — install/configure/status/start/stop/
+  restart/uninstall lifecycle, the dedicated MGW instance, the virtual-HNB
+  deploy/remove endpoints, config file viewer. `osmo-hnbgw-build.ts` /
+  `osmo-hnodeb-build.ts` — source builds, same pattern as
+  `osmo-sip-connector-build.ts`. `gsm-controller.ts`'s `osmo-sgsn.cfg` writer
+  (ownership-merge, shared with this module's own IuPS directive).
+- **Frontend**: `HnbPage.tsx` — Setup / Virtual HNB / Config Files tabs,
+  following this project's standard centered-pill-tab layout. RAN page's
+  "3G UMTS" section (`Umts3GSection`) — deliberately lighter-weight than the
+  2G section (no per-UE data source exists yet on the backend, so it shows
+  registered HNBs only, not a per-radio UE breakdown).
+
+### Real bugs found and fixed getting this far
+
+- **`plmn <mcc> <mnc>` doesn't exist in tag `1.3.0`'s `hnbgw` VTY node at
+  all** — copied from the official manual's own example config, which turned
+  out to be from a newer osmo-hnbgw release. A config with it fails to parse
+  outright and the daemon refuses to start ("There is no such command").
+  Confirmed via the real binary's own `--vty-ref-xml`; fixed by removing it
+  (PLMN appears to come from the HNB's own HNBAP registration in this
+  version instead) — found via a real live-start test, not by inspection.
+- **Same version-mismatch class, same fix method**: the MGW client directive
+  shape was also wrong — `1.3.0` uses the older flat `mgcp` node
+  (`mgw remote-ip`/`mgw remote-port`/`mgw reset-endpoint NAME`), not the
+  newer numbered `mgw <n>` sub-node the manual shows. The manual's own text
+  even warns this changed in a later version.
+- **OsmoHNodeB's GTP-U bind collides fatally with Open5GS's own UPF** — both
+  default to `0.0.0.0:2152` (fixed port); osmo-hnodeb treats the bind
+  failure as fatal and exits, so the virtual HNB could never even reach the
+  Iuh-connect step. Fixed with a dedicated `gtp / local-ip 127.0.1.9`.
+
+---
+
 ## PSTN Gateway
 
 > **Beta.** This module has **no public SIP trunk connectivity** — no provider

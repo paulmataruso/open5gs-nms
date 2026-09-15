@@ -4,6 +4,83 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.60] - 2026-09-15
+
+### Added — Cross-RAN Calling: bridge 4G/5G and 2G short codes across both Asterisk instances
+
+- One toggle ("Enable Cross-RAN Calling", Voice Gateway page → Extensions tab) peers
+  the PSTN Gateway's Asterisk instance with Asterisk-2G's own instance via a new
+  inter-Asterisk PJSIP trunk in each direction, with real AMR/AMR-WB ↔ GSM-FR
+  transcoding — the first time this project transcodes real call audio rather than
+  just relaying it. Dialplan entries on each side *forward, not resolve* — dialing
+  the other side's short code re-enters that side's own dialplan at the identical
+  digit string, where its own existing per-mapping `Dial()` logic completes the call
+  unchanged, so neither side needs to know the other's subscriber mapping.
+- Codec order is deliberately different per leg (each endpoint lists its own
+  downstream destination's native codec first) to bias negotiation toward exactly
+  one transcode hop per call instead of risking two; both new trunk endpoints carry
+  the same `rtp_keepalive`/B2BUA hardening settings as the existing trunks, applied
+  proactively this time rather than needing another live-debug cycle to rediscover
+  the same class of bug.
+- A one-time collision sweep runs at enable time across both short-code registries;
+  a cheaper, `crossRanEnabled`-gated version of the same check also runs on every
+  new single-side short-code add, so two deployments that never intend to bridge
+  can still freely reuse the same codes.
+- Confirmed live with real over-the-air calls in both directions, full bidirectional
+  audio verified via packet capture (not just clean signaling).
+
+### Fixed — real 2G TCH-assignment failures were a config bug, not hardware
+
+- Real GSM calls (both native 2G↔2G and the new Cross-RAN path) were failing 100%
+  of the time with `osmo-bsc`'s `Assignment Failure`/`Received NACK on IPACC CRCX`,
+  previously believed to be an inherent real-hardware RF reliability issue. Root
+  cause: `osmo-bsc.cfg` declared `codec-support fr` (GSM-FR only) while `amr-config`
+  still permitted an AMR rate — an internally inconsistent pair — even though the
+  real nanoBTS's own live OML Feature Vector explicitly reports it supports AMR.
+  Fixed to `codec-support fr amr`, matching the BTS's real reported capability.
+- Fix validated live via VTY before touching any config file (the setting applies
+  only to newly-created lchans, so this needed no service restart), then confirmed
+  end-to-end with a real BTS power-cycle and fresh packet-captured test calls.
+
+### Added — Voice Gateway: 2G Short Codes, PSTN Gateway renamed and merged with Asterisk-2G
+
+- The PSTN Gateway page is now "Voice Gateway" and covers both Asterisk instances
+  from one page — status, Extensions (now split into "4G/5G Short Codes" and "2G
+  Short Codes" sections, matching visual treatment), and a merged Config Files tab.
+- 2G Short Codes: assign a short code to a 2G-enabled subscriber so other 2G phones
+  can dial them without the full MSISDN, mirroring the existing 4G/5G extensions
+  feature.
+
+### Fixed — real PSTN Gateway / Asterisk-2G no-audio bug (`rtp_keepalive`)
+
+- Short-code calls had full audio in one direction and zero audio in the reverse
+  direction, reproduced identically on repeat. Root-caused via live packet capture
+  and Asterisk's own DEBUG-level logging across several real test calls: with
+  `rtp_symmetric=yes`, a leg's real send destination is learned only from its first
+  inbound packet rather than trusted from the SDP answer — a call whose very first
+  learn-then-transmit attempt loses a timing race has nothing to ever retry it, so
+  that leg stays permanently silent even though the bridge itself looks healthy.
+  Fixed with `rtp_keepalive=5` on both the PSTN Gateway's and Asterisk-2G's trunk
+  endpoints (applied proactively to Asterisk-2G before it ever hit the same bug).
+
+### Changed — app-wide page-header coherence pass
+
+- ~25 frontend pages brought in line with the established header convention (title/
+  subtitle block on the left, status badges + action buttons on the right, centered
+  pill-style tab bars where applicable) — no functional changes.
+
+### Added — 3G UMTS via OsmoHNBGW (alpha, opt-in, `ENABLE_HNBGW_MODULE`)
+
+- New module bridging a 3G femtocell's Iuh interface to the existing `osmo-msc`
+  (IuCS) and `osmo-sgsn` (IuPS) over the already-running `osmo-stp`, source-built
+  (not an apt package) against this host's actual installed Osmocom libraries.
+  Reuses the 2G module's own `gsmEnabled` subscriber flag (relabeled "2G/3G Auth")
+  and its `auc_3g` MILENAGE row rather than adding a parallel flag. Needs a real HNB
+  (e.g. an ip.access nano3G) or OsmoHNodeB (a software test HNB, deployable from the
+  module's own page) to actually attach anything — no real hardware validated yet.
+
+---
+
 ## [v2.0-beta_0.59] - 2026-09-13
 
 ### Added — Asterisk-2G: a second, fully isolated Asterisk instance for real 2G voice calling

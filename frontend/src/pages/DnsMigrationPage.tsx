@@ -300,8 +300,8 @@ export function DnsMigrationPage(): JSX.Element {
             Convert this core from hardcoded IP addressing to 3GPP FQDN/DNS-based NF discovery
           </p>
         </div>
-        <button onClick={handleLoadPlan} disabled={loadingPlan} className="nms-btn-ghost flex items-center gap-2 text-sm">
-          <RefreshCw className={clsx('w-4 h-4', loadingPlan && 'animate-spin')} /> {plan ? 'Reload Plan' : 'Load Migration Plan'}
+        <button onClick={handleLoadPlan} disabled={loadingPlan} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 shrink-0">
+          <RefreshCw className={clsx('w-3 h-3', loadingPlan && 'animate-spin')} /> {plan ? 'Reload Plan' : 'Load Migration Plan'}
         </button>
       </div>
 

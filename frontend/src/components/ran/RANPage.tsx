@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { FEATURES } from '../../config/features';
 import { gsmApi, type BtsEntry, type GsmSignalSample, type PdpContext } from '../../api/gsm';
+import { hnbgwApi, parseHnbList, type RegisteredHnb } from '../../api/hnbgw';
 import { Signal } from 'lucide-react';
 
 interface RANPageProps {
@@ -1733,14 +1734,90 @@ function Gsm2GSection({ btsEntries, services, samples, linkStatus, pdpContexts, 
   );
 }
 
-function SectionHeader({ label, color }: { label: string; color: '4G' | '5G' | '2G' }): JSX.Element {
+function SectionHeader({ label, color }: { label: string; color: '4G' | '5G' | '2G' | '3G' }): JSX.Element {
   const cls = color === '5G' ? 'bg-nms-accent/15 text-nms-accent'
     : color === '2G' ? 'bg-teal-500/15 text-teal-400'
+    : color === '3G' ? 'bg-indigo-500/15 text-indigo-400'
     : 'bg-purple-500/15 text-purple-400';
   return (
     <div className="flex items-center gap-3 mb-3">
       <span className={clsx('text-xs font-bold uppercase tracking-widest px-2.5 py-1 rounded', cls)}>{label}</span>
       <div className="flex-1 h-px bg-nms-border" />
+    </div>
+  );
+}
+
+// ── 3G / UMTS (OsmoHNBGW) ───────────────────────────────────────────────────
+// Deliberately lighter-weight than the 2G section above: OsmoHNBGW doesn't
+// (yet) expose any per-subscriber/per-CN-link RF or session data the way
+// osmo-bsc's meas-feed does for 2G, so there's no per-UE sub-list to show —
+// just what's actually there: which HNBs are registered (from HNBGW's own
+// `show hnb all`) and the Iu-CS/Iu-PS link's up/down state. Real UE-level
+// visibility here is future work once RANAP-level CN-link tracking exists
+// on the backend, not something to fake now.
+function useUmts3GData() {
+  const [hnbs, setHnbs] = useState<RegisteredHnb[]>([]);
+  const [servicesUp, setServicesUp] = useState(false);
+  const [installed, setInstalled] = useState(false);
+
+  useEffect(() => {
+    if (!FEATURES.hnbgw) return;
+    let cancelled = false;
+    const load = () => {
+      hnbgwApi.getStatus().then(s => {
+        if (cancelled) return;
+        setInstalled(s.installedOnDisk);
+        setServicesUp(!!s.services?.['osmo-hnbgw']);
+        setHnbs(parseHnbList(s.hnbListRaw || ''));
+      }).catch(() => {});
+    };
+    load();
+    const t = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, []);
+
+  return { hnbs, servicesUp, installed };
+}
+
+function Umts3GSection({ hnbs, servicesUp, installed }: { hnbs: RegisteredHnb[]; servicesUp: boolean; installed: boolean }): JSX.Element {
+  return (
+    <div>
+      <SectionHeader label="3G UMTS" color="3G" />
+      <div className="nms-card">
+        <div className="flex items-center gap-3 mb-4">
+          <div className={clsx('p-2 rounded-lg', servicesUp ? 'bg-indigo-500/10' : 'bg-nms-surface-2')}>
+            <Radio className={clsx('w-5 h-5', servicesUp ? 'text-indigo-400' : 'text-nms-text-dim')} />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold font-display text-nms-text">Iu interface</h2>
+            <p className="text-xs text-nms-text-dim">Iu-CS/Iu-PS (OsmoHNBGW ↔ osmo-msc/osmo-sgsn via osmo-stp)</p>
+          </div>
+          <div className="ml-auto flex items-center gap-2">
+            <span className={clsx('text-xs font-mono px-2 py-0.5 rounded-full border flex items-center gap-1',
+              servicesUp ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
+              <span className={clsx('w-1.5 h-1.5 rounded-full', servicesUp ? 'bg-green-400 animate-pulse' : 'bg-red-500')} />
+              {servicesUp ? 'Up' : 'Down'}
+            </span>
+          </div>
+        </div>
+        {!installed ? (
+          <p className="text-sm text-nms-text-dim py-6 text-center">Not installed — set it up on the 3G UMTS page.</p>
+        ) : hnbs.length === 0 ? (
+          <p className="text-sm text-nms-text-dim py-6 text-center">No HNB registered yet.</p>
+        ) : (
+          <div className="border border-nms-border rounded-md overflow-hidden divide-y divide-nms-border">
+            {hnbs.map(h => (
+              <div key={h.identity + h.remoteAddr} className="flex items-center justify-between px-3 py-2 bg-nms-surface-2/20">
+                <div>
+                  <span className="text-sm font-mono font-semibold text-nms-text">{h.identity}</span>
+                  <span className="text-xs text-nms-text-dim ml-2">{h.remoteAddr}</span>
+                </div>
+                <span className="text-xs font-mono text-nms-text-dim">MCC {h.mcc} MNC {h.mnc} LAC {h.lac} CID {h.cid}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1911,6 +1988,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const activeUEs4G = (interfaceStatus?.activeUEs4G || []) as ActiveUE[];
   const activeUEs5G = (interfaceStatus?.activeUEs5G || []) as ActiveUE[];
   const gsm2g = useGsm2GData();
+  const umts3g = useUmts3GData();
 
   // 2G BTS admin-lock — a real osmo-bsc OML command to the radio itself (see
   // Gsm2GBlockButton's comment), so it gets the same confirm-modal gating as
@@ -2002,10 +2080,10 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       )}
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold font-display text-nms-text mb-1">RAN Network</h1>
-          <p className="text-sm text-nms-text-dim">Radio Access Network — interface status, connected radios, and active UE sessions</p>
+          <h1 className="text-2xl font-semibold font-display text-nms-text">RAN Network</h1>
+          <p className="text-sm text-nms-text-dim mt-1">Radio Access Network — interface status, connected radios, and active UE sessions</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {/* Radio list layout — applies to every S1-MME/S1-U/N2/N3 radio list below. */}
@@ -2071,6 +2149,10 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       {FEATURES.gsm && (
         <Gsm2GSection btsEntries={gsm2g.btsEntries} services={gsm2g.services} samples={gsm2g.samples} linkStatus={gsm2g.linkStatus} pdpContexts={gsm2g.pdpContexts} layout={radioLayout} onNavigateToSubscriber={onNavigateToSubscriber}
           isAdmin={isAdmin} onRequestBlock={setPendingBlockBts} onUnblock={handleUnblockBts} />
+      )}
+
+      {FEATURES.hnbgw && (
+        <Umts3GSection hnbs={umts3g.hnbs} servicesUp={umts3g.servicesUp} installed={umts3g.installed} />
       )}
 
       {/* All Sessions */}

@@ -25,7 +25,10 @@ const SERVICES_OSMO_SGS = ['osmo-stp', 'osmo-hlr', 'osmo-msc'];
 // osmo-hlr/osmo-msc/osmo-stp are shared with the SMS-over-SGs module — these
 // are the 2G GSM module's own daemons, layered on top (see gsm-controller.ts).
 const SERVICES_OSMO_GSM = ['osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db', 'osmo-sip-connector'];
-const SERVICES_OSMO   = [...SERVICES_OSMO_SGS, ...SERVICES_OSMO_GSM];
+// 3G UMTS module (OsmoHNBGW) — its own dedicated MGW instance, never the
+// 2G-era one above (see hnbgw-controller.ts's own module comment).
+const SERVICES_OSMO_HNBGW = ['osmo-hnbgw', 'osmo-mgw-hnbgw'];
+const SERVICES_OSMO   = [...SERVICES_OSMO_SGS, ...SERVICES_OSMO_GSM, ...SERVICES_OSMO_HNBGW];
 
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || bytes === 0) return '—';
@@ -60,6 +63,7 @@ function formatUptime(timestamp: string | null | undefined): string {
 function serviceManageTarget(name: string): { label: string; target: string } {
   if (SERVICES_OSMO_SGS.includes(name)) return { label: 'SMS', target: 'sms' };
   if (SERVICES_OSMO_GSM.includes(name)) return { label: '2G GSM', target: 'gsm' };
+  if (SERVICES_OSMO_HNBGW.includes(name)) return { label: '3G UMTS', target: 'hnbgw' };
   if (name === 'mongodb') return { label: 'Backup', target: 'backup' };
   return { label: 'Config', target: 'config' };
 }
@@ -486,14 +490,14 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
         <SpeedTestServerModal onClose={() => { setShowSpeedtestModal(false); fetchSpeedtest(); }} />
       )}
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display">Services</h1>
           <p className="text-sm text-nms-text-dim mt-1">
             Manage Open5GS network function services
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 shrink-0">
           {/* 5G group toggle */}
           <button
             onClick={() => doGroupToggle('5g')}

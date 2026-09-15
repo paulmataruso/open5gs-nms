@@ -1940,7 +1940,7 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
               />
             </div>
           </div>
-          {FEATURES.gsm && (
+          {(FEATURES.gsm || FEATURES.hnbgw) && (
             <label className="flex items-center gap-2 mt-4 cursor-pointer">
               <input
                 type="checkbox"
@@ -1948,7 +1948,14 @@ function SubForm({ sub, onSave, onCancel, isNew }: {
                 onChange={e => setForm({ ...form, gsmEnabled: e.target.checked } as any)}
                 className="w-4 h-4 accent-nms-accent shrink-0"
               />
-              <span className="text-sm text-nms-text">Enable 2G/GSM (sync K/OPc into OsmoHLR)</span>
+              {/* One flag, one auc_3g row — OsmoHLR's MILENAGE k/opc serves
+                  both 2G (GSM-AKA-compatible) and 3G (full UMTS AKA) from
+                  the same row, confirmed via OsmoHLR's own manual. A
+                  separate 3G-only flag would just race/duplicate this same
+                  write, so 3G reuses it rather than adding one. */}
+              <span className="text-sm text-nms-text">
+                Enable {FEATURES.gsm && FEATURES.hnbgw ? '2G/3G' : FEATURES.hnbgw ? '3G' : '2G'} Auth (sync K/OPc into OsmoHLR)
+              </span>
             </label>
           )}
         </div>
@@ -2785,12 +2792,12 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="shrink-0">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
           <h1 className="text-2xl font-semibold font-display">Subscribers</h1>
           <p className="text-sm text-nms-text-dim mt-1">{total} provisioned</p>
         </div>
-        <div className="flex gap-2 flex-wrap items-center">
+        <div className="flex gap-2 flex-wrap items-center shrink-0">
           {/* Export — available to all */}
           <button onClick={handleExport} className="nms-btn-ghost flex items-center gap-1.5" title="Export all subscribers to CSV">
             <Download className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">Export CSV</span>

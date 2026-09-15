@@ -222,6 +222,82 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     widening this gateway's own `local_ts` — Nokia's "Bypass" IPsec action isn't
     reliably usable for this, don't assume it is.
 
+16. **Cross-RAN Calling: when two sibling modules each need to read the
+    other's data, only ONE direction of the cross-module import can be
+    static — the other must be a lazy `await import()` at the call site, or
+    it's a real load-time circular dependency.** `pstn-controller.ts` (PSTN
+    Gateway's Asterisk) and `asterisk-2g-controller.ts` (Asterisk-2G) are two
+    independent B2BUA instances; Cross-RAN Calling peers them with a new
+    inter-Asterisk PJSIP trunk on each side (`[asterisk2g_trunk]` in
+    `pjsip_pstn.conf`, `[pstn_trunk]` in Asterisk-2G's `pjsip.conf`) plus
+    dialplan blocks on each side that **forward, not resolve** — dialing the
+    other side's short code re-enters that side's own dialplan at the exact
+    same digit string, where its own already-existing per-mapping `Dial()`
+    logic completes the call unchanged (neither side ever needs to know the
+    other's subscriber mapping). `pstn-controller.ts` already had a
+    pre-existing static `import { isAsterisk2gInstalled } from
+    './asterisk-2g-controller'` (a deliberate one-way dependency — see that
+    function's own comment) — extending that SAME direction with more named
+    exports (`setCrossRanPeer`, `listGsm2gShortCodesForCrossRan`,
+    `getAsterisk2gEchoTestNumber`, `getAsterisk2gBindAddress`) was safe. But
+    Cross-RAN Calling also needs the reverse (Asterisk-2G's own routine
+    single-side short-code regen, `regenerateExtensions2g()`, needs to know
+    whether to keep including PSTN's forwarding blocks — with no orchestrator
+    in that call path to push the data in as a parameter) — so that direction
+    uses `await import('./pstn-controller')` right at the two call sites that
+    need it (a private `getCrossRanPeerCodes()` helper, and the `/extensions`
+    collision guard), never a static top-level import. This mirrors the
+    pre-existing `setMscMnccMode` pattern (`sms-controller.ts`, consumed via
+    lazy import from both `asterisk-2g-controller.ts` and `gsm-controller.ts`)
+    — **static import for a genuinely one-directional relationship, lazy
+    `await import()` the moment a second file needs to import back**, in this
+    codebase specifically to avoid circular static imports between sibling
+    controllers. The toggle itself (`setCrossRanCalling()` in
+    `pstn-controller.ts` — the sole orchestrator, since the one-button UI
+    lives on the Voice Gateway page's Extensions tab, backed by `pstnApi`) is
+    deliberately **fail-closed with no rollback on partial failure**: both
+    dialplans are exact-match-only (PSTN's has no catch-all at all;
+    Asterisk-2G's `_X.` catch-all always loses to an exact match in the same
+    context regardless of declaration order), so a half-applied state — one
+    side wired, the other not — just means a call fails to route on one leg;
+    it can never misroute or corrupt an in-progress call, so surfacing the
+    specific inconsistency and letting the operator retry is safer than
+    silently reverting a flag that would then lie about a still-half-wired
+    trunk. A one-time collision sweep runs at enable time across both short-
+    code registries (`pstn_extensions`/`gsm2g_extensions` Mongo collections)
+    and each side's echo-test number; a matching, cheaper guard is gated on
+    `crossRanEnabled` (not unconditional) inside each side's own
+    `POST /extensions` handler, so two operators running both modules with no
+    intention of ever bridging them can still reuse the same short code
+    freely on each side. Real transcoding requirement (first time this
+    project transcodes real call audio, not just relays it): the new trunk
+    endpoints allow both codec families (`gsm,amrwb,amr` on PSTN's side,
+    `amrwb,amr,gsm` on Asterisk-2G's side — codec ORDER matters, each lists
+    its own downstream leg's native codec first to bias negotiation toward
+    exactly one transcode hop instead of risking two), `direct_media=no` is a
+    hard functional requirement here (not just inherited B2BUA hardening
+    habit — Asterisk must stay in the RTP path on both legs for transcoding
+    to happen at all), and both new endpoints carry `rtp_keepalive=5` from
+    day one (the no-audio bug fixed live 2026-09-14, see the PSTN/Asterisk-2G
+    entries above — this risk is generic to any `rtp_symmetric`-dependent
+    B2BUA leg, so it's applied proactively here rather than waiting to
+    rediscover it). Confirmed live 2026-09-14: enable/disable cycle produces
+    working PJSIP endpoints and dialplan routing on both instances with zero
+    impact on the pre-existing `scscf_trunk`/`sipconn` trunks, and the
+    collision sweep correctly rejects a deliberately-colliding test code
+    before writing anything. **Real over-the-air calls confirmed working
+    2026-09-15, both directions, full bidirectional audio (packet-verified)**
+    — getting there also surfaced and fixed a real, separate `osmo-bsc.cfg`
+    bug unrelated to this feature's own code: `codec-support fr` was
+    under-declaring the real nanoBTS's own AMR capability (it genuinely
+    supports AMR per its own live OML Feature Vector), which had been
+    misdiagnosed the day before as an unfixable hardware RF reliability
+    issue. Fixed to `codec-support fr amr` in `gsm-controller.ts`'s
+    `btsBlock()`. See memory: `gsm_2g_osmocom_module_progress.md` for the
+    full arc — if a 2G TCH-assignment failure ever resurfaces, check
+    `show bts 0`'s live `Features:` list against `codec-support`/
+    `amr-config` before assuming it's hardware again.
+
 ## Feature inventory (as of v2.0-beta_0.48, 2026-08-16)
 
 | Feature | Status | Key backend files | Key frontend files |
@@ -233,7 +309,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | IMS / VoLTE (PyHSS-based) | beta — real UE-to-UE calling with full audio confirmed working end-to-end over **direct IMS** on real iPhone hardware, PLMN 001-01 (2026-07-26), incl. dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface. **iPhone-only** — Android as callee (both direct IMS and via PSTN Gateway) currently fails; root cause not yet found (2026-07-29) | `ims-controller.ts` | `IMSPage.tsx` |
 | SMS | stable — **SMS over IMS is the default/primary path** (real phones prefer it whenever IMS-registered anyway; this is also the confirmed-working baseline). SMS over SGs (osmo-\*) is available as an opt-in, experimental alternative via a "SMS Delivery Mode" toggle on the SMS/MMS page (`POST /api/ims/sms-delivery-mode`) — selecting it hard-blocks SIP MESSAGE at S-CSCF (`#!ifdef BLOCK_IMS_SMS` in `kamailio_scscf.cfg`) so it can't silently fall through to peer-to-peer IMS delivery instead. Real two-UE SGs delivery has an open, unresolved bug (P-CSCF `ims_ipsec_pcscf` failing to relay a locally-generated reply back through the IPsec tunnel — see memory: sms-over-ims-vs-sgs-delivery-mode) — don't enable SGs mode without reading that first. Both `sms-controller.ts` and `ims-controller.ts` are involved; `configureIms()`/`/status` both default fresh deployments to `'ims'`. | `sms-controller.ts`, `ims-controller.ts` | `SMSPage.tsx` |
 | MMS (VectorCore MMSC) | beta — real end-to-end MMS confirmed working on a real UE (2026-07-30), after fixing two real bugs: VectorCore logs its whole MM1 request path at Debug while shipping configured at Info (looked exactly like requests weren't reaching the app at all — set to `debug`), and real phones send MMS PDUs with no usable `From` field, which VectorCore expects a GGSN/PGW-style `X-MSISDN` HTTP header to supply. Fixed with a small compiled-Go reverse proxy (`mm1-msisdn-proxy.go`, its own `vectorcore-mm1-proxy` systemd unit, built during every Configure from the same already-guaranteed Go toolchain — deliberately not Node, which isn't a documented prerequisite anywhere in this project) sitting in front of VectorCore's real public `:8002`, resolving sender MSISDN from the UE's Framed-Routing IP and injecting the header — see memory: `mms-mm1-msisdn-header-injection-fix`. `ENABLE_MMS_MODULE` defaults **disabled** (opt-in). Lives as a second tab on the SMS/MMS page, not a separate nav entry. | `mms-controller.ts` | `SMSPage.tsx` (MMS tab) |
-| PSTN Gateway (Asterisk, internal-only) | **beta — no public SIP trunk yet**; signaling AND audio both confirmed working end-to-end (full duplex, both call directions, both the PSTN-extension dialing method and normal MSISDN dialing, over VoWiFi) as of 2026-08-16 — see `PROJECT_STATE.md`'s newest Handoff Summary entry for the four real bugs (an S-CSCF self-relay loop, a dead rtpengine session-learning guard, an Asterisk config-file ownership bug, and a cross-leg RTP payload-type mismatch) found and fixed to get there. Earlier same-day-regression history is stale — don't assume audio is broken without re-verifying live; `ENABLE_PSTN_MODULE` defaults **disabled** (opt-in) | `pstn-controller.ts` | `PstnGatewayPage.tsx` |
+| PSTN Gateway (Asterisk, internal-only) | **beta — no public SIP trunk yet**; signaling AND audio both confirmed working end-to-end (full duplex, both call directions, both the PSTN-extension dialing method and normal MSISDN dialing, over VoWiFi) as of 2026-08-16 — see `PROJECT_STATE.md`'s newest Handoff Summary entry for the four real bugs (an S-CSCF self-relay loop, a dead rtpengine session-learning guard, an Asterisk config-file ownership bug, and a cross-leg RTP payload-type mismatch) found and fixed to get there. Earlier same-day-regression history is stale — don't assume audio is broken without re-verifying live. **Cross-RAN Calling** (one toggle on the Voice Gateway page's Extensions tab) bridges this instance to Asterisk-2G — see architectural pattern #16 for the full design; confirmed live 2026-09-15 with real over-the-air calls in both directions, full bidirectional audio (packet-verified) — getting there also required a real `osmo-bsc.cfg` fix (`codec-support fr` → `fr amr`), see pattern #16's tail and memory `gsm_2g_osmocom_module_progress.md`. `ENABLE_PSTN_MODULE` defaults **disabled** (opt-in) | `pstn-controller.ts`, `asterisk-2g-controller.ts` | `PstnGatewayPage.tsx` |
 | VoWiFi (ePDG) | alpha, experimental | `vowifi-controller.ts`, `vowifi-build.ts` | `VoWiFiPage.tsx` |
 | eSIM generation (Simlessly API) | stable | `esim-generator.ts`, `esim-controller.ts` | `EsimGeneratorModal.tsx` |
 | Subscriber Groups | stable | `subscriber-groups-controller.ts` | `SubscriberPage.tsx` (grouping UI) |
@@ -248,7 +324,8 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | Security Gateway (SecGW) | alpha — real IPsec tunnels confirmed live for both radio vendors simultaneously: 3 Baicells eNBs (IKEv2 Configuration Payload/virtual-IP based) and 1 Nokia AirScale (static tunnel endpoints + traffic selectors, no CP) — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME, 2026-08-14). See architectural pattern #15 for why Baicells and Nokia are configured completely differently. `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in). | `secgw-controller.ts`, `secgw-build.ts` | `SecGWPage.tsx` |
 | RF Planning | **alpha, actively being built out** — deterministic LTE link-budget/site-geometry engine (Phase 1 of a planned multi-phase tool, see memory: `rf_planning_tool_phase1_plan`); expect incomplete phases and possible breaking changes between releases. `ENABLE_RF_PLANNING_MODULE` defaults **disabled** (opt-in). | `rf-planning-controller.ts`, `rf-planning-projects-controller.ts`, `rf-planning-reports-controller.ts` | `RfPlanningPage.tsx` |
 | UE Signal Monitoring | **new, community-contributed** (PR #32) — per-UE RSRP/RSRQ/SINR/BLER/MCS/CQI/throughput correlated with subscriber identity (IMSI/ICCID/MSISDN), 7-day SQLite history, AES-256-GCM encrypted radio credentials, admin-triggered downlink wake for idle UEs. **Baicells-native connector only** — other vendors need the generic JSON connector, which requires the radio to already expose its own metrics in that shape, so it is not a drop-in for every vendor. `ENABLE_UE_SIGNAL_MODULE` defaults **enabled** (set to `false` to hide it — this is a visibility gate, not an install/uninstall lifecycle like most other opt-in modules). | `radio-signal-controller.ts` | `RadioSignalPage.tsx` |
-| 2G GSM (Osmocom) | **alpha** — real GSM radio access (osmo-bsc/osmo-bts) layered on the osmo-hlr/osmo-msc/osmo-stp that SMS-over-SGs already runs, on real nanoBTS hardware confirmed on-air. CS attach/ciphering, GPRS/EDGE data, and 2G↔4G SMS (via VectorCore SMSC, its own separate module) are **stable**. Real voice calling is **alpha**: osmo-msc's own built-in call handler can complete signaling (ring/answer) but never implements `MNCC_RTP_CREATE` (confirmed live 2026-09-13, upstream Osmocom limitation, not fixable here) — no audio ever flows in Internal mode. Real 2G↔2G audio needs External mode routed through **Asterisk-2G**, a second, fully isolated Asterisk instance (own config tree, own systemd unit, own loopback IP `127.0.1.7` — never touches the separate Asterisk instance PSTN Gateway owns) whose only job is looping a call back through osmo-sip-connector so the second phone gets paged. One button (GSM page's "2G Voice" tab, gated on `ENABLE_ASTERISK_2G_MODULE`, defaults **disabled**) installs, configures, wires the SIP tab's remote peer, and switches MNCC to External automatically. `ENABLE_GSM_MODULE` defaults **disabled** (opt-in) — real radio (and, for a real BTS, actual spectrum transmission) is a bigger blast radius than a broken lab feature. | `gsm-controller.ts`, `asterisk-2g-controller.ts`, `osmo-sip-connector-build.ts` | `GsmPage.tsx` |
+| 2G GSM (Osmocom) | **alpha** — real GSM radio access (osmo-bsc/osmo-bts) layered on the osmo-hlr/osmo-msc/osmo-stp that SMS-over-SGs already runs, on real nanoBTS hardware confirmed on-air. CS attach/ciphering, GPRS/EDGE data, and 2G↔4G SMS (via VectorCore SMSC, its own separate module) are **stable**. Real voice calling is **alpha**: osmo-msc's own built-in call handler can complete signaling (ring/answer) but never implements `MNCC_RTP_CREATE` (confirmed live 2026-09-13, upstream Osmocom limitation, not fixable here) — no audio ever flows in Internal mode. Real 2G↔2G audio needs External mode routed through **Asterisk-2G**, a second, fully isolated Asterisk instance (own config tree, own systemd unit, own loopback IP `127.0.1.7` — never touches the separate Asterisk instance PSTN Gateway owns) whose only job is looping a call back through osmo-sip-connector so the second phone gets paged. One button (GSM page's "2G Voice" tab, gated on `ENABLE_ASTERISK_2G_MODULE`, defaults **disabled**) installs, configures, wires the SIP tab's remote peer, and switches MNCC to External automatically. `ENABLE_GSM_MODULE` defaults **disabled** (opt-in) — real radio (and, for a real BTS, actual spectrum transmission) is a bigger blast radius than a broken lab feature. If a real call ever fails at TCH assignment (osmo-bsc logs "Assignment Failure"/"NACK on IPACC CRCX"), it is NOT necessarily a hardware issue — see architectural pattern #16's tail and memory `gsm_2g_osmocom_module_progress.md`: a real `codec-support`/AMR config mismatch caused exactly this, confirmed live 2026-09-15, and had been misdiagnosed as unfixable hardware the day before. | `gsm-controller.ts`, `asterisk-2g-controller.ts`, `osmo-sip-connector-build.ts` | `GsmPage.tsx` |
+| 3G UMTS (OsmoHNBGW) | **alpha** — Home NodeB Gateway bridging a 3G femtocell's Iuh interface to the existing osmo-msc (IuCS) and osmo-sgsn (IuPS) over the already-running osmo-stp. `osmo-hnbgw` isn't an apt package on this host — built from source, pinned to tag `1.3.0` (NOT the `1.9.0` every other daemon here uses — its own version numbering is independent, and `1.9.0` needs a newer `libosmocore` than this host has; confirmed live 2026-09-13 via a real scratch build). Adds a new `cs7`/IuPS point-code block into the 2G module's own `osmo-sgsn.cfg` via ownership-merge (never a blind overwrite — see `vty-config-ownership.ts`), and a third, dedicated OsmoMGW instance (own config/systemd unit/loopback `127.0.1.8`, reusing the already-installed `osmo-mgw` binary). `osmo-stp.cfg`/`osmo-msc.cfg` need **zero changes** — confirmed live from both HNBGW's and MSC's own logs (STP's existing dynamic-ASP-registration + MSC's existing SCCP link both already handle it). Subscriber credentials need no new provisioning either — reuses the 2G module's own `gsmEnabled` flag and its `auc_3g` MILENAGE row (confirmed via OsmoHLR's own manual: the same row serves both 2G and full UMTS AKA). A software test HNB, **OsmoHNodeB** (tag `0.1.0`, same source-build pattern, needs its own dedicated GTP-U bind `127.0.1.9` — its default collides fatally with Open5GS's own UPF), deployable from the module's own page, proved a full live HNBAP registration end-to-end before any real hardware was touched. Real hardware target: an ip.access nano3G — unlike 2G's OML, Iuh/HNBAP has no remote-provisioning push, so a real HNB self-registers once pointed at this gateway's IP on its own local config, rather than being discovered/pushed-to from this NMS. `ENABLE_HNBGW_MODULE` defaults **disabled** (opt-in). | `hnbgw-controller.ts`, `osmo-hnbgw-build.ts`, `osmo-hnodeb-build.ts` | `HnbPage.tsx`, RAN page's "3G UMTS" section |
 
 Full detail on any of these: `docs/features.md`.
 

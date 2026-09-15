@@ -1279,28 +1279,28 @@ export function FRRPage() {
           <p className="text-sm text-nms-text-dim mt-1">FRR routing migration and TUN interface management</p>
         </div>
         {pageTab === 'routing' && (
-          <div className="flex gap-2 flex-wrap items-center">
-            <label className="flex items-center gap-2 text-sm text-nms-text-dim">
-              <Terminal className="w-4 h-4" />
+          <div className="flex gap-2 flex-wrap items-center shrink-0">
+            <label className="flex items-center gap-1.5 text-xs text-nms-text-dim">
+              <Terminal className="w-3 h-3" />
               Log Level
               <select
                 value={migState?.logLevel ?? 'informational'}
                 disabled={settingLogLevel}
                 onChange={e => handleLogLevelChange(e.target.value as FrrLogLevel)}
-                className="nms-input py-1 text-sm"
+                className="nms-input py-1 text-xs"
               >
                 {FRR_LOG_LEVELS.map(level => (
                   <option key={level} value={level}>{level}</option>
                 ))}
               </select>
             </label>
-            <button onClick={() => load()} disabled={acting} className="nms-btn-ghost flex items-center gap-2 text-sm">
-              <RefreshCw className={clsx('w-4 h-4', acting && 'animate-spin')} /> Refresh
+            <button onClick={() => load()} disabled={acting} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <RefreshCw className={clsx('w-3 h-3', acting && 'animate-spin')} /> Refresh
             </button>
             {currentPhase !== 'INIT' && !isComplete && (
               <button onClick={() => runStream(frrApi.rollback, 'Rollback')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400">
-                <RotateCcw className="w-4 h-4" /> Rollback
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400">
+                <RotateCcw className="w-3 h-3" /> Rollback
               </button>
             )}
             <button
@@ -1312,8 +1312,8 @@ export function FRRPage() {
                   await load();
                 }
               }}
-              className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400">
-              <XCircle className="w-4 h-4" /> Reset state
+              className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-red-400">
+              <XCircle className="w-3 h-3" /> Reset state
             </button>
           </div>
         )}

@@ -149,9 +149,9 @@ export function TunInterfacePage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold font-display text-nms-text flex items-center gap-2">
+          <h1 className="text-2xl font-semibold font-display text-nms-text flex items-center gap-2">
             <Network className="w-6 h-6 text-nms-accent" />
             TUN Interfaces
           </h1>
@@ -160,13 +160,13 @@ export function TunInterfacePage() {
             Changes are applied immediately and persisted via systemd-networkd (.netdev + .network pairs).
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <button onClick={load} className="nms-btn-ghost flex items-center gap-2" title="Refresh">
-            <RefreshCw className="w-4 h-4" />
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button onClick={load} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5" title="Refresh">
+            <RefreshCw className="w-3 h-3" />
           </button>
           {isAdmin && (
-            <button onClick={() => setModal({ mode: 'create' })} className="nms-btn-primary flex items-center gap-2">
-              <Plus className="w-4 h-4" /> New Interface
+            <button onClick={() => setModal({ mode: 'create' })} className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Plus className="w-3 h-3" /> New Interface
             </button>
           )}
         </div>

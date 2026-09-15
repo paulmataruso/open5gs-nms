@@ -26,6 +26,9 @@ export const EXTRA_BACKUP_FILES = [
   '/etc/osmocom/osmo-hlr.cfg',
   '/etc/osmocom/osmo-msc.cfg',
   '/etc/osmocom/osmo-stp.cfg',
+  '/etc/osmocom/osmo-hnbgw.cfg',
+  '/etc/osmocom/osmo-mgw-hnbgw.cfg',
+  '/etc/osmocom/.nms-hnbgw-state.json',
   // osmo-epdg.config: the archived osmo-epdg-based VoWiFi backend (see
   // archive/vowifi-osmo-epdg/) — left in this list for any host that hasn't
   // reinstalled onto the VectorCore backend yet; harmless no-op (skipped with a

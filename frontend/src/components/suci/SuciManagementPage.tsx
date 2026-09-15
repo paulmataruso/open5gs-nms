@@ -19,27 +19,27 @@ export function SuciManagementPage(): JSX.Element {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display">SUCI Key Management</h1>
           <p className="text-sm text-nms-text-dim mt-1">
             Home Network Public Keys for 5G Privacy Protection
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {keys.length > 0 && (
             <button
               onClick={() => setShowPysimModal(true)}
-              className="nms-btn-ghost flex items-center gap-2 text-sm"
+              className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
             >
-              <FileJson className="w-4 h-4" /> pySIM JSON
+              <FileJson className="w-3 h-3" /> pySIM JSON
             </button>
           )}
-          <button 
-            onClick={() => setShowGenerateModal(true)} 
-            className="nms-btn-primary flex items-center gap-2"
+          <button
+            onClick={() => setShowGenerateModal(true)}
+            className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <Plus className="w-4 h-4" /> Generate New Key
+            <Plus className="w-3 h-3" /> Generate New Key
           </button>
         </div>
       </div>

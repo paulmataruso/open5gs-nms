@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Smartphone, RefreshCw, CheckCircle2, XCircle, ArrowRight } from 'lucide-react';
+import { RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { gsmApi, type HlrSubscriberStatus } from '../api/gsm';
@@ -26,7 +26,18 @@ function formatLu(ts: string | null): string {
   return d.toLocaleString();
 }
 
-export function Gsm2gSubscribersPage({ onNavigate }: { onNavigate?: (tab: string) => void }) {
+// One shared auc_3g/OsmoHLR auth-status view, used as a tab from BOTH the
+// 2G GSM page and the 3G UMTS page — not two separate features. There is
+// only one HLR row per subscriber (the "Enable 2G/3G Auth" checkbox on the
+// main Subscriber page, gsmEnabled), and OsmoHLR's own auc_3g table serves
+// both 2G's GSM-AKA-compatible Milenage and full 3G UMTS AKA from that same
+// row (confirmed via OsmoHLR's own manual) — so a 2G-only or 3G-only
+// subscriber list would just be the identical data shown twice under a
+// misleadingly narrower label. Previously its own top-level page
+// (Gsm2gSubscribersPage.tsx / sidebar "2G Subscribers"); moved here so it
+// reads correctly from either module's own page instead of a separate nav
+// entry implying it's 2G-specific.
+export function SubscriberAuthTab({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const [subscribers, setSubscribers] = useState<HlrSubscriberStatus[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -37,7 +48,7 @@ export function Gsm2gSubscribersPage({ onNavigate }: { onNavigate?: (tab: string
       const r = await gsmApi.listSubscribers();
       setSubscribers(r.subscribers);
     } catch {
-      toast.error('Failed to load 2G subscriber status.');
+      toast.error('Failed to load 2G/3G subscriber auth status.');
     } finally {
       setLoading(false);
     }
@@ -61,37 +72,33 @@ export function Gsm2gSubscribersPage({ onNavigate }: { onNavigate?: (tab: string
   const keyedCount = subscribers?.filter(s => s.hasAuthKeys).length ?? 0;
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold font-display flex items-center gap-2">
-            <Smartphone className="w-6 h-6 text-nms-accent" /> 2G Subscribers
-          </h1>
-          <p className="text-sm text-nms-text-dim mt-1">
-            Real 2G/3G authentication status for every Open5GS subscriber, synced into OsmoHLR.
-          </p>
-        </div>
+        <p className="text-sm text-nms-text-dim">
+          Real 2G/3G authentication status for every Open5GS subscriber, synced into OsmoHLR.
+        </p>
         <div className="flex items-center gap-2">
           <button className="nms-btn-ghost" onClick={refresh} disabled={loading} title="Refresh">
             <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
           </button>
           <button className="nms-btn-primary" onClick={handleSync} disabled={syncing}>
-            {syncing ? 'Syncing…' : 'Sync Subscribers to 2G Network'}
+            {syncing ? 'Syncing…' : 'Sync Subscribers to HLR'}
           </button>
         </div>
       </div>
 
-      <div className="bg-nms-surface rounded-lg border border-nms-border p-3 text-xs text-nms-text-dim">
-        This is the same subscriber database used by 4G/5G — there is no separate 2G subscriber
-        list. A subscriber is synced here if it has an MSISDN, <em>or</em> if you check its
-        "Enable 2G/GSM" box on the{' '}
+      <div className="bg-nms-surface-2 border border-nms-border rounded-lg p-3 text-xs text-nms-text-dim">
+        This is the same subscriber database used by 4G/5G — there is no separate 2G or 3G
+        subscriber list, since both share the exact same OsmoHLR auc_3g row. A subscriber is
+        synced here if it has an MSISDN, <em>or</em> if you check its "Enable 2G/3G Auth" box on
+        the{' '}
         <button className="text-nms-accent hover:underline" onClick={() => onNavigate?.('subscribers')}>
           Subscribers
         </button>{' '}
         page — then come back here and sync.
       </div>
 
-      <div className="bg-nms-surface rounded-lg border border-nms-border overflow-hidden">
+      <div className="nms-card overflow-hidden !p-0">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-nms-surface-2 text-nms-text-dim text-xs uppercase">
@@ -126,17 +133,9 @@ export function Gsm2gSubscribersPage({ onNavigate }: { onNavigate?: (tab: string
       {subscribers && subscribers.length > 0 && (
         <p className="text-xs text-nms-text-dim">
           {keyedCount} of {subscribers.length} subscriber(s) have real 2G/3G authentication key
-          material — only those can actually attach over a real BTS.
+          material — only those can actually attach over a real BTS or HNB.
         </p>
       )}
-
-      <div className="text-xs text-nms-text-dim flex items-center gap-1">
-        Manage BTS radios and the module itself on the{' '}
-        <button className="text-nms-accent hover:underline inline-flex items-center gap-0.5" onClick={() => onNavigate?.('gsm')}>
-          2G GSM <ArrowRight className="w-3 h-3" />
-        </button>{' '}
-        page.
-      </div>
     </div>
   );
 }

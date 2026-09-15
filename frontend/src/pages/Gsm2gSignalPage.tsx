@@ -62,8 +62,8 @@ export function Gsm2gSignalPage() {
           <h1 className="text-2xl font-semibold font-display">2G UE Signal</h1>
           <p className="text-sm text-nms-text-dim mt-1">Per-UE 2G radio measurements from osmo-bsc's meas-feed (RxLev / RxQual / TA)</p>
         </div>
-        <button onClick={load} className="nms-btn-ghost flex items-center gap-1.5 text-sm" disabled={loading}>
-          <RotateCw className={clsx('w-4 h-4', loading && 'animate-spin')} /> Refresh
+        <button onClick={load} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 shrink-0" disabled={loading}>
+          <RotateCw className={clsx('w-3 h-3', loading && 'animate-spin')} /> Refresh
         </button>
       </div>
 

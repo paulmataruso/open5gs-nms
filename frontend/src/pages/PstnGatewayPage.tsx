@@ -1,14 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Editor from '@monaco-editor/react';
 import {
   Phone, CheckCircle, XCircle, AlertCircle, RefreshCw,
-  Terminal, RotateCw, Settings, Power, BookOpen, ChevronDown, Plus, Trash2, PhoneCall,
+  Terminal, RotateCw, Settings, Power, BookOpen, ChevronDown, Plus, Trash2, PhoneCall, FileText, Signal, ArrowRight,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { pstnApi } from '../api/pstn';
 import type { PstnStatus, PstnExtension } from '../api/pstn';
+import { asterisk2gApi } from '../api/asterisk-2g';
+import type { Asterisk2gStatus, Asterisk2gExtension } from '../api/asterisk-2g';
+import { gsmApi } from '../api/gsm';
+import type { HlrSubscriberStatus } from '../api/gsm';
 import { subscriberApi } from '../api';
 import type { SubscriberListItem } from '../types';
+import { FEATURES } from '../config/features';
 
 function LogTerminal({ lines }: { lines: string }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -147,7 +153,7 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
   return (
     <div className="nms-card">
       <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
-        <PhoneCall className="w-4 h-4 text-nms-accent" /> Extensions
+        <PhoneCall className="w-4 h-4 text-nms-accent" /> 4G/5G Short Codes
       </h2>
       <p className="text-xs text-nms-text-dim mb-4">
         Assign a PSTN-looking number to a subscriber so other subscribers can dial them through
@@ -235,9 +241,228 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
   );
 }
 
-export function PstnGatewayPage() {
-  const [tab, setTab] = useState<'setup' | 'extensions'>('setup');
+// The entire user-facing surface of the Cross-RAN Calling feature — one
+// toggle, nothing else. Everything it takes to actually work (the new
+// inter-Asterisk PJSIP trunk on both instances, dialplan forwarding blocks
+// on both sides for the other side's short codes, transcoding-capable codec
+// lists) is generated server-side by setCrossRanCalling() in
+// pstn-controller.ts. Only rendered once both instances are installed AND
+// configured (see the gating at this component's call site) — a button that
+// would just 400 immediately isn't worth showing.
+function CrossRanToggleCard({ status, onChanged }: { status: PstnStatus | null; onChanged: () => void }) {
+  const [acting, setActing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [collisions, setCollisions] = useState<string[]>([]);
+  const enabled = !!status?.crossRanEnabled;
+
+  const handleToggle = async () => {
+    setActing(true);
+    setError(null);
+    setCollisions([]);
+    try {
+      if (enabled) {
+        await pstnApi.disableCrossRan();
+        toast.success('Cross-RAN Calling disabled');
+      } else {
+        await pstnApi.enableCrossRan();
+        toast.success('Cross-RAN Calling enabled');
+      }
+    } catch (err: any) {
+      setError(err?.response?.data?.error ?? err.message);
+      setCollisions(err?.response?.data?.collisions ?? []);
+    } finally {
+      setActing(false);
+      onChanged();
+    }
+  };
+
+  return (
+    <div className="nms-card">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="max-w-xl">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+            <ArrowRight className="w-4 h-4 text-nms-accent" /> Cross-RAN Calling
+          </h2>
+          <p className="text-xs text-nms-text-dim">
+            Lets a 4G/5G short code reach a 2G subscriber's short code, and vice versa — both Asterisk
+            instances peer directly and transcode audio automatically. Nothing else to configure.
+          </p>
+        </div>
+        <button
+          onClick={handleToggle}
+          disabled={acting}
+          className={clsx(
+            'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border transition-all shrink-0',
+            enabled
+              ? 'bg-green-500/15 text-green-400 border-green-500/30 hover:bg-green-500/25'
+              : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text',
+          )}
+        >
+          <Power className="w-3 h-3" />
+          {acting ? '…' : enabled ? 'Cross-RAN Calling Enabled' : 'Enable Cross-RAN Calling'}
+        </button>
+      </div>
+      {error && (
+        <div className="mt-3 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded px-3 py-2">
+          {error}
+          {collisions.length > 0 && <div className="mt-1 font-mono">{collisions.join(', ')}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Direct analog of ExtensionsCard above, adapted for the 2G trunk — dials by
+// MSISDN (osmo-sip-connector's own routing unit) rather than IMSI over the
+// scscf_trunk, and only offers subscribers that are actually 2G-auth-enabled
+// (gsmApi.listSubscribers() already filters to gsmEnabled && present in
+// hlr.db — the exact same filter the GSM page's own subscriber views use).
+function Gsm2gExtensionsCard() {
+  const [extensions, setExtensions] = useState<Asterisk2gExtension[]>([]);
+  const [subscribers, setSubscribers] = useState<(HlrSubscriberStatus & { nickname?: string })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [newExtension, setNewExtension] = useState('');
+  const [newImsi, setNewImsi] = useState('');
+  const [newLabel, setNewLabel] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [extRes, subRes, allSubsRes] = await Promise.all([
+        asterisk2gApi.listExtensions(),
+        gsmApi.listSubscribers(),
+        subscriberApi.list(0, 500),
+      ]);
+      setExtensions(extRes.extensions);
+      // gsmApi.listSubscribers() is the authoritative "is this subscriber
+      // actually 2G-enabled and present in hlr.db" source but only carries
+      // imsi/msisdn — join in nicknames from the general subscriber list so
+      // this dropdown reads the same way ExtensionsCard's own does.
+      const nicknameByImsi = new Map(allSubsRes.subscribers.map(s => [s.imsi, s.nickname]));
+      setSubscribers(subRes.subscribers.map(s => ({ ...s, nickname: nicknameByImsi.get(s.imsi) })));
+    } catch { /* ignore */ }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!newExtension || !newImsi) return;
+    setAdding(true);
+    try {
+      await asterisk2gApi.addExtension(newExtension, newImsi, newLabel || undefined);
+      toast.success(`${newExtension} mapped`);
+      setNewExtension(''); setNewImsi(''); setNewLabel('');
+      await load();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? err.message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleRemove = async (extension: string) => {
+    try {
+      await asterisk2gApi.removeExtension(extension);
+      toast.success(`${extension} removed`);
+      await load();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? err.message);
+    }
+  };
+
+  return (
+    <div className="nms-card">
+      <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+        <Signal className="w-4 h-4 text-nms-accent" /> 2G Short Codes
+      </h2>
+      <p className="text-xs text-nms-text-dim mb-4">
+        Assign a short code to a 2G-enabled subscriber so other 2G phones can dial them without the
+        full MSISDN — a shortcut through the same osmo-sip-connector re-dial path any 2G call already uses.
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+        <div>
+          <label className="nms-label">Short code</label>
+          <input value={newExtension} onChange={e => setNewExtension(e.target.value)}
+            placeholder="10" className="nms-input font-mono text-xs mt-1" />
+          <p className="text-xs text-nms-text-dim mt-1">Any digits, any length — no "+" needed</p>
+        </div>
+        <div>
+          <label className="nms-label">Subscriber</label>
+          <select value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
+            <option value="">Select subscriber…</option>
+            {subscribers.map(s => (
+              <option key={s.imsi} value={s.imsi}>
+                {s.nickname ? `${s.nickname} (${s.imsi})` : s.imsi}{s.msisdn ? ` — ${s.msisdn}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="nms-label">Label <span className="text-nms-text-dim font-normal">(optional)</span></label>
+          <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+            placeholder="e.g. Test Phone A" className="nms-input text-xs mt-1" />
+        </div>
+        <div className="flex items-end">
+          <button onClick={handleAdd} disabled={adding || !newExtension || !newImsi}
+            className="nms-btn-primary flex items-center gap-2 text-sm w-full justify-center">
+            <Plus className="w-4 h-4" /> {adding ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-6 text-nms-text-dim text-sm">
+          <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…
+        </div>
+      ) : extensions.length === 0 ? (
+        <p className="text-xs text-nms-text-dim text-center py-6">
+          {subscribers.length === 0
+            ? 'No 2G-enabled subscribers yet — enable "2G/3G Auth" for a subscriber on the Subscribers page first.'
+            : 'No short codes assigned yet.'}
+        </p>
+      ) : (
+        <div className="border border-nms-border rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead className="bg-nms-surface-2 text-nms-text-dim">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium">Short code</th>
+                <th className="text-left px-3 py-2 font-medium">Subscriber</th>
+                <th className="text-left px-3 py-2 font-medium">Label</th>
+                <th className="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {extensions.map(e => (
+                <tr key={e.extension} className="border-t border-nms-border">
+                  <td className="px-3 py-2 font-mono text-nms-text">{e.extension}</td>
+                  <td className="px-3 py-2 text-nms-text-dim">
+                    {e.subscriberNickname ? `${e.subscriberNickname} ` : ''}
+                    <span className="font-mono">{e.subscriberImsi}</span>
+                    {e.subscriberMsisdn ? ` (${e.subscriberMsisdn})` : ''}
+                  </td>
+                  <td className="px-3 py-2 text-nms-text-dim">{e.label ?? '—'}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => handleRemove(e.extension)} className="text-red-400 hover:text-red-300">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function PstnGatewayPage({ onNavigate }: { onNavigate?: (tab: string) => void }) {
+  const [tab, setTab] = useState<'setup' | 'extensions' | 'configs'>('setup');
   const [status, setStatus] = useState<PstnStatus | null>(null);
+  const [a2gStatus, setA2gStatus] = useState<Asterisk2gStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [streamLog, setStreamLog] = useState('');
@@ -245,6 +470,7 @@ export function PstnGatewayPage() {
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallLog, setUninstallLog] = useState('');
   const [asteriskIp, setAsteriskIp] = useState('127.0.1.4');
+  const [echoTestNumber, setEchoTestNumber] = useState('500');
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -252,11 +478,20 @@ export function PstnGatewayPage() {
       const s = await pstnApi.getStatus();
       setStatus(s);
       if (s.currentConfig?.asteriskIp) setAsteriskIp(s.currentConfig.asteriskIp);
+      if (s.currentConfig?.echoTestNumber) setEchoTestNumber(s.currentConfig.echoTestNumber);
     } catch (err: any) {
       if (!silent) toast.error(`Status fetch failed: ${err.message}`);
     } finally {
       if (!silent) setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    if (!FEATURES.asterisk2g) return;
+    const loadA2g = () => asterisk2gApi.getStatus().then(setA2gStatus).catch(() => {});
+    loadA2g();
+    const iv = setInterval(loadA2g, 10_000);
+    return () => clearInterval(iv);
   }, []);
 
   useEffect(() => {
@@ -314,7 +549,7 @@ export function PstnGatewayPage() {
   const handleConfigure = async () => {
     setActing(true);
     try {
-      await pstnApi.configure(asteriskIp);
+      await pstnApi.configure(asteriskIp, echoTestNumber);
       toast.success('Asterisk configured and wired into S-CSCF\'s dispatcher');
       await load(true);
     } catch (err: any) {
@@ -363,57 +598,63 @@ export function PstnGatewayPage() {
 
   const installed = status?.installed ?? false;
   const svcs = status?.services;
-  const allUp = svcs?.asterisk && svcs?.['kamailio-scscf'];
 
   return (
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
+        <div className="max-w-2xl">
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-semibold font-display">PSTN Gateway</h1>
+            <h1 className="text-2xl font-semibold font-display">Voice Gateway</h1>
             <span className="text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full text-amber-400 bg-amber-500/10 border border-amber-500/30">Beta</span>
           </div>
           <p className="text-sm text-nms-text-dim mt-1">Asterisk-based PSTN interconnect for the IMS core</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {installed && svcs && (
+            <>
+              <SvcBadge label="asterisk" active={svcs.asterisk} />
+              <SvcBadge label="kamailio-scscf" active={svcs['kamailio-scscf']} />
+              <div className="h-5 w-px bg-nms-border" />
+            </>
+          )}
           {installed && status?.hasSavedConfig && (
             <button
               onClick={handleToggle}
               disabled={acting}
-              className={`flex items-center gap-2 text-sm px-4 py-2 rounded-lg border transition-all ${
+              className={`flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border transition-all ${
                 status?.pstnEnabled
                   ? 'bg-green-500/15 text-green-400 border-green-500/30 hover:bg-green-500/25'
                   : 'bg-nms-surface-2 text-nms-text-dim border-nms-border hover:text-nms-text'
               }`}
             >
-              <Power className="w-4 h-4" />
+              <Power className="w-3 h-3" />
               {acting ? '…' : status?.pstnEnabled ? 'Gateway Enabled' : 'Gateway Disabled'}
             </button>
           )}
           {installed && (
             <>
-              <div className="w-px h-6 bg-nms-border" />
+              <div className="h-5 w-px bg-nms-border" />
               <button onClick={() => handleSvcAction('start')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-green-400 border-green-500/20 hover:border-green-500/40">
-                <CheckCircle className="w-4 h-4" /> Start
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-green-400 border-green-500/20 hover:border-green-500/40">
+                <CheckCircle className="w-3 h-3" /> Start
               </button>
               <button onClick={() => handleSvcAction('stop')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-red-400 border-red-500/20 hover:border-red-500/40">
-                <XCircle className="w-4 h-4" /> Stop
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-red-400 border-red-500/20 hover:border-red-500/40">
+                <XCircle className="w-3 h-3" /> Stop
               </button>
               <button onClick={() => handleSvcAction('restart')} disabled={acting}
-                className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400 border-amber-500/20 hover:border-amber-500/40">
-                <RotateCw className={`w-4 h-4 ${acting ? 'animate-spin' : ''}`} /> Restart
+                className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400 border-amber-500/20 hover:border-amber-500/40">
+                <RotateCw className={`w-3 h-3 ${acting ? 'animate-spin' : ''}`} /> Restart
               </button>
               <button onClick={() => setShowUninstallConfirm(true)} disabled={acting || uninstalling}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
-                <Trash2 className="w-4 h-4" /> Uninstall
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border text-red-400 bg-red-500/10 border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> Uninstall
               </button>
-              <div className="w-px h-6 bg-nms-border" />
+              <div className="h-5 w-px bg-nms-border" />
             </>
           )}
-          <button onClick={() => load()} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className="w-4 h-4" /> Refresh
+          <button onClick={() => load()} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className="w-3 h-3" /> Refresh
           </button>
         </div>
       </div>
@@ -474,8 +715,9 @@ export function PstnGatewayPage() {
       <div className="flex justify-center">
         <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
           {([
-            { id: 'setup',      label: 'Setup',      icon: <Settings className="w-4 h-4" /> },
-            { id: 'extensions', label: 'Extensions', icon: <PhoneCall className="w-4 h-4" /> },
+            { id: 'setup',      label: 'Setup',        icon: <Settings className="w-4 h-4" /> },
+            { id: 'extensions', label: 'Extensions',    icon: <PhoneCall className="w-4 h-4" /> },
+            { id: 'configs',    label: 'Config Files',  icon: <FileText className="w-4 h-4" /> },
           ] as const).map(tabDef => (
             <button
               key={tabDef.id}
@@ -498,34 +740,13 @@ export function PstnGatewayPage() {
         <>
           <OverviewCard />
 
-          <div className={`nms-card ${!installed ? 'border-amber-500/30 bg-amber-500/5' : allUp ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
-            <div className="flex items-start justify-between flex-wrap gap-4">
-              <div className="flex items-center gap-3">
-                {!installed
-                  ? <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
-                  : allUp
-                    ? <CheckCircle className="w-5 h-5 text-green-400 shrink-0" />
-                    : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
-                }
-                <div>
-                  <p className="text-sm font-semibold">
-                    {!installed ? 'Asterisk not installed' : allUp ? 'All services running' : 'Services partially stopped'}
-                  </p>
-                  <p className="text-xs text-nms-text-dim mt-0.5">
-                    Dispatcher wired: {status?.dispatcherWired ? 'yes' : 'no'} ·{' '}
-                    AMR codec: {status?.codecAmrLoaded ? 'loaded' : 'not loaded'} ·{' '}
-                    Extensions: {status?.extensionCount ?? 0}
-                  </p>
-                </div>
-              </div>
-              {installed && svcs && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <SvcBadge label="asterisk" active={svcs.asterisk} />
-                  <SvcBadge label="kamailio-scscf" active={svcs['kamailio-scscf']} />
-                </div>
-              )}
-            </div>
-          </div>
+          {installed && (
+            <p className="text-xs text-nms-text-dim">
+              Dispatcher wired: {status?.dispatcherWired ? 'yes' : 'no'} ·{' '}
+              AMR codec: {status?.codecAmrLoaded ? 'loaded' : 'not loaded'} ·{' '}
+              Extensions: {status?.extensionCount ?? 0}
+            </p>
+          )}
 
           {!installed && (
             <div className="nms-card">
@@ -573,10 +794,52 @@ export function PstnGatewayPage() {
                     placeholder="127.0.1.4" className="nms-input font-mono text-xs mt-1" />
                   <p className="text-xs text-nms-text-dim mt-1">A dedicated loopback alias, following this project's per-component convention</p>
                 </div>
+                <div>
+                  <label className="nms-label">Echo test number</label>
+                  <input value={echoTestNumber} onChange={e => setEchoTestNumber(e.target.value)}
+                    placeholder="500" className="nms-input font-mono text-xs mt-1" />
+                  <p className="text-xs text-nms-text-dim mt-1">Dial this from any IMS phone for a local Answer/Echo/Hangup test — no PSTN extension assignment needed</p>
+                </div>
               </div>
               <button onClick={handleConfigure} disabled={acting || !status?.imsConfigured} className="nms-btn-primary flex items-center gap-2 text-sm">
                 <Settings className="w-4 h-4" /> {acting ? 'Configuring…' : 'Configure'}
               </button>
+            </div>
+          )}
+
+          {FEATURES.asterisk2g && (
+            <div className="nms-card">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <Signal className="w-4 h-4 text-nms-accent" />
+                  <div>
+                    <p className="text-sm font-semibold text-nms-text">Other Asterisk instances on this host</p>
+                    <p className="text-xs text-nms-text-dim mt-0.5">Asterisk-2G — 2G-to-2G internal voice, fully isolated from this instance</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {a2gStatus && <SvcBadge label="asterisk-2g" active={a2gStatus.serviceActive} />}
+                  <button onClick={() => onNavigate?.('gsm')} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+                    Manage on the 2G GSM page <ArrowRight className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+              {a2gStatus && (
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-3">
+                  <div className="bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-nms-text-dim">Bind</p>
+                    <p className="text-sm font-mono text-nms-text mt-0.5 truncate">{a2gStatus.bindIp}:{a2gStatus.bindPort}</p>
+                  </div>
+                  <div className="bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-nms-text-dim">Echo test number</p>
+                    <p className="text-sm font-mono text-nms-text mt-0.5 truncate">{a2gStatus.echoTestNumber}</p>
+                  </div>
+                  <div className="bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
+                    <p className="text-[10px] uppercase tracking-wider text-nms-text-dim">Codec GSM</p>
+                    <p className="text-sm font-mono text-nms-text mt-0.5 truncate">{a2gStatus.codecGsmLoaded ? 'loaded' : 'not loaded'}</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -593,18 +856,157 @@ export function PstnGatewayPage() {
       )}
 
       {tab === 'extensions' && (
-        installed
-          ? <ExtensionsCard imsConfigured={!!status?.imsConfigured} />
-          : (
+        <div className="space-y-4">
+          {installed ? (
+            <ExtensionsCard imsConfigured={!!status?.imsConfigured} />
+          ) : (
             <div className="nms-card border-dashed border-nms-border text-center py-10">
               <PhoneCall className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
               <p className="text-sm text-nms-text-dim">Asterisk is not installed yet.</p>
               <p className="text-xs text-nms-text-dim mt-1">
-                Install it from the <strong>Setup</strong> tab before assigning extensions.
+                Install it from the <strong>Setup</strong> tab before assigning 4G/5G short codes.
               </p>
             </div>
-          )
+          )}
+
+          {FEATURES.asterisk2g && installed && status?.hasSavedConfig && a2gStatus?.installed && a2gStatus?.hasSavedConfig && (
+            <CrossRanToggleCard status={status} onChanged={() => load(true)} />
+          )}
+
+          {FEATURES.asterisk2g && (
+            a2gStatus?.installed ? (
+              <Gsm2gExtensionsCard />
+            ) : (
+              <div className="nms-card border-dashed border-nms-border text-center py-10">
+                <Signal className="w-10 h-10 text-nms-text-dim/40 mx-auto mb-3" />
+                <p className="text-sm text-nms-text-dim">Asterisk-2G is not installed yet.</p>
+                <p className="text-xs text-nms-text-dim mt-1">
+                  Install it from the 2G GSM page's <strong>2G Voice</strong> tab before assigning 2G short codes.
+                </p>
+              </div>
+            )
+          )}
+        </div>
       )}
+
+      {tab === 'configs' && <VoiceConfigFilesTab />}
+    </div>
+  );
+}
+
+// Merges both instances' raw config files into one grouped browser — each
+// entry is tagged with the API it came from (pstnApi vs asterisk2gApi) so
+// Save & Restart routes to the right backend regardless of which group the
+// selected file is in. Mirrors gsm-controller.ts's own convention of showing
+// a foreign module's files alongside this page's own (its Config Files tab
+// already shows sms-controller.ts-owned osmo-stp/osmo-hlr/osmo-msc under a
+// "Shared with SMS over SGs" group) — same idea here, just for a second
+// Asterisk instance instead of a second Osmocom daemon.
+interface VoiceConfigFile {
+  path: string; label: string; group: string; language: string;
+  restartServices: string[]; exists: boolean; source: 'pstn' | 'asterisk2g';
+}
+
+function VoiceConfigFilesTab() {
+  const [files, setFiles] = useState<VoiceConfigFile[]>([]);
+  const [selected, setSelected] = useState<VoiceConfigFile | null>(null);
+  const [content, setContent] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(() => {
+    const sources: Promise<VoiceConfigFile[]>[] = [
+      pstnApi.getConfigs().then(r => r.files.map(f => ({ ...f, source: 'pstn' as const }))),
+    ];
+    if (FEATURES.asterisk2g) {
+      sources.push(asterisk2gApi.getConfigs().then(r => r.files.map(f => ({ ...f, source: 'asterisk2g' as const }))));
+    }
+    Promise.all(sources).then(lists => setFiles(lists.flat())).catch(() => {});
+  }, []);
+  useEffect(() => { load(); setSelected(null); }, [load]);
+
+  const openFile = async (f: VoiceConfigFile) => {
+    setSelected(f);
+    const api = f.source === 'pstn' ? pstnApi : asterisk2gApi;
+    const r = await api.getConfigContent(f.path);
+    setContent(r.content);
+  };
+
+  const handleSave = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      const api = selected.source === 'pstn' ? pstnApi : asterisk2gApi;
+      await api.saveConfigContent(selected.path, content);
+      await api.restartServices(selected.restartServices);
+      toast.success(`Saved — restarted ${selected.restartServices.join(', ')}`);
+      load();
+    } catch (err: any) {
+      toast.error(`Save failed: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const groups = [...new Set(files.map(f => f.group))];
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="nms-card lg:col-span-1">
+        {groups.map(g => (
+          <div key={g} className="mb-3">
+            <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+              {g}
+              {g !== '4G/5G Voice Gateway' && <Signal className="w-3 h-3 text-nms-accent" />}
+            </h3>
+            {files.filter(f => f.group === g).map(f => (
+              <button
+                key={f.path}
+                onClick={() => openFile(f)}
+                className={clsx(
+                  'w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-mono mb-1 flex items-center justify-between',
+                  selected?.path === f.path ? 'bg-nms-accent/15 text-nms-accent' : 'text-nms-text-dim hover:bg-nms-bg',
+                )}
+              >
+                {f.label}
+                {!f.exists && <span className="text-red-400 text-[10px]">missing</span>}
+              </button>
+            ))}
+          </div>
+        ))}
+        {files.length === 0 && (
+          <p className="text-xs text-nms-text-dim py-4 text-center">No config files yet — install and configure first.</p>
+        )}
+      </div>
+      <div className="nms-card lg:col-span-2">
+        {selected ? (
+          <>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-mono text-nms-text">{selected.path}</span>
+              <button className="nms-btn-primary" disabled={saving} onClick={handleSave}>
+                {saving ? <RotateCw className="w-4 h-4 animate-spin" /> : null} Save &amp; Restart
+              </button>
+            </div>
+            {selected.source === 'asterisk2g' && (
+              <div className="flex items-start gap-2 bg-nms-accent/5 border border-nms-accent/20 rounded-lg p-2.5 text-xs text-nms-text-dim mb-2">
+                <Signal className="w-4 h-4 shrink-0 mt-0.5 text-nms-accent" />
+                <span>Belongs to the Asterisk-2G instance (2G GSM module) — restarting only affects 2G-to-2G voice, not this page's own PSTN Gateway.</span>
+              </div>
+            )}
+            <div className="border border-nms-border rounded-lg overflow-hidden">
+              <Editor
+                height="500px"
+                language={selected.language}
+                theme="vs-dark"
+                value={content}
+                onChange={v => setContent(v ?? '')}
+                options={{ minimap: { enabled: false }, fontSize: 13 }}
+              />
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-nms-text-dim py-10 text-center">Select a config file to view/edit.</p>
+        )}
+      </div>
     </div>
   );
 }

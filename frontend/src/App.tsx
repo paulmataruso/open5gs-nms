@@ -24,7 +24,7 @@ import { PstnGatewayPage } from './pages/PstnGatewayPage';
 import { VoWiFiPage } from './pages/VoWiFiPage';
 import { SecGWPage } from './pages/SecGWPage';
 import { GsmPage } from './pages/GsmPage';
-import { Gsm2gSubscribersPage } from './pages/Gsm2gSubscribersPage';
+import { HnbPage } from './pages/HnbPage';
 import { TwampPage } from './pages/TwampPage';
 import { BindPage } from './pages/BindPage';
 import { ValidationPage } from './pages/ValidationPage';
@@ -106,17 +106,17 @@ function App(): JSX.Element {
       case 'ims':
         return FEATURES.ims ? <IMSPage /> : <DashboardPage />;
       case 'pstn':
-        return FEATURES.pstn ? <PstnGatewayPage /> : <DashboardPage />;
+        return FEATURES.pstn ? <PstnGatewayPage onNavigate={setActiveTab} /> : <DashboardPage />;
       case 'vowifi':
         return FEATURES.vowifi ? <VoWiFiPage /> : <DashboardPage />;
       case 'secgw':
         return FEATURES.secgw ? <SecGWPage /> : <DashboardPage />;
       case 'gsm':
         return FEATURES.gsm ? <GsmPage onNavigate={setActiveTab} /> : <DashboardPage />;
-      case 'gsm-subscribers':
-        return FEATURES.gsm ? <Gsm2gSubscribersPage onNavigate={setActiveTab} /> : <DashboardPage />;
       case 'gsm-signal':
         return FEATURES.gsm ? <Gsm2gSignalPage /> : <DashboardPage />;
+      case 'hnbgw':
+        return FEATURES.hnbgw ? <HnbPage onNavigate={setActiveTab} /> : <DashboardPage />;
       case 'twamp':
         return FEATURES.twamp ? <TwampPage onNavigate={setActiveTab} /> : <DashboardPage />;
       case 'validation':

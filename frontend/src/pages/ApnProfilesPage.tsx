@@ -389,12 +389,12 @@ export function ApnProfilesPage() {
             Saving writes both smf.yaml and upf.yaml so they can't drift out of sync.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={load} className="nms-btn-ghost flex items-center gap-2" title="Refresh">
-            <RefreshCw className="w-4 h-4" />
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button onClick={load} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5" title="Refresh">
+            <RefreshCw className="w-3 h-3" />
           </button>
-          <button onClick={() => setModal('add')} className="nms-btn-primary flex items-center gap-2">
-            <Plus className="w-4 h-4" /> New Profile
+          <button onClick={() => setModal('add')} className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <Plus className="w-3 h-3" /> New Profile
           </button>
         </div>
       </div>

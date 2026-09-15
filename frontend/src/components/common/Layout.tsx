@@ -3,7 +3,7 @@ import { clsx } from 'clsx';
 import {
   Radio, Settings, Users, Activity, Network,
   ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge, ServerCog, Signal, Smartphone,
+  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge, ServerCog, Signal,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
@@ -39,10 +39,10 @@ const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<an
   { id: 'bind', label: 'DNS (BIND9)', icon: Globe },
   ...(FEATURES.sms ? [{ id: 'sms', label: FEATURES.mms ? 'SMS/MMS' : 'SMS', icon: MessageSquare }] : []),
   ...(FEATURES.gsm ? [{ id: 'gsm', label: '2G GSM', icon: Signal }] : []),
-  ...(FEATURES.gsm ? [{ id: 'gsm-subscribers', label: '2G Subscribers', icon: Smartphone }] : []),
   ...(FEATURES.gsm ? [{ id: 'gsm-signal', label: '2G UE Signal', icon: Wifi }] : []),
+  ...(FEATURES.hnbgw ? [{ id: 'hnbgw', label: '3G UMTS', icon: Signal }] : []),
   ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
-  ...(FEATURES.pstn ? [{ id: 'pstn', label: 'PSTN Gateway', icon: PhoneCall }] : []),
+  ...(FEATURES.pstn ? [{ id: 'pstn', label: 'Voice Gateway', icon: PhoneCall }] : []),
   ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),
   ...(FEATURES.secgw ? [{ id: 'secgw', label: 'SecGW', icon: ShieldCheck }] : []),
   ...(FEATURES.twamp ? [{ id: 'twamp', label: 'TWAMP', icon: Gauge }] : []),

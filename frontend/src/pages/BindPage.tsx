@@ -246,19 +246,34 @@ export function BindPage() {
     ? 'plaintext' : selectedPath?.endsWith('.zone') ? 'plaintext' : 'plaintext';
 
   return (
-    <div className="space-y-4">
+    <div className="p-6 space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-xl bg-nms-accent/10 border border-nms-accent/20">
             <Globe className="w-5 h-5 text-nms-accent" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold font-display text-nms-text">DNS (BIND9)</h1>
-            <p className="text-xs text-nms-text-dim">Shared DNS server — raw file editor for zones and config used by IMS, VoWiFi, and anything else</p>
+            <h1 className="text-2xl font-semibold font-display text-nms-text">DNS (BIND9)</h1>
+            <p className="text-sm text-nms-text-dim mt-1">Shared DNS server — raw file editor for zones and config used by IMS, VoWiFi, and anything else</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {status && (
+            <>
+              <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
+                status.installed ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
+                {status.installed ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {status.installed ? 'Installed' : 'Not Installed'}
+              </span>
+              {status.installed && (
+                <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
+                  status.running ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-nms-text-dim border-nms-border')}>
+                  {status.running ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {status.running ? 'Running' : 'Stopped'}
+                </span>
+              )}
+              <div className="h-5 w-px bg-nms-border" />
+            </>
+          )}
           {status?.installed && (
             <>
               <button onClick={() => handleServiceAction('start')} disabled={acting} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
@@ -303,17 +318,7 @@ export function BindPage() {
       {activeTab === 'files' && <>
 
       {status && (
-        <div className="flex items-center gap-2">
-          <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
-            status.installed ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30')}>
-            {status.installed ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {status.installed ? 'Installed' : 'Not Installed'}
-          </span>
-          <span className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border',
-            status.running ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-nms-text-dim border-nms-border')}>
-            {status.running ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />} {status.running ? 'Running' : 'Stopped'}
-          </span>
-          <span className="text-xs text-nms-text-dim">{status.fileCount} file{status.fileCount === 1 ? '' : 's'} under /etc/bind</span>
-        </div>
+        <p className="text-xs text-nms-text-dim">{status.fileCount} file{status.fileCount === 1 ? '' : 's'} under /etc/bind</p>
       )}
 
       {(installing || installLog) && (

@@ -33,8 +33,8 @@ export const RadioProvisioningPage: React.FC<RadioProvisioningPageProps> = ({ on
           <p className="text-sm text-nms-text-dim mt-1">TR-069/ACS provisioning for Sercomm and Baicells radios</p>
         </div>
         {FEATURES.rfPlanning && (
-          <button onClick={() => onNavigate?.('rf-planning')} className="nms-btn-ghost flex items-center gap-2 border border-nms-border">
-            <Calculator className="w-4 h-4" />
+          <button onClick={() => onNavigate?.('rf-planning')} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 border border-nms-border shrink-0">
+            <Calculator className="w-3 h-3" />
             RF Planning
           </button>
         )}

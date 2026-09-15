@@ -2,8 +2,10 @@ import { Router, Request, Response } from 'express';
 import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
+import { Collection, MongoClient } from 'mongodb';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
+import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import {
@@ -100,14 +102,33 @@ interface Asterisk2gState {
   // to leak to even without range-gating. Tighten to a real numbering-plan
   // pattern (e.g. '_1555X.') any time via Configure without any code change.
   msisdnMatchPattern: string;
+  // Exact-match dialplan extension (not a pattern) for a 2G-only Asterisk
+  // Echo() test — dial it from any 2G phone to hear your own audio looped
+  // back, no second phone or subscriber needed. Asterisk always prefers an
+  // exact literal extension over a `_`-prefixed pattern match in the same
+  // context, so this coexists with msisdnMatchPattern's catch-all without
+  // reordering anything. Chosen short ("600") so it can never collide with
+  // this deployment's real MSISDNs, which are all 11 digits.
+  echoTestNumber: string;
   installedWithVersion?: string;
   configuredWithVersion?: string;
+  // Follower copy of the Cross-RAN Calling toggle — pstn-controller.ts's own
+  // PstnState.crossRanEnabled is the source of truth the UI reads/writes
+  // (the toggle button lives on the Voice Gateway page, backed by pstnApi);
+  // this copy exists so THIS module's own independent regen paths
+  // (regenerateExtensions2g, configureAsterisk2g) know whether to keep
+  // including the cross-RAN forwarding blocks when something on THIS side
+  // alone triggers a regen (e.g. an ordinary 2G short code add/remove).
+  // Only ever written by setCrossRanPeer() below — never toggled directly
+  // via a route on this module. See CLAUDE.md's Cross-RAN Calling entry.
+  crossRanEnabled?: boolean;
 }
 
 const STATE_DEFAULTS: Asterisk2gState = {
   bindIp: DEFAULT_BIND_IP,
   bindPort: BIND_PORT,
   msisdnMatchPattern: '_X.',
+  echoTestNumber: '600',
 };
 
 function readState(): Asterisk2gState | null {
@@ -120,11 +141,37 @@ function writeState(state: Asterisk2gState): void {
   fs.writeFileSync(HOST_STATE, JSON.stringify(state, null, 2), 'utf-8');
 }
 
+export interface Asterisk2gConfigFile {
+  path: string; label: string; group: string; language: string;
+  restartServices: string[]; exists: boolean;
+}
+
+// Own, fully separate directory tree (see A2G_ETC's own comment above) — no
+// shared/sharedWith flags needed, unlike gsm-controller.ts's manifest.
+const A2G_CONFIG_MANIFEST: Omit<Asterisk2gConfigFile, 'exists'>[] = [
+  { path: `${HOST_ROOT}${A2G_CONF}`,    label: 'asterisk.conf',    group: '2G Voice Gateway', language: 'ini', restartServices: [SYSTEMD_UNIT] },
+  { path: `${HOST_ROOT}${A2G_PJSIP}`,   label: 'pjsip.conf',       group: '2G Voice Gateway', language: 'ini', restartServices: [SYSTEMD_UNIT] },
+  { path: `${HOST_ROOT}${A2G_EXTEN}`,   label: 'extensions.conf',  group: '2G Voice Gateway', language: 'ini', restartServices: [SYSTEMD_UNIT] },
+  { path: `${HOST_ROOT}${A2G_MODULES}`, label: 'modules.conf',     group: '2G Voice Gateway', language: 'ini', restartServices: [SYSTEMD_UNIT] },
+  { path: `${HOST_ROOT}${A2G_RTP}`,     label: 'rtp.conf',         group: '2G Voice Gateway', language: 'ini', restartServices: [SYSTEMD_UNIT] },
+];
+const A2G_ALLOWED_PATHS = new Set(A2G_CONFIG_MANIFEST.map(f => f.path));
+
 // Cheap, read-only check consumed by pstn-controller.ts's own uninstall —
 // the two Asterisk instances share the same apt package, so PSTN's uninstall
 // needs to know not to purge it out from under this module. Deliberately a
 // tiny, one-way dependency (PSTN reads this module's presence) rather than
-// the reverse — this module never needs to know anything about PSTN.
+// the reverse — this module never needs to know anything about PSTN, with
+// one narrow, deliberate exception: Cross-RAN Calling (setCrossRanPeer,
+// listGsm2gShortCodesForCrossRan, getAsterisk2gEchoTestNumber,
+// getAsterisk2gBindAddress below) genuinely needs data from both sides. Since
+// PSTN -> here was already established safe as a static import, the reverse
+// direction (this file needing PSTN's own data) uses a LAZY
+// `await import('./pstn-controller')` at just the two call sites that need
+// it (getCrossRanPeerCodes, setCrossRanPeer, and the /extensions collision
+// guard) instead of a static import, specifically to avoid turning this into
+// a real load-time circular dependency. See CLAUDE.md's Cross-RAN Calling
+// pattern entry for the full ownership map.
 export function isAsterisk2gInstalled(): boolean {
   return fs.existsSync(`${HOST_ROOT}${A2G_CONF}`);
 }
@@ -251,7 +298,51 @@ astsbindir => /usr/sbin
 `;
 }
 
-function pjsip2gConf(bindIp: string, bindPort: number, sipConnIp: string, sipConnPort: number): string {
+function pjsip2gConf(bindIp: string, bindPort: number, sipConnIp: string, sipConnPort: number, crossRanPeer: { ip: string; port: number } | null): string {
+  // Cross-RAN Calling: peers with the PSTN Gateway's own Asterisk instance
+  // so a call to a 4G/5G short code can be dialed from this side and vice
+  // versa. Written/removed only by setCrossRanPeer() below, orchestrated
+  // from pstn-controller.ts's setCrossRanCalling() — never toggled directly
+  // from a route on this module. Reuses transport-2g (a PJSIP transport is
+  // the local UDP socket bound to bindIp:bindPort — every endpoint that
+  // sends/receives through this instance shares the one transport,
+  // regardless of how many distinct peers reference it; a second
+  // type=transport on the same bind would just fail to load). allow= is
+  // ordered amrwb/amr before gsm — this endpoint ultimately feeds toward
+  // PSTN's scscf_trunk (AMR-capable), so biasing negotiation toward AMR here
+  // keeps the call to exactly one transcode hop (AMR<->GSM-FR happening once,
+  // on whichever instance's dialplan the call lands on second) rather than
+  // risking a double transcode. direct_media=no is a hard functional
+  // requirement here, not inherited B2BUA hardening habit: transcoding is
+  // only possible while Asterisk itself stays in the RTP path on both legs.
+  // See CLAUDE.md's Cross-RAN Calling pattern entry for the full design.
+  const crossRanBlock = crossRanPeer ? `
+[pstn_trunk]
+type=identify
+endpoint=pstn_trunk
+match=${crossRanPeer.ip}
+
+[pstn_trunk]
+type=aor
+contact=sip:${crossRanPeer.ip}:${crossRanPeer.port}
+
+[pstn_trunk]
+type=endpoint
+context=2g-loopback
+disallow=all
+allow=amrwb
+allow=amr
+allow=gsm
+aors=pstn_trunk
+transport=transport-2g
+direct_media=no
+trust_id_inbound=yes
+asymmetric_rtp_codec=yes
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+rtp_keepalive=5
+` : '';
   return `; Generated by the NMS's Asterisk-2G module — do not edit by hand,
 ; regenerated on every Configure call.
 ;
@@ -297,7 +388,17 @@ asymmetric_rtp_codec=yes
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
-`;
+; Real bug found live (2026-09-14) on PSTN Gateway's own identical B2BUA
+; setup: rtp_symmetric above means each leg's real send destination is only
+; learned from its first inbound packet, not trusted from the SDP answer —
+; a call whose very first learn-then-transmit attempt loses a timing race
+; has nothing to ever retry it, so that leg stays permanently silent even
+; though the bridge itself looks perfectly healthy. This risk is generic to
+; any rtp_symmetric-dependent B2BUA leg, not tied to PSTN's own unreachable-
+; address issue above, so it applies here too even in this host-local
+; topology. See pstn-controller.ts's pjsipPstnConf() for the full writeup.
+rtp_keepalive=5
+${crossRanBlock}`;
 }
 
 // Why this isn't an infinite loop: osmo-sip-connector has exactly one
@@ -314,16 +415,140 @@ rewrite_contact=yes
 // its own normal MSISDN->subscriber/HLR resolution and pages B exactly as
 // it would for any real inbound call. There is no third SIP hop, so no
 // recursion is possible.
-function extensions2gConf(msisdnMatchPattern: string): string {
+// ── 2G-only short codes ──────────────────────────────────────────────────
+// Direct analog of pstn-controller.ts's own extensions feature, adapted for
+// this trunk: PSTN dials a subscriber by IMSI over the scscf_trunk (IMS
+// core resolves it), but this instance's only peer is osmo-sip-connector,
+// which — per the module header above — does no routing of its own; the
+// re-dial always has to carry the subscriber's actual MSISDN, exactly like
+// the existing msisdnMatchPattern catch-all already does with whatever
+// digits were dialed. So a short code here is stored by subscriberImsi
+// (matching PSTN's own convention, and staying correct if a subscriber's
+// MSISDN ever changes) but resolved to their live MSISDN at config-generate
+// time, not stored redundantly.
+export interface Gsm2gExtension {
+  extension: string;
+  subscriberImsi: string;
+  label?: string;
+  createdAt: string;
+}
+
+const EXTENSION_INPUT_RE = /^\+?[0-9]{1,15}$/;
+function normalizeExtension(raw: string): string {
+  return raw.replace(/^\+/, '');
+}
+
+function getGsm2gExtensionsCollection(mongoUri: string): { client: MongoClient; collection: Collection<Gsm2gExtension> } {
+  const client = new MongoClient(mongoUri);
+  return { client, collection: client.db('open5gs').collection<Gsm2gExtension>('gsm2g_extensions') };
+}
+
+async function withGsm2gExtensions<T>(mongoUri: string, fn: (col: Collection<Gsm2gExtension>) => Promise<T>): Promise<T> {
+  const { client, collection } = getGsm2gExtensionsCollection(mongoUri);
+  try {
+    await client.connect();
+    return await fn(collection);
+  } finally {
+    await client.close();
+  }
+}
+
+function extensions2gConf(msisdnMatchPattern: string, echoTestNumber: string, shortCodes: { extension: string; subscriberMsisdn: string }[], crossRanPeerCodes: { extension: string; label?: string }[]): string {
+  const shortCodeBlocks = shortCodes.map(e => `exten => ${e.extension},1,NoOp(2G Short Code -> ${e.subscriberMsisdn})
+ same => n,Dial(PJSIP/${e.subscriberMsisdn}@sipconn,30)
+ same => n,Hangup()
+`).join('\n');
+
+  // Cross-RAN Calling: forward, don't resolve — dial the SAME digit string
+  // out to pstn_trunk so the call re-enters PSTN Gateway's own dialplan at
+  // the exact extension it already owns, where its own existing per-mapping
+  // Dial() logic completes it unchanged. This side never needs to know which
+  // subscriber a PSTN short code actually belongs to.
+  const crossRanBlocks = crossRanPeerCodes.map(e => `exten => ${e.extension},1,NoOp(Cross-RAN -> 4G/5G short code ${e.extension}${e.label ? ' (' + e.label + ')' : ''})
+ same => n,Dial(PJSIP/${e.extension}@pstn_trunk,30)
+ same => n,Hangup()
+`).join('\n');
+
   return `; Generated by the NMS's Asterisk-2G module — do not edit by hand,
 ; regenerated on every Configure call.
 
 [2g-loopback]
+; Exact literal match — Asterisk always tries this before the msisdnMatchPattern
+; catch-all below, so a 2G phone dialing this number hits the echo test instead
+; of being re-dialed back out through osmo-sip-connector.
+exten => ${echoTestNumber},1,NoOp(2G Echo Test)
+ same => n,Answer()
+ same => n,Wait(1)
+ same => n,Playback(demo-echotest)
+ same => n,Echo()
+ same => n,Playback(demo-echodone)
+ same => n,Hangup()
+
+${shortCodeBlocks}
+${crossRanBlocks}
 exten => ${msisdnMatchPattern},1,NoOp(2G-to-2G: re-dialing \${EXTEN} back through osmo-sip-connector)
  same => n,Set(CALLERID(num)=\${CALLERID(num)})
  same => n,Dial(PJSIP/\${EXTEN}@sipconn,30)
  same => n,Hangup()
 `;
+}
+
+async function resolveGsm2gShortCodes(mongoUri: string, subscriberRepo: ISubscriberRepository): Promise<{ extension: string; subscriberMsisdn: string }[]> {
+  const extensions = await withGsm2gExtensions(mongoUri, col => col.find({}).toArray());
+  if (extensions.length === 0) return [];
+  const allSubs = await subscriberRepo.findAllFull();
+  const msisdnByImsi = new Map(allSubs.map(s => [s.imsi, s.msisdn?.[0]]));
+  return extensions
+    .map(e => ({ extension: e.extension, subscriberMsisdn: msisdnByImsi.get(e.subscriberImsi) }))
+    .filter((e): e is { extension: string; subscriberMsisdn: string } => !!e.subscriberMsisdn);
+}
+
+// Direct Mongo read, no subscriberRepo join — cross-RAN forwarding only
+// needs to know the CODE exists on this side; MSISDN resolution happens
+// locally once the call lands back in THIS instance's own dialplan (see
+// extensions2gConf()'s shortCodeBlocks above). Exported for
+// pstn-controller.ts's own extensionsPstnConf() to consume via the
+// pre-existing safe static import direction. See CLAUDE.md's Cross-RAN
+// Calling entry for the full ownership map.
+export async function listGsm2gShortCodesForCrossRan(mongoUri: string): Promise<{ extension: string; label?: string }[]> {
+  const extensions = await withGsm2gExtensions(mongoUri, col => col.find({}).toArray());
+  return extensions.map(e => ({ extension: e.extension, label: e.label }));
+}
+
+export function getAsterisk2gEchoTestNumber(): string {
+  return readState()?.echoTestNumber ?? STATE_DEFAULTS.echoTestNumber;
+}
+
+export function getAsterisk2gBindAddress(): { ip: string; port: number } | null {
+  const s = readState();
+  return s ? { ip: s.bindIp, port: s.bindPort } : null;
+}
+
+// Lazy-imports pstn-controller.ts ONLY when cross-RAN is actually enabled —
+// see isAsterisk2gInstalled()'s own comment for why this direction has to
+// stay a lazy `await import()` rather than a static one (this function is
+// reached from routine single-side short-code CRUD, with no orchestrator in
+// that call path to push the data in as a parameter instead).
+async function getCrossRanPeerCodes(mongoUri: string): Promise<{ extension: string; label?: string }[]> {
+  const state = readState();
+  if (!state?.crossRanEnabled) return [];
+  const { listPstnShortCodesForCrossRan } = await import('./pstn-controller');
+  return listPstnShortCodesForCrossRan(mongoUri);
+}
+
+// Lightweight regen — mirrors pstn-controller.ts's own regenerateDialplan():
+// rewrites just extensions.conf + reloads the dialplan, deliberately NOT a
+// full configureAsterisk2g() (which also touches IP binding, pjsip.conf, the
+// SIP tab wiring, and restarts the whole service) — adding/removing a short
+// code shouldn't need any of that.
+async function regenerateExtensions2g(mongoUri: string, subscriberRepo: ISubscriberRepository): Promise<void> {
+  const state = readState();
+  const msisdnMatchPattern = state?.msisdnMatchPattern ?? STATE_DEFAULTS.msisdnMatchPattern;
+  const echoTestNumber = state?.echoTestNumber ?? STATE_DEFAULTS.echoTestNumber;
+  const shortCodes = await resolveGsm2gShortCodes(mongoUri, subscriberRepo);
+  const crossRanPeerCodes = await getCrossRanPeerCodes(mongoUri);
+  fs.writeFileSync(`${HOST_ROOT}${A2G_EXTEN}`, extensions2gConf(msisdnMatchPattern, echoTestNumber, shortCodes, crossRanPeerCodes), 'utf-8');
+  await nsenter('asterisk', ['-C', A2G_CONF, '-rx', 'dialplan reload']).catch(() => {});
 }
 
 function rtp2gConf(): string {
@@ -493,7 +718,9 @@ export async function installAsterisk2g(write: (s: string) => void): Promise<{ s
 }
 
 export async function configureAsterisk2g(
-  input: { bindIp?: string; bindPort?: number; msisdnMatchPattern?: string },
+  input: { bindIp?: string; bindPort?: number; msisdnMatchPattern?: string; echoTestNumber?: string },
+  mongoUri: string,
+  subscriberRepo: ISubscriberRepository,
 ): Promise<{ success: boolean; error?: string; bindIp?: string; sipConnPeer?: string }> {
   try {
     if (!fs.existsSync(`${HOST_ROOT}${A2G_CONF}`)) {
@@ -508,6 +735,12 @@ export async function configureAsterisk2g(
     const bindIp = input.bindIp || existing?.bindIp || DEFAULT_BIND_IP;
     const bindPort = input.bindPort || existing?.bindPort || BIND_PORT;
     const msisdnMatchPattern = input.msisdnMatchPattern || existing?.msisdnMatchPattern || STATE_DEFAULTS.msisdnMatchPattern;
+    const echoTestNumber = input.echoTestNumber || existing?.echoTestNumber || STATE_DEFAULTS.echoTestNumber;
+
+    const shortCodeCollision = await withGsm2gExtensions(mongoUri, col => col.findOne({ extension: echoTestNumber })).catch(() => null);
+    if (shortCodeCollision) {
+      return { success: false, error: `Echo test number ${echoTestNumber} collides with an assigned 2G short code — pick a different one.` };
+    }
 
     // Idempotent — matches the loopback-alias convention every other SIP
     // daemon in this project follows (each gets its own dedicated address).
@@ -515,9 +748,23 @@ export async function configureAsterisk2g(
 
     const astmoddir = deriveStockDir('astmoddir', '/usr/lib/x86_64-linux-gnu/asterisk/modules');
     const astdatadir = deriveStockDir('astdatadir', '/usr/share/asterisk');
+    const shortCodes = await resolveGsm2gShortCodes(mongoUri, subscriberRepo);
+    // Preserve the existing Cross-RAN Calling wiring across a routine
+    // Configure call — this rewrites pjsip.conf/extensions.conf wholesale,
+    // so without re-deriving these, an unrelated re-Configure would silently
+    // drop the pstn_trunk peer/forwarding blocks even though crossRanEnabled
+    // itself is untouched by this function (see CLAUDE.md's Cross-RAN
+    // Calling entry — same "don't silently drop on regen" issue
+    // regenerateExtensions2g's own getCrossRanPeerCodes() already handles).
+    let crossRanPeer: { ip: string; port: number } | null = null;
+    if (existing?.crossRanEnabled) {
+      const { getPstnBindAddress } = await import('./pstn-controller');
+      crossRanPeer = getPstnBindAddress();
+    }
+    const crossRanPeerCodes = await getCrossRanPeerCodes(mongoUri);
     fs.writeFileSync(`${HOST_ROOT}${A2G_CONF}`, asterisk2gConfTemplate(astmoddir, astdatadir), 'utf-8');
-    fs.writeFileSync(`${HOST_ROOT}${A2G_PJSIP}`, pjsip2gConf(bindIp, bindPort, peer.ip, peer.port), 'utf-8');
-    fs.writeFileSync(`${HOST_ROOT}${A2G_EXTEN}`, extensions2gConf(msisdnMatchPattern), 'utf-8');
+    fs.writeFileSync(`${HOST_ROOT}${A2G_PJSIP}`, pjsip2gConf(bindIp, bindPort, peer.ip, peer.port, crossRanPeer), 'utf-8');
+    fs.writeFileSync(`${HOST_ROOT}${A2G_EXTEN}`, extensions2gConf(msisdnMatchPattern, echoTestNumber, shortCodes, crossRanPeerCodes), 'utf-8');
     fs.writeFileSync(`${HOST_ROOT}${A2G_RTP}`, rtp2gConf(), 'utf-8');
     ensureChanSipDisabled2g();
     await chownConfigFiles();
@@ -539,9 +786,73 @@ export async function configureAsterisk2g(
     // against modules silently rewriting each other's config.
     await wireIntoSipTabAndGoExternal(bindIp, bindPort, peer);
 
-    writeState({ bindIp, bindPort, msisdnMatchPattern, installedWithVersion: existing?.installedWithVersion, configuredWithVersion: getAppVersion() });
+    writeState({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, installedWithVersion: existing?.installedWithVersion, configuredWithVersion: getAppVersion() });
 
     return { success: true, bindIp, sipConnPeer: `${peer.ip}:${peer.port}` };
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
+
+// ── Cross-RAN Calling (2G <-> 4G/5G short-code bridging) ────────────────────
+//
+// Sole follower half of the Cross-RAN Calling toggle — orchestrated FROM
+// pstn-controller.ts's setCrossRanCalling(), never called directly from a
+// route on this module (there is deliberately no `POST /cross-ran/*` route
+// here — the one-button toggle lives entirely on the Voice Gateway page,
+// backed by pstnApi). Mirrors configureAsterisk2g()'s own "never a full
+// restart, always a live module/dialplan reload" convention — both instances
+// must already be running before this can be called. See CLAUDE.md's
+// Cross-RAN Calling pattern entry for the full design (ownership map, codec
+// ordering rationale, why there's no rollback on partial failure).
+export async function setCrossRanPeer(
+  enabled: boolean,
+  mongoUri: string,
+  subscriberRepo: ISubscriberRepository,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!fs.existsSync(`${HOST_ROOT}${A2G_CONF}`)) {
+      return { success: false, error: 'Asterisk-2G is not installed yet.' };
+    }
+    const existing = readState();
+    if (!existing) {
+      return { success: false, error: 'Asterisk-2G is not configured yet — run Configure first.' };
+    }
+    const sipConnPeer = readGsmSipPeer();
+    if (!sipConnPeer) {
+      return { success: false, error: 'osmo-sip-connector has no concrete local SIP address configured yet — set it on the GSM page\'s SIP tab first.' };
+    }
+
+    let crossRanPeer: { ip: string; port: number } | null = null;
+    if (enabled) {
+      let codecOk = false;
+      try {
+        const { stdout } = await nsenter('asterisk', ['-C', A2G_CONF, '-rx', 'module show like codec_gsm']);
+        codecOk = /Running/.test(stdout);
+      } catch { /* ignore */ }
+      if (!codecOk) {
+        return { success: false, error: 'codec_gsm.so is not loaded on this instance — required for Cross-RAN Calling\'s transcoding. Check `module show like codec_gsm`.' };
+      }
+      const { getPstnBindAddress } = await import('./pstn-controller');
+      crossRanPeer = getPstnBindAddress();
+      if (!crossRanPeer) {
+        return { success: false, error: 'PSTN Gateway is not configured yet — configure it before enabling Cross-RAN Calling.' };
+      }
+    }
+
+    // Written BEFORE the file regen below so regenerateExtensions2g()'s own
+    // getCrossRanPeerCodes() (which reads this same state) picks up the new
+    // value immediately. Deliberately not rolled back if a later step fails
+    // — see setCrossRanCalling() in pstn-controller.ts for the full "no
+    // rollback, surface the inconsistency" rationale this mirrors.
+    writeState({ ...existing, crossRanEnabled: enabled });
+
+    fs.writeFileSync(`${HOST_ROOT}${A2G_PJSIP}`, pjsip2gConf(existing.bindIp, existing.bindPort, sipConnPeer.ip, sipConnPeer.port, crossRanPeer), 'utf-8');
+    await chownConfigFiles();
+    await nsenter('asterisk', ['-C', A2G_CONF, '-rx', 'module reload res_pjsip.so']).catch(() => {});
+    await regenerateExtensions2g(mongoUri, subscriberRepo);
+
+    return { success: true };
   } catch (err) {
     return { success: false, error: String(err) };
   }
@@ -569,7 +880,7 @@ export async function getAsterisk2gStaleness(): Promise<Asterisk2gStalenessResul
 
 // ── Router ───────────────────────────────────────────────────────────────
 
-export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
+export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mongoUri: string, logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
   router.get('/status', async (_req: Request, res: Response) => {
@@ -599,6 +910,7 @@ export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditL
         bindIp: state?.bindIp ?? DEFAULT_BIND_IP,
         bindPort: state?.bindPort ?? BIND_PORT,
         msisdnMatchPattern: state?.msisdnMatchPattern ?? STATE_DEFAULTS.msisdnMatchPattern,
+        echoTestNumber: state?.echoTestNumber ?? STATE_DEFAULTS.echoTestNumber,
         // What this instance's own pjsip.conf currently points its sipconn
         // trunk at (osmo-sip-connector's live local bind, read fresh every
         // status poll) — lets the frontend warn if the GSM SIP tab's own
@@ -608,6 +920,7 @@ export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditL
         configuredWithVersion: state?.configuredWithVersion,
         configStale,
         appVersion,
+        crossRanEnabled: !!state?.crossRanEnabled,
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'asterisk-2g status error');
@@ -630,14 +943,99 @@ export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditL
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
-    const { bindIp, bindPort, msisdnMatchPattern } = req.body as { bindIp?: string; bindPort?: number; msisdnMatchPattern?: string };
-    const result = await configureAsterisk2g({ bindIp, bindPort, msisdnMatchPattern });
+    const { bindIp, bindPort, msisdnMatchPattern, echoTestNumber } = req.body as { bindIp?: string; bindPort?: number; msisdnMatchPattern?: string; echoTestNumber?: string };
+    const result = await configureAsterisk2g({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber }, mongoUri, subscriberRepo);
     if (!result.success) {
       await auditLogger.log({ action: 'asterisk2g_configure', user, details: result.error ?? 'failed', success: false });
       return res.status(400).json({ success: false, error: result.error });
     }
     await auditLogger.log({ action: 'asterisk2g_configure', user, details: `bindIp=${result.bindIp} sipConnPeer=${result.sipConnPeer}`, success: true });
     res.json({ success: true, bindIp: result.bindIp, sipConnPeer: result.sipConnPeer });
+  });
+
+  // GET /api/asterisk-2g/extensions — list 2G short codes, joined with subscriber nickname/MSISDN
+  router.get('/extensions', requireAdmin, async (_req: Request, res: Response) => {
+    try {
+      const extensions = await withGsm2gExtensions(mongoUri, col => col.find({}).sort({ extension: 1 }).toArray());
+      const nicknames = await subscriberRepo.getNicknamesByImsi(extensions.map(e => e.subscriberImsi));
+      const allSubs = await subscriberRepo.findAllFull();
+      const msisdnByImsi = new Map(allSubs.map(s => [s.imsi, s.msisdn?.[0]]));
+      res.json({
+        success: true,
+        extensions: extensions.map(e => ({
+          ...e,
+          subscriberNickname: nicknames[e.subscriberImsi],
+          subscriberMsisdn: msisdnByImsi.get(e.subscriberImsi),
+        })),
+      });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'asterisk-2g extensions list error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/asterisk-2g/extensions — body: { extension, subscriberImsi, label? }
+  router.post('/extensions', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { subscriberImsi, label } = req.body as { extension?: string; subscriberImsi?: string; label?: string };
+    const rawExtension = req.body.extension as string | undefined;
+    if (!rawExtension || !EXTENSION_INPUT_RE.test(rawExtension)) {
+      return res.status(400).json({ success: false, error: 'extension must be 1-15 digits (a leading "+" is accepted but not required)' });
+    }
+    const extension = normalizeExtension(rawExtension);
+    if (!subscriberImsi || !/^\d{6,15}$/.test(subscriberImsi)) {
+      return res.status(400).json({ success: false, error: 'subscriberImsi is required' });
+    }
+    const echoTestNumber = readState()?.echoTestNumber || STATE_DEFAULTS.echoTestNumber;
+    if (extension === echoTestNumber) {
+      return res.status(400).json({ success: false, error: `${extension} is reserved for the echo test — pick a different code, or change the echo test number on the 2G Voice tab first.` });
+    }
+    // Cross-RAN Calling makes both sides' short codes reachable from either
+    // instance, so a number can't mean two different subscribers at once —
+    // gated on crossRanEnabled (not unconditional) so two unrelated,
+    // never-to-be-bridged deployments can still reuse the same short code
+    // freely on each side. See CLAUDE.md's Cross-RAN Calling entry.
+    if (readState()?.crossRanEnabled) {
+      const peerCodes = await getCrossRanPeerCodes(mongoUri);
+      const { getPstnEchoTestNumber } = await import('./pstn-controller');
+      if (peerCodes.some(c => c.extension === extension) || extension === getPstnEchoTestNumber()) {
+        return res.status(409).json({ success: false, error: `${extension} collides with an existing 4G/5G short code or its echo-test number — Cross-RAN Calling is enabled, so short codes must stay unique across both sides.` });
+      }
+    }
+    try {
+      const subscriber = await subscriberRepo.findByImsi(subscriberImsi);
+      if (!subscriber) return res.status(404).json({ success: false, error: `No subscriber with IMSI ${subscriberImsi}` });
+      if (!subscriber.gsmEnabled) return res.status(400).json({ success: false, error: 'Subscriber does not have 2G/3G Auth enabled — enable it on the Subscribers page first.' });
+      if (!subscriber.msisdn?.[0]) return res.status(400).json({ success: false, error: 'Subscriber has no MSISDN — 2G short codes dial by MSISDN, not IMSI.' });
+
+      await withGsm2gExtensions(mongoUri, async col => {
+        const existing = await col.findOne({ extension });
+        if (existing) throw new Error(`Short code ${extension} is already assigned`);
+        await col.insertOne({ extension, subscriberImsi, label, createdAt: new Date().toISOString() });
+      });
+      await regenerateExtensions2g(mongoUri, subscriberRepo);
+
+      await auditLogger.log({ action: 'asterisk2g_extension_add', user, details: `${extension} -> ${subscriberImsi}`, success: true });
+      res.json({ success: true });
+    } catch (err) {
+      await auditLogger.log({ action: 'asterisk2g_extension_add', user, details: String(err), success: false });
+      res.status(400).json({ success: false, error: String((err as Error).message ?? err) });
+    }
+  });
+
+  // DELETE /api/asterisk-2g/extensions/:extension
+  router.delete('/extensions/:extension', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const extension = decodeURIComponent(req.params.extension);
+    try {
+      await withGsm2gExtensions(mongoUri, col => col.deleteOne({ extension }));
+      await regenerateExtensions2g(mongoUri, subscriberRepo);
+      await auditLogger.log({ action: 'asterisk2g_extension_remove', user, details: extension, success: true });
+      res.json({ success: true });
+    } catch (err) {
+      await auditLogger.log({ action: 'asterisk2g_extension_remove', user, details: String(err), success: false });
+      res.status(500).json({ success: false, error: String(err) });
+    }
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
@@ -675,6 +1073,50 @@ export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditL
     }
   });
 
+  // ─── Config file editor (mirrors gsm-controller.ts's /configs endpoints) ──
+  router.get('/configs', async (_req: Request, res: Response) => {
+    const files: Asterisk2gConfigFile[] = A2G_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
+    res.json({ success: true, files });
+  });
+
+  router.get('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+    const path = req.query.path as string;
+    if (!A2G_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
+    try {
+      const content = fs.existsSync(path) ? fs.readFileSync(path, 'utf-8') : '';
+      res.json({ success: true, content });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { path, content } = req.body as { path: string; content: string };
+    if (!A2G_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
+    try {
+      fs.mkdirSync(`${HOST_ROOT}${A2G_ETC}`, { recursive: true });
+      fs.writeFileSync(path, content, 'utf-8');
+      await auditLogger.log({ action: 'asterisk2g_config_save', user, details: path, success: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const services = (req.body.services as string[]) || [];
+    try {
+      for (const svc of services) await nsenter('systemctl', ['restart', svc]);
+      if (services.includes(SYSTEMD_UNIT)) await ensureNativeRtpBridgeSuspended2g();
+      await auditLogger.log({ action: 'asterisk2g_config_restart', user, details: services.join(','), success: true });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
   // POST /api/asterisk-2g/uninstall — scoped ONLY to this instance's own
   // tree/unit. Deliberately NEVER apt purges asterisk/asterisk-modules (see
   // module header) — that package is shared with the PSTN Gateway's own,
@@ -691,7 +1133,20 @@ export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditL
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
 
     try {
-      write('=== Stopping and disabling asterisk-2g.service (the stock asterisk.service / PSTN Gateway is never touched) ===');
+      // Best-effort — must run BEFORE this instance's own tree gets wiped
+      // below, since setCrossRanCalling(false,...) internally delegates back
+      // to THIS module's own setCrossRanPeer(false,...) too (harmless/
+      // redundant given the wipe that follows, but it needs A2G_CONF to
+      // still exist to do PSTN's own half of the teardown correctly). Lazy
+      // import — see isAsterisk2gInstalled()'s own comment for why this
+      // direction can't be a static import.
+      if (readState()?.crossRanEnabled) {
+        write('=== Tearing down Cross-RAN Calling peer on PSTN Gateway (best-effort) ===');
+        const { setCrossRanCalling } = await import('./pstn-controller');
+        await setCrossRanCalling(false, mongoUri, subscriberRepo).catch(() => {});
+      }
+
+      write('\n=== Stopping and disabling asterisk-2g.service (the stock asterisk.service / PSTN Gateway is never touched) ===');
       await nsenter('systemctl', ['disable', '--now', SYSTEMD_UNIT]).catch(() => {});
 
       write('\n=== Removing this instance\'s own systemd unit ===');
@@ -702,6 +1157,10 @@ export function createAsterisk2gRouter(logger: pino.Logger, auditLogger: IAuditL
       await nsenter('rm', ['-rf', A2G_ETC, A2G_VARLIB, A2G_SPOOL, A2G_LOG, A2G_CACHE, A2G_RUN]).catch(() => {});
       if (fs.existsSync(`${HOST_ROOT}${TMPFILES_PATH}`)) fs.unlinkSync(`${HOST_ROOT}${TMPFILES_PATH}`);
       if (fs.existsSync(HOST_STATE)) fs.unlinkSync(HOST_STATE);
+
+      write('\n=== Removing 2G short code mappings ===');
+      const removed = await withGsm2gExtensions(mongoUri, col => col.deleteMany({})).then(r => r.deletedCount).catch(() => 0);
+      write(`Removed ${removed} short code mapping(s).`);
 
       write('\n=== NOT purging the asterisk/asterisk-modules packages — shared with the PSTN Gateway\'s own instance ===');
 

@@ -330,11 +330,11 @@ export const BackupPage: React.FC = () => {
         />
       )}
 
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold font-display text-nms-text mb-1">Backup & Restore</h1>
-        <p className="text-sm text-nms-text-dim">Manage configuration and database backups</p>
+      <div>
+        <h1 className="text-2xl font-semibold font-display text-nms-text">Backup & Restore</h1>
+        <p className="text-sm text-nms-text-dim mt-1">Manage configuration and database backups</p>
       </div>
 
       {/* Main Grid */}

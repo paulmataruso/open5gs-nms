@@ -34,7 +34,10 @@ export type ServiceName =
   | 'osmo-sgsn'         // Serving GPRS Support Node
   | 'osmo-ggsn'         // Gateway GPRS Support Node
   | 'osmo-meas-udp2db'  // Per-UE measurement-report -> SQLite bridge
-  | 'osmo-sip-connector'; // GSM SIP tab — osmo-msc's external MNCC<->SIP bridge
+  | 'osmo-sip-connector' // GSM SIP tab — osmo-msc's external MNCC<->SIP bridge
+  // 3G UMTS (OsmoHNBGW module) — may be absent on deployments without it.
+  | 'osmo-hnbgw'         // Home NodeB Gateway (Iuh <-> IuCS/IuPS)
+  | 'osmo-mgw-hnbgw';    // Dedicated 3rd OsmoMGW instance, co-located with HNBGW
 
 export const SERVICE_UNIT_MAP: Record<ServiceName, string> = {
   // Infrastructure
@@ -70,6 +73,8 @@ export const SERVICE_UNIT_MAP: Record<ServiceName, string> = {
   'osmo-ggsn': 'osmo-ggsn',
   'osmo-meas-udp2db': 'osmo-meas-udp2db',
   'osmo-sip-connector': 'osmo-sip-connector',
+  'osmo-hnbgw': 'osmo-hnbgw',
+  'osmo-mgw-hnbgw': 'osmo-mgw-hnbgw',
 };
 
 // Proper restart order: Control plane BEFORE user plane to avoid PFCP errors

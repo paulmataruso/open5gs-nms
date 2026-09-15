@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import {
   Play, Square, RotateCw, Terminal, Trash2, Plus, Settings, FileText, RadioTower, AlertTriangle, ShieldAlert,
-  Pencil, Radar, CheckCircle, CheckCircle2, XCircle, Phone, PhoneCall,
+  Pencil, Radar, CheckCircle, CheckCircle2, XCircle, Phone, PhoneCall, Smartphone,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -12,6 +12,7 @@ import {
 } from '../api/gsm';
 import { asterisk2gApi, type Asterisk2gStatus } from '../api/asterisk-2g';
 import { FEATURES } from '../config/features';
+import { SubscriberAuthTab } from './SubscriberAuthTab';
 
 function LogTerminal({ lines }: { lines: string }) {
   return (
@@ -1173,6 +1174,7 @@ function Asterisk2gTab() {
   const [bindIp, setBindIp] = useState('127.0.1.7');
   const [bindPort, setBindPort] = useState(5060);
   const [msisdnMatchPattern, setMsisdnMatchPattern] = useState('_X.');
+  const [echoTestNumber, setEchoTestNumber] = useState('600');
 
   const refresh = useCallback(() => {
     asterisk2gApi.getStatus().then(setStatus).catch(() => {});
@@ -1191,6 +1193,7 @@ function Asterisk2gTab() {
     setBindIp(status.bindIp);
     setBindPort(status.bindPort);
     setMsisdnMatchPattern(status.msisdnMatchPattern);
+    setEchoTestNumber(status.echoTestNumber);
   }, [status]);
 
   // Single button does install (idempotent) then configure, in sequence —
@@ -1218,7 +1221,7 @@ function Asterisk2gTab() {
     setInstalling(false);
     setConfiguring(true);
     try {
-      await asterisk2gApi.configure({ bindIp, bindPort, msisdnMatchPattern });
+      await asterisk2gApi.configure({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber });
       toast.success('Asterisk-2G installed and configured — SIP tab remote and MNCC mode set to External automatically.');
       refresh();
     } catch (err: any) {
@@ -1318,6 +1321,15 @@ function Asterisk2gTab() {
               numbering plan (e.g. <code className="font-mono">_1555X.</code>) any time.
             </p>
           </div>
+          <div className="md:col-span-2">
+            <label className="nms-label">Echo test number</label>
+            <input className="nms-input font-mono text-xs" value={echoTestNumber} onChange={e => setEchoTestNumber(e.target.value)} placeholder="600" />
+            <p className="text-[11px] text-nms-text-dim mt-1">
+              Dial this number from any 2G phone to hear your own audio looped back (Asterisk's native Echo() test) — no
+              second phone or subscriber needed. An exact match always wins over the MSISDN match pattern above, so pick
+              anything that doesn't collide with a real MSISDN on this network.
+            </p>
+          </div>
         </div>
 
         <button onClick={handleInstallAndConfigure} disabled={installing || configuring || !status.sipConnPeer} className="nms-btn-primary text-sm flex items-center gap-2 disabled:opacity-50">
@@ -1332,7 +1344,7 @@ function Asterisk2gTab() {
 
 export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const [status, setStatus] = useState<GsmStatus | null>(null);
-  const [tab, setTab] = useState<'setup' | 'bts' | 'sip' | 'voice2g' | 'configs'>('setup');
+  const [tab, setTab] = useState<'setup' | 'bts' | 'subscribers' | 'sip' | 'voice2g' | 'configs'>('setup');
   const [svcBusy, setSvcBusy] = useState(false);
 
   const refresh = useCallback(() => {
@@ -1361,6 +1373,7 @@ export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
   const TABS: { id: typeof tab; label: string; icon: React.ReactNode }[] = [
     { id: 'setup',   label: 'Setup',         icon: <Settings className="w-4 h-4" /> },
     { id: 'bts',     label: 'BTS / Radios',  icon: <RadioTower className="w-4 h-4" /> },
+    { id: 'subscribers', label: 'Subscribers', icon: <Smartphone className="w-4 h-4" /> },
     { id: 'sip',     label: 'SIP',           icon: <Phone className="w-4 h-4" /> },
     ...(FEATURES.asterisk2g ? [{ id: 'voice2g' as const, label: '2G Voice', icon: <PhoneCall className="w-4 h-4" /> }] : []),
     { id: 'configs', label: 'Config Files',  icon: <FileText className="w-4 h-4" /> },
@@ -1420,6 +1433,7 @@ export function GsmPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
 
       {tab === 'setup' && <SetupTab status={status} refresh={refresh} onNavigate={onNavigate} />}
       {tab === 'bts' && <BtsTab btsEntries={status?.btsEntries ?? []} refresh={refresh} defaultOmlIp={status?.bscMgwBindIp ?? '127.0.0.1'} />}
+      {tab === 'subscribers' && <SubscriberAuthTab onNavigate={onNavigate} />}
       {tab === 'sip' && <SipTab status={status} refresh={refresh} />}
       {tab === 'voice2g' && FEATURES.asterisk2g && <Asterisk2gTab />}
       {tab === 'configs' && <ConfigFilesTab />}

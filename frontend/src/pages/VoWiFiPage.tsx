@@ -200,6 +200,7 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
 
   return (
     <div className="space-y-4">
+      <OverviewCard />
       {installNeedsAttention ? (
         <div className="nms-card">
           <h2 className="text-sm font-semibold text-nms-text mb-3">1. Install</h2>
@@ -646,8 +647,6 @@ export function VoWiFiPage() {
           </div>
         )}
       </div>
-
-      <OverviewCard />
 
       {/* Tabs */}
       <div className="flex justify-center">

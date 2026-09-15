@@ -741,14 +741,14 @@ export function ConfigPage(): JSX.Element {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display">Configuration</h1>
           <p className="text-sm text-nms-text-dim mt-1">
             Edit Open5GS network function configurations (5G Core + 4G EPC)
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {dirty && (
             <span className="text-xs text-nms-amber flex items-center gap-1">
               <AlertTriangle className="w-3.5 h-3.5" /> Unsaved changes
@@ -758,29 +758,29 @@ export function ConfigPage(): JSX.Element {
             href="/docs/open5gs-yaml-reference.html"
             target="_blank"
             rel="noopener noreferrer"
-            className="nms-btn-ghost flex items-center gap-2 text-sm"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <BookOpen className="w-4 h-4" />
+            <BookOpen className="w-3 h-3" />
             YAML Config Reference
           </a>
           <a
             href="/docs/open5gs-architecture-guide.html"
             target="_blank"
             rel="noopener noreferrer"
-            className="nms-btn-ghost flex items-center gap-2 text-sm"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <Network className="w-4 h-4" />
+            <Network className="w-3 h-3" />
             Architecture Guide
           </a>
-          <button onClick={handleValidate} className="nms-btn-ghost flex items-center gap-2">
-            <Shield className="w-4 h-4" /> Validate
+          <button onClick={handleValidate} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <Shield className="w-3 h-3" /> Validate
           </button>
           <button
             onClick={() => handleApply()}
             disabled={applying || !dirty}
-            className="nms-btn-primary flex items-center gap-2"
+            className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            {applying ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            {applying ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
             Apply Changes
           </button>
         </div>

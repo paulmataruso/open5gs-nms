@@ -211,8 +211,8 @@ export function PcapPage(): JSX.Element {
             Capture real core/radio traffic on any host interface — scope by NF or function type at capture time, decode with protocol filters afterward.
           </p>
         </div>
-        <button onClick={loadAll} className="nms-btn-ghost flex items-center gap-2 text-sm">
-          <RefreshCw className="w-4 h-4" /> Refresh
+        <button onClick={loadAll} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 shrink-0">
+          <RefreshCw className="w-3 h-3" /> Refresh
         </button>
       </div>
 

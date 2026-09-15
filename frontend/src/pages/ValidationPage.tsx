@@ -1316,41 +1316,41 @@ export function ValidationPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-display font-bold text-nms-text">UE/Core Validation</h1>
-          <p className="text-sm text-nms-text-dim mt-0.5">
+          <h1 className="text-2xl font-semibold font-display text-nms-text">UE/Core Validation</h1>
+          <p className="text-sm text-nms-text-dim mt-1">
             Simulate UE attach using UERANSIM (5G) and srsRAN (4G) — configs inferred from your Open5GS deployment
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           <button
             onClick={handleInfer}
             disabled={inferring}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-nms-border rounded hover:border-nms-accent/50 text-nms-text-dim hover:text-nms-text transition-colors"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${inferring ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3 h-3 ${inferring ? 'animate-spin' : ''}`} />
             Re-read Config
           </button>
           <button
             onClick={handleStopAll}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-red-500/40 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-red-500/40 bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
           >
-            <Square className="w-3.5 h-3.5" /> Stop All
+            <Square className="w-3 h-3" /> Stop All
           </button>
           <button
             onClick={handleForceCleanup}
             title="Force-delete all VAL-TEST-* subscribers and ue-val-* containers, even after a backend restart"
-            className="flex items-center gap-2 px-3 py-1.5 text-sm border border-red-700/50 rounded bg-red-900/20 text-red-500 hover:bg-red-900/40 transition-colors"
+            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-red-700/50 bg-red-900/20 text-red-500 hover:bg-red-900/40 transition-colors"
           >
-            <Trash2 className="w-3.5 h-3.5" /> Force Cleanup
+            <Trash2 className="w-3 h-3" /> Force Cleanup
           </button>
         </div>
       </div>
 
       {/* Resource warning */}
-      <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/20 rounded-lg px-4 py-3 text-sm text-amber-400">
-        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+      <div className="flex items-start gap-3 p-4 rounded-lg border border-amber-500/40 bg-amber-500/5 text-sm text-amber-400">
+        <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
         <div>
           Running a UE simulation is <strong>very resource-intensive</strong> (real-time DSP for 4G, concurrent
           radio processes for 5G) and can cause the GUI to lag while a session is starting or under load.

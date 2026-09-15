@@ -165,11 +165,11 @@ export function TrafficHistoryPage() {
   const zoom = useZoomableChartData(points);
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold font-display text-nms-text flex items-center gap-2">
+          <h1 className="text-2xl font-semibold font-display text-nms-text flex items-center gap-2">
             <TrendingUp className="w-6 h-6 text-nms-accent" />
             Traffic History
           </h1>
@@ -177,17 +177,17 @@ export function TrafficHistoryPage() {
             GTP U-Plane throughput over time — aggregate per-DNN or filtered to a single subscriber.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           <TimeRangePicker value={timeRange} onChange={setTimeRange} />
-          <button onClick={load} className="nms-btn-ghost flex items-center gap-2" title="Refresh">
-            <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} />
+          <button onClick={load} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5" title="Refresh">
+            <RefreshCw className={clsx('w-3 h-3', loading && 'animate-spin')} />
           </button>
           <button
             onClick={() => setSpeedTestModalOpen(true)}
-            className="nms-btn-ghost flex items-center gap-2"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
             title="Speed Test Server"
           >
-            <Gauge className="w-4 h-4" />
+            <Gauge className="w-3 h-3" />
             Speed Test Server
           </button>
         </div>

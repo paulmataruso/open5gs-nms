@@ -1933,22 +1933,22 @@ export function SASPage() {
           <h1 className="text-2xl font-semibold font-display">Spectrum Access System</h1>
           <p className="text-sm text-nms-text-dim mt-1">WinnForum CBRS SAS-CBSD Interface — WINNF-TS-0016 V1.2.7</p>
         </div>
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           <button
             onClick={toggleVerbose}
             className={clsx(
-              'nms-btn-ghost flex items-center gap-2 text-sm',
+              'nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5',
               verbose && 'text-amber-400'
             )}
           >
-            <ScrollText className="w-4 h-4" />
+            <ScrollText className="w-3 h-3" />
             {verbose ? 'Verbose ON' : 'Verbose OFF'}
           </button>
-          <button onClick={openFreqDebug} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <Activity className="w-4 h-4" /> Freq Debug
+          <button onClick={openFreqDebug} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <Activity className="w-3 h-3" /> Freq Debug
           </button>
-          <button onClick={() => load()} disabled={loading} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className={clsx('w-4 h-4', loading && 'animate-spin')} /> Refresh
+          <button onClick={() => load()} disabled={loading} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className={clsx('w-3 h-3', loading && 'animate-spin')} /> Refresh
           </button>
           <button
             onClick={async () => {
@@ -1959,9 +1959,9 @@ export function SASPage() {
                 load(true);
               } catch { toast.error('Clear failed'); }
             }}
-            className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400"
           >
-            <Trash2 className="w-4 h-4" /> Clear DB
+            <Trash2 className="w-3 h-3" /> Clear DB
           </button>
           <button
             onClick={async () => {
@@ -1978,7 +1978,7 @@ export function SASPage() {
               } catch { toast.error('Failed to change SAS state'); }
             }}
             className={clsx(
-              'flex items-center gap-2 text-sm',
+              'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md',
               paused ? 'nms-btn-primary' : 'nms-btn-danger'
             )}
           >

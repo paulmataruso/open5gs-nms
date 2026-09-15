@@ -40,13 +40,13 @@ export function AuditPage(): JSX.Element {
 
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display">Audit Log</h1>
           <p className="text-sm text-nms-text-dim mt-1">{total} entries</p>
         </div>
-        <button onClick={fetchLogs} className="nms-btn-ghost flex items-center gap-2">
-          <RefreshCw className="w-4 h-4" /> Refresh
+        <button onClick={fetchLogs} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 shrink-0">
+          <RefreshCw className="w-3 h-3" /> Refresh
         </button>
       </div>
 

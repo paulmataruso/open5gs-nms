@@ -265,18 +265,17 @@ export function MetricsPage(): JSX.Element {
     <div className="p-6 space-y-6">
 
       {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="max-w-2xl">
           <h1 className="text-2xl font-semibold font-display flex items-center gap-2">
             <BarChart2 className="w-6 h-6 text-nms-accent" />
             Metrics Endpoints
           </h1>
           <p className="text-sm text-nms-text-dim mt-1">
-            Configure where each network function exposes Prometheus metrics.
-            Changes update <span className="font-mono">/etc/open5gs/*.yaml</span>, restart affected services, and reload Prometheus automatically.
+            Prometheus scrape endpoints per network function
           </p>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {isDirty && (
             <span className="text-xs text-nms-amber flex items-center gap-1.5">
               <AlertTriangle className="w-3.5 h-3.5" />
@@ -287,38 +286,38 @@ export function MetricsPage(): JSX.Element {
             href={`http://${window.location.hostname}:${import.meta.env.VITE_PROMETHEUS_PORT || '9099'}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="nms-btn-ghost flex items-center gap-2 text-sm"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
             title="Open Prometheus UI"
           >
-            <ExternalLink className="w-4 h-4" />
+            <ExternalLink className="w-3 h-3" />
             Prometheus
           </a>
           <a
             href={`http://${window.location.hostname}:${import.meta.env.VITE_GRAFANA_PORT || '3000'}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="nms-btn-ghost flex items-center gap-2 text-sm text-nms-accent border-nms-accent/30 hover:border-nms-accent/60"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-nms-accent border-nms-accent/30 hover:border-nms-accent/60"
             title="Open Grafana dashboards"
           >
-            <ExternalLink className="w-4 h-4" />
+            <ExternalLink className="w-3 h-3" />
             Grafana
           </a>
           <button
             onClick={handleRefresh}
             disabled={applying}
-            className="nms-btn-ghost flex items-center gap-2 text-sm"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <RefreshCw className={clsx('w-4 h-4', applying && 'animate-spin')} />
+            <RefreshCw className={clsx('w-3 h-3', applying && 'animate-spin')} />
             Refresh
           </button>
           <button
             onClick={handleApply}
             disabled={applying || !isDirty}
-            className="nms-btn-primary flex items-center gap-2 text-sm"
+            className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
             {applying
-              ? <RefreshCw className="w-4 h-4 animate-spin" />
-              : <Save className="w-4 h-4" />
+              ? <RefreshCw className="w-3 h-3 animate-spin" />
+              : <Save className="w-3 h-3" />
             }
             {applying
               ? 'Applying…'

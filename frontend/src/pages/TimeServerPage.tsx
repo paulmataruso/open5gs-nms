@@ -27,6 +27,17 @@ function parseChronycAge(s: string): number | null {
   return seconds > 0 ? seconds : null;
 }
 
+function SvcBadge({ label, active }: { label: string; active: boolean }) {
+  return (
+    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-mono border ${
+      active ? 'text-green-400 bg-green-500/10 border-green-500/30' : 'text-red-400 bg-red-500/10 border-red-500/30'
+    }`}>
+      {active ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+      {label}
+    </div>
+  );
+}
+
 function SourceStateLabel({ state }: { state: string }) {
   const map: Record<string, { label: string; color: string }> = {
     '*': { label: 'Selected',  color: 'text-green-400 bg-green-500/10 border-green-500/30' },
@@ -171,63 +182,56 @@ export function TimeServerPage() {
           <h1 className="text-2xl font-semibold font-display">Time Server</h1>
           <p className="text-sm text-nms-text-dim mt-1">NTP via Chrony — serves time to radios and UEs</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => fetchAll()} className="nms-btn-ghost flex items-center gap-2 text-sm">
-            <RefreshCw className="w-4 h-4" /> Refresh
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {installed && <SvcBadge label={active ? 'chrony running' : 'chrony stopped'} active={active} />}
+          {installed && <div className="h-5 w-px bg-nms-border" />}
+          <button onClick={() => fetchAll()} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+            <RefreshCw className="w-3 h-3" /> Refresh
           </button>
           {installed && active && (
             <button onClick={handleRestart} disabled={restarting}
-              className="nms-btn-ghost flex items-center gap-2 text-sm text-amber-400">
-              <RotateCw className={`w-4 h-4 ${restarting ? 'animate-spin' : ''}`} />
+              className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-amber-400">
+              <RotateCw className={`w-3 h-3 ${restarting ? 'animate-spin' : ''}`} />
               {restarting ? 'Restarting…' : 'Restart Chrony'}
+            </button>
+          )}
+          {!installed && (
+            <button onClick={handleInstall} disabled={installing}
+              className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+              <Terminal className="w-3 h-3" />
+              {installing ? 'Installing…' : 'Install Chrony'}
             </button>
           )}
           {config && dirty && (
             <button onClick={() => { setDirty(false); fetchAll(true, true); }}
-              className="nms-btn-ghost flex items-center gap-2 text-sm text-nms-text-dim">
+              className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 text-nms-text-dim">
               Discard
             </button>
           )}
           {config && (
             <button onClick={handleSave} disabled={saving}
-              className={`nms-btn-primary flex items-center gap-2 text-sm ${dirty ? 'ring-2 ring-nms-accent/50' : ''}`}>
-              <Save className="w-4 h-4" />
+              className={`nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5 ${dirty ? 'ring-2 ring-nms-accent/50' : ''}`}>
+              <Save className="w-3 h-3" />
               {saving ? 'Saving…' : dirty ? 'Save & Restart *' : 'Save & Restart'}
             </button>
           )}
         </div>
       </div>
 
-      {/* Status banner */}
-      <div className={`nms-card flex items-center gap-4 ${!installed ? 'border-amber-500/30 bg-amber-500/5' : active ? 'border-green-500/30 bg-green-500/5' : 'border-red-500/30 bg-red-500/5'}`}>
-        <div className="flex items-center gap-2">
-          {!installed
-            ? <AlertCircle className="w-5 h-5 text-amber-400" />
-            : active
-              ? <CheckCircle className="w-5 h-5 text-green-400" />
-              : <XCircle    className="w-5 h-5 text-red-400"   />
-          }
-          <div>
-            <p className="text-sm font-semibold">
-              {!installed ? 'Chrony not installed' : active ? 'Chrony running' : 'Chrony stopped'}
-            </p>
-            {status?.tracking && (
-              <p className="text-xs text-nms-text-dim mt-0.5">
-                Synced to <span className="font-mono text-nms-text">{status.tracking.refSource || status.tracking.refId}</span>
-                {status.tracking.stratum && <> · Stratum <span className="font-mono text-nms-text">{status.tracking.stratum}</span></>}
-                {status.tracking.sysTimeOffset && <> · Offset <span className="font-mono text-nms-text">{status.tracking.sysTimeOffset.split(' ')[0]}</span></>}
-              </p>
-            )}
-          </div>
+      {!installed && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-200 leading-relaxed">Chrony is not installed on this host — click <strong>Install Chrony</strong> above to get started.</p>
         </div>
-        {!installed && (
-          <button onClick={handleInstall} disabled={installing}
-            className="ml-auto nms-btn-primary flex items-center gap-2">
-            <Terminal className="w-4 h-4" />
-            {installing ? 'Installing…' : 'Install Chrony'}
-          </button>
-        )}
-      </div>
+      )}
+
+      {installed && status?.tracking && (
+        <p className="text-xs text-nms-text-dim">
+          Synced to <span className="font-mono text-nms-text">{status.tracking.refSource || status.tracking.refId}</span>
+          {status.tracking.stratum && <> · Stratum <span className="font-mono text-nms-text">{status.tracking.stratum}</span></>}
+          {status.tracking.sysTimeOffset && <> · Offset <span className="font-mono text-nms-text">{status.tracking.sysTimeOffset.split(' ')[0]}</span></>}
+        </p>
+      )}
 
       {/* Install output */}
       {installLog && (

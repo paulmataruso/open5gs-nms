@@ -98,7 +98,7 @@ function StatCard({
 const SERVICES_OSMO = [
   'osmo-stp', 'osmo-hlr', 'osmo-msc',
   'osmo-bsc', 'osmo-mgw', 'osmo-bts-virtual', 'osmo-pcu', 'osmo-sgsn', 'osmo-ggsn', 'osmo-meas-udp2db',
-  'osmo-sip-connector',
+  'osmo-sip-connector', 'osmo-hnbgw', 'osmo-mgw-hnbgw',
 ];
 function vendorLabel(serviceName: string): string {
   if (serviceName === 'mongodb') return 'MongoDB';
@@ -353,40 +353,40 @@ export function DashboardPage(): JSX.Element {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display">Dashboard</h1>
           <p className="text-sm text-nms-text-dim mt-1">Open5GS 5G Core Network Overview</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           <button
             onClick={() => doBulkAction('start')}
             disabled={bulkActing}
-            className="nms-btn-ghost flex items-center gap-2 text-sm"
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <Play className="w-4 h-4" /> Start All
+            <Play className="w-3 h-3" /> Start All
           </button>
           <button
             onClick={() => doBulkAction('stop')}
             disabled={bulkActing}
-            className="nms-btn-danger flex items-center gap-2 text-sm"
+            className="nms-btn-danger text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <Square className="w-4 h-4" /> Stop All
+            <Square className="w-3 h-3" /> Stop All
           </button>
           <button
             onClick={() => doBulkAction('restart')}
             disabled={bulkActing}
-            className="nms-btn-primary flex items-center gap-2 text-sm"
+            className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5"
           >
-            <Zap className="w-4 h-4" /> Restart All
+            <Zap className="w-3 h-3" /> Restart All
           </button>
           <button
             onClick={() => setConfirmBlockRan(true)}
             disabled={blockingRan}
-            className="nms-btn-danger flex items-center gap-2 text-sm"
+            className="nms-btn-danger text-xs flex items-center gap-1.5 px-2.5 py-1.5"
             title="Sever S1-MME and S1-U for every connected radio (nftables, this host only) — radios themselves are not touched"
           >
-            <ShieldOff className="w-4 h-4" /> Block RAN
+            <ShieldOff className="w-3 h-3" /> Block RAN
           </button>
         </div>
       </div>

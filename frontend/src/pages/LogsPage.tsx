@@ -267,95 +267,101 @@ export const LogsPage: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-nms-bg">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-nms-border bg-nms-surface">
-        <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold font-display text-nms-text">Unified Logs</h1>
-          {/* Page tabs */}
+      <div className="p-4 border-b border-nms-border bg-nms-surface space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold font-display text-nms-text">Unified Logs</h1>
+            <p className="text-sm text-nms-text-dim mt-1">Live tail, audit trail, and major-event classification across every NF</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap shrink-0">
+            {pageTab === 'logs' && (
+              <>
+                <div className="flex items-center gap-1.5">
+                  {connected ? (
+                    <>
+                      <Circle className="w-2 h-2 fill-nms-green text-nms-green animate-pulse" />
+                      <span className="text-xs text-nms-green">Connected</span>
+                    </>
+                  ) : (
+                    <>
+                      <Circle className="w-2 h-2 fill-nms-red text-nms-red" />
+                      <span className="text-xs text-nms-red">Disconnected</span>
+                    </>
+                  )}
+                </div>
+                <div className="h-5 w-px bg-nms-border" />
+                <label
+                  className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5 cursor-pointer"
+                  title="Set the logger level on every open5gs NF at once — applied immediately"
+                >
+                  {settingLogLevel ? <RotateCw className="w-3 h-3 animate-spin" /> : <Gauge className="w-3 h-3" />}
+                  <select
+                    disabled={settingLogLevel}
+                    defaultValue=""
+                    onChange={(e) => { if (e.target.value) { handleBulkLogLevel(e.target.value); e.target.value = ''; } }}
+                    className="bg-transparent focus:outline-none cursor-pointer disabled:cursor-not-allowed"
+                  >
+                    <option value="" disabled>Log Level (all NFs)</option>
+                    {LOG_LEVELS.map((l) => (
+                      <option key={l.value} value={l.value}>{l.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  onClick={() => setShowDownloadModal(true)}
+                  className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
+                  title="Download logs"
+                >
+                  <Download className="w-3 h-3" /> Download
+                </button>
+                <button
+                  onClick={() => setShowSyslogModal(true)}
+                  className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
+                  title="Forward all logs to a remote syslog server"
+                >
+                  <RadioTower className="w-3 h-3" /> Syslog Forwarding
+                </button>
+                <button
+                  onClick={() => window.location.reload()}
+                  className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
+                  title="Refresh"
+                >
+                  <RotateCw className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={clearLogs}
+                  className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"
+                  title="Clear logs"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-center">
           <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
             <button
               onClick={() => setPageTab('logs')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${pageTab === 'logs' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'logs' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
             >
               <ScrollText className="w-4 h-4" /> Live Logs
             </button>
             <button
               onClick={() => setPageTab('audit')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${pageTab === 'audit' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'audit' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
             >
               <FileText className="w-4 h-4" /> Audit Log
             </button>
             <button
               onClick={() => setPageTab('events')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${pageTab === 'events' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'events' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
             >
               <Zap className="w-4 h-4" /> Major Events
             </button>
           </div>
-          {pageTab === 'logs' && (
-            <div className="flex items-center gap-2">
-              {connected ? (
-                <>
-                  <Circle className="w-2 h-2 fill-nms-green text-nms-green animate-pulse" />
-                  <span className="text-xs text-nms-green">Connected</span>
-                </>
-              ) : (
-                <>
-                  <Circle className="w-2 h-2 fill-nms-red text-nms-red" />
-                  <span className="text-xs text-nms-red">Disconnected</span>
-                </>
-              )}
-            </div>
-          )}
         </div>
-        {pageTab === 'logs' && (
-          <div className="flex gap-2 items-center">
-            <label
-              className="nms-btn-ghost text-sm flex items-center gap-1.5 cursor-pointer"
-              title="Set the logger level on every open5gs NF at once — applied immediately"
-            >
-              {settingLogLevel ? <RotateCw className="w-4 h-4 animate-spin" /> : <Gauge className="w-4 h-4" />}
-              <select
-                disabled={settingLogLevel}
-                defaultValue=""
-                onChange={(e) => { if (e.target.value) { handleBulkLogLevel(e.target.value); e.target.value = ''; } }}
-                className="bg-transparent focus:outline-none cursor-pointer disabled:cursor-not-allowed"
-              >
-                <option value="" disabled>Log Level (all NFs)</option>
-                {LOG_LEVELS.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
-            </label>
-            <button
-              onClick={() => setShowDownloadModal(true)}
-              className="nms-btn-ghost text-sm flex items-center gap-1.5"
-              title="Download logs"
-            >
-              <Download className="w-4 h-4" /> Download
-            </button>
-            <button
-              onClick={() => setShowSyslogModal(true)}
-              className="nms-btn-ghost text-sm flex items-center gap-1.5"
-              title="Forward all logs to a remote syslog server"
-            >
-              <RadioTower className="w-4 h-4" /> Syslog Forwarding
-            </button>
-            <button
-              onClick={() => window.location.reload()}
-              className="nms-btn-ghost text-sm"
-              title="Refresh"
-            >
-              <RotateCw className="w-4 h-4" />
-            </button>
-            <button
-              onClick={clearLogs}
-              className="nms-btn-ghost text-sm"
-              title="Clear logs"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </div>
-        )}
       </div>
 
       {pageTab === 'audit' && (

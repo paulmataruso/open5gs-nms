@@ -34,6 +34,11 @@ export const FEATURES = {
   // internal voice, shown as its own tab on the GSM page. Never touches the
   // separate Asterisk instance the pstn module owns.
   asterisk2g: import.meta.env.VITE_ENABLE_ASTERISK_2G === 'true',
+  // Opt-in like gsm/secgw — 3G/UMTS via OsmoHNBGW, a new source-built daemon
+  // (not an apt package) plus new/extended config on osmo-sgsn.cfg (a new
+  // cs7/IuPS block). Same posture as every other real-RAN module: not
+  // default-on.
+  hnbgw: import.meta.env.VITE_ENABLE_HNBGW === 'true',
   // Opt-in like pstn/mms/secgw (not default-on like sms/ims) — not yet meant for
   // general/public deployments, only for hosts that explicitly enable it.
   rfPlanning: import.meta.env.VITE_ENABLE_RF_PLANNING === 'true',

@@ -9,6 +9,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { setMscMgwPeer, readCurrentSmsConfig, listHlrSubscriberStatus } from './sms-controller';
 import { cidrRange, numToIp } from '../../domain/services/ip-utils';
+import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import {
   buildOsmoSipConnectorScript, verifyOsmoSipConnectorBuild, osmoSipConnectorSystemdUnit, osmoSipConnectorCfg,
@@ -667,7 +668,7 @@ function btsBlock(e: BtsEntry, index: number, sgsnGbRemoteIp = ''): string {
   early-classmark-sending forbidden
   ipa unit-id ${e.unitId} 0
   oml ipa stream-id 255 line 0
-  codec-support fr
+  codec-support fr amr
   gprs mode ${gprsMode}
 ${gprsBlock}${earfcnBlock}  trx 0
    rf_locked 0
@@ -754,8 +755,27 @@ function osmobscCfg(mcc: string, mnc: string, btsEntries: BtsEntry[], mgwBindIp:
   // two RTP legs, so the call hangs and both channels eventually time out.
   // Real 2G<->2G audio needs the external MNCC path (osmo-sip-connector,
   // see the SIP tab) — internal mode only ever completes signaling, never
-  // audio, on this osmo-msc version. Don't re-diagnose this as a codec/BSC
-  // config issue without re-checking that assumption first.
+  // audio, on this osmo-msc version.
+  //
+  // That said, this amr-config block's SIBLING setting above (bts 0's own
+  // codec-support) genuinely WAS a real, separate config bug, found live
+  // 2026-09-15: codec-support was `fr` only (no amr), while this exact
+  // amr-config block already allowed 5_90k — an internally inconsistent
+  // pair. The BTS's own live OML Feature Vector (`show bts 0`) reports it
+  // genuinely supports both `012 Fullrate speech AMR` and `013 Halfrate
+  // speech AMR` — codec-support fr-only was needlessly hiding that from
+  // osmo-bsc's own channel-mode selection, and every real TCH assignment
+  // attempted through the (new, that day) Cross-RAN Calling path failed
+  // with "Received NACK on IPACC CRCX" on the BTS's own first-tried channel,
+  // 100% reproducible. Confirmed fixed live (codec-support fr amr, same
+  // amr-config below, real BTS restart) via packet capture: full
+  // bidirectional RTP flow on real calls in both directions. This does NOT
+  // contradict the 2026-09-13 finding above (that finding was specifically
+  // about amr-config, and about INTERNAL MNCC's own separate MNCC_RTP_CREATE
+  // gap) — it just means the 2026-09-13 test happened to exercise a call
+  // path/timing where codec-support's under-declaration didn't yet surface
+  // as a hard NACK. See CLAUDE.md's Cross-RAN Calling entry and PROJECT_
+  // STATE.md's 2026-09-15 Handoff Summary entry for the full investigation.
   const btsBlocks = btsEntries.map((e, i) => btsBlock(e, i, sgsnGbRemoteIp)).join('');
   return `log stderr
  logging filter all 1
@@ -906,6 +926,38 @@ ns
   listen 0.0.0.0 23000
   accept-ipaccess
 `;
+}
+
+// Ownership-merge write for osmo-sgsn.cfg, mirroring sms-controller.ts's own
+// osmo-msc.cfg fix (vty-config-ownership.ts's own header comment has the
+// full incident writeup: a blind fs.writeFileSync() on a shared VTY config
+// destroyed hand/VTY-maintained content the simple template never modeled).
+// This file was a plain blind overwrite until the 3G/OsmoHNBGW module
+// needed to add its own `cs7 instance` block here for IuPS — without this
+// conversion, the very next 2G-side GPRS/EDGE reconfigure would silently
+// wipe that block. Every directive osmosgsnCfg() itself generates is now
+// explicitly owned here; anything else in the file (the 3G module's cs7
+// block included) passes through byte-for-byte untouched.
+function writeSgsnCfg(gtpLocalIp: string, ggsnGtpIp: string, hlrBindIp: string, apn: string): void {
+  const path = `${HOST_OSMOCOM_DIR}/osmo-sgsn.cfg`;
+  const owned: OwnedDirective[] = [
+    { node: 'log stderr', prefix: /^\s*logging filter all\s+/, line: ' logging filter all 1' },
+    { node: 'log stderr', prefix: /^\s*logging print category\s+/, line: ' logging print category 1' },
+    { node: 'line vty', prefix: /^\s*no login\s*$/, line: ' no login' },
+    { node: 'sgsn', prefix: /^\s*gtp state-dir\s+/, line: ' gtp state-dir /tmp' },
+    { node: 'sgsn', prefix: /^\s*gtp local-ip\s+/, line: ` gtp local-ip ${gtpLocalIp}` },
+    { node: 'sgsn', prefix: /^\s*auth-policy\s+/, line: ' auth-policy remote' },
+    { node: 'sgsn', prefix: /^\s*gsup remote-ip\s+/, line: ` gsup remote-ip ${hlrBindIp}` },
+    { node: 'sgsn', prefix: /^\s*ggsn 0 remote-ip\s+/, line: ` ggsn 0 remote-ip ${ggsnGtpIp}` },
+    { node: 'sgsn', prefix: /^\s*ggsn 0 gtp-version\s+/, line: ' ggsn 0 gtp-version 1' },
+    { node: 'sgsn', prefix: /^\s*apn\s+\S+\s+ggsn\s+0\s*$/, line: ` apn ${apn} ggsn 0` },
+    { node: 'sgsn', prefix: /^\s*ggsn dynamic\s*$/, line: ' ggsn dynamic' },
+    { node: 'ns', prefix: /^\s*bind udp local\s*$/, line: ' bind udp local' },
+    { node: 'ns', prefix: /^\s*listen\s+/, line: '  listen 0.0.0.0 23000' },
+    { node: 'ns', prefix: /^\s*accept-ipaccess\s*$/, line: '  accept-ipaccess' },
+  ];
+  const current = fs.existsSync(path) ? fs.readFileSync(path, 'utf-8') : '';
+  fs.writeFileSync(path, upsertVtyDirectives(current, owned, osmosgsnCfg(gtpLocalIp, ggsnGtpIp, hlrBindIp, apn)), 'utf-8');
 }
 
 // ip prefix dynamic below is deliberately a disjoint sub-block of the same
@@ -1144,10 +1196,7 @@ async function regenerateGsmConfigs(state: GsmState): Promise<void> {
     writeHostCfg(`${HOST_OSMOCOM_DIR}/osmo-pcu.cfg`, osmopcuCfg());
     const { readCurrentSmsConfig } = await import('./sms-controller');
     const hlrBindIp = readCurrentSmsConfig()?.hlrBindIp || '127.0.0.1';
-    writeHostCfg(
-      `${HOST_OSMOCOM_DIR}/osmo-sgsn.cfg`,
-      osmosgsnCfg(state.sgsnGtpLocalIp || '127.0.0.1', state.ggsnGtpBindIp || '127.0.0.5', hlrBindIp, state.ggsnApn || 'gprs'),
-    );
+    writeSgsnCfg(state.sgsnGtpLocalIp || '127.0.0.1', state.ggsnGtpBindIp || '127.0.0.5', hlrBindIp, state.ggsnApn || 'gprs');
     writeHostCfg(
       `${HOST_OSMOCOM_DIR}/osmo-ggsn.cfg`,
       osmoggsnCfg(

@@ -138,18 +138,18 @@ export function RadioSignalPage(): JSX.Element {
 
   const chart = (selected?.history ?? []).map(point => ({ ...point, time: new Date(point.sampledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }));
 
-  return <div className="min-h-full bg-nms-bg p-6 lg:p-8">
-    <div className="max-w-[1680px] mx-auto">
-      <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-5">
+  return <div className="p-6">
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="flex items-center gap-2 text-nms-accent text-xs uppercase tracking-[0.22em]"><Antenna className="w-4 h-4" /> Radio intelligence</div>
-          <h1 className="mt-2 text-3xl font-display font-semibold text-nms-text">UE Signal Quality</h1>
+          <h1 className="mt-1 text-2xl font-display font-semibold text-nms-text">UE Signal Quality</h1>
           <p className="mt-1 text-sm text-nms-text-dim">Unified IMSI · ICCID · MSISDN view across all radios and cells</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={discover} className="nms-btn-ghost flex items-center gap-2"><Radar className="w-4 h-4" /> Discover S1-MME</button>
-          <button onClick={() => { setForm(emptyRadio); setConfigOpen(true); }} className="nms-btn-ghost flex items-center gap-2"><Settings2 className="w-4 h-4" /> Radios</button>
-          <button onClick={poll} disabled={polling || !radios.length} className="nms-btn-primary flex items-center gap-2"><RefreshCw className={`w-4 h-4 ${polling ? 'animate-spin' : ''}`} /> Refresh</button>
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          <button onClick={discover} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"><Radar className="w-3 h-3" /> Discover S1-MME</button>
+          <button onClick={() => { setForm(emptyRadio); setConfigOpen(true); }} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5"><Settings2 className="w-3 h-3" /> Radios</button>
+          <button onClick={poll} disabled={polling || !radios.length} className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5"><RefreshCw className={`w-3 h-3 ${polling ? 'animate-spin' : ''}`} /> Refresh</button>
         </div>
       </div>
 
