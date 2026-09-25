@@ -271,7 +271,7 @@ services:
       genieacs-init:
         condition: service_completed_successfully
     environment:
-      - GENIEACS_MONGODB_CONNECTION_URL=mongodb://127.0.0.1:27017/genieacs
+      - GENIEACS_MONGODB_CONNECTION_URL=${GENIEACS_MONGODB_CONNECTION_URL:-mongodb://127.0.0.1:27017/genieacs}
       - GENIEACS_UI_JWT_SECRET=${GENIEACS_UI_JWT_SECRET:-changeme_set_in_env}
       - GENIEACS_CWMP_ACCESS_LOG_FILE=/var/log/genieacs/genieacs-cwmp-access.log
       - GENIEACS_NBI_ACCESS_LOG_FILE=/var/log/genieacs/genieacs-nbi-access.log
