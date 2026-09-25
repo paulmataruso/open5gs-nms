@@ -63,7 +63,7 @@ services:
       - TZ=${TZ:-America/New_York}
       - NODE_ENV=production
       - PORT=3001
-      - MONGODB_URI=mongodb://127.0.0.1:27017/open5gs
+      - MONGODB_URI=${MONGODB_URI:-mongodb://127.0.0.1:27017/open5gs}
       - BACKUP_PATH=/etc/open5gs/backups/config
       - MONGO_BACKUP_PATH=/etc/open5gs/backups/mongodb
       - LOG_LEVEL=info
