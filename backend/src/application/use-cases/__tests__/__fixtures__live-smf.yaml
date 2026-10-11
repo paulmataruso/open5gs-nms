@@ -1,0 +1,65 @@
+logger:
+  level: debug
+  file:
+    path: /var/log/open5gs/smf.log
+global:
+  max:
+    ue: 1024
+parameter:
+  no_ipv4v6_local_addr_in_packet_filter: true
+smf:
+  sbi:
+    server:
+      - address: 127.0.0.4
+        port: 7777
+        advertise: smf.5gc.mnc001.mcc001.3gppnetwork.org:7777
+    client:
+      scp:
+        - uri: http://scp.5gc.mnc001.mcc001.3gppnetwork.org:7777
+  pfcp:
+    server:
+      - address: 127.0.0.4
+    client:
+      upf:
+        - address: 127.0.0.7
+  gtpc:
+    server:
+      - address: 127.0.0.4
+  gtpu:
+    server:
+      - address: 127.0.0.4
+  metrics:
+    server:
+      - address: 127.0.0.4
+        port: 9090
+  session:
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+      dnn: internet
+    - subnet: 2001:db8:cafe::/48
+      gateway: 2001:db8:cafe::1
+      dnn: internet
+    - subnet: 10.46.0.0/24
+      gateway: 10.46.0.1
+      dnn: ims
+      dns:
+        - 10.0.1.178
+  dns:
+    - 10.0.1.180
+  p-cscf:
+    - 10.0.1.178
+  mtu: 1400
+  freeDiameter: /etc/freeDiameter/smf.conf
+  info:
+    - s_nssai:
+        - sst: 1
+          dnn:
+            - internet
+        - sst: 1
+          dnn:
+            - internet
+          sd: 19cde1
+        - sst: 1
+          dnn:
+            - ims
+          sd: 19cde1

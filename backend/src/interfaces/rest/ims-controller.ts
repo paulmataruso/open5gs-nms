@@ -1642,10 +1642,26 @@ const imsLogger = pino({ name: 'ims-smf-yaml' });
  * continuing: these run inside Configure/Disable, and silently skipping a
  * requested change is how a deployment ends up in a state nobody can explain.
  */
+// The only top-level key IMS owns in smf.yaml: it adds `parameter:` on
+// Configure and removes it on Disable, so its disappearance is correct rather
+// than corruption. upf.yaml has no equivalent — IMS only touches upf.session[].
+const IMS_OWNED_SMF_TOP_KEYS = ['parameter'] as const;
+
 export function writeYamlGuarded(
   filePath: string,
   transform: (raw: string) => string,
   what: string,
+  /**
+   * Top-level keys this edit is ALLOWED to remove. Everything else must still
+   * be there afterwards.
+   *
+   * Needed because IMS legitimately owns a top-level key: it adds `parameter:`
+   * (for no_ipv4v6_local_addr_in_packet_filter) on Configure and removes it on
+   * Disable. Without this, the drop-check rejected that as corruption and broke
+   * IMS Disable outright — caught by running a real disable/enable cycle
+   * against this deployment's own smf.yaml, not by review.
+   */
+  ownedTopLevelKeys: readonly string[] = [],
 ): void {
   const raw = fs.readFileSync(filePath, 'utf-8');
 
@@ -1683,7 +1699,9 @@ export function writeYamlGuarded(
     // Nothing outside the IMS-owned keys may vanish. Catches a transform that
     // "succeeds" while dropping unrelated sections, which is exactly the shape
     // the original bug took.
-    const lost = Object.keys(before).filter(k => !(k in (after as Record<string, unknown>)));
+    const lost = Object.keys(before)
+      .filter(k => !(k in (after as Record<string, unknown>)))
+      .filter(k => !ownedTopLevelKeys.includes(k));
     if (lost.length > 0) throw new Error(`would drop top-level key(s): ${lost.join(', ')}`);
   } catch (err) {
     throw new Error(
@@ -3071,7 +3089,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // 11. Update SMF yaml
   if (fs.existsSync(HOST_SMF_YAML)) {
     if (!fs.existsSync(HOST_IMS_SMF_BAK)) fs.copyFileSync(HOST_SMF_YAML, HOST_IMS_SMF_BAK);
-    writeYamlGuarded(HOST_SMF_YAML, raw => updateSmfImsSession(raw, pcscfIp, dnsIp), 'add the IMS session to smf.yaml');
+    writeYamlGuarded(HOST_SMF_YAML, raw => updateSmfImsSession(raw, pcscfIp, dnsIp), 'add the IMS session to smf.yaml', IMS_OWNED_SMF_TOP_KEYS);
   }
 
   // 11b. HSS yaml — sms_over_ims capability for 4G subscribers
@@ -5171,7 +5189,7 @@ export function createImsRouter(
       if (fs.existsSync(HOST_IMS_SMF_BAK) && fs.existsSync(HOST_IMS_STATE)) {
         const { config } = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
         if (fs.existsSync(HOST_SMF_YAML) && config) {
-          writeYamlGuarded(HOST_SMF_YAML, raw => updateSmfImsSession(raw, config.pcscfIp, config.dnsIp), 're-add the IMS session to smf.yaml');
+          writeYamlGuarded(HOST_SMF_YAML, raw => updateSmfImsSession(raw, config.pcscfIp, config.dnsIp), 're-add the IMS session to smf.yaml', IMS_OWNED_SMF_TOP_KEYS);
           await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
         }
       }
@@ -5188,7 +5206,7 @@ export function createImsRouter(
     const user = (req as any).user?.username ?? 'unknown';
     try {
       if (fs.existsSync(HOST_SMF_YAML)) {
-        writeYamlGuarded(HOST_SMF_YAML, removeSmfImsSession, 'remove the IMS session from smf.yaml');
+        writeYamlGuarded(HOST_SMF_YAML, removeSmfImsSession, 'remove the IMS session from smf.yaml', IMS_OWNED_SMF_TOP_KEYS);
         await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
       }
       if (fs.existsSync(HOST_UPF_YAML)) {
@@ -5242,7 +5260,7 @@ export function createImsRouter(
     // 2. Remove IMS DNN and p-cscf from SMF YAML, restart SMF
     write('\n=== Removing IMS APN from SMF config ===\n');
     if (fs.existsSync(HOST_SMF_YAML)) {
-      writeYamlGuarded(HOST_SMF_YAML, removeSmfImsSession, 'remove the IMS session from smf.yaml');
+      writeYamlGuarded(HOST_SMF_YAML, removeSmfImsSession, 'remove the IMS session from smf.yaml', IMS_OWNED_SMF_TOP_KEYS);
       await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
       write('  p-cscf + dnn:ims removed from smf.yaml, open5gs-smfd restarted.\n');
     } else {
