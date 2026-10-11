@@ -57,10 +57,16 @@ left and what's the next action" view.
 ## Readiness audit 2026-10-10 — open findings
 
 Two independent audits (patch-wiring, host-drift) produced 33 findings. The
-**Status 2026-10-10: R2-R13 are all fixed and committed. Only R1 remains
-open**, and only because it needs a deliberate 2G maintenance window (the fix
-restarts the radio, dropping camped UEs). Each row below keeps its original
-wording so the finding is still readable, with the fixing commit appended.
+**Status 2026-10-11: the audit is CLOSED — R1 through R13 are all fixed and
+committed**, as are the four modules neither audit originally reached (A1-A4).
+Each row below keeps its original wording so the finding is still readable, with
+the fixing commit appended.
+
+R1 turned out not to need the maintenance window it was held for. The fix is an
+ownership merge over the operator's real file, so applying it to an unchanged
+deployment is provably a no-op — verified byte-for-byte against this host's own
+210-line `osmo-bsc.cfg` — and therefore needs no BSC restart and drops no
+camped UEs. The radio was never touched.
 
 Everything claimed fixed here was verified against the running host, not just
 compiled: the FRR reload path (topology clean, 12 prefixes at 1 successor), the
@@ -74,7 +80,7 @@ see "Needs manual approval" below. Ranked:
 
 | # | Finding | Sev | Fix location |
 |---|---|---|---|
-| R1 | `osmo-bsc.cfg` wholesale-regenerated, destroying ~3KB of live SS7/AMR/GPRS tuning, then restarts the radio (drops camped 2G UEs). Fires on every GSM Configure, BTS add/edit/delete, and IP-Plan apply touching BSC/MGW | **Critical** | route through existing `upsertVtyDirectives()` — `gsm-controller.ts:1197` |
+| ~~R1~~ ✅ | `osmo-bsc.cfg` wholesale-regenerated, destroying ~3KB of live SS7/AMR/GPRS tuning, then restarts the radio (drops camped 2G UEs). Fires on every GSM Configure, BTS add/edit/delete, and IP-Plan apply touching BSC/MGW | **Critical** | route through existing `upsertVtyDirectives()` — `gsm-controller.ts:1197` — **fixed, this batch** |
 | ~~R2~~ ✅ | SMS-over-SGs **Uninstall destroys the 2G and 3G modules** — deletes shared `osmo-stp/hlr/msc` configs, `rm -f hlr.db*` (holds the `auc_3g` MILENAGE rows both depend on), then apt-purges. No `isGsmInstalled()`/`isHnbgwInstalled()` guard | **Critical** | `sms-controller.ts:1201-1216` — **fixed, c9b17e8 / a209c12** |
 | ~~R3~~ ✅ | VoWiFi Uninstall whole-file-restores `smf.conf` from an Aug-2 `.bak`, **silently killing OCS Gy charging today** (the bak predates the `ocs.*` peer). Correct prefix-scoped strip already exists unused in the else branch | **Critical, live-armed** | `vowifi-controller.ts:1193`, `ocs-controller.ts:1141` — **fixed, a209c12** |
 | ~~R4~~ ✅ | No apt hold/pin anywhere, and IMS Install itself `apt-get install`s `kamailio` unconditionally. A 5.8.9+ publish (or an IMS Install) downgrades over the 6.0.8 source build, reverting all 7 patches — and with `WITH_N5` active, 5.8.x has no `http_client_request_v2pk()`, so **P-CSCF won't start at all**. No live trigger today | **Critical** | `apt-mark hold` after a successful build; skip in `basePkgs` — **fixed, a209c12** |

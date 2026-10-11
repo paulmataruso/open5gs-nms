@@ -8,7 +8,10 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { setMscMgwPeer, readCurrentSmsConfig, listHlrSubscriberStatus } from './sms-controller';
 import { cidrRange, numToIp } from '../../domain/services/ip-utils';
-import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
+import {
+  upsertVtyDirectives, OwnedDirective,
+  upsertVtyPathDirectives, removeVtyPathNode, ownedDirectivesFromGenerated,
+} from '../../domain/services/vty-config-ownership';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { detectMainInterface } from '../../infrastructure/network/main-interface';
 import {
@@ -734,7 +737,7 @@ ${gprsBlock}${earfcnBlock}  trx 0
 `;
 }
 
-function osmobscCfg(mcc: string, mnc: string, btsEntries: BtsEntry[], mgwBindIp: string, sgsnGbRemoteIp = ''): string {
+export function osmobscCfg(mcc: string, mnc: string, btsEntries: BtsEntry[], mgwBindIp: string, sgsnGbRemoteIp = ''): string {
   // Per-BTS `gprs mode` comes from each BtsEntry.gprsMode (btsBlock()); a
   // BTS left at the default 'none' stays CS-only. sgsnGbRemoteIp is where
   // the PCU dials the Gb link — see btsBlock()/GsmState for how it's
@@ -1120,6 +1123,61 @@ function warnOnUnmodelledLoss(path: string, oldContent: string, newContent: stri
   }
 }
 
+// Directives whose key is NOT simply "everything but the last word" — each of
+// these would otherwise key on a VALUE, so a file holding a different value
+// would fail to match and the directive would be appended as a duplicate.
+const OSMO_BSC_KEY_TOKENS = [
+  { match: /^meas-feed destination\b/, tokens: 2 },
+  { match: /^mgw remote-ip\b/, tokens: 2 },
+  { match: /^gprs nsvc \d+ remote ip\b/, tokens: 5 },
+  { match: /^ipa unit-id\b/, tokens: 2 },
+  { match: /^encryption a5\b/, tokens: 2 },
+];
+
+/**
+ * Write osmo-bsc.cfg as an ownership MERGE over the operator's real file rather
+ * than regenerating it.
+ *
+ * R1 from the 2026-10-10 readiness audit, and the most destructive finding in
+ * it. osmo-bsc.cfg was rewritten wholesale on every GSM Configure, BTS
+ * add/edit/delete and IP-Plan apply touching BSC/MGW. Measured against this
+ * deployment's real 210-line file, that discarded 67 substantive
+ * hand-maintained lines — including `cs7 instance 0`'s `point-code`, losing
+ * which takes down the A-interface to MSC and with it all of 2G; the complete
+ * `amr tch-f`/`tch-h` codec tuning (the settings CLAUDE.md #16 records as
+ * having been got wrong once already); ~25 lines of GPRS cell and NS timers;
+ * both `bs-power-control`/`ms-power-control` blocks; and msc 0's `codec-list`,
+ * `amr-payload` and `asp-protocol`. Then it restarted the BSC, dropping every
+ * camped 2G UE.
+ *
+ * osmo-bsc.cfg could not use upsertVtyDirectives() because that is one level
+ * deep and this file nests `network` > `bts N` > `trx N` > `timeslot N`, with
+ * `bts N` carrying its own sub-nodes. upsertVtyPathDirectives() addresses
+ * directives by path, and the owned set is derived from the generator's own
+ * output so the two cannot drift apart.
+ *
+ * A BTS removed from the UI needs its whole `bts N` subtree gone, not just its
+ * modelled directives overwritten, so those are pruned explicitly first.
+ */
+function writeOsmoBscCfg(
+  path: string,
+  generated: string,
+  desiredBtsCount: number,
+): void {
+  const current = fs.existsSync(path) ? fs.readFileSync(path, 'utf-8') : '';
+  // Nothing to preserve on a fresh install — the generated template IS the file.
+  if (!current.trim()) { writeHostCfg(path, generated); return; }
+
+  let merged = current;
+  // Drop any `bts N` the UI no longer has. Scan well past the current count so
+  // a previously-larger deployment is cleaned up too.
+  for (let i = desiredBtsCount; i < desiredBtsCount + 16; i++) {
+    merged = removeVtyPathNode(merged, ['network', `bts ${i}`]);
+  }
+  merged = upsertVtyPathDirectives(merged, ownedDirectivesFromGenerated(generated, OSMO_BSC_KEY_TOKENS));
+  writeHostCfg(path, merged);
+}
+
 function writeHostCfg(path: string, content: string): void {
   // Back up before every overwrite so a regeneration is always recoverable.
   // Kept to the most recent 10 so this cannot grow without bound.
@@ -1274,7 +1332,11 @@ async function restartOsmoBsc(state: GsmState): Promise<void> {
 async function regenerateGsmConfigs(state: GsmState): Promise<void> {
   const { mcc, mnc } = readMccMnc();
   fs.mkdirSync(HOST_OSMOCOM_DIR, { recursive: true });
-  writeHostCfg(`${HOST_OSMOCOM_DIR}/osmo-bsc.cfg`, osmobscCfg(mcc, mnc, state.btsEntries, state.bscMgwBindIp, state.sgsnGbRemoteIp || ''));
+  writeOsmoBscCfg(
+    `${HOST_OSMOCOM_DIR}/osmo-bsc.cfg`,
+    osmobscCfg(mcc, mnc, state.btsEntries, state.bscMgwBindIp, state.sgsnGbRemoteIp || ''),
+    state.btsEntries.length,
+  );
   writeHostCfg(`${HOST_OSMOCOM_DIR}/osmo-mgw.cfg`, osmomgwCfg(state.bscMgwBindIp, state.mgwRtpBindIp));
 
   const virtualBts = state.btsEntries.find(e => e.backend === 'virtual');

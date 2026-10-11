@@ -141,3 +141,192 @@ export function upsertVtyDirectives(
 
   return serializeVtyChunks(chunks);
 }
+
+// ─── Nesting-aware ownership merge ───────────────────────────────────────────
+//
+// upsertVtyDirectives() above is deliberately one level deep, which is enough
+// for osmo-msc.cfg / osmo-sgsn.cfg / osmo-hlr.cfg. osmo-bsc.cfg is not: it nests
+// `network` > `bts N` > `trx N` > `timeslot N`, and `bts N` additionally
+// contains its own sub-nodes (`bs-power-control`, `ms-power-control`) with their
+// own children. A flat merge cannot address a directive inside `bts 0`, so
+// osmo-bsc.cfg was still being regenerated wholesale — measured on a real
+// deployment, that discarded 67 substantive hand-maintained lines including
+// `cs7 instance 0`'s `point-code` (losing which takes down the A-interface to
+// MSC outright), the full `amr tch-f`/`tch-h` codec tuning, ~25 lines of GPRS
+// cell/NS timers, both power-control blocks, and msc 0's codec-list.
+//
+// This merge works the other way round from a generator: the operator's real
+// file is the BASE, and only the specific directives the generator models are
+// overwritten in place. Everything else is preserved byte for byte because it
+// is never touched — which is the property that matters, rather than trying to
+// enumerate everything worth keeping.
+
+export interface PathDirective {
+  /** Node headers from the document root, e.g. ['network', 'bts 0']. */
+  path: string[];
+  /** Matches the directive, tested against the TRIMMED line. */
+  prefix: RegExp;
+  /** Replacement text (indentation is applied automatically), or null to remove. */
+  line: string | null;
+}
+
+/** Indent width, or null for a blank line. */
+function indentWidth(line: string): number | null {
+  if (/^\s*$/.test(line)) return null;
+  return line.length - line.replace(/^\s*/, '').length;
+}
+
+/**
+ * Walk `text` maintaining the current node path by indentation, replacing or
+ * removing each owned directive where it sits, and appending any that were
+ * absent to the end of their own node's block.
+ *
+ * A line is treated as a NODE header when the next non-blank line is indented
+ * deeper than it; otherwise it is a leaf directive. That is the only way to tell
+ * the two apart in this format — `bs-power-control` and `mode static` look
+ * identical in isolation — and it holds for every Osmocom config this project
+ * writes.
+ */
+export function upsertVtyPathDirectives(text: string, owned: PathDirective[]): string {
+  const lines = text.split('\n');
+
+  // Resolve each line's node path once.
+  const pathOf: string[][] = [];
+  const stack: Array<{ header: string; indent: number }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const ind = indentWidth(lines[i]);
+    if (ind === null) { pathOf.push(stack.map(s => s.header)); continue; }
+    while (stack.length > 0 && ind <= stack[stack.length - 1].indent) stack.pop();
+    pathOf.push(stack.map(s => s.header));
+    // Is this a node header? Look ahead to the next non-blank line.
+    let j = i + 1;
+    while (j < lines.length && indentWidth(lines[j]) === null) j++;
+    const nextInd = j < lines.length ? indentWidth(lines[j]) : null;
+    if (nextInd !== null && nextInd > ind) stack.push({ header: lines[i].trim(), indent: ind });
+  }
+
+  const samePath = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
+
+  const applied = new Set<PathDirective>();
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const ind = indentWidth(lines[i]);
+    if (ind === null) { out.push(lines[i]); continue; }
+    const trimmed = lines[i].trim();
+    const d = owned.find(o => !applied.has(o) && samePath(o.path, pathOf[i]) && o.prefix.test(trimmed));
+    if (!d) { out.push(lines[i]); continue; }
+    applied.add(d);
+    if (d.line !== null) out.push(' '.repeat(ind) + d.line);
+    // d.line === null -> drop the line entirely.
+  }
+
+  // Anything not found gets appended at the end of its node's block, so a
+  // directive the generator models but the file lacks is still applied.
+  for (const d of owned) {
+    if (applied.has(d) || d.line === null) continue;
+    const idxs: number[] = [];
+    for (let i = 0; i < lines.length; i++) if (samePath(d.path, pathOf[i]) && indentWidth(lines[i]) !== null) idxs.push(i);
+    if (idxs.length === 0) continue; // node absent — caller's fallback template covers a fresh file
+    const lastOriginal = idxs[idxs.length - 1];
+    const ind = indentWidth(lines[lastOriginal]) ?? 0;
+    // Map the original index onto `out`, which may have shifted by removals.
+    const marker = lines[lastOriginal];
+    let at = out.lastIndexOf(marker);
+    if (at === -1) at = out.length - 1;
+    out.splice(at + 1, 0, ' '.repeat(ind) + d.line);
+  }
+
+  return out.join('\n');
+}
+
+/**
+ * Remove a node and everything nested under it — used when a BTS is deleted, so
+ * its whole `bts N` subtree goes rather than being left as an orphan header.
+ */
+export function removeVtyPathNode(text: string, path: string[]): string {
+  const lines = text.split('\n');
+  const header = path[path.length - 1];
+  const parentDepth = path.length - 1;
+
+  const stack: Array<{ header: string; indent: number }> = [];
+  let start = -1;
+  let startIndent = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const ind = indentWidth(lines[i]);
+    if (ind === null) continue;
+    while (stack.length > 0 && ind <= stack[stack.length - 1].indent) stack.pop();
+    const here = stack.map(s => s.header);
+    if (lines[i].trim() === header && here.length === parentDepth &&
+        here.every((v, k) => v === path[k])) {
+      start = i; startIndent = ind; break;
+    }
+    let j = i + 1;
+    while (j < lines.length && indentWidth(lines[j]) === null) j++;
+    const nextInd = j < lines.length ? indentWidth(lines[j]) : null;
+    if (nextInd !== null && nextInd > ind) stack.push({ header: lines[i].trim(), indent: ind });
+  }
+  if (start === -1) return text;
+
+  let end = start + 1;
+  while (end < lines.length) {
+    const ind = indentWidth(lines[end]);
+    if (ind !== null && ind <= startIndent) break;
+    end++;
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)].join('\n');
+}
+
+/**
+ * Derive the owned-directive set from a generator's own output.
+ *
+ * Hand-maintaining the list of directives a generator controls guarantees drift:
+ * add a line to the template, forget the list, and that line silently stops
+ * being applied. So the generated text IS the list — whatever it emits is what
+ * it owns, and nothing else in the operator's file is touched.
+ *
+ * Each generated directive becomes a PathDirective keyed on its leading tokens.
+ * `keyTokens` says how many leading words identify a directive as opposed to
+ * its value, defaulting to "all but the last word" — right for `cell_identity 2`
+ * (key `cell_identity`) and for `amr-config 12_2k forbidden` (key
+ * `amr-config 12_2k`, so the eight amr-config lines stay distinct). Pass an
+ * override wherever that rule would key on a value and therefore fail to match
+ * a file holding a different one — `meas-feed destination 127.0.0.1 8888` must
+ * key on `meas-feed destination`, not on the address.
+ */
+export function ownedDirectivesFromGenerated(
+  generated: string,
+  keyTokens: Array<{ match: RegExp; tokens: number }> = [],
+): PathDirective[] {
+  const lines = generated.split('\n');
+  const out: PathDirective[] = [];
+  const stack: Array<{ header: string; indent: number }> = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const ind = indentWidth(lines[i]);
+    if (ind === null) continue;
+    while (stack.length > 0 && ind <= stack[stack.length - 1].indent) stack.pop();
+    const trimmed = lines[i].trim();
+
+    let j = i + 1;
+    while (j < lines.length && indentWidth(lines[j]) === null) j++;
+    const nextInd = j < lines.length ? indentWidth(lines[j]) : null;
+    if (nextInd !== null && nextInd > ind) {
+      // A node header, not a directive — it defines a path, it is not owned
+      // content itself.
+      stack.push({ header: trimmed, indent: ind });
+      continue;
+    }
+
+    const words = trimmed.split(/\s+/);
+    const override = keyTokens.find(k => k.match.test(trimmed));
+    const n = override ? override.tokens : Math.max(1, words.length - 1);
+    const key = words.slice(0, n).join(' ');
+    out.push({
+      path: stack.map(s => s.header),
+      prefix: new RegExp('^' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\s|$)'),
+      line: trimmed,
+    });
+  }
+  return out;
+}

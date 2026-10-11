@@ -1,0 +1,42 @@
+{
+  "btsEntries": [
+    {
+      "id": "ecb33bc2-c660-49f9-9486-f5ce6be9cc38",
+      "name": "ip.access nanoBTS",
+      "backend": "remote-abis-ip",
+      "unitId": 1,
+      "band": "PCS1900",
+      "arfcn": 661,
+      "cellIdentity": 2,
+      "locationAreaCode": 1,
+      "baseStationIdCode": 63,
+      "remoteIp": "172.16.0.108",
+      "gprsMode": "egprs",
+      "blocked": false,
+      "lteEarfcns": [
+        0
+      ]
+    }
+  ],
+  "bscMgwBindIp": "127.0.0.1",
+  "mscMgwBindIp": "127.0.0.1",
+  "mgwRtpBindIp": "127.0.0.1",
+  "gprsEnabled": true,
+  "gprsMode": "egprs",
+  "sgsnGtpLocalIp": "127.0.0.1",
+  "sgsnGbRemoteIp": "172.16.0.168",
+  "ggsnGtpBindIp": "127.0.0.5",
+  "ggsnApn": "internet",
+  "ggsnTunDevice": "apn-gprs",
+  "ggsnPoolCidr": "10.45.0.128/25",
+  "ggsnDns1": "10.0.1.180",
+  "ggsnDns2": "9.9.9.9",
+  "gprsNat": false,
+  "sip": {
+    "localIp": "127.0.1.6",
+    "localPort": 5060,
+    "remoteHost": "127.0.1.7",
+    "remotePort": 5060
+  },
+  "appliedGprsEigrpCidr": "10.45.0.128/25"
+}
