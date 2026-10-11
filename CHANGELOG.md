@@ -8,6 +8,25 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.69] - 2026-10-11
+
+### Fixed
+
+- Stopping or starting IMS could corrupt the SMF **and** UPF configuration
+  files. The earlier fix covered only the SMF side; the UPF equivalent carried
+  the identical fault and is written on every IMS stop and start, which is why
+  the problem could persist after updating. Both now edit only within their own
+  session list, and refuse to edit a file whose layout they cannot identify
+  rather than rewriting it.
+- Neither file can be left unreadable any more. Every write is checked before
+  and after: a configuration that does not parse is never edited, and an edit
+  that would produce an unreadable file, or drop a section it does not own, is
+  refused with the file left untouched. A deployment already damaged by the
+  earlier fault is now reported clearly, pointing at the backup taken before
+  IMS first configured it, instead of silently rewriting the damage.
+
+---
+
 ## [v2.0-beta_0.68] - 2026-10-11
 
 ### Fixed
