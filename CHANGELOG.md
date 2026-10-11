@@ -8,6 +8,31 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.66] - 2026-10-11
+
+### Fixed
+
+- Installing on a machine that cannot reach pypi.org no longer fails the build.
+  The Python libraries behind SUCI key generation and femto provisioning now
+  come from the distribution instead. One capability still needs a newer release
+  than the distribution carries — SUCI ECIES Profile A (curve25519) key
+  generation — and it is now fetched opportunistically rather than being a
+  precondition: if it cannot be downloaded the install still completes, Profile
+  B keys work as normal, and attempting Profile A reports exactly what is
+  missing and how to add it. (#36)
+- `docker compose up --build` no longer fails on some Docker versions asking for
+  additional privileges. Builds no longer request host networking by default,
+  which was only needed for rebuilding on a host whose DNS resolver is reachable
+  only from the host itself. That case is still supported, via an opt-in
+  override documented in the installation guide. Container runtime networking is
+  unchanged. (#37)
+- The Updates prompt now shows progress while it works. Output appeared only
+  after each step had finished, so a long step — rebuilding the IMS core
+  modules can take several minutes — looked like a hung job. It now streams as
+  it goes, names the step in progress, and says that some steps take minutes.
+
+---
+
 ## [v2.0-beta_0.65] - 2026-10-11
 
 ### Fixed
