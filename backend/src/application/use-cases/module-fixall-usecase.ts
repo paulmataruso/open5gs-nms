@@ -300,10 +300,23 @@ export class ModuleFixAllUseCase {
         continue;
       }
 
-      const result = await this.fixModule(moduleId, status).catch((err): FixAllModuleResult => ({
-        moduleId, ranInstall: false, ranConfigure: false, skipped: false, error: String(err), log: [],
-      }));
+      // Published BEFORE the work starts, not after it finishes.
+      //
+      // This used to be `const result = await this.fixModule(...)` followed by
+      // `results.push(result)`, which meant a module's log array only became
+      // reachable once that module had completed. GET /fix-all/status therefore
+      // returned nothing for whatever was currently running, so the operator
+      // watched an empty box for the entire duration — up to ~9 minutes for the
+      // Kamailio rebuild — with no way to tell a working run from a hung one.
+      // Pushing the object first lets fixModule's write() append to the very
+      // array the status endpoint serialises, so output streams as it happens.
+      const result: FixAllModuleResult = {
+        moduleId, ranInstall: false, ranConfigure: false, skipped: false, log: [],
+      };
       this.runState.results.push(result);
+      await this.fixModule(moduleId, status, result).catch((err) => {
+        result.error = String(err);
+      });
 
       if (moduleId === 'ims' && (result.installSuccess === false || result.configureSuccess === false)) {
         imsFixFailed = true;
@@ -323,10 +336,14 @@ export class ModuleFixAllUseCase {
     });
   }
 
-  private async fixModule(moduleId: ModuleId, status: ModuleStaleStatus): Promise<FixAllModuleResult> {
-    const log: string[] = [];
-    const write = (s: string) => { log.push(s); };
-    const result: FixAllModuleResult = { moduleId, ranInstall: false, ranConfigure: false, skipped: false, log };
+  // `result` is created and published into runState by the caller so its `log`
+  // array is live while this runs — see runFixAll's comment. Mutated in place.
+  private async fixModule(
+    moduleId: ModuleId,
+    status: ModuleStaleStatus,
+    result: FixAllModuleResult,
+  ): Promise<FixAllModuleResult> {
+    const write = (s: string) => { result.log.push(s); };
 
     switch (moduleId) {
       case 'ims': {

@@ -118,10 +118,17 @@ export function StaleModulesModal(): JSX.Element | null {
   };
 
   const logLines = run?.results.flatMap(r => [
-    `── ${r.moduleId} ──`,
+    `── ${r.moduleId}${r.moduleId === run.currentModule ? ' (running…)' : ''} ──`,
     ...(r.skipped ? [`skipped: ${r.skipReason ?? ''}`] : r.log),
     r.error ? `error: ${r.error}` : '',
   ].filter(Boolean)) ?? [];
+
+  // Some steps are genuinely long and quiet — the Kamailio rebuild recompiles
+  // the IMS modules and restarts all four services. Name what is running so a
+  // slow step never reads as a hung one, even before it has emitted any output.
+  const runningLabel = run?.currentModule
+    ? (visible.find(m => m.moduleId === run.currentModule)?.label ?? run.currentModule)
+    : null;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -149,14 +156,26 @@ export function StaleModulesModal(): JSX.Element | null {
                   These need manual attention (see notes above) — nothing here can be auto-fixed.
                 </div>
               ) : (
-                <button
-                  onClick={handleFixAll}
-                  disabled={fixing}
-                  className="nms-btn-primary flex items-center gap-2"
-                >
-                  {fixing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Wrench className="w-4 h-4" />}
-                  {fixing ? 'Fixing…' : 'Fix All'}
-                </button>
+                <div className="flex items-center gap-3 min-w-0">
+                  <button
+                    onClick={handleFixAll}
+                    disabled={fixing}
+                    className="nms-btn-primary flex items-center gap-2 shrink-0"
+                  >
+                    {fixing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Wrench className="w-4 h-4" />}
+                    {fixing ? 'Fixing…' : 'Fix All'}
+                  </button>
+                  {fixing && (
+                    <div className="text-xs text-nms-text-dim min-w-0">
+                      {runningLabel
+                        ? <>Working on <span className="text-nms-text">{runningLabel}</span>…</>
+                        : <>Starting…</>}
+                      <div className="text-[10px] opacity-70">
+                        Some steps rebuild from source and take several minutes. Leave this open.
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </>
           ) : (
