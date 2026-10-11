@@ -116,6 +116,26 @@ export class SuciManagementUseCase {
 
     if (result.exitCode !== 0) {
       this.logger.error({ exitCode: result.exitCode, stderr: result.stderr }, 'suci-keytool generate-key failed');
+      // Profile A (curve25519) needs pycryptodome >= 3.21. The image installs
+      // Debian's python3-pycryptodome (3.11) so it builds without pypi — see
+      // backend/Dockerfile's own comment and issue #36 — and then layers the
+      // newer wheel from pypi when that is reachable. When it was not, this is
+      // the one capability that is missing, and the underlying failure is a bare
+      // `KeyError: 'curve25519'` from deep inside the library, which tells an
+      // operator nothing. Translate it.
+      const looksLikeOldPycryptodome =
+        curve === 'curve25519' &&
+        /UnsupportedEccFeature|KeyError.*curve25519|curve25519/i.test(result.stderr ?? '');
+      if (looksLikeOldPycryptodome) {
+        throw new Error(
+          'SUCI Profile A (curve25519) key generation needs pycryptodome 3.21 or newer, and this ' +
+          'install has the older version Debian ships. That happens when the image was built ' +
+          'without access to pypi.org. Fix: rebuild the backend image on a host that can reach ' +
+          'pypi.org (docker compose build backend), or install it inside the container with ' +
+          "pip3 install --break-system-packages 'pycryptodomex>=3.21'. " +
+          'Profile B (secp256r1) keys work without it.',
+        );
+      }
       throw new Error(`Key generation failed: ${result.stderr}`);
     }
     this.logger.info({ keyPath, curve }, 'Key file generated via suci-keytool.py');

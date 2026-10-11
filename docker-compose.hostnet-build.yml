@@ -1,0 +1,27 @@
+# Opt-in override: build the images using the HOST's network stack.
+#
+# Use this only if a build fails to resolve DNS. That happens on a host whose
+# /etc/resolv.conf contains nothing but a loopback address — which is the state
+# this project itself creates once its BIND9 module is configured
+# (`nameserver 127.0.0.1`) — AND which has no route to public DNS, so Docker's
+# usual substitution for bridge containers cannot help either. A
+# restricted-egress deployment, in other words.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.hostnet-build.yml up --build -d
+#
+# It is not the default because requesting host networking for a build makes
+# `docker compose up --build` fail outright on Docker versions where buildx bake
+# enforces the entitlement ("additional privileges requested: pass
+# --allow=network.host" — issue #37). On those versions, with this override, you
+# additionally need:
+#
+#   COMPOSE_BAKE=false docker compose -f docker-compose.yml -f docker-compose.hostnet-build.yml build
+#
+# or pass --allow=network.host to a direct `docker buildx bake`.
+services:
+  backend:
+    build:
+      network: host
+  frontend:
+    build:
+      network: host

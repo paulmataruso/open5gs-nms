@@ -37,10 +37,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     sqlite3 \
+    python3-paramiko \
+    python3-requests \
+    python3-pycryptodome \
     && apt-get install -y --no-install-recommends \
        -o Dpkg::Options::="--force-overwrite" \
        tshark \
-    && pip3 install pycryptodomex paramiko requests --break-system-packages \
+    # Python deps come from Debian, not pypi, so the image builds on a host with
+    # no route to pypi.org (issue #36 — a real report: pypi timed out and the
+    # whole build failed, blocking the entire product over two optional
+    # features). Debian's python3-pycryptodome already provides the `Cryptodome`
+    # namespace suci-keytool.py imports, and paramiko 2.12 / requests 2.28 are
+    # far newer than femto_provision.py's trivial usage needs.
+    #
+    # One capability does need a newer pycryptodome than Debian ships (3.11):
+    # SUCI ECIES Profile A (curve25519) needs >= 3.21, confirmed by testing both
+    # — on 3.11 secp256r1 works and curve25519 raises KeyError, exactly as
+    # suci-keytool.py's own comment predicts. So try to layer the newer wheel
+    # from pypi, but NEVER fail the build over it: pip installs into
+    # /usr/local/lib/.../dist-packages, which precedes Debian's path, so when
+    # pypi is reachable the newer version simply wins (verified: 3.11 -> 3.24,
+    # both curves OK). When it is not, the image still builds and everything
+    # except Profile A key generation works. suci-management.ts turns the
+    # remaining gap into an explicit, actionable error rather than a raw
+    # KeyError.
+    && (pip3 install --no-input --break-system-packages 'pycryptodomex>=3.21' \
+        || echo 'WARNING: could not reach pypi to install pycryptodomex>=3.21 — SUCI ECIES Profile A (curve25519) key generation will be unavailable; Profile B (secp256r1) and everything else still work.') \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list \

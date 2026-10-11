@@ -29,7 +29,29 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-      network: host
+      # NOTE: build-time host networking is deliberately NOT set here.
+      #
+      # It used to be (`network: host` under build:), to give the build the
+      # host's own resolver. That matters on a deployed host, because this
+      # project points /etc/resolv.conf at the BIND9 it manages
+      # (`nameserver 127.0.0.1`), and a bridge-network build cannot reach a
+      # resolver on the host's loopback. Docker papers over that for most
+      # people — when the host resolver is loopback-only it substitutes public
+      # DNS for bridge containers — so a normal install builds fine either way.
+      #
+      # But asking for host networking makes `docker compose up --build` fail
+      # outright on Docker versions where buildx bake enforces the entitlement:
+      #   "additional privileges requested: pass --allow=network.host"
+      # (issue #37, reported on a clean Ubuntu 24.04 VM). A fresh install is
+      # exactly when you build, and at that point this project has not installed
+      # BIND yet, so the host resolver is the systemd-resolved stub and Docker's
+      # public-DNS substitution applies — i.e. the default needs no special
+      # privilege.
+      #
+      # If you are rebuilding on a host that genuinely needs the host resolver
+      # (loopback-only resolv.conf AND no route to public DNS — a
+      # restricted-egress deployment), add the override:
+      #   docker compose -f docker-compose.yml -f docker-compose.hostnet-build.yml up --build -d
     container_name: open5gs-nms-backend
     restart: unless-stopped
     privileged: true
@@ -105,7 +127,29 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      network: host
+      # NOTE: build-time host networking is deliberately NOT set here.
+      #
+      # It used to be (`network: host` under build:), to give the build the
+      # host's own resolver. That matters on a deployed host, because this
+      # project points /etc/resolv.conf at the BIND9 it manages
+      # (`nameserver 127.0.0.1`), and a bridge-network build cannot reach a
+      # resolver on the host's loopback. Docker papers over that for most
+      # people — when the host resolver is loopback-only it substitutes public
+      # DNS for bridge containers — so a normal install builds fine either way.
+      #
+      # But asking for host networking makes `docker compose up --build` fail
+      # outright on Docker versions where buildx bake enforces the entitlement:
+      #   "additional privileges requested: pass --allow=network.host"
+      # (issue #37, reported on a clean Ubuntu 24.04 VM). A fresh install is
+      # exactly when you build, and at that point this project has not installed
+      # BIND yet, so the host resolver is the systemd-resolved stub and Docker's
+      # public-DNS substitution applies — i.e. the default needs no special
+      # privilege.
+      #
+      # If you are rebuilding on a host that genuinely needs the host resolver
+      # (loopback-only resolv.conf AND no route to public DNS — a
+      # restricted-egress deployment), add the override:
+      #   docker compose -f docker-compose.yml -f docker-compose.hostnet-build.yml up --build -d
       args:
         - VITE_API_URL=
         - VITE_WS_URL=

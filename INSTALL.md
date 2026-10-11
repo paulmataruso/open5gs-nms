@@ -511,21 +511,63 @@ systemctl status open5gs-amfd
 
 ## Troubleshooting
 
-### Docker Build Fails with DNS Errors
+### Docker Build Fails Asking for Extra Privileges
 
-**Error:** `npm error code EAI_AGAIN`
+**Error:**
 
-**Solution:**
+```
+additional privileges requested: pass "--allow=network.host" to grant requested privileges
+```
+
+**Cause:** an older Docker/buildx enforces an entitlement check when a build asks
+for host networking. The default `docker-compose.yml` no longer asks for it, so
+this should not happen on a current checkout — if it does, you are on a build
+that still has `network: host` under a `build:` section.
+
+**Solution:** update your checkout (`git pull`). If you need host networking for
+the build (see the next section), use the override file and disable bake:
 
 ```bash
-# Fix host DNS
-sudo nano /etc/resolv.conf
-# Add: nameserver 8.8.8.8
+COMPOSE_BAKE=false docker compose \
+  -f docker-compose.yml -f docker-compose.hostnet-build.yml build
+```
 
-# The docker-compose.yml already uses network: host for builds.
-# Just rebuild:
+### Docker Build Fails with DNS Errors
+
+**Error:** `npm error code EAI_AGAIN`, or pip/apt timing out during the build.
+
+**Cause:** the build cannot resolve DNS. Builds run on Docker's bridge network,
+which cannot reach a resolver listening on the host's loopback address. If
+`/etc/resolv.conf` contains only a loopback address, Docker normally substitutes
+public DNS for bridge containers — so this only bites when the host *also* has
+no route to public DNS.
+
+Note this project puts the host into exactly that state once its DNS/BIND9
+module is configured (`nameserver 127.0.0.1`), so a **rebuild** on a
+restricted-egress deployment can fail where the original install succeeded.
+
+**Solution — give the host a reachable resolver:**
+
+```bash
+# Check what the host resolves with
+cat /etc/resolv.conf
+
+# If it is loopback-only and you have no local DNS that works, add a public one
+sudo nano /etc/resolv.conf     # e.g. nameserver 8.8.8.8
 docker compose build --no-cache
 ```
+
+**Solution — or build using the host's own network stack**, which is what you
+want if the host has a working local resolver (this project's BIND9, say) but no
+public DNS:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.hostnet-build.yml up --build -d
+```
+
+This is an opt-in override rather than the default because requesting host
+networking for a build makes `docker compose up --build` fail outright on Docker
+versions that enforce the entitlement — see the previous section.
 
 ### Backend Container Won't Start
 
