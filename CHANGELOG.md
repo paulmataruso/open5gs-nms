@@ -8,6 +8,30 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.65] - 2026-10-11
+
+### Fixed
+
+- The SMF configuration file could be destroyed when IMS was configured, on any
+  deployment that routes a data network name to a specific user-plane function.
+  That is a normal Open5GS arrangement, but it puts a second `dnn:` entry in the
+  file, and IMS configuration matched the wrong one and rewrote the whole file
+  from it — leaving it unparseable and reporting the missing service-discovery
+  client as if that were the original problem. Removing IMS could empty the file
+  outright for the same reason. Both now operate only within the session list,
+  and refuse to edit a file whose layout they cannot identify rather than
+  rewriting it.
+
+### Added
+
+- The Updates prompt now also covers the Kamailio IMS core modules, and can
+  rebuild them for you. Previously, if a deployment's compiled modules were
+  missing a fix, nothing reported it and there was no way to apply it from the
+  interface. The rebuild is only offered when the installed modules are actually
+  out of date, so an up-to-date deployment is never asked to do it.
+
+---
+
 ## [v2.0-beta_0.64] - 2026-10-11
 
 ### Fixed — IMS / VoLTE / VoNR calling
