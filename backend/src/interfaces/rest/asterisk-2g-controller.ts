@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { revisionStaleness } from '../../domain/services/module-revision';
 import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
@@ -146,6 +147,9 @@ interface Asterisk2gState {
   // Only ever written by setCrossRanPeer() below — never toggled directly
   // via a route on this module. See CLAUDE.md's Cross-RAN Calling entry.
   crossRanEnabled?: boolean;
+  // Revision of the config generator this deployment ran — the real staleness
+  // signal (domain/services/module-revision.ts).
+  configuredWithRev?: number;
 }
 
 const STATE_DEFAULTS: Asterisk2gState = {
@@ -913,7 +917,7 @@ export async function configureAsterisk2g(
     // against modules silently rewriting each other's config.
     await wireIntoSipTabAndGoExternal(bindIp, bindPort, peer);
 
-    writeState({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, installedWithVersion: existing?.installedWithVersion, configuredWithVersion: getAppVersion() });
+    writeState({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, installedWithVersion: existing?.installedWithVersion, configuredWithVersion: getAppVersion(), configuredWithRev: ASTERISK_2G_CONFIG_REV });
 
     return { success: true, bindIp, sipConnPeer: `${peer.ip}:${peer.port}` };
   } catch (err) {
@@ -992,11 +996,19 @@ export interface Asterisk2gStalenessResult {
   configuredWithVersion?: string;
 }
 
+// Config revision — see domain/services/module-revision.ts. Install-side
+// staleness isn't modelled for this module (it installs Asterisk from apt).
+export const ASTERISK_2G_CONFIG_REV = 1;
+
 export async function getAsterisk2gStaleness(): Promise<Asterisk2gStalenessResult> {
   const installed = fs.existsSync(`${HOST_ROOT}${A2G_CONF}`);
   const state = readState();
-  const appVersion = getAppVersion();
-  const configStale = !!state && state.configuredWithVersion !== appVersion;
+  const { configStale } = revisionStaleness({
+    installed, hasSavedConfig: !!state,
+    installedWithRev: ASTERISK_2G_CONFIG_REV, expectedInstallRev: ASTERISK_2G_CONFIG_REV,
+    configuredWithRev: state?.configuredWithRev,
+    expectedConfigRev: ASTERISK_2G_CONFIG_REV,
+  });
   return {
     installed,
     hasSavedConfig: !!state,
@@ -1027,7 +1039,13 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
       const state = readState();
       const gsmPeer = readGsmSipPeer();
       const appVersion = getAppVersion();
-      const configStale = !!state && state.configuredWithVersion !== appVersion;
+      // Same revision comparison as getAsterisk2gStaleness() above.
+      const { configStale } = revisionStaleness({
+        installed, hasSavedConfig: !!state,
+        installedWithRev: ASTERISK_2G_CONFIG_REV, expectedInstallRev: ASTERISK_2G_CONFIG_REV,
+        configuredWithRev: state?.configuredWithRev,
+        expectedConfigRev: ASTERISK_2G_CONFIG_REV,
+      });
 
       res.json({
         success: true,

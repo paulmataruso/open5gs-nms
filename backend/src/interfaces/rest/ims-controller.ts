@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { revisionStaleness } from '../../domain/services/module-revision';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
@@ -3081,6 +3082,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   try {
     const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
     state.configuredWithVersion = getAppVersion();
+    state.configuredWithRev = IMS_CONFIG_REV;
     fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
   } catch { /* see comment above */ }
 
@@ -4251,12 +4253,20 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
     // if an individual patch step warned rather than hard-failed.
     fs.writeFileSync(HOST_IMS_INSTALL_STATE, JSON.stringify({
       installedWithVersion: getAppVersion(),
+      installedWithRev: IMS_INSTALL_REV,
       installedAt: new Date().toISOString(),
     }, null, 2), 'utf-8');
 
   write('\n✅ IMS installation complete. Run Configure next.\n');
   return { success: true };
 }
+
+// Install/config revisions — see domain/services/module-revision.ts for the
+// rule. IMS additionally has a CONTENT check (checkImsTemplateStaleness), which
+// is the stronger signal where it applies; these catch a changed install step or
+// config generator whose output happens to look identical.
+export const IMS_INSTALL_REV = 1;
+export const IMS_CONFIG_REV = 1;
 
 export interface ImsStalenessResult {
   installed: boolean;
@@ -4265,6 +4275,8 @@ export interface ImsStalenessResult {
   configStale: boolean;
   installedWithVersion?: string;
   configuredWithVersion?: string;
+  installedWithRev?: number;
+  configuredWithRev?: number;
   /**
    * Deployed static templates whose content differs from this build's, and ones
    * missing entirely — host paths, from checkImsTemplateStaleness().
@@ -4291,21 +4303,34 @@ export async function getImsStaleness(): Promise<ImsStalenessResult> {
 
   const hasSavedConfig = fs.existsSync(HOST_IMS_STATE);
   let configuredWithVersion: string | undefined;
+  let configuredWithRev: number | undefined;
   if (hasSavedConfig) {
     try {
-      configuredWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')).configuredWithVersion;
+      const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      configuredWithVersion = saved.configuredWithVersion;
+      configuredWithRev = saved.configuredWithRev;
     } catch { /* corrupt */ }
   }
-  const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
 
   let installedWithVersion: string | undefined;
+  let installedWithRev: number | undefined;
   const hasInstallMarker = fs.existsSync(HOST_IMS_INSTALL_STATE);
   if (hasInstallMarker) {
     try {
-      installedWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8')).installedWithVersion;
+      const saved = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8'));
+      installedWithVersion = saved.installedWithVersion;
+      installedWithRev = saved.installedWithRev;
     } catch { /* corrupt */ }
   }
-  const installStale = installed && installedWithVersion !== appVersion;
+
+  const { installStale, configStale } = revisionStaleness({
+    installed,
+    hasSavedConfig,
+    installedWithRev,
+    configuredWithRev,
+    expectedInstallRev: IMS_INSTALL_REV,
+    expectedConfigRev: IMS_CONFIG_REV,
+  });
 
   // Content comparison, not a version-string compare. Needs the rtpEngineIp the
   // deployment was actually configured with so token-bearing templates render
@@ -4324,6 +4349,7 @@ export async function getImsStaleness(): Promise<ImsStalenessResult> {
   return {
     installed, hasSavedConfig, installStale, configStale,
     installedWithVersion, configuredWithVersion,
+    installedWithRev, configuredWithRev,
     staleTemplates: templates.stale,
     missingTemplates: templates.missing,
   };
@@ -4374,6 +4400,7 @@ export function createImsRouter(
       let currentConfig: ImsConfigureInput | undefined;
       let imsDomain: string | undefined;
       let configuredWithVersion: string | undefined;
+      let configuredWithRev: number | undefined;
       let smsDeliveryMode: 'sgs' | 'ims' | 'vectorcore' = 'ims';
       let smsWorkerIntervalSeconds = 30;
       let voiceChargingEnabled = false;
@@ -4384,6 +4411,7 @@ export function createImsRouter(
           currentConfig = saved.config;
           imsDomain = saved.imsDomain;
           configuredWithVersion = saved.configuredWithVersion;
+          configuredWithRev = saved.configuredWithRev;
           if (saved.smsDeliveryMode === 'sgs' || saved.smsDeliveryMode === 'vectorcore') smsDeliveryMode = saved.smsDeliveryMode;
           if (typeof saved.smsWorkerIntervalSeconds === 'number' && saved.smsWorkerIntervalSeconds > 0) {
             smsWorkerIntervalSeconds = saved.smsWorkerIntervalSeconds;
@@ -4400,7 +4428,9 @@ export function createImsRouter(
       // configuredWithVersion at all — treat that the same as "stale",
       // since we genuinely don't know what template they're running.
       const appVersion = getAppVersion();
-      const configStale = hasSavedConfig && configuredWithVersion !== appVersion;
+      // Same revision comparison the Fix-All aggregator uses; IMS additionally
+      // reports the stronger content check below.
+      const configStale = hasSavedConfig && configuredWithRev !== IMS_CONFIG_REV;
 
       // Same pattern, for Install rather than Configure — see
       // HOST_IMS_INSTALL_STATE's own comment for why these are tracked
@@ -4410,13 +4440,16 @@ export function createImsRouter(
       // same reasoning as configStale above — we don't know what install
       // steps it actually got.
       let installedWithVersion: string | undefined;
+      let installedWithRev: number | undefined;
       const hasInstallMarker = fs.existsSync(HOST_IMS_INSTALL_STATE);
       if (hasInstallMarker) {
         try {
-          installedWithVersion = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8')).installedWithVersion;
+          const savedInstall = JSON.parse(fs.readFileSync(HOST_IMS_INSTALL_STATE, 'utf-8'));
+          installedWithVersion = savedInstall.installedWithVersion;
+          installedWithRev = savedInstall.installedWithRev;
         } catch { /* corrupt */ }
       }
-      const installStale = installed && installedWithVersion !== appVersion;
+      const installStale = installed && installedWithRev !== IMS_INSTALL_REV;
 
       // Content-based staleness, independent of the two version-string flags
       // above — see checkImsTemplateStaleness()'s own comment for the two real

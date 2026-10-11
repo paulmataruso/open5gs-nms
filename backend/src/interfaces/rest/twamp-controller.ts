@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { revisionStaleness } from '../../domain/services/module-revision';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import { Db, ObjectId } from 'mongodb';
@@ -196,7 +197,7 @@ export async function installTwamp(write: (s: string) => void): Promise<{ succes
         return { success: false, error: `build exit ${buildExit}` };
       }
 
-      writeTwampState({ ...(readTwampState() ?? {}), installedWithVersion: getAppVersion() });
+      writeTwampState({ ...(readTwampState() ?? {}), installedWithVersion: getAppVersion(), installedWithRev: TWAMP_INSTALL_REV });
       write('\n✅ twamp-client and twamp-server installed. Add a target below to start testing, or configure the reflector if you need it to accept inbound tests.');
       return { success: true };
     } catch (err) {
@@ -269,6 +270,7 @@ export async function configureTwampServer(
         ...prevState,
         server: {
           configuredWithVersion: getAppVersion(),
+          configuredWithRev: TWAMP_CONFIG_REV,
           listenIp: resolvedListenIp,
           listenPort: resolvedPort,
           enableFull: resolvedEnableFull,
@@ -292,12 +294,21 @@ export interface TwampClientStalenessResult {
   installedWithVersion?: string;
 }
 
+// Install/config revisions — see domain/services/module-revision.ts.
+export const TWAMP_INSTALL_REV = 1;
+export const TWAMP_CONFIG_REV = 1;
+
 // Cheap staleness check for the cross-module Fix-All aggregator, client/install side.
 export function getTwampClientStaleness(): TwampClientStalenessResult {
   const installed = isTwampInstalled();
   const state = readTwampState();
-  const appVersion = getAppVersion();
-  const installStale = installed && state?.installedWithVersion !== appVersion;
+  const { installStale } = revisionStaleness({
+    installed,
+    hasSavedConfig: false,
+    installedWithRev: state?.installedWithRev,
+    expectedInstallRev: TWAMP_INSTALL_REV,
+    expectedConfigRev: TWAMP_CONFIG_REV,
+  });
   return { installed, installStale, installedWithVersion: state?.installedWithVersion };
 }
 
@@ -312,8 +323,13 @@ export interface TwampServerStalenessResult {
 export function getTwampServerStaleness(): TwampServerStalenessResult {
   const installed = isTwampServerInstalled();
   const state = readTwampState();
-  const appVersion = getAppVersion();
-  const configStale = !!state?.server && state.server.configuredWithVersion !== appVersion;
+  const { configStale } = revisionStaleness({
+    installed,
+    hasSavedConfig: !!state?.server,
+    installedWithRev: TWAMP_INSTALL_REV, expectedInstallRev: TWAMP_INSTALL_REV,
+    configuredWithRev: state?.server?.configuredWithRev,
+    expectedConfigRev: TWAMP_CONFIG_REV,
+  });
   return {
     installed,
     hasSavedConfig: !!state?.server,
@@ -345,7 +361,11 @@ export function createTwampRouter(
       const installed = isTwampInstalled();
       const state = readTwampState();
       const appVersion = getAppVersion();
-      const installStale = installed && state?.installedWithVersion !== appVersion;
+      const { installStale } = revisionStaleness({
+        installed, hasSavedConfig: false,
+        installedWithRev: state?.installedWithRev,
+        expectedInstallRev: TWAMP_INSTALL_REV, expectedConfigRev: TWAMP_CONFIG_REV,
+      });
       res.json({
         success: true,
         installed,
@@ -601,7 +621,12 @@ export function createTwampRouter(
       const serviceActive = serviceActiveRes?.stdout.trim() === 'active';
       const state = readTwampState();
       const appVersion = getAppVersion();
-      const configStale = !!state?.server && state.server.configuredWithVersion !== appVersion;
+      const { configStale } = revisionStaleness({
+        installed, hasSavedConfig: !!state?.server,
+        installedWithRev: TWAMP_INSTALL_REV, expectedInstallRev: TWAMP_INSTALL_REV,
+        configuredWithRev: state?.server?.configuredWithRev,
+        expectedConfigRev: TWAMP_CONFIG_REV,
+      });
       res.json({
         success: true,
         installed,

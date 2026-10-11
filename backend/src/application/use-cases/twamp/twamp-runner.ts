@@ -40,12 +40,20 @@ export interface TwampServerState {
   secretKeyId?: string;
   secretValue?: string;
   allowCidrs?: string[];
+  // Revision of the install steps / config generator this deployment actually
+  // ran — the real staleness signal (domain/services/module-revision.ts). The
+  // *WithVersion fields stay as human-readable diagnostics only.
+  configuredWithRev?: number;
 }
 
 export interface TwampState {
   installedWithVersion?: string;
   server?: TwampServerState;
   history?: { retentionDays: number };
+  // Revision of the install steps / config generator this deployment actually
+  // ran — the real staleness signal (domain/services/module-revision.ts). The
+  // *WithVersion fields stay as human-readable diagnostics only.
+  installedWithRev?: number;
 }
 
 // Shared between twamp-controller.ts (reads/writes it directly) and

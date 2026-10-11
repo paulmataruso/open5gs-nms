@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { revisionStaleness } from '../../domain/services/module-revision';
 import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
@@ -131,6 +132,10 @@ export interface PstnState {
   // `enabled: false`), so `externalTrunk?.enabled` is the correct check
   // everywhere, matching this field's own optionality.
   externalTrunk?: PstnExternalTrunkConfig;
+  // Revision of the install steps / config generator this deployment actually
+  // ran — the real staleness signal (domain/services/module-revision.ts). The
+  // *WithVersion fields stay as human-readable diagnostics only.
+  configuredWithRev?: number;
 }
 
 export function readPstnState(): PstnState | null {
@@ -1210,7 +1215,7 @@ export async function configurePstn(
       // lost the field, one "Configure" click away from tearing the real
       // trunk down. `existing ?? {}` guards the legitimate first-ever-
       // Configure case where existing is null.
-      writePstnState({ ...(existing ?? {}), asteriskIp, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, configuredWithVersion: getAppVersion() });
+      writePstnState({ ...(existing ?? {}), asteriskIp, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, configuredWithVersion: getAppVersion(), configuredWithRev: PSTN_CONFIG_REV });
 
       return { success: true, message: 'Asterisk configured and wired into S-CSCF\'s dispatcher.', asteriskIp };
     } catch (err) {
@@ -1401,12 +1406,24 @@ export interface PstnStalenessResult {
 // Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
 // comparison GET /status already does. PSTN has no install-staleness concept
 // (installStale field doesn't exist for this module — see /status above).
+// Config revision — see domain/services/module-revision.ts. PSTN has no
+// install-side staleness (the module installs Asterisk from apt and nothing
+// about that needs re-running per release), so only the generator is tracked.
+export const PSTN_CONFIG_REV = 1;
+
 export async function getPstnStaleness(): Promise<PstnStalenessResult> {
   const { stdout: whichOut } = await nsenter('which', ['asterisk']).catch(() => ({ stdout: '', stderr: '' }));
   const installed = whichOut.trim().length > 0;
   const state = readPstnState();
-  const appVersion = getAppVersion();
-  const configStale = !!state && state.configuredWithVersion !== appVersion;
+  const { configStale } = revisionStaleness({
+    installed,
+    hasSavedConfig: !!state,
+    // PSTN reports no install-side staleness; satisfy the shared shape with a
+    // matching pair so installStale is always false.
+    installedWithRev: PSTN_CONFIG_REV, expectedInstallRev: PSTN_CONFIG_REV,
+    configuredWithRev: state?.configuredWithRev,
+    expectedConfigRev: PSTN_CONFIG_REV,
+  });
   return {
     installed,
     hasSavedConfig: !!state,
@@ -1469,7 +1486,13 @@ export function createPstnRouter(
       // all (pre-dates this field) counts as stale too, since we don't
       // know what template that deployment is actually running.
       const appVersion = getAppVersion();
-      const configStale = !!state && state.configuredWithVersion !== appVersion;
+      // Same revision comparison the Fix-All aggregator uses.
+      const { configStale } = revisionStaleness({
+        installed, hasSavedConfig: !!state,
+        installedWithRev: PSTN_CONFIG_REV, expectedInstallRev: PSTN_CONFIG_REV,
+        configuredWithRev: state?.configuredWithRev,
+        expectedConfigRev: PSTN_CONFIG_REV,
+      });
 
       res.json({
         success: true,

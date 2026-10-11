@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { revisionStaleness } from '../../domain/services/module-revision';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
@@ -336,6 +337,12 @@ export interface MmsState {
   // /status as installStale, with its own banner distinct from the
   // config-staleness one.
   installedWithVersion?: string;
+  // Revisions of the install steps / config generator this deployment
+  // actually ran — the real staleness signal. The *WithVersion fields are
+  // kept alongside purely as human-readable diagnostics ('configured by
+  // 0.64'); they no longer decide anything.
+  installedWithRev?: number;
+  configuredWithRev?: number;
 }
 
 export function readMmsState(): MmsState | null {
@@ -744,7 +751,7 @@ export async function installMms(write: (s: string) => void): Promise<{ success:
       // binary predates a fix shipped since then and prompt a re-Install —
       // see the MmsState.installedWithVersion comment above.
       const existingState = readMmsState();
-      writeMmsState({ ...(existingState ?? {} as MmsState), installedWithVersion: getAppVersion() });
+      writeMmsState({ ...(existingState ?? {} as MmsState), installedWithVersion: getAppVersion(), installedWithRev: MMS_INSTALL_REV });
 
       write('\n✅ VectorCore MMSC installed. Run Configure next.');
       return { success: true };
@@ -913,7 +920,7 @@ export async function configureMms(
       // Spread existing state first so installedWithVersion (written by
       // /install, see MmsState comment) survives a subsequent Configure —
       // a plain object literal here would silently wipe it every time.
-      writeMmsState({ ...(readMmsState() ?? {} as MmsState), deliveryPath: 'sgs', mm1PublicIp, esmeName: ESME_NAME, esmePassword, configuredWithVersion: getAppVersion() });
+      writeMmsState({ ...(readMmsState() ?? {} as MmsState), deliveryPath: 'sgs', mm1PublicIp, esmeName: ESME_NAME, esmePassword, configuredWithVersion: getAppVersion(), configuredWithRev: MMS_CONFIG_REV });
 
       return { success: true, message: 'VectorCore MMSC configured and wired to osmo-msc via SMPP.' };
   } catch (err) {
@@ -933,12 +940,23 @@ export interface MmsStalenessResult {
 
 // Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
 // comparison GET /status already does, without the rest of that endpoint's work.
+// Install/configure revisions — see domain/services/module-revision.ts for the
+// rule. Bump only when this module's own install steps or config generator
+// change, never for an unrelated release.
+export const MMS_INSTALL_REV = 1;
+export const MMS_CONFIG_REV = 1;
+
 export async function getMmsStaleness(): Promise<MmsStalenessResult> {
   const installed = fs.existsSync(`${HOST_ROOT}${VC_BIN}`);
   const state = readMmsState();
-  const appVersion = getAppVersion();
-  const configStale = !!state && state.configuredWithVersion !== appVersion;
-  const installStale = installed && state?.installedWithVersion !== appVersion;
+  const { installStale, configStale } = revisionStaleness({
+    installed,
+    hasSavedConfig: !!state,
+    installedWithRev: state?.installedWithRev,
+    configuredWithRev: state?.configuredWithRev,
+    expectedInstallRev: MMS_INSTALL_REV,
+    expectedConfigRev: MMS_CONFIG_REV,
+  });
   return {
     installed,
     hasSavedConfig: !!state,
@@ -990,15 +1008,22 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
         }
       }
 
+      // Still reported for display ("configured by 0.64"), just not used to
+      // decide staleness any more.
       const appVersion = getAppVersion();
-      const configStale = !!state && state.configuredWithVersion !== appVersion;
-      // installed (not just hasSavedConfig) gates this — a deployment
-      // that's never been Installed at all shouldn't show "reinstall me",
-      // it should show the normal first-time Install flow instead. Missing
-      // installedWithVersion on an otherwise-installed deployment (i.e. it
-      // was installed before this field existed) counts as stale too, same
-      // "unrecorded counts as stale" rule IMS's configStale uses.
-      const installStale = installed && state?.installedWithVersion !== appVersion;
+      // Single source of truth: the same revision comparison the Fix-All
+      // aggregator uses (domain/services/module-revision.ts). This used to
+      // recompute an app-version comparison inline, which meant this page's
+      // banner and the Updates prompt could disagree, and both fired on every
+      // unrelated release.
+      const { installStale, configStale } = revisionStaleness({
+        installed,
+        hasSavedConfig: !!state,
+        installedWithRev: state?.installedWithRev,
+        configuredWithRev: state?.configuredWithRev,
+        expectedInstallRev: MMS_INSTALL_REV,
+        expectedConfigRev: MMS_CONFIG_REV,
+      });
 
       res.json({
         success: true,

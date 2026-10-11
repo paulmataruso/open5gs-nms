@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { revisionStaleness } from '../../domain/services/module-revision';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
@@ -289,6 +290,12 @@ interface VectorcoreSmscState {
   // smsc.yaml, restart with the CURRENTLY-BUILT binary) are genuinely
   // different operations; only a re-Install rebuilds the actual binary.
   installedWithVersion?: string;
+  // Revisions of the install steps / config generator this deployment
+  // actually ran — the real staleness signal. The *WithVersion fields are
+  // kept alongside purely as human-readable diagnostics ('configured by
+  // 0.64'); they no longer decide anything.
+  installedWithRev?: number;
+  configuredWithRev?: number;
 }
 
 function readState(): VectorcoreSmscState | null {
@@ -526,7 +533,7 @@ export async function installVectorcoreSmsc(write: (s: string) => void): Promise
       }
 
       const existingState = readState();
-      writeState({ ...(existingState ?? {} as VectorcoreSmscState), imsDomain: existingState?.imsDomain ?? '', installedWithVersion: getAppVersion() });
+      writeState({ ...(existingState ?? {} as VectorcoreSmscState), imsDomain: existingState?.imsDomain ?? '', installedWithVersion: getAppVersion(), installedWithRev: VECTORCORE_SMSC_INSTALL_REV });
 
       write('\n✅ VectorCore SMSC installed. Run Configure next.');
       return { success: true };
@@ -560,7 +567,7 @@ export async function configureVectorcoreSmsc(): Promise<{ success: boolean; err
       await new Promise(r => setTimeout(r, 4000));
       await ensureCsBridge();
 
-      writeState({ imsDomain, configuredWithVersion: getAppVersion(), installedWithVersion: readState()?.installedWithVersion });
+      writeState({ imsDomain, configuredWithVersion: getAppVersion(), configuredWithRev: VECTORCORE_SMSC_CONFIG_REV, installedWithVersion: readState()?.installedWithVersion, installedWithRev: readState()?.installedWithRev });
 
       return { success: true, imsDomain, sipAddress: `${SIP_BIND_IP}:${SIP_PORT}` };
     } catch (err) {
@@ -580,12 +587,23 @@ export interface VectorcoreSmscStalenessResult {
 
 // Cheap staleness check for the cross-module Fix-All aggregator — mirrors the
 // comparison GET /status already does, without the rest of that endpoint's work.
+// Install/configure revisions — see domain/services/module-revision.ts for the
+// rule. Bump only when this module's own install steps or config generator
+// change, never for an unrelated release.
+export const VECTORCORE_SMSC_INSTALL_REV = 1;
+export const VECTORCORE_SMSC_CONFIG_REV = 1;
+
 export async function getVectorcoreSmscStaleness(): Promise<VectorcoreSmscStalenessResult> {
   const installed = fs.existsSync(`${HOST_ROOT}${VC_BIN}`);
   const state = readState();
-  const appVersion = getAppVersion();
-  const configStale = !!state && state.configuredWithVersion !== appVersion;
-  const installStale = installed && state?.installedWithVersion !== appVersion;
+  const { installStale, configStale } = revisionStaleness({
+    installed,
+    hasSavedConfig: !!state,
+    installedWithRev: state?.installedWithRev,
+    configuredWithRev: state?.configuredWithRev,
+    expectedInstallRev: VECTORCORE_SMSC_INSTALL_REV,
+    expectedConfigRev: VECTORCORE_SMSC_CONFIG_REV,
+  });
   return {
     installed,
     hasSavedConfig: !!state,
@@ -628,8 +646,16 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
 
       const state = readState();
       const appVersion = getAppVersion();
-      const configStale = !!state && state.configuredWithVersion !== appVersion;
-      const installStale = installed && state?.installedWithVersion !== appVersion;
+      // Same revision comparison the Fix-All aggregator uses — see
+      // domain/services/module-revision.ts.
+      const { installStale, configStale } = revisionStaleness({
+        installed,
+        hasSavedConfig: !!state,
+        installedWithRev: state?.installedWithRev,
+        configuredWithRev: state?.configuredWithRev,
+        expectedInstallRev: VECTORCORE_SMSC_INSTALL_REV,
+        expectedConfigRev: VECTORCORE_SMSC_CONFIG_REV,
+      });
 
       res.json({
         success: true,
