@@ -22,6 +22,9 @@ import { LogBlock } from './LogBlock';
 // hatch appears so a manual-fix-only case never traps the operator behind
 // an unclosable overlay.
 const FEATURE_FLAG_BY_MODULE: Record<ModuleId, boolean> = {
+  // The Kamailio source build has no flag of its own — it exists only to serve
+  // IMS, so it is visible exactly when IMS is.
+  kamailio: FEATURES.ims,
   ims: FEATURES.ims,
   mms: FEATURES.mms,
   vectorcoreSmsc: FEATURES.vectorcoreSmsc,

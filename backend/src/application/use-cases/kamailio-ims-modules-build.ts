@@ -40,6 +40,33 @@ export const CDP_ACCTSM_C_MARKER = 'NMS patch 2026-10-01';
 export const SECVERIFY_C_MARKER = 'IPSEC_FORWARD_ADD_SECVERIFY';
 export const CDP_MOD_C_MARKER = 'NMS patch: cdp process slot';
 
+/**
+ * Revision of the C-source patch SET that the Kamailio 6.0.8 source build
+ * applies. **Bump this whenever a patch is added, removed or materially
+ * changed** — it is what tells a deployment its installed build predates the
+ * current patches.
+ *
+ * Why a recorded revision rather than inspecting the built `.so`: every one of
+ * these patches is identified in source by a C *comment* marker, and comments
+ * do not survive compilation into the binary's string table, so `strings` can
+ * never find them. (That exact mistake is already documented on
+ * verifyKamailioImsModulesPatch(), which silently always returned false for
+ * years because of it.) Some patches change nothing observable about the file
+ * either — CDP_MOD_C_PATCH only edits two integer literals, so it shifts
+ * neither the size nor any symbol. Recording the rev at build time is the only
+ * reliable signal, and it is the same idiom vowifi-build.ts
+ * (VECTORCORE_PATCH_REV) and secgw-build.ts (SECGW_PATCH_REV) already use.
+ *
+ * rev 1 — the original 7: CMD_C_PATCH_KAMAILIO6, SAVE_C_PATCH, CCR_C_PATCH,
+ *         IMS_RO_C_PATCH, CDP_COMMON_C_PATCH, CDP_ACCTSM_C_PATCH,
+ *         SECVERIFY_C_PATCH.
+ * rev 2 — adds CDP_MOD_C_PATCH (the cdp process-slot fix, which had been lost
+ *         entirely: applied by hand 2026-08-02, then silently dropped by the
+ *         2026-10-03 rebuild, with a stale marker file making IMS Install skip
+ *         it forever).
+ */
+export const KAMAILIO_PATCH_REV = 2;
+
 // Real bug, fixed live 2026-08-02 and nearly lost again 2026-10-03: stock
 // cdp_mod.c registers one fewer process slot than the module actually forks
 // (`2 + workers + 2*peers`, when the timer process is a third fixed one on top

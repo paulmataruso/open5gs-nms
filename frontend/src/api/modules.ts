@@ -5,7 +5,7 @@ const api = axios.create({ baseURL: '/api/modules', withCredentials: true });
 // Mirrors backend/src/application/use-cases/module-fixall-usecase.ts's exported
 // types — duplicated here rather than shared, matching this codebase's existing
 // frontend/backend type-duplication convention (no shared-types package exists).
-export type ModuleId = 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp';
+export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp';
 
 export interface ModuleStaleStatus {
   moduleId: ModuleId;

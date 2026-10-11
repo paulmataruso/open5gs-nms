@@ -10,6 +10,7 @@ import {
   DEFAULT_KAMAILIO_TAG, KAMAILIO_BUILD_STEPS, KamailioBuildStep, isValidKamailioTag,
   buildKamailioSourceScript, restoreKamailioFromSnapshot, verifyKamailioBuild,
 } from '../../application/use-cases/kamailio-source-build';
+import { KAMAILIO_PATCH_REV } from '../../application/use-cases/kamailio-ims-modules-build';
 
 // Same overall shape as frr-source-build-controller.ts (this project's own proven pattern
 // for a long-running, detached, host-side source build with a snapshot-based rollback) —
@@ -34,6 +35,10 @@ export interface BuildState {
   // Real host path (not /proc/1/root-prefixed) to the pre-swap snapshot for this run — the
   // only rollback source of truth, same no-apt-fallback design as FRR's own build.
   snapshotPath: string | null;
+  // Which revision of the C-patch set this build actually carries. Null on any
+  // build that predates this field, which is correctly treated as stale — see
+  // KAMAILIO_PATCH_REV and getKamailioSourceBuildStaleness().
+  builtWithPatchRev?: number | null;
 }
 
 function loadState(): BuildState {
@@ -70,6 +75,55 @@ export const KAMAILIO_APT_PKGS = [
 
 // True once a 6.0.8 source build has verified all four services active. Read by
 // ims-controller.ts so IMS Install stops apt-installing kamailio over it.
+export interface KamailioBuildStaleness {
+  /** A source build has completed, i.e. this host is on the 6.0.8 build at all. */
+  installed: boolean;
+  /** The completed build predates the current C-patch set and needs rebuilding. */
+  buildStale: boolean;
+  builtWithPatchRev: number | null;
+  expectedPatchRev: number;
+}
+
+/**
+ * Whether the deployed Kamailio build carries the current patch set.
+ *
+ * This exists because the patches and the thing that applies them had drifted
+ * apart with nothing to notice: IMS Install deliberately skips its own cdp
+ * patch step once a source build is active (patching from apt 5.8.8 source
+ * would drop an ABI-incompatible module over the 6.0.8 one), and the 6.0.8
+ * pipeline that does own the patches is never re-run automatically. So a build
+ * missing a patch stayed missing it indefinitely, and the operator had no way
+ * to find out or fix it from the GUI.
+ */
+export function getKamailioSourceBuildStaleness(): KamailioBuildStaleness {
+  const state = loadState();
+  const installed = state.status === 'complete';
+  const builtWithPatchRev = state.builtWithPatchRev ?? null;
+  return {
+    installed,
+    buildStale: installed && builtWithPatchRev !== KAMAILIO_PATCH_REV,
+    builtWithPatchRev,
+    expectedPatchRev: KAMAILIO_PATCH_REV,
+  };
+}
+
+/** Kicks off a rebuild at the last-used tag (or the default) — for Fix All. */
+export function startKamailioRebuildForFixAll(logger: pino.Logger): void {
+  const prev = loadState();
+  const targetTag = prev.targetTag && isValidKamailioTag(prev.targetTag) ? prev.targetTag : DEFAULT_KAMAILIO_TAG;
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotPath = `/etc/open5gs-nms/kamailio-source-build-snapshots/${ts}`;
+  saveState({
+    status: 'preparing', currentStepLabel: 'preparing', targetTag,
+    startedAt: new Date().toISOString(), completedAt: null, error: null,
+    snapshotPath, builtWithPatchRev: prev.builtWithPatchRev ?? null,
+  });
+  appendLog(`\n==BUILD:start tag=${targetTag} ts=${new Date().toISOString()} (fix-all)==\n`);
+  startBuild(targetTag, snapshotPath, logger);
+}
+
+export function loadKamailioBuildState(): BuildState { return loadState(); }
+
 export function isKamailioSourceBuildComplete(): boolean {
   try {
     return JSON.parse(fs.readFileSync(HOST_STATE_FILE, 'utf-8')).status === 'complete';
@@ -104,6 +158,9 @@ async function verifyAndFinish(): Promise<void> {
     : `Verification failed — pcscf=${result.pcscfActive} scscf=${result.scscfActive} icscf=${result.icscfActive} smsc=${result.smscActive}`;
   s.completedAt = new Date().toISOString();
   if (!allActive) s.error = 'Not all 4 Kamailio services reported active after install — check the log and consider /rollback';
+  // Only stamp the patch revision on a build that actually succeeded: a failed
+  // build must stay stale so it keeps being offered as fixable.
+  if (allActive) s.builtWithPatchRev = KAMAILIO_PATCH_REV;
   saveState(s);
 
   // Pin the apt packages so a later `apt upgrade` cannot silently replace this

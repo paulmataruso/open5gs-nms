@@ -19,6 +19,9 @@ import {
 } from '../../interfaces/rest/twamp-controller';
 import { readTwampState } from './twamp/twamp-runner';
 import {
+  getKamailioSourceBuildStaleness, startKamailioRebuildForFixAll, loadKamailioBuildState,
+} from '../../interfaces/rest/kamailio-source-build-controller';
+import {
   installSecgw, configureSecgw, loadState as loadSecgwState, getSecgwStaleness,
 } from '../../interfaces/rest/secgw-controller';
 import {
@@ -41,9 +44,16 @@ import {
 // The core-17 NF "Apply Config" flow has no staleness concept at all and is
 // out of scope here — see CLAUDE.md.
 
-export type ModuleId = 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp';
+export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp';
 
-const MODULE_ORDER: ModuleId[] = ['ims', 'mms', 'vectorcoreSmsc', 'pstn', 'vowifi', 'secgw', 'twamp'];
+// `kamailio` runs FIRST, deliberately: its rebuild stops and restarts all four
+// Kamailio services and swaps the compiled modules, so anything that configures
+// Kamailio afterwards must come after it. In particular IMS Configure is what
+// emits `#!define WITH_N5` (it checks isKamailioHttp2Capable() at Configure
+// time, not at build time), so running ims after kamailio is also what actually
+// re-enables VoNR following a rebuild — the gap verifyAndFinish() currently has
+// to tell the operator about in prose.
+const MODULE_ORDER: ModuleId[] = ['kamailio', 'ims', 'mms', 'vectorcoreSmsc', 'pstn', 'vowifi', 'secgw', 'twamp'];
 
 const MODULE_LABELS: Record<ModuleId, string> = {
   ims: 'IMS / VoLTE',
@@ -53,6 +63,7 @@ const MODULE_LABELS: Record<ModuleId, string> = {
   vowifi: 'VoWiFi (ePDG)',
   secgw: 'Security Gateway (SecGW)',
   twamp: 'TWAMP',
+  kamailio: 'Kamailio (IMS core modules)',
 };
 
 // MMS/VectorCore SMSC/PSTN all hard-require IMS installed+configured (their
@@ -110,6 +121,10 @@ export interface FixAllRunState {
 // the same way the frontend's install/log/stream route already does.
 const VOWIFI_INSTALL_POLL_MS = 3000;
 const VOWIFI_INSTALL_TIMEOUT_MS = 20 * 60 * 1000; // matches this project's other from-source VectorCore builds
+const KAMAILIO_REBUILD_POLL_MS = 5000;
+// The real 6.0.8 build measured ~9 minutes on this host; 30 gives genuine
+// headroom on a slower one without hanging a Fix All run indefinitely.
+const KAMAILIO_REBUILD_TIMEOUT_MS = 30 * 60 * 1000;
 
 export class ModuleFixAllUseCase {
   private runState: FixAllRunState = { status: 'idle', results: [] };
@@ -126,6 +141,7 @@ export class ModuleFixAllUseCase {
 
   async getStaleStatus(): Promise<ModuleStaleStatus[]> {
     const settled = await Promise.allSettled([
+      this.getKamailioStatus(),
       this.getImsStatus(),
       this.getMmsStatus(),
       this.getVectorcoreSmscStatus(),
@@ -140,6 +156,21 @@ export class ModuleFixAllUseCase {
       else if (r.status === 'rejected') this.logger.warn({ err: String(r.reason) }, 'module-fixall: staleness check failed for one module');
     }
     return statuses;
+  }
+
+  private getKamailioStatus(): ModuleStaleStatus | null {
+    const s = getKamailioSourceBuildStaleness();
+    if (!s.installed || !s.buildStale) return null;
+    // Reported as install-stale rather than config-stale: the remedy is a
+    // rebuild of the compiled modules, not a config regeneration.
+    return {
+      moduleId: 'kamailio', label: MODULE_LABELS.kamailio,
+      installStale: true, configStale: false,
+      installedWithVersion: s.builtWithPatchRev === null
+        ? 'patch set unknown (pre-dates tracking)'
+        : `patch set rev ${s.builtWithPatchRev}`,
+      canAutoFix: true,
+    };
   }
 
   private async getImsStatus(): Promise<ModuleStaleStatus | null> {
@@ -426,6 +457,17 @@ export class ModuleFixAllUseCase {
         return result;
       }
 
+      case 'kamailio': {
+        // A real ~9-minute rebuild that stops all four Kamailio services. It is
+        // only ever reached when getKamailioStatus() found the deployed build
+        // genuinely predates the current patch set, so a current deployment
+        // never pays this cost — the module does not even appear in the list.
+        result.ranInstall = true;
+        const r = await this.runKamailioRebuild(write);
+        result.installSuccess = r.success;
+        result.error = r.error;
+        return result;
+      }
       case 'twamp': {
         if (status.installStale) {
           result.ranInstall = true;
@@ -458,6 +500,39 @@ export class ModuleFixAllUseCase {
   // VoWiFi's build is a detached background job (see resetAndStartVowifiInstall's
   // own comment) — kick it off, then poll loadVowifiState().installStatus for a
   // terminal state, same pattern the frontend's own /install/log/stream route uses.
+  // Same detached-build + poll-to-terminal shape as runVowifiInstall below: the
+  // build runs as a host-side script and reports progress only through its own
+  // state file, so there is nothing to await directly.
+  private async runKamailioRebuild(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+    const before = getKamailioSourceBuildStaleness();
+    write(`Kamailio rebuild started (detached, ~9 minutes) — deployed patch set ` +
+          `${before.builtWithPatchRev === null ? 'unknown' : `rev ${before.builtWithPatchRev}`}, ` +
+          `expected rev ${before.expectedPatchRev}. All four Kamailio services restart during this.`);
+    startKamailioRebuildForFixAll(this.logger);
+    const deadline = Date.now() + KAMAILIO_REBUILD_TIMEOUT_MS;
+    let lastStep = '';
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, KAMAILIO_REBUILD_POLL_MS));
+      const st = loadKamailioBuildState();
+      if (st.status !== lastStep) { lastStep = st.status; write(`  kamailio: ${st.currentStepLabel || st.status}`); }
+      if (st.status === 'complete') {
+        // Verify the rebuild actually recorded the patch set, rather than
+        // trusting 'complete' — the whole point of this module is that a build
+        // can succeed while missing a patch.
+        const after = getKamailioSourceBuildStaleness();
+        if (after.buildStale) {
+          return { success: false, error: `Build completed but still reports patch set ${after.builtWithPatchRev} (expected ${after.expectedPatchRev})` };
+        }
+        write('Kamailio rebuild complete — patch set current.');
+        return { success: true };
+      }
+      if (st.status === 'failed' || st.status === 'rolled_back') {
+        return { success: false, error: st.error ?? `build ended as ${st.status}` };
+      }
+    }
+    return { success: false, error: `Kamailio rebuild did not complete within ${KAMAILIO_REBUILD_TIMEOUT_MS / 60000} minutes` };
+  }
+
   private async runVowifiInstall(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
     resetAndStartVowifiInstall(this.logger, 'fix-all');
     write('VoWiFi (VectorCore) install started (detached build)...');
