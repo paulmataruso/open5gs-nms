@@ -8,6 +8,22 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.68] - 2026-10-11
+
+### Fixed
+
+- Configuring 2G, or adding, editing or deleting a BTS, no longer rewrites the
+  whole BSC configuration file. It previously discarded every hand-maintained
+  setting the interface does not model — on a real deployment that meant the
+  SS7 point code (losing which takes the link to the MSC down, and with it all
+  of 2G), the full AMR codec tuning, the GPRS cell and network-service timers,
+  both power-control blocks, and the MSC codec list. Only the settings the
+  interface actually manages are now written; everything else in the file is
+  left exactly as found. Deleting a BTS removes its whole section rather than
+  leaving a fragment behind.
+
+---
+
 ## [v2.0-beta_0.67] - 2026-10-11
 
 ### Changed
