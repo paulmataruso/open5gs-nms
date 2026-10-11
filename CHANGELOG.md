@@ -8,6 +8,21 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.67] - 2026-10-11
+
+### Changed
+
+- The "Updates available" prompt no longer appears just because a new version
+  was released. Each module now tracks the revision of its own install steps and
+  config generator, so you are only asked to re-run something when that module
+  actually changed — not when an unrelated part of the application did. A module
+  installed before this tracking existed is reported once, since there is no way
+  to know whether it matches, and goes quiet after that.
+- A module's own page and the Updates prompt can no longer disagree about
+  whether it is up to date; both now read the same check.
+
+---
+
 ## [v2.0-beta_0.66] - 2026-10-11
 
 ### Fixed
