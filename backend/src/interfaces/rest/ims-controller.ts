@@ -1588,28 +1588,102 @@ function removeNamedZone(raw: string, zoneName: string): string {
 
 // Per Open5GS v2.7.7: p-cscf belongs at the smf: level alongside dns: and mtu:,
 // NOT inside the session block. The ims session entry must only have subnet/gateway/dnn.
-function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: string): string {
+// Module-scope: these raw-text config transformers run outside any request
+// handler's own logger scope (same idiom as gsm-controller's cfgLogger).
+const imsLogger = pino({ name: 'ims-smf-yaml' });
+
+// Line range of smf.session[]'s own block, so edits to it can never wander into
+// another part of the document. `session:` is a child of the top-level `smf:`
+// key, so it is matched at its real nesting depth rather than by name alone —
+// `session:` as a bare name could appear under another NF's key in a combined
+// file.
+function findSmfSessionRange(lines: string[]): { start: number; end: number; indent: number } | null {
+  const smfIdx = lines.findIndex(l => /^smf:\s*$/.test(l));
+  if (smfIdx < 0) return null;
+  // End of the `smf:` block: the next non-blank line at indent 0.
+  let smfEnd = smfIdx + 1;
+  while (smfEnd < lines.length) {
+    const l = lines[smfEnd];
+    if (l.trim().length > 0 && (l.match(/^(\s*)/) ?? ['', ''])[1].length === 0) break;
+    smfEnd++;
+  }
+  const sessionIdx = lines.findIndex((l, i) => i > smfIdx && i < smfEnd && /^\s+session:\s*$/.test(l));
+  if (sessionIdx < 0) return null;
+  const indent = (lines[sessionIdx].match(/^(\s*)/) ?? ['', ''])[1].length;
+  let end = sessionIdx + 1;
+  while (end < smfEnd) {
+    const l = lines[end];
+    if (l.trim().length > 0 && (l.match(/^(\s*)/) ?? ['', ''])[1].length <= indent) break;
+    end++;
+  }
+  return { start: sessionIdx + 1, end, indent };
+}
+
+export function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: string): string {
   let lines = raw.split('\n');
 
   // Step 1: Ensure a clean ims session entry (subnet + gateway + dnn only)
-  const imsIdx = lines.findIndex(l => /^\s+dnn:\s*ims\s*$/.test(l));
-  if (imsIdx >= 0) {
+  //
+  // The `dnn: ims` search MUST be scoped to smf.session[]. It used to be a
+  // document-wide `lines.findIndex(l => /^\s+dnn:\s*ims\s*$/.test(l))`, which
+  // destroyed a real user's smf.yaml (reported 2026-10-11) and is reproduced in
+  // smf-ims-session-upf-dnn.test.ts:
+  //
+  //   pfcp:
+  //     client:
+  //       upf:
+  //         - address: 10.233.188.4
+  //           dnn: ims          <-- matched THIS first
+  //
+  // Routing a DNN to a specific UPF is an ordinary Open5GS feature, so that
+  // line is legitimate — our own default config just doesn't have one, which is
+  // why this never showed up in testing. From that wrong match the damage
+  // cascaded: the walk-back for a `- subnet|dnn:` list item found none (the
+  // enclosing item is `- address:`) and ran to line 0, making blockIndent 0;
+  // the forward walk then found no other 0-indent line and ran to EOF; so the
+  // "keep only subnet/gateway/dnn lines" filter was applied to the ENTIRE
+  // document and spliced over all of it. The file was left as one orphan
+  // `dnn: ims` line plus a few session fields — every other key gone, including
+  // the whole sbi block, which is why the GUI then reported "SMF has no NRF or
+  // SCP client configured under sbi.client". That message was a symptom; the
+  // config had already been shredded.
+  const sessionRange = findSmfSessionRange(lines);
+  const imsIdx = sessionRange
+    ? lines.findIndex((l, i) =>
+        i >= sessionRange.start && i < sessionRange.end && /^\s+dnn:\s*ims\s*$/.test(l))
+    : -1;
+  if (imsIdx >= 0 && sessionRange) {
     let startIdx = imsIdx;
-    while (startIdx > 0 && !/^\s*-\s*(subnet|dnn):/.test(lines[startIdx])) startIdx--;
+    while (startIdx > sessionRange.start && !/^\s*-\s*(subnet|dnn):/.test(lines[startIdx])) startIdx--;
     const blockIndent = (lines[startIdx].match(/^(\s*)/) ?? ['', ''])[1].length;
-    let endIdx = imsIdx + 1;
-    while (endIdx < lines.length) {
-      const line = lines[endIdx];
-      if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= blockIndent) break;
-      endIdx++;
+    // Hard guard. Even scoped, only edit when we are certainly sitting on a
+    // session list item nested deeper than `session:` itself. Anything else
+    // means the file is shaped in a way this line surgery does not understand,
+    // and leaving it untouched is always better than rewriting it — that is the
+    // exact failure above.
+    if (!/^\s*-\s*(subnet|dnn):/.test(lines[startIdx]) || blockIndent <= sessionRange.indent) {
+      imsLogger.warn(
+        { startLine: startIdx + 1, blockIndent, sessionIndent: sessionRange.indent },
+        'smf.yaml: could not identify the ims session entry safely — leaving the session block untouched',
+      );
+    } else {
+      // Bounded by the session block, never by EOF.
+      let endIdx = imsIdx + 1;
+      while (endIdx < sessionRange.end) {
+        const line = lines[endIdx];
+        if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= blockIndent) break;
+        endIdx++;
+      }
+      // Keep only the list-item lines that belong to subnet/gateway/dnn
+      // Re-insert dns: pointing to our BIND9 server (pcscfIp hosts it)
+      const kept = lines.slice(startIdx, endIdx)
+        .filter(l => l.trim() === '' || /^\s*[-\s]*(subnet|gateway|dnn):\s/.test(l));
+      // Match the entry's own indentation rather than assuming 6 spaces, so a
+      // file indented differently doesn't get a misaligned dns block.
+      const fieldIndent = ' '.repeat(blockIndent + 2);
+      kept.push(`${fieldIndent}dns:`, `${fieldIndent}  - ${pcscfIp}`);
+      lines.splice(startIdx, endIdx - startIdx, ...kept);
     }
-    // Keep only the list-item lines that belong to subnet/gateway/dnn
-    // Re-insert dns: pointing to our BIND9 server (pcscfIp hosts it)
-    const kept = lines.slice(startIdx, endIdx)
-      .filter(l => l.trim() === '' || /^\s*[-\s]*(subnet|gateway|dnn):\s/.test(l));
-    const dnsLine = `      dns:\n        - ${pcscfIp}`;
-    kept.push(...dnsLine.split('\n'));
-    lines.splice(startIdx, endIdx - startIdx, ...kept);
   } else {
     // No ims session — add a minimal one to the session list
     const sessionIdx = lines.findIndex(l => /^\s*session:\s*$/.test(l));
@@ -1645,8 +1719,12 @@ function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: string): str
   } else {
     // Insert before mtu: or before freeDiameter: as fallback
     const mtuIdx = lines.findIndex(l => /^ {2}mtu:\s/.test(l));
-    const insertAt = mtuIdx >= 0 ? mtuIdx
-      : (lines.findIndex(l => /^ {2}freeDiameter:/.test(l)) || lines.length);
+    // `findIndex() || lines.length` was wrong both ways: it returns -1 when not
+    // found, and -1 is truthy, so a missing freeDiameter: key spliced at -1 —
+    // inserting before the LAST line instead of at the end. And a freeDiameter:
+    // at index 0 would be falsy and jump to end-of-file. Compare explicitly.
+    const fdIdx = lines.findIndex(l => /^ {2}freeDiameter:/.test(l));
+    const insertAt = mtuIdx >= 0 ? mtuIdx : (fdIdx >= 0 ? fdIdx : lines.length);
     lines.splice(insertAt, 0, ...pCscfEntry.split('\n'));
   }
 
@@ -1696,22 +1774,40 @@ function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: string): str
   return lines.join('\n');
 }
 
-function removeSmfImsSession(raw: string): string {
+export function removeSmfImsSession(raw: string): string {
   let lines = raw.split('\n');
 
-  // Remove the dnn: ims session entry
-  const imsIdx = lines.findIndex(l => /^\s+dnn:\s*ims\s*$/.test(l));
-  if (imsIdx >= 0) {
+  // Remove the dnn: ims session entry.
+  //
+  // Scoped and guarded for the same reason as updateSmfImsSession() above, and
+  // this copy was the more dangerous of the two: it ends in a bare
+  // `splice(startIdx, endIdx - startIdx)`, so on a config with a per-UPF
+  // `dnn: ims` route the same wrong-match cascade (walk-back to line 0, forward
+  // walk to EOF) deleted essentially the whole file rather than mangling it.
+  // IMS Remove would have emptied smf.yaml.
+  const sessionRange = findSmfSessionRange(lines);
+  const imsIdx = sessionRange
+    ? lines.findIndex((l, i) =>
+        i >= sessionRange.start && i < sessionRange.end && /^\s+dnn:\s*ims\s*$/.test(l))
+    : -1;
+  if (imsIdx >= 0 && sessionRange) {
     let startIdx = imsIdx;
-    while (startIdx > 0 && !/^\s*-\s*(subnet|dnn):/.test(lines[startIdx])) startIdx--;
+    while (startIdx > sessionRange.start && !/^\s*-\s*(subnet|dnn):/.test(lines[startIdx])) startIdx--;
     const blockIndent = (lines[startIdx].match(/^(\s*)/) ?? ['', ''])[1].length;
-    let endIdx = imsIdx + 1;
-    while (endIdx < lines.length) {
-      const line = lines[endIdx];
-      if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= blockIndent) break;
-      endIdx++;
+    if (!/^\s*-\s*(subnet|dnn):/.test(lines[startIdx]) || blockIndent <= sessionRange.indent) {
+      imsLogger.warn(
+        { startLine: startIdx + 1, blockIndent, sessionIndent: sessionRange.indent },
+        'smf.yaml: could not identify the ims session entry safely — leaving the session block untouched',
+      );
+    } else {
+      let endIdx = imsIdx + 1;
+      while (endIdx < sessionRange.end) {
+        const line = lines[endIdx];
+        if (line.trim().length > 0 && (line.match(/^(\s*)/) ?? ['', ''])[1].length <= blockIndent) break;
+        endIdx++;
+      }
+      lines.splice(startIdx, endIdx - startIdx);
     }
-    lines.splice(startIdx, endIdx - startIdx);
   }
 
   // Remove p-cscf from smf level
