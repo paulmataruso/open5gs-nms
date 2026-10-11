@@ -31,6 +31,83 @@ const HOST_DAEMONS    = '/proc/1/root/etc/frr/daemons';
 const BACKUP_DIR      = '/proc/1/root/etc/open5gs-nms/frr-backup';
 const HOST_UPF_YAML   = '/proc/1/root/etc/open5gs/upf.yaml';
 
+// ─── Applying a regenerated frr.conf ──────────────────────────────────────────
+
+// Module-scope, so applyFrrConf() can log outside any one request's router.
+const frrLogger = pino({ name: 'frr-apply' });
+
+/**
+ * Push a freshly-written /etc/frr/frr.conf into the running FRR.
+ *
+ * Deliberately `systemctl reload`, never `restart`, for any change an operator
+ * can make on a live, converged deployment — see CLAUDE.md pattern #7. A
+ * restart tears down the EIGRP adjacency and makes eigrpd reprocess the whole
+ * topology during the resync, which is the confirmed trigger for the frr#943
+ * crash: applying one new `network` statement by writing frr.conf and
+ * restarting hit it twice in a row on this deployment (2026-08-26), and the
+ * crash-guard patch that stops the assertion still leaves a corrupted topology
+ * entry behind. `reload` runs FRR's own `frr-reload.py` (via the unit's
+ * `ExecReload=/usr/lib/frr/frrinit.sh reload`), which diffs the running config
+ * against the new file and applies only the delta over vtysh — the same
+ * incremental path pattern #7 documents as safe, just driven from a whole-file
+ * config instead of hand-typed commands, so the adjacency is never reset.
+ *
+ * Falls back to a restart when reload genuinely can't do the job:
+ *  - `forceRestart` — the caller changed /etc/frr/daemons. Reload cannot start
+ *    a daemon that isn't running, so a protocol switch has to restart.
+ *  - FRR isn't running yet (initial bring-up — there is no adjacency to
+ *    protect, and nothing to reload into).
+ *  - The unit reports CanReload=no, or the reload itself fails. A half-applied
+ *    running config is worse than taking the restart's risk, and the restart is
+ *    also the documented recovery for an already-corrupted topology.
+ */
+async function applyFrrConf(
+  write: (s: string) => void,
+  opts: { forceRestart?: boolean; reason?: string } = {},
+): Promise<'reloaded' | 'restarted'> {
+  const restart = async (why: string) => {
+    write(`Restarting FRR (${why})...\n`);
+    await nsenterSvc('systemctl', ['restart', 'frr'], 120000);
+    return 'restarted' as const;
+  };
+
+  if (opts.forceRestart) return restart(opts.reason ?? 'full restart required');
+
+  // No point reloading into a dead FRR, and on initial bring-up there is no
+  // established adjacency for a restart to disturb.
+  const active = await nsenterSvc('systemctl', ['is-active', 'frr'])
+    .then(r => r.stdout.trim() === 'active')
+    .catch(() => false);
+  if (!active) return restart('FRR not currently running');
+
+  const canReload = await nsenterSvc('systemctl', ['show', 'frr', '-p', 'CanReload'])
+    .then(r => r.stdout.includes('CanReload=yes'))
+    .catch(() => false);
+  if (!canReload) {
+    frrLogger.warn('FRR unit reports CanReload=no — falling back to restart');
+    return restart('this FRR build has no reload support');
+  }
+
+  try {
+    write('Reloading FRR (incremental — avoids the frr#943 restart trigger)...\n');
+    await nsenterSvc('systemctl', ['reload', 'frr'], 120000);
+  } catch (err) {
+    // frrinit.sh reload exits non-zero if frr-reload.py could not apply the
+    // delta, which can leave the running config partly updated.
+    frrLogger.warn({ err: String(err) }, 'FRR reload failed — falling back to restart');
+    write(`Reload failed (${String(err)}) — falling back to a full restart.\n`);
+    return restart('reload failed');
+  }
+
+  // Pattern: never trust the exit code alone (CLAUDE.md "Verify, don't trust success").
+  const stillActive = await nsenterSvc('systemctl', ['is-active', 'frr'])
+    .then(r => r.stdout.trim() === 'active')
+    .catch(() => false);
+  if (!stillActive) return restart('FRR went inactive after reload');
+
+  return 'reloaded';
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface UeSubnet {
@@ -788,14 +865,15 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       write('Writing /etc/frr/frr.conf...\n');
       fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
 
-      write('Restarting FRR (full restart required for new neighbor config)...\n');
-      // Use exec with shell as fallback — nsenterSvc sometimes fails with D-Bus in certain container configs
-      await new Promise<void>((resolve, reject) => {
-        const child = exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`);
-        child.on('close', code => {
-          if (code === 0) resolve();
-          else reject(new Error(`systemctl restart frr exited ${code}`));
-        });
+      // Deliberately still a full restart, unlike every other site below: this
+      // is the wizard's initial bring-up, so the `router <protocol>` block is
+      // brand new rather than a delta, and no adjacency exists yet for the
+      // restart to tear down and resync — the frr#943 trigger pattern #7
+      // describes needs an already-established neighbor with a populated
+      // topology, which this step is what creates in the first place.
+      await applyFrrConf(write, {
+        forceRestart: true,
+        reason: 'new neighbor config on initial bring-up',
       });
 
       // Wait for FRR to come back up
@@ -871,10 +949,10 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       // Now that VSIs exist, write the full FRR config with network statements for each /32
       const fullConfig = await generateFrrConfig(state);
       fs.writeFileSync(HOST_FRR_CONF, fullConfig, 'utf-8');
-      await new Promise<void>((resolve, reject) => {
-        exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
-      });
-      // Wait for FRR to restart
+      // One /32 `network` statement per VSI — the exact change shape that
+      // triggered frr#943 twice live, so this goes in incrementally.
+      await applyFrrConf(() => { /* JSON route — no progress stream */ });
+      // Wait for FRR to settle
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const isActive = await new Promise<boolean>(resolve => {
@@ -1181,10 +1259,8 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       if (activeOut === 'active') {
         const config = await generateFrrConfig(state);
         fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
-        await new Promise<void>((resolve, reject) => {
-          exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
-        });
-        // Give FRR a moment to come back up after restart
+        await applyFrrConf(() => { /* JSON route — no progress stream */ });
+        // Give FRR a moment to settle before reporting success
         await new Promise(r => setTimeout(r, 2000));
         await auditLogger.log({ action: 'frr_neighbor_config', user, details: 'route filters updated', success: true });
         res.json({ success: true, state, applied: true });
@@ -1215,9 +1291,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       // Reload FRR with previous filters
       const config = await generateFrrConfig(state);
       fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
-      await new Promise<void>((resolve, reject) => {
-        exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
-      });
+      await applyFrrConf(() => { /* JSON route — no progress stream */ });
       await auditLogger.log({ action: 'frr_neighbor_config', user, details: 'route filters rolled back', success: true });
       res.json({ success: true, state, filters: state.routeFilters });
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
@@ -1316,8 +1390,13 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
 
       // Enable correct daemon
+      // Tracked so the apply below only pays for a full restart when the daemon
+      // SET actually changed — reload can't start a daemon that isn't running,
+      // but a same-protocol edit (log level, timers, networks) doesn't need one.
+      let daemonSetChanged = false;
       if (fs.existsSync(HOST_DAEMONS)) {
-        let d = fs.readFileSync(HOST_DAEMONS, 'utf-8');
+        const daemonsBefore = fs.readFileSync(HOST_DAEMONS, 'utf-8');
+        let d = daemonsBefore;
         d = ensureDaemonLine(d, 'zebra', true);
         // mgmtd is mandatory as of FRR 9.0+ ("mgmtd cannot be disabled") — always enable it
         // regardless of protocol; older daemons files predate this daemon entirely.
@@ -1325,13 +1404,14 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         if (protocol === 'eigrp') d = ensureDaemonLine(d, 'eigrpd', true);
         if (protocol === 'ospf')  d = ensureDaemonLine(d, 'ospfd', true);
         if (protocol === 'bgp')   d = ensureDaemonLine(d, 'bgpd', true);
+        daemonSetChanged = d !== daemonsBefore;
         fs.writeFileSync(HOST_DAEMONS, d, 'utf-8');
-        write('Daemons file updated.\n');
+        write(`Daemons file ${daemonSetChanged ? 'updated' : 'already correct'}.\n`);
       }
 
-      write('Restarting FRR...\n');
-      await new Promise<void>((resolve, reject) => {
-        exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
+      await applyFrrConf(write, {
+        forceRestart: daemonSetChanged,
+        reason: 'the enabled daemon set changed',
       });
 
       write('\n✅ FRR reconfigured successfully.\n');
@@ -1509,11 +1589,11 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         }
         fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
         write('Written /etc/frr/frr.conf\n');
-        write('Restarting FRR...\n');
-        await new Promise<void>((resolve, reject) => {
-          exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
-        });
-        write('FRR restarted.\n');
+        // UE-subnet `network` statements are the precise change that triggered
+        // frr#943 twice live (2026-08-26) when applied by restart — never
+        // restart here just to pick up a prefix change.
+        const how = await applyFrrConf(write);
+        write(`FRR ${how}.\n`);
       } else {
         write('FRR is not running — config saved but not applied.\n');
       }
@@ -1609,11 +1689,11 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         }
         fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
         write('Written /etc/frr/frr.conf\n');
-        write('Restarting FRR...\n');
-        await new Promise<void>((resolve, reject) => {
-          exec(`nsenter -t 1 -m -u -i -p -- systemctl restart frr`, (err) => err ? reject(err) : resolve());
-        });
-        write('FRR restarted.\n');
+        // UE-subnet `network` statements are the precise change that triggered
+        // frr#943 twice live (2026-08-26) when applied by restart — never
+        // restart here just to pick up a prefix change.
+        const how = await applyFrrConf(write);
+        write(`FRR ${how}.\n`);
       } else {
         write('FRR is not running — config cleared from state.\n');
       }
@@ -1707,9 +1787,10 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
           saveState(state);
           const config = await generateFrrConfig(state);
           fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
-          await new Promise<void>((resolve) => {
-            exec('nsenter -t 1 -m -u -i -p -- systemctl restart frr', () => resolve());
-          });
+          // Best-effort, as before: the interface and state are already
+          // committed, so a failure here must not fail the whole request.
+          await applyFrrConf(() => { /* JSON route */ })
+            .catch(err => frrLogger.warn({ err: String(err) }, 'frr apply failed after dummy create'));
           addedToFrr = true;
         }
       }
@@ -1746,9 +1827,8 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         if (state.protocol && state.transitInterface && state.protocolConfig) {
           const config = await generateFrrConfig(state);
           fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
-          await new Promise<void>((resolve) => {
-            exec('nsenter -t 1 -m -u -i -p -- systemctl restart frr', () => resolve());
-          });
+          await applyFrrConf(() => { /* JSON route */ })
+            .catch(err => frrLogger.warn({ err: String(err) }, 'frr apply failed after dummy delete'));
         }
       }
 

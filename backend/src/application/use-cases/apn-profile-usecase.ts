@@ -203,8 +203,44 @@ export class ApnProfileUseCase {
   // Mongo-only — never touches smf.yaml/upf.yaml or subscribers already
   // using this DNN. Removing the actual DNN/session stays a manual
   // SmfEditor.tsx/UpfEditor.tsx action, outside this feature's scope.
+  // Real bug found and fixed 2026-10-02 (API regression suite): this
+  // previously only deleted the Mongo record, leaving the session(s)
+  // patchYamlConfigs() wrote permanently orphaned in smf.yaml/upf.yaml —
+  // asymmetric with create()/update(), which always keep those files in
+  // sync with the profile. An orphaned session doesn't affect already-
+  // running smf/upf (nothing re-reads it until a future Apply), but it
+  // would silently reappear in the config editor and get re-applied on the
+  // next full Apply Config cycle with no record of why it's there. Fetches
+  // the profile BEFORE deleting the Mongo record so there's still a dnn/dev
+  // to match sessions by.
   async delete(id: string): Promise<void> {
+    const existing = await this.apnProfileRepo.findById(id);
+    if (existing) await this.removeYamlConfigs(existing);
     await this.apnProfileRepo.delete(id);
+  }
+
+  // Mirrors patchYamlConfigs()'s own matching logic exactly, in reverse —
+  // removes rather than upserts the smf session (matched by dnn) and upf
+  // session (matched by dev, falling back to dnn) this profile owns, for
+  // both the v4 entry and (if present) the v6 one.
+  private async removeYamlConfigs(profile: ApnProfile): Promise<void> {
+    const smf = await this.configRepo.loadSmf();
+    const smfRaw = (smf as any).rawYaml;
+    const smfSessions: any[] = smfRaw?.smf?.session ?? [];
+    const filteredSmf = smfSessions.filter((s) => s?.dnn !== profile.dnn);
+    if (filteredSmf.length !== smfSessions.length) {
+      if (smfRaw?.smf) smfRaw.smf.session = filteredSmf;
+      await this.configRepo.saveSmf({ ...(smf as any), rawYaml: smfRaw });
+    }
+
+    const upf = await this.configRepo.loadUpf();
+    const upfRaw = (upf as any).rawYaml;
+    const upfSessions: any[] = upfRaw?.upf?.session ?? [];
+    const filteredUpf = upfSessions.filter((s) => (s?.dev || 'ogstun') !== profile.dev && s?.dnn !== profile.dnn);
+    if (filteredUpf.length !== upfSessions.length) {
+      if (upfRaw?.upf) upfRaw.upf.session = filteredUpf;
+      await this.configRepo.saveUpf({ ...(upf as any), rawYaml: upfRaw });
+    }
   }
 
   // Patches smf.yaml's and upf.yaml's session[] arrays in place — same

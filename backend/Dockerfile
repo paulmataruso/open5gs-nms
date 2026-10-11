@@ -20,6 +20,13 @@ RUN npm prune --omit=dev
 FROM node:20-bookworm-slim
 
 # Runtime deps: nsenter, iproute2 (ip command), Docker CLI, MongoDB tools, tshark, Python3 (for suci-keytool)
+# sqlite3: the CLI binary (distinct from the bundled better-sqlite3 Node
+# library above) — backup-restore.ts shells out to its online `.backup`
+# command for auth.db/hlr.db/astdb.sqlite3, since that's safe against a
+# concurrently-open connection from the owning process, unlike a raw file
+# copy. Real gap found live 2026-09-22: this was missing entirely, so every
+# SQLite-based backup category silently failed with `spawn sqlite3 ENOENT`,
+# logged only as a warning — easy to miss without a live end-to-end test.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     util-linux \
     iproute2 \
@@ -29,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     lsb-release \
     python3 \
     python3-pip \
+    sqlite3 \
     && apt-get install -y --no-install-recommends \
        -o Dpkg::Options::="--force-overwrite" \
        tshark \
@@ -72,6 +80,11 @@ COPY src/config/qci-hw-test-templates ./dist/config/qci-hw-test-templates
 # compiled Diameter S6a stack, written to the host and compiled at Install
 # time — see ue-detach-runner.ts) into dist
 COPY src/config/ue-detach-templates ./dist/config/ue-detach-templates
+
+# Copy the FRR eigrpd crash-guard patch (pattern #7, FRRouting/frr#943) —
+# written to the host and applied by frr-source-build.ts's build script, see
+# docs/frr-eigrpd-crash-guard-patch.md
+COPY src/config/frr-patches ./dist/config/frr-patches
 
 # Copy the pre-compiled ITM (Longley-Rice) WASM module into dist — built
 # once via backend/vendor/itm-src/build-wasm.sh (Docker + Emscripten, never

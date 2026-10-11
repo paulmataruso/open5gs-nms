@@ -3,6 +3,7 @@ import pino from 'pino';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 
 type Resolution = '5m' | '15m' | '1h';
+type Generation = '2g' | '4g' | '5g';
 
 // Also valid PromQL duration literals — used directly as the rate() window.
 const RESOLUTION_STEP_SECONDS: Record<Resolution, number> = { '5m': 300, '15m': 900, '1h': 3600 };
@@ -36,6 +37,46 @@ async function promQueryRange(
   return body.data.result as PromMatrixSeries[];
 }
 
+async function promInstantQuery(prometheusUrl: string, query: string): Promise<Record<string, string>[]> {
+  const url = new URL('/api/v1/query', prometheusUrl);
+  url.searchParams.set('query', query);
+  const response = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`Prometheus query failed: HTTP ${response.status}`);
+  const body: any = await response.json();
+  if (body.status !== 'success' || body.data?.resultType !== 'vector') {
+    throw new Error(`Unexpected Prometheus response: ${JSON.stringify(body).slice(0, 200)}`);
+  }
+  return (body.data.result as Array<{ metric: Record<string, string> }>).map(r => r.metric);
+}
+
+// Resolves the "radio" and/or "generation" (4g/5g only — 2g is a metric-
+// family switch handled separately, not a narrowing filter) request params
+// into a set of matching IMSIs via the shared open5gs_radio_info gauge —
+// same join mechanism the Grafana dashboard uses via `and on(imsi)`, just
+// resolved server-side here since building that join inside a PromQL string
+// assembled from request params is harder to keep safe/correct than doing
+// the join in one small extra query. Returns null when neither filter is
+// set (no narrowing requested at all).
+// Returns each matched imsi alongside its own ran_generation label, not just a bare
+// imsi list — real bug, confirmed live 2026-09-29 during a full-session wiring audit:
+// a radio selection with RAN Type left at "All" (no explicit generation) has no other
+// way to know which metric family (4g/5g-native vs. 2g's own separate counters) that
+// radio's subscribers actually belong to, and the caller was previously always
+// defaulting to the 4g/5g family regardless — a 2G radio's own traffic silently never
+// appeared. See this function's own caller for how ran_generation is used.
+async function resolveImsisByRadioOrGeneration(
+  prometheusUrl: string,
+  radio: string | undefined,
+  generation: '4g' | '5g' | undefined,
+): Promise<{ imsi: string; ranGeneration: string }[] | null> {
+  if (!radio && !generation) return null;
+  const matchers: string[] = [];
+  if (radio) matchers.push(`radio_name="${radio}"`);
+  if (generation) matchers.push(`ran_generation="${generation}"`);
+  const rows = await promInstantQuery(prometheusUrl, `open5gs_radio_info{${matchers.join(',')}}`);
+  return rows.filter(m => m.imsi).map(m => ({ imsi: m.imsi, ranGeneration: m.ran_generation }));
+}
+
 export const createTrafficHistoryRouter = (
   prometheusUrl: string,
   subscriberRepo: ISubscriberRepository,
@@ -56,8 +97,19 @@ export const createTrafficHistoryRouter = (
 
       const imsi = req.query.imsi as string | undefined;
       const dnn = req.query.dnn as string | undefined;
-      if (scope === 'subscriber' && !imsi) {
-        res.status(400).json({ error: 'imsi is required when scope=subscriber' });
+      const radio = req.query.radio as string | undefined;
+      const generationParam = req.query.generation as string | undefined;
+      const generation: Generation | undefined = generationParam === '2g' || generationParam === '4g' || generationParam === '5g' ? generationParam : undefined;
+      if (scope === 'subscriber' && !imsi && !radio && !generation) {
+        res.status(400).json({ error: 'imsi is required when scope=subscriber, unless radio or generation is set' });
+        return;
+      }
+      // Radio and 4g/5g-generation narrowing only mean anything for
+      // per-subscriber series — the DNN/APN aggregate counters have no imsi
+      // dimension to join against (one shared tun device per DNN/APN, not
+      // one per radio — a structural limit, not a gap in this endpoint).
+      if (scope === 'aggregate' && (radio || (generation && generation !== '2g'))) {
+        res.status(400).json({ error: 'radio and generation=4g/5g filters only apply to scope=subscriber; aggregate has no per-radio breakdown' });
         return;
       }
 
@@ -66,9 +118,55 @@ export const createTrafficHistoryRouter = (
       const startSec = Math.floor(from.getTime() / 1000);
       const endSec = Math.floor(to.getTime() / 1000);
 
-      const upMetric = scope === 'subscriber' ? 'open5gs_subscriber_up_bytes_total' : 'open5gs_gtp_rx_bytes_total';
-      const downMetric = scope === 'subscriber' ? 'open5gs_subscriber_down_bytes_total' : 'open5gs_gtp_tx_bytes_total';
-      const labelFilter = scope === 'subscriber' ? `{imsi="${imsi}"}` : dnn ? `{dnn="${dnn}"}` : '';
+      // generation=2g switches to the 2G GPRS/EDGE metric family entirely
+      // (its own separate counters — 2G traffic never touches Open5GS's own
+      // UPF/SMF). generation=4g/5g does NOT switch metrics — it narrows
+      // WHICH imsis are queried within the existing (today: 4G/5G-only)
+      // family, via the resolver above.
+      let is2g = generation === '2g';
+
+      let labelFilter: string;
+      if (scope === 'subscriber') {
+        if (radio || generation === '4g' || generation === '5g') {
+          // Not gated on `!is2g` — real bug, confirmed live 2026-09-29: a radio
+          // filter must still resolve when generation=2g is ALSO selected (it
+          // used to be dropped entirely, silently falling through to "every 2G
+          // subscriber" instead of the chosen radio's own).
+          const matched = await resolveImsisByRadioOrGeneration(prometheusUrl, radio, generation === '4g' || generation === '5g' ? generation : undefined);
+          const rows = matched ?? [];
+          const candidateRows = imsi ? rows.filter(m => m.imsi === imsi) : rows;
+          if (candidateRows.length === 0) {
+            // Honest empty result — a real, valid outcome (e.g. no
+            // subscriber currently on the chosen radio), not an error.
+            res.json({ points: [] });
+            return;
+          }
+          // No explicit generation was given but a specific radio was — infer
+          // is2g from what that radio's own resolved subscribers actually are,
+          // rather than defaulting to the 4g/5g family regardless (the other
+          // real bug this same audit found: picking a 2G radio with RAN Type
+          // left at "All" silently queried the wrong metric family and always
+          // came back empty). A radio serves exactly one generation in this
+          // project's own data model, so this is never actually ambiguous.
+          if (!generation) is2g = candidateRows.every(r => r.ranGeneration === '2g');
+          labelFilter = `{imsi=~"${candidateRows.map(r => r.imsi).join('|')}"}`;
+        } else if (imsi) {
+          labelFilter = `{imsi="${imsi}"}`;
+        } else {
+          // generation=2g with no specific imsi chosen — every 2G subscriber.
+          labelFilter = '';
+        }
+      } else {
+        const aggLabel = is2g ? 'apn' : 'dnn';
+        labelFilter = dnn ? `{${aggLabel}="${dnn}"}` : '';
+      }
+
+      const upMetric = is2g
+        ? (scope === 'subscriber' ? 'open5gs_gsm2g_subscriber_up_bytes_total' : 'open5gs_gsm2g_gtp_rx_bytes_total')
+        : (scope === 'subscriber' ? 'open5gs_subscriber_up_bytes_total' : 'open5gs_gtp_rx_bytes_total');
+      const downMetric = is2g
+        ? (scope === 'subscriber' ? 'open5gs_gsm2g_subscriber_down_bytes_total' : 'open5gs_gsm2g_gtp_tx_bytes_total')
+        : (scope === 'subscriber' ? 'open5gs_subscriber_down_bytes_total' : 'open5gs_gtp_tx_bytes_total');
 
       const [upResult, downResult] = await Promise.all([
         promQueryRange(prometheusUrl, `rate(${upMetric}${labelFilter}[${resolution}])*8/1e6`, startSec, endSec, step),
@@ -77,7 +175,7 @@ export const createTrafficHistoryRouter = (
 
       // Merge up+down series keyed by (ts, dnn|imsi) back into one point per series/timestamp.
       const byKey = new Map<string, { ts: number; dnn?: string; imsi?: string; upMbps: number; downMbps: number }>();
-      const labelOf = (metric: Record<string, string>) => (scope === 'subscriber' ? metric.imsi : metric.dnn);
+      const labelOf = (metric: Record<string, string>) => (scope === 'subscriber' ? metric.imsi : (metric.dnn ?? metric.apn));
 
       for (const series of upResult) {
         const label = labelOf(series.metric);
@@ -139,6 +237,7 @@ export const createTrafficHistoryRouter = (
         res.status(400).json({ error: 'imsi is required' });
         return;
       }
+      const generation = (req.query.generation as string) === '2g' ? '2g' : undefined;
       const period = (req.query.period as string) === 'week' ? 'week'
         : (req.query.period as string) === 'month' ? 'month' : 'day';
       const periodSeconds = period === 'week' ? 7 * 24 * 3600 : period === 'month' ? 30 * 24 * 3600 : 24 * 3600;
@@ -148,10 +247,12 @@ export const createTrafficHistoryRouter = (
       const endSec = Math.floor(Date.now() / 1000);
       const startSec = endSec - periodSeconds * count;
       const labelFilter = `{imsi="${imsi}"}`;
+      const upMetric = generation === '2g' ? 'open5gs_gsm2g_subscriber_up_bytes_total' : 'open5gs_subscriber_up_bytes_total';
+      const downMetric = generation === '2g' ? 'open5gs_gsm2g_subscriber_down_bytes_total' : 'open5gs_subscriber_down_bytes_total';
 
       const [upResult, downResult] = await Promise.all([
-        promQueryRange(prometheusUrl, `increase(open5gs_subscriber_up_bytes_total${labelFilter}[${rangeLit}])`, startSec, endSec, periodSeconds),
-        promQueryRange(prometheusUrl, `increase(open5gs_subscriber_down_bytes_total${labelFilter}[${rangeLit}])`, startSec, endSec, periodSeconds),
+        promQueryRange(prometheusUrl, `increase(${upMetric}${labelFilter}[${rangeLit}])`, startSec, endSec, periodSeconds),
+        promQueryRange(prometheusUrl, `increase(${downMetric}${labelFilter}[${rangeLit}])`, startSec, endSec, periodSeconds),
       ]);
 
       const byTs = new Map<number, number>();
@@ -178,13 +279,27 @@ export const createTrafficHistoryRouter = (
   });
 
   // ── GET /subscribers — IMSIs currently tracked, for the filter dropdown ─────
+  // Known, pre-existing limitation (unrelated to this feature, not fixed
+  // here): label/imsi/values with no start/end returns every IMSI ever seen
+  // across Prometheus's full 30-day retention, not just currently-active
+  // ones — a decommissioned subscriber can linger in this dropdown for up
+  // to 30 days. Left as-is; the new /radios endpoint below deliberately
+  // does NOT repeat this by bounding its own query window instead.
   router.get('/subscribers', async (_req: Request, res: Response) => {
     try {
-      const url = new URL('/api/v1/label/imsi/values', prometheusUrl);
-      url.searchParams.set('match[]', 'open5gs_subscriber_up_bytes_total');
-      const response = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
-      const body: any = await response.json();
-      const imsis: string[] = Array.isArray(body?.data) ? body.data : [];
+      const fetchImsis = async (metric: string): Promise<string[]> => {
+        const url = new URL('/api/v1/label/imsi/values', prometheusUrl);
+        url.searchParams.set('match[]', metric);
+        const response = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+        const body: any = await response.json();
+        return Array.isArray(body?.data) ? body.data : [];
+      };
+
+      const [imsis4g5g, imsis2g] = await Promise.all([
+        fetchImsis('open5gs_subscriber_up_bytes_total'),
+        fetchImsis('open5gs_gsm2g_subscriber_up_bytes_total'),
+      ]);
+      const imsis = Array.from(new Set([...imsis4g5g, ...imsis2g]));
 
       const nicknameByImsi = await subscriberRepo.getNicknamesByImsi(imsis);
       res.json({
@@ -193,6 +308,29 @@ export const createTrafficHistoryRouter = (
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ err: msg }, 'Failed to list subscribers with traffic history');
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // ── GET /radios — radios currently seen in traffic data, for the filter
+  // dropdown. Bounded to the last 24h (unlike /subscribers above) so a
+  // decommissioned/renamed radio doesn't linger for the full 30-day
+  // retention window.
+  router.get('/radios', async (_req: Request, res: Response) => {
+    try {
+      const endSec = Math.floor(Date.now() / 1000);
+      const startSec = endSec - 24 * 3600;
+      const url = new URL('/api/v1/label/radio_name/values', prometheusUrl);
+      url.searchParams.set('match[]', 'open5gs_radio_info');
+      url.searchParams.set('start', String(startSec));
+      url.searchParams.set('end', String(endSec));
+      const response = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+      const body: any = await response.json();
+      const radios: string[] = Array.isArray(body?.data) ? body.data.filter(Boolean) : [];
+      res.json({ radios });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err: msg }, 'Failed to list radios with traffic history');
       res.status(500).json({ error: msg });
     }
   });

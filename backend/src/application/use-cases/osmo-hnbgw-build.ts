@@ -87,11 +87,24 @@ echo "==STEP:installing_apt_deps=="
 start_heartbeat
 apt-get update -qq
 # Confirmed live 2026-09-13 by a real successful build at tag ${HNBGW_TAG}
-# against exactly this package set.
+# against exactly this package set — MINUS osmo-libasn1c-dev, a real gap
+# only surfaced 2026-09-23 on a genuinely fresh host: this package's own
+# runtime lib (osmo-libasn1c1t64) gets pulled in automatically as a
+# transitive dependency of the OTHER libosmo-*-dev packages below, so
+# \`./configure\`'s pkg-config check for \`libasn1c >= 0.9.30\` had never
+# actually failed before purely by accident — the dev/headers package
+# (needed at configure/build time, not just runtime) was never actually
+# in this list. Confirmed live: \`configure: error: Package requirements
+# (libasn1c >= 0.9.30) were not met\` with this package absent, clean
+# build with it present. Same story, found in the SAME live retry right
+# after fixing the above: \`configure: error: Package requirements
+# (libosmo-mgcp-client >= 1.10.0) were not met\` — libosmo-mgcp-client-dev
+# was missing too, for the exact same "runtime lib present as someone
+# else's transitive dep, dev headers never actually listed" reason.
 apt-get install -y \\
   build-essential autotools-dev dh-autoreconf pkg-config libsctp-dev \\
   libosmocore-dev libosmo-sigtran-dev libosmo-ranap-dev libosmo-hnbap-dev \\
-  libosmo-rua-dev libosmo-sabp-dev
+  libosmo-rua-dev libosmo-sabp-dev osmo-libasn1c-dev libosmo-mgcp-client-dev
 stop_heartbeat
 
 echo "==STEP:cloning=="

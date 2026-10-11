@@ -9,6 +9,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { classifyMajorEvent, MAJOR_EVENT_GREP_PATTERNS, parseOpen5gsTimestamp, formatOpen5gsTimestamp } from '../../application/use-cases/major-event-classifier';
+import { extractEventDetails } from '../../application/use-cases/log-event-details';
 
 const execFileAsync = promisify(execFile);
 
@@ -418,7 +419,9 @@ export const createLogDownloadRouter = (
       });
 
       const matchIndex = parsed.findIndex(p => p.isMatch);
-      res.json({ service, lines: parsed.map(p => p.line), matchIndex });
+      const allLines = parsed.map(p => p.line);
+      const details = extractEventDetails(allLines, matchIndex);
+      res.json({ service, lines: allLines, matchIndex, details });
     } catch (err) {
       logger.error({ err: String(err) }, 'Failed to get log context');
       res.status(500).json({ error: 'Failed to get log context' });

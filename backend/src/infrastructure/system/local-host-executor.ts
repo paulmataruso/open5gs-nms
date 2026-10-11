@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import pino from 'pino';
 import { IHostExecutor, CommandResult } from '../../domain/interfaces/host-executor';
+import { safeNsenter } from './safe-nsenter';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,30 +34,26 @@ export class LocalHostExecutor implements IHostExecutor {
     this.logger.debug({ command, args }, 'Executing command');
 
     try {
-      // nsenter flags:
-      // -t 1  : target PID 1 (host init process)
-      // -m    : enter host mount namespace — process sees host filesystem,
-      //         so /usr/bin/systemctl, /sbin/conntrack etc. resolve to HOST
-      //         binaries which use the HOST's GLIBC. This is what fixes the
-      //         GLIBC mismatch on Ubuntu 24.04 without needing -r.
-      // -u -i -p : UTS, IPC, PID namespaces
+      // nsenter flags (see safe-nsenter.ts, which actually issues the
+      // command): -t 1 targets PID 1 (host init); -m enters the host mount
+      // namespace so /usr/bin/systemctl, /sbin/conntrack etc. resolve to
+      // HOST binaries against the HOST's GLIBC (fixes the Ubuntu 24.04
+      // GLIBC mismatch without needing -r); -u -i -p enter the UTS/IPC/PID
+      // namespaces. We pass the bare command name (e.g. 'systemctl'), not a
+      // full path — a full path would resolve in the CONTAINER filesystem
+      // before nsenter runs; bare names resolve after entering the host
+      // mount namespace.
       //
-      // IMPORTANT: we pass the bare command name (e.g. 'systemctl') not a
-      // full path. If we passed a full path it would be resolved in the
-      // CONTAINER filesystem before nsenter runs, picking up the container's
-      // binary instead of the host's. Bare names are resolved by nsenter
-      // after entering the host mount namespace.
-      const nsenterArgs = ['-t', '1', '-m', '-u', '-i', '-p', command, ...args];
-      
-      const { stdout, stderr } = await execFileAsync('nsenter', nsenterArgs, {
-        timeout: timeoutMs,
-        encoding: 'utf-8',
-        maxBuffer: MAX_BUFFER_BYTES,
-        env: {
-          ...process.env,
-          DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket',
-        },
-      });
+      // Uses safeNsenter, not a bare execFile+timeout — real, reproduced-
+      // live bug (2026-09-25): nsenter -p forks internally before exec'ing
+      // the wrapped command, unconditionally, so a plain execFile timeout
+      // only kills the tracked nsenter PID and orphans the real wrapped
+      // process (confirmed live for this exact call path, using these
+      // exact spawn arguments — this was the single highest-consequence
+      // caller of that bug, since KamailioStatsMonitor alone was already
+      // calling through here every 15s, forever, in production). See
+      // safe-nsenter.ts's own header comment for the full mechanism.
+      const { stdout, stderr } = await safeNsenter(command, args, timeoutMs);
 
       this.logger.debug({ command, args, stdout, stderr }, 'Command executed successfully');
       return { stdout: stdout || '', stderr: stderr || '', exitCode: 0 };

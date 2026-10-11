@@ -1,6 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { exec, execFile, spawn } from 'child_process';
-import { promisify } from 'util';
+import { spawn } from 'child_process';
 import { createSocket } from 'dgram';
 import * as fs from 'fs';
 import { randomUUID } from 'crypto';
@@ -11,24 +10,32 @@ import { setMscMgwPeer, readCurrentSmsConfig, listHlrSubscriberStatus } from './
 import { cidrRange, numToIp } from '../../domain/services/ip-utils';
 import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
+import { detectMainInterface } from '../../infrastructure/network/main-interface';
 import {
   buildOsmoSipConnectorScript, verifyOsmoSipConnectorBuild, osmoSipConnectorSystemdUnit, osmoSipConnectorCfg,
   BIN as SIPCONN_BIN, UNIT_PATH as SIPCONN_UNIT_PATH, CFG_PATH as SIPCONN_CFG_PATH, MNCC_SOCKET_PATH as SIPCONN_MNCC_SOCKET_PATH,
 } from '../../application/use-cases/osmo-sip-connector-build';
+import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 
-const execFileAsync = promisify(execFile);
-
-// Same local pattern as sms-controller.ts/mms-controller.ts/pstn-controller.ts
-// (there's no shared nsenter utility in this codebase — see IHostExecutor/
-// LocalHostExecutor for the one that exists, unused by this family of
-// controllers) — kept consistent with this module's closest sibling rather
-// than introducing a third convention.
-const nsenter = async (cmd: string, args: string[] = [], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> =>
-  execFileAsync('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', cmd, ...args], {
-    timeout: timeoutMs,
-    encoding: 'utf-8',
-    env: { ...process.env, DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket' },
-  });
+// Was previously its own local execFileAsync('nsenter', ...) + timeout, same shared
+// pattern as sms-controller.ts/mms-controller.ts/pstn-controller.ts (there's no shared
+// nsenter utility in this codebase — see IHostExecutor/LocalHostExecutor for the one
+// that exists, unused by this family of controllers). Switched to safeNsenter
+// specifically for THIS file — 2026-09-29, real finding while auditing tonight's work —
+// because `osmoVtyCommand`/`bscVtyCommand` below both go through this helper and are
+// each driven by their own 15s setInterval (startBtsCacheRefresh/startGsmSignalCache
+// Refresh/startGprsTrafficCacheRefresh below), forever, on every deployment (unlike a
+// one-shot request handler). VTY_RUN_COMMAND_SCRIPT's drain-loop structurally costs
+// ~6.8s (see startBtsCacheRefresh's own comment) against only a 10s default timeout —
+// real headroom to hit that timeout under any VTY slowness (a BTS OML flap, e.g.), and
+// under the plain execFileAsync+timeout this used before, every such timeout orphaned
+// the nsenter+python3 process tree (safe-nsenter.ts's own header comment has the full
+// mechanism) — this is the exact "highest-consequence caller" shape that bug class was
+// fixed for elsewhere (KamailioStatsMonitor), just not yet retrofitted here until now.
+// Not applied blindly to every file sharing the old pattern — the others still using it
+// (sms-controller.ts, mms-controller.ts, pstn-controller.ts, etc.) were checked and have
+// no equivalent recurring-loop caller, so they keep the simpler pre-existing helper.
+const nsenter = safeNsenter;
 
 const HOST_OSMOCOM_DIR = '/proc/1/root/etc/osmocom';
 const HOST_MME_YAML    = '/proc/1/root/etc/open5gs/mme.yaml';
@@ -39,10 +46,12 @@ const HOST_GSM_STATE   = `${HOST_OSMOCOM_DIR}/.nms-gsm-bts-state.json`;
 // already resolved to the real IMSI, to whoever's listening on this port.
 // osmo-meas-udp2db (from the official osmo-bsc-meas-utils package — same
 // apt repo, exact-version-matched to the installed osmo-bsc) is that
-// listener; it owns and writes this sqlite file directly, we only ever
-// read it. Lives outside the container's own mounted filesystem (same as
-// hlr.db) so it's queried the same way — nsenter + the sqlite3 CLI, never
-// a direct better-sqlite3 open.
+// listener; it owns and writes this sqlite file's ROWS directly. We do
+// additionally create one index on it (see ensureMeasDbIndex below,
+// `imsi`-keyed queries were doing full table scans without it) — additive
+// DDL only, never touches osmo-meas-udp2db's own INSERTs. Lives outside the
+// container's own mounted filesystem (same as hlr.db) so it's queried the
+// same way — nsenter + the sqlite3 CLI, never a direct better-sqlite3 open.
 const HOST_MEAS_DB          = '/var/lib/osmocom/meas.db';
 const MEAS_UDP2DB_UNIT      = 'osmo-meas-udp2db';
 const HOST_MEAS_UNIT_PATH   = '/proc/1/root/etc/systemd/system/osmo-meas-udp2db.service';
@@ -492,6 +501,17 @@ export interface GsmState {
   sip?: { localIp: string; localPort: number; remoteHost: string; remotePort: number };
 }
 
+// Lets sms-controller.ts defer to this module before deleting the Osmocom
+// configs, hlr.db, or apt-purging osmo-stp/hlr/msc -- all of which 2G GSM
+// shares with SMS-over-SGs. Mirrors isAsterisk2gInstalled()/isPstnInstalled()
+// exactly. sms-controller.ts consumes this via a LAZY `await import()`, never
+// a static one, because this file already statically imports sms-controller.ts
+// (line 9) and a static import back would be a real load-time circular
+// dependency -- CLAUDE.md pattern #16.
+export function isGsmInstalled(): boolean {
+  return fs.existsSync(HOST_GSM_STATE);
+}
+
 const GSM_STATE_DEFAULTS: GsmState = {
   btsEntries: [], bscMgwBindIp: '127.0.0.1', mscMgwBindIp: '127.0.0.1', mgwRtpBindIp: '127.0.0.1',
   gprsEnabled: false, gprsMode: 'gprs', sgsnGtpLocalIp: '127.0.0.1', sgsnGbRemoteIp: '', ggsnGtpBindIp: '127.0.0.5',
@@ -802,7 +822,7 @@ network
  neci 1
  paging any use tch 0
  handover 0
- timer net T3212 5
+ timer net T3212 2
  meas-feed destination 127.0.0.1 8888
  meas-feed scenario nms
 ${btsBlocks}msc 0
@@ -1053,7 +1073,76 @@ WantedBy=multi-user.target
 // 2026-09-10, which made a plain fs.writeFileSync ENOENT because the write
 // follows the dangling symlink to a missing target. Unlink first so we
 // always land a real regular file.
+// Directive names this module's generators never emit. Real defect found in
+// the 2026-10-10 readiness audit: osmo-bsc.cfg is fully regenerated from
+// structured state on every GSM Configure, BTS add/edit/delete, and IP-Plan
+// apply touching the BSC/MGW bind IP -- then osmo-bsc is restarted, dropping
+// camped 2G UEs. The live file on this host was 5283 bytes and carried real
+// hand/VTY-maintained tuning the generator has no model for: 11 `gprs cell
+// timer`, 7 `gprs ns timer`, `bs-power-control`, `rach max-delay`, `stats
+// interval`, and 6 `amr tch-f` lines against the generator's 1. All of it
+// would have been destroyed silently.
+//
+// The proper fix is an ownership-merge via upsertVtyDirectives() (the idiom
+// sms-controller.ts already uses for osmo-msc.cfg), but that helper is
+// deliberately one level deep and osmo-bsc.cfg nests network -> bts N ->
+// trx N -> timeslot N, with most of the at-risk directives living INSIDE the
+// bts blocks the generator rebuilds. Extending it needs a real 2G maintenance
+// window to test, since getting a splice wrong yields a config osmo-bsc
+// rejects outright -- i.e. radio down.
+//
+// So this does not pretend to merge. It makes the loss RECOVERABLE and
+// VISIBLE instead of silent: every overwrite is backed up first, and any
+// unmodelled directive that is about to disappear is named in the log. See
+// TODO.md for the remaining merge work.
+// Module-scope logger: writeHostCfg() is a plain function called from many
+// places, not inside the router factory where the injected logger lives.
+const cfgLogger = pino({ name: 'gsm-vty-config' });
+
+const OSMO_BSC_UNMODELLED_DIRECTIVES = [
+  'gprs cell timer', 'gprs ns timer', 'bs-power-control', 'rach max-delay',
+  'stats interval', 'amr tch-f', 'cs7 instance',
+];
+
+function warnOnUnmodelledLoss(path: string, oldContent: string, newContent: string): void {
+  const lost: string[] = [];
+  for (const d of OSMO_BSC_UNMODELLED_DIRECTIVES) {
+    const before = (oldContent.match(new RegExp(`^\\s*${d.replace(/ /g, '\\s+')}`, 'gm')) ?? []).length;
+    const after  = (newContent.match(new RegExp(`^\\s*${d.replace(/ /g, '\\s+')}`, 'gm')) ?? []).length;
+    if (before > after) lost.push(`${d} (${before} -> ${after})`);
+  }
+  if (lost.length > 0) {
+    cfgLogger.warn(
+      { path, lost },
+      'Regenerating this VTY config DROPS hand-maintained directives the generator does not model — ' +
+      'a timestamped backup was written alongside it; re-apply these by hand (or via vtysh + write memory) if they are still wanted',
+    );
+  }
+}
+
 function writeHostCfg(path: string, content: string): void {
+  // Back up before every overwrite so a regeneration is always recoverable.
+  // Kept to the most recent 10 so this cannot grow without bound.
+  try {
+    if (fs.existsSync(path)) {
+      const prev = fs.readFileSync(path, 'utf-8');
+      if (prev !== content) {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        fs.writeFileSync(`${path}.pre-regen-${stamp}`, prev, 'utf-8');
+        warnOnUnmodelledLoss(path, prev, content);
+        const dir = require('path').dirname(path);
+        const base = require('path').basename(path);
+        const olds = fs.readdirSync(dir)
+          .filter((n: string) => n.startsWith(`${base}.pre-regen-`))
+          .sort();
+        for (const stale of olds.slice(0, Math.max(0, olds.length - 10))) {
+          try { fs.unlinkSync(`${dir}/${stale}`); } catch { /* best effort */ }
+        }
+      }
+    }
+  } catch (err) {
+    cfgLogger.warn({ path, error: String(err) }, 'Could not back up VTY config before regenerating it');
+  }
   try { if (fs.lstatSync(path).isSymbolicLink()) fs.unlinkSync(path); } catch { /* not there yet */ }
   fs.writeFileSync(path, content, 'utf-8');
 }
@@ -1264,6 +1353,18 @@ export interface ConfigureGsmInput {
   gprsEnabled?: boolean; gprsMode?: 'gprs' | 'egprs'; sgsnGtpLocalIp?: string;
   ggsnGtpBindIp?: string; ggsnApn?: string; ggsnTunDevice?: string; ggsnPoolCidr?: string;
   ggsnDns1?: string; ggsnDns2?: string; gprsNat?: boolean; sgsnGbRemoteIp?: string;
+  // Real, 2026-09-24 finding: appliedGprsEigrpCidr/appliedGprsNatCidr are
+  // restored VERBATIM as part of .nms-gsm-bts-state.json (EXTRA_BACKUP_FILES),
+  // so on a restore they already equal the freshly-computed desired value —
+  // the diff-checks below see "no change" and never actually push the real
+  // vtysh EIGRP network statement / iptables MASQUERADE rule onto the target
+  // host, even though its live dataplane has nothing applied yet. Confirmed
+  // live: production's own state file has a real non-empty
+  // appliedGprsEigrpCidr right now, meaning THIS host would hit this
+  // silently on its next restore. backup-restart-usecase.ts's gsm reapply
+  // step passes this flag so the diff-checks below treat the restored state
+  // as "nothing applied yet," forcing a real re-push.
+  forceGprsReapply?: boolean;
 }
 
 export async function configureGsm(input: ConfigureGsmInput): Promise<{ eigrpApplied: string | null }> {
@@ -1300,6 +1401,11 @@ export async function configureGsm(input: ConfigureGsmInput): Promise<{ eigrpApp
   let eigrpApplied: string | null = null;
   const wantCidr = state.gprsEnabled && state.ggsnPoolCidr ? state.ggsnPoolCidr : null;
   if (wantCidr) {
+    // Enable as well as restart, so GPRS/EDGE survives a reboot. Without this
+    // a Configure brought it up for the current boot only (see /start's own
+    // comment for the confirmed-live incident).
+    await nsenter('systemctl', ['enable', 'osmo-sgsn']).catch(() => {});
+    await nsenter('systemctl', ['enable', 'osmo-ggsn']).catch(() => {});
     await nsenter('systemctl', ['restart', 'osmo-sgsn']).catch(() => {});
     await nsenter('systemctl', ['restart', 'osmo-ggsn']).catch(() => {});
     // osmo-pcu only applies to a locally-run osmo-bts (virtual/trx) — a real
@@ -1311,6 +1417,15 @@ export async function configureGsm(input: ConfigureGsmInput): Promise<{ eigrpApp
       await nsenter('systemctl', ['restart', 'osmo-pcu']).catch(() => {});
     } else {
       await nsenter('systemctl', ['disable', '--now', 'osmo-pcu']).catch(() => {});
+    }
+  } else {
+    // Turning GPRS/EDGE off used to leave osmo-sgsn/osmo-ggsn running: there
+    // was no off-path here at all, only the on-path above. So the page could
+    // report GPRS disabled while both daemons kept serving the Gb link and the
+    // APN — the inverse of the boot-persistence bug, and just as silent.
+    // `disable --now` so it is off now AND stays off across a reboot.
+    for (const svc of ['osmo-pcu', 'osmo-sgsn', 'osmo-ggsn']) {
+      await nsenter('systemctl', ['disable', '--now', svc]).catch(() => {});
     }
   }
   // Make the GGSN pool reachable — no manual step. Two modes:
@@ -1325,21 +1440,35 @@ export async function configureGsm(input: ConfigureGsmInput): Promise<{ eigrpApp
   const dev = state.ggsnTunDevice || 'apn-gprs';
   const wantEigrp = wantCidr && !state.gprsNat ? wantCidr : null;
   const wantNat   = wantCidr &&  state.gprsNat ? wantCidr : null;
-  if (state.appliedGprsEigrpCidr && state.appliedGprsEigrpCidr !== wantEigrp) {
-    eigrpApplied = await applyGprsEigrpRoute(null, state.appliedGprsEigrpCidr, dev);
-    state.appliedGprsEigrpCidr = undefined; saveGsmState(state);
+  // forceGprsReapply (see ConfigureGsmInput's comment) — treat the just-
+  // restored "applied" bookkeeping as stale so the checks below fall through
+  // to actually re-pushing the route/NAT rule, rather than seeing the
+  // restored value already match the desired one and skipping entirely.
+  const appliedEigrp = input.forceGprsReapply ? undefined : state.appliedGprsEigrpCidr;
+  const appliedNat = input.forceGprsReapply ? undefined : state.appliedGprsNatCidr;
+  // Real, 2026-09-24 finding (compounding the one above): these used to
+  // persist state.appliedGprs{Eigrp,Nat}Cidr unconditionally, even when
+  // applyGprsEigrpRoute()/applyGprsNat() actually failed (both swallow their
+  // own errors and return a "...failed (apply manually): ..." STRING rather
+  // than throwing) — silently desyncing the tracked "applied" state from
+  // the real dataplane on ANY failure, restore or not. Now only persisted
+  // on confirmed success.
+  const FAILURE_PREFIX = /^(EIGRP|NAT) change failed/;
+  if (appliedEigrp && appliedEigrp !== wantEigrp) {
+    eigrpApplied = await applyGprsEigrpRoute(null, appliedEigrp, dev);
+    if (!FAILURE_PREFIX.test(eigrpApplied)) { state.appliedGprsEigrpCidr = undefined; saveGsmState(state); }
   }
-  if (state.appliedGprsNatCidr && state.appliedGprsNatCidr !== wantNat) {
-    eigrpApplied = await applyGprsNat(null, state.appliedGprsNatCidr, dev);
-    state.appliedGprsNatCidr = undefined; saveGsmState(state);
+  if (appliedNat && appliedNat !== wantNat) {
+    eigrpApplied = await applyGprsNat(null, appliedNat, dev);
+    if (!FAILURE_PREFIX.test(eigrpApplied)) { state.appliedGprsNatCidr = undefined; saveGsmState(state); }
   }
-  if (wantEigrp && wantEigrp !== state.appliedGprsEigrpCidr) {
+  if (wantEigrp && wantEigrp !== appliedEigrp) {
     eigrpApplied = await applyGprsEigrpRoute(wantEigrp, null, dev);
-    state.appliedGprsEigrpCidr = wantEigrp; saveGsmState(state);
+    if (!FAILURE_PREFIX.test(eigrpApplied)) { state.appliedGprsEigrpCidr = wantEigrp; saveGsmState(state); }
   }
-  if (wantNat && wantNat !== state.appliedGprsNatCidr) {
+  if (wantNat && wantNat !== appliedNat) {
     eigrpApplied = await applyGprsNat(wantNat, null, dev);
-    state.appliedGprsNatCidr = wantNat; saveGsmState(state);
+    if (!FAILURE_PREFIX.test(eigrpApplied)) { state.appliedGprsNatCidr = wantNat; saveGsmState(state); }
   }
   // FORWARD ACCEPT for the GGSN tun — mode-independent (see helper).
   await ensureGprsForwardAccept(dev, !!state.gprsEnabled);
@@ -1362,8 +1491,468 @@ export async function getGsmStaleness(): Promise<{ installedOnDisk: boolean; con
 
 // ─── Router ─────────────────────────────────────────────────────────────────
 
+// Runs an nsenter'd bash script to completion, streaming its output,
+// resolving with its exit code — same shape as ims-controller.ts's own
+// spawnStream. Module-level (not inside installGsm) so installGsm can stay a
+// plain async function matching every other module's installX(write) shape.
+function gsmSpawnStream(bashScript: string, write: (s: string) => void): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout?.on('data', (d: Buffer) => write(d.toString()));
+    child.stderr?.on('data', (d: Buffer) => write(d.toString()));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+}
+
+// Streaming apt install of osmo-bsc + osmo-mgw + osmo-bts (the latter
+// bundles the virtual/trx backends both) plus osmo-sip-connector (SIP tab,
+// built from source — no package exists for it). Extracted from the
+// /install route so a bootstrap/restore orchestrator can call this
+// in-process too, same reasoning as configureGsm() below.
+export async function installGsm(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+  // osmo-bsc-ipaccess-utils provides /usr/bin/ipaccess-config — real,
+  // confirmed-live gap (2026-09-24): every nanoBTS OML reprovision/drop
+  // call (ipaccess-config -o/-r, this file's own reprovisionBts()/
+  // dropOml()) shells out to this binary directly, but it was never in
+  // this install list — "nsenter: failed to execute ipaccess-config: No
+  // such file or directory" on any host whose apt cache doesn't happen to
+  // have pulled it in as a transitive dependency of something else.
+  const baseExitCode = await gsmSpawnStream(
+    "DEBIAN_FRONTEND=noninteractive apt-get install -y osmo-bsc osmo-mgw osmo-bts osmo-bsc-meas-utils osmo-bsc-ipaccess-utils osmo-pcu osmo-sgsn osmo-ggsn 2>&1",
+    write,
+  );
+  write(baseExitCode === 0
+    ? '✅ osmo-bsc, osmo-mgw, osmo-bts, osmo-bsc-meas-utils, osmo-bsc-ipaccess-utils, osmo-pcu, osmo-sgsn, osmo-ggsn installed.'
+    : `❌ Base 2G/GSM package install failed (exit ${baseExitCode}).`);
+
+  // Built alongside the rest of the module on every Install so a
+  // fresh/re-run install always ends up with it available — actually wiring
+  // it into a real call path (the "remote" SIP target) happens on the SIP
+  // tab's own Configure, not here.
+  write('\n=== Building osmo-sip-connector (SIP tab) ===');
+  const sipConnExitCode = await gsmSpawnStream(buildOsmoSipConnectorScript(), write);
+  write(sipConnExitCode === 0
+    ? '✅ osmo-sip-connector built.'
+    : `⚠️ WARNING: osmo-sip-connector build FAILED (see errors above) — the SIP tab will show as not installed. Fix the underlying issue and re-run Install; the build is idempotent and will retry automatically.`);
+
+  const success = baseExitCode === 0 && sipConnExitCode === 0;
+  return success ? { success } : { success, error: `base exit ${baseExitCode}, sipconn exit ${sipConnExitCode}` };
+}
+
+// Real, 2026-09-24 finding: extracted from the /sip/configure route handler
+// (matching the configureGsm/installGsm extraction pattern already used in
+// this file) so backup-restart-usecase.ts's restore-reapply can call it
+// too — regenerateGsmConfigs() (called by configureGsm() itself) never
+// wrote osmo-sip-connector.cfg; GsmState.sip is correctly captured in
+// .nms-gsm-bts-state.json, but nothing regenerated the actual config/unit/
+// service from it during a restore's reapply. Currently masked whenever
+// Asterisk-2G is also installed (wireIntoSipTabAndGoExternal() incidentally
+// rewrites this same file as a side effect of ITS OWN unrelated Configure)
+// — a deployment using the SIP tab standalone against a different remote
+// (an external SIP trunk, P-CSCF, etc. — explicitly supported per this
+// module's own design) would restore the state data but never get this
+// daemon's config/unit regenerated or the service (re)started.
+export async function configureGsmSip(input: { localIp?: string; localPort?: number; remoteHost?: string; remotePort?: number }): Promise<{ success: boolean; error?: string; sip?: NonNullable<GsmState['sip']> }> {
+  const state = loadGsmState();
+  const current = { ...GSM_STATE_DEFAULTS.sip, ...state.sip } as NonNullable<GsmState['sip']>;
+  const remoteHost = (input.remoteHost ?? current.remoteHost ?? '').trim();
+  if (!remoteHost) {
+    return { success: false, error: 'remoteHost is required — this is the SIP peer 2G calls will be sent to/received from.' };
+  }
+  const sip = {
+    localIp: (input.localIp || current.localIp || '0.0.0.0').trim(),
+    localPort: Number(input.localPort ?? current.localPort ?? 5060),
+    remoteHost,
+    remotePort: Number(input.remotePort ?? current.remotePort ?? 5060),
+  };
+  state.sip = sip;
+  saveGsmState(state);
+
+  fs.mkdirSync('/proc/1/root/etc/osmocom', { recursive: true });
+  writeHostCfg(`/proc/1/root${SIPCONN_CFG_PATH}`, osmoSipConnectorCfg(sip.localIp, sip.localPort, sip.remoteHost, sip.remotePort));
+  fs.writeFileSync(`/proc/1/root${SIPCONN_UNIT_PATH}`, osmoSipConnectorSystemdUnit(), 'utf-8');
+  await nsenter('systemctl', ['daemon-reload']);
+  const wasActive = (await nsenter('systemctl', ['is-active', 'osmo-sip-connector']).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+  if (wasActive) {
+    await nsenter('systemctl', ['restart', 'osmo-sip-connector']);
+  } else {
+    await nsenter('systemctl', ['enable', '--now', 'osmo-sip-connector']);
+  }
+  return { success: true, sip };
+}
+
+// Real, 2026-09-25 finding: /signal/overview did an inline `await
+// bscVtyCommand('show lchan')` on every request to enrich each UE with its
+// current BTS. VTY_RUN_COMMAND_SCRIPT's drain-loop design costs ~6.8s
+// structurally (three ~2s "wait for silence" timeouts + two sleeps) no
+// matter how little `show lchan` returns — every page load and every 15s
+// poll from Gsm2gSignalPage.tsx was stalling on this alone. Moved to a
+// background-refreshed cache instead, matching validation-controller.ts's
+// startSessionMaxAgeSweep() idiom (setInterval with its own internal
+// try/catch — the callback's rejection must never escape uncaught, since
+// this project has no unhandledRejection handler anywhere and Node's
+// default `--unhandled-rejections=throw` would crash-loop the ENTIRE
+// backend, not just this feature, confirmed via adversarial review before
+// this shipped). Gated on the SAME `configured` check createGsmRouter's own
+// /status and /sip routes already use — createGsmRouter() is registered
+// unconditionally on every NMS deployment (index.ts has no ENABLE_GSM_MODULE
+// gate on any backend route; that flag is frontend-build-only, it only hides
+// the nav item), so an ungated interval would hit osmo-bsc's VTY forever on
+// every install, including the large majority that never enable 2G GSM.
+let cachedBtsByImsi = new Map<string, number>();
+
+function startBtsCacheRefresh(logger: pino.Logger): void {
+  const refresh = async () => {
+    const configured = fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-bsc.cfg`) && fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-mgw.cfg`);
+    if (!configured) return; // no-op on the majority of deployments that never installed 2G GSM
+    try {
+      const lchanRaw = await bscVtyCommand('show lchan');
+      // Reassign only on success — a transient VTY hiccup leaves the cache
+      // at its last-known-good value instead of blanking `bts` for every UE
+      // for a full cycle.
+      cachedBtsByImsi = new Map(parseActiveLchans(lchanRaw).map(x => [x.imsi, x.bts]));
+    } catch (err) {
+      logger.debug({ err: String(err) }, 'gsm: BTS cache refresh failed (VTY unreachable) — keeping last-known cache');
+    }
+  };
+  refresh(); // fire-and-forget so the cache isn't empty for the first 15s after a restart
+  setInterval(refresh, 15_000); // matches Gsm2gSignalPage.tsx's own poll cadence
+}
+
+// Same reasoning as startBtsCacheRefresh's own gating comment — additive
+// DDL only (IF NOT EXISTS), never touches osmo-meas-udp2db's own writes,
+// but still gated + caught: meas.db may not exist at all on a host that
+// never installed 2G GSM, and even once it does, a concurrent write from
+// osmo-meas-udp2db could in principle return SQLITE_BUSY — this must fail
+// loud-but-caught (logged), never silently and never uncaught.
+//
+// Real, 2026-09-25 finding: `path_loss` (what /signal/overview and
+// /signal/history actually query) is osmo-meas-udp2db's own SQL VIEW, not
+// a table — `CREATE VIEW path_loss AS SELECT ... FROM meas_rep, meas_rep_
+// unidir AS ud_dl, meas_rep_unidir AS ud_ul WHERE ...` (confirmed live via
+// `sqlite3 meas.db "SELECT sql FROM sqlite_master WHERE name='path_loss'"`).
+// SQLite hard-rejects any attempt to index a view ("Error: in prepare,
+// views may not be indexed") — the original `CREATE INDEX ... ON
+// path_loss(...)` failed on every single call, 100% of the time, silently
+// swallowed by this same catch block back when it logged at `debug`
+// (invisible at this deployment's real LOG_LEVEL=info) — a permanent,
+// total failure of the intended fix that a log-silence check alone could
+// not distinguish from success. The view's own `id`/`imsi` columns pass
+// straight through from `meas_rep` unaliased (no computed/renamed column),
+// so the correct index target is the real underlying table, `meas_rep`.
+// Real bug, confirmed live THREE times now (2026-09-25, 2026-09-26, and
+// again 2026-09-28 despite the 2026-09-26 "fix" below): touching meas.db
+// from the backend on every startup — even with the 2026-09-26 change to a
+// read-only `SELECT ... sqlite_master` existence check instead of an
+// unconditional `CREATE INDEX` — can still collide with osmo-meas-udp2db's
+// own concurrent live INSERT and permanently wedge its prepared-statement
+// handle (spams "SQL Error ... bad parameter or other API misuse" forever,
+// fixed only by `systemctl restart osmo-meas-udp2db`). The 2026-09-26 fix's
+// own premise was wrong: it assumed this database is in WAL mode (where a
+// plain read needs only a SHARED lock, safe alongside a writer) — confirmed
+// live 2026-09-28 via `PRAGMA journal_mode` that it's actually the SQLite
+// default `delete` (rollback-journal) mode, where a reader CAN still
+// contend with a writer's lock, so even a read-only query was never
+// actually safe here. Real fix this time: a plain host-file sentinel,
+// checked (and, the first time, written) via fs.existsSync/writeFileSync —
+// NOT sqlite3 — so once the index is confirmed to exist even once, every
+// future backend startup for the rest of this deployment's life never
+// touches meas.db at all, eliminating the collision window entirely
+// instead of just narrowing it again.
+const MEAS_DB_INDEX_SENTINEL = `${HOST_OSMOCOM_DIR}/.meas-db-index-ensured`;
+async function ensureMeasDbIndex(logger: pino.Logger): Promise<void> {
+  const configured = fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-bsc.cfg`) && fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-mgw.cfg`);
+  if (!configured) return;
+  if (fs.existsSync(MEAS_DB_INDEX_SENTINEL)) return;
+  try {
+    const { stdout } = await nsenter('sqlite3', [HOST_MEAS_DB, "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_meas_rep_imsi_id';"]);
+    if (stdout.trim() === 'idx_meas_rep_imsi_id') {
+      fs.writeFileSync(MEAS_DB_INDEX_SENTINEL, new Date().toISOString());
+      return;
+    }
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'gsm: meas.db index existence check failed — skipping this startup, will retry on the next one');
+    return;
+  }
+  try {
+    await nsenter('sqlite3', [HOST_MEAS_DB, 'CREATE INDEX IF NOT EXISTS idx_meas_rep_imsi_id ON meas_rep(imsi, id);']);
+    fs.writeFileSync(MEAS_DB_INDEX_SENTINEL, new Date().toISOString());
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'gsm: meas.db index creation failed — /signal/overview and /signal/history will keep doing full table scans until this succeeds on a future restart');
+  }
+}
+
+// Hoisted to module scope, 2026-09-25, for gsm-metrics.ts's own cache
+// refresh below to reuse — confirmed pure (no closure dependency on
+// anything only available inside createGsmRouter()) before hoisting.
+const MEAS_ROW_COLUMNS =
+  `p.imsi || '|' || p.timestamp || '|' || COALESCE(p.ms_l1_pwr,'') || '|' || COALESCE(p.ms_l1_ta,'') || '|' || ` +
+  `COALESCE(p.ul_rx_lev_full,'') || '|' || COALESCE(p.ul_rx_qual_full,'') || '|' || ` +
+  `COALESCE(p.dl_rx_lev_full,'') || '|' || COALESCE(p.dl_rx_qual_full,'') || '|' || ` +
+  `COALESCE(p.bs_power,'') || '|' || COALESCE(p.ul_path_loss_full,'') || '|' || COALESCE(p.dl_path_loss_full,'')`;
+
+function parseMeasRow(line: string) {
+  const [imsi, timestamp, msL1Pwr, msL1Ta, ulRxLev, ulRxQual, dlRxLev, dlRxQual, bsPower, ulPathLoss, dlPathLoss] = line.split('|');
+  const n = (v: string) => (v === '' ? null : Number(v));
+  return {
+    imsi, timestamp,
+    msPowerDbm: n(msL1Pwr), timingAdvance: n(msL1Ta),
+    ulRxLevDbm: n(ulRxLev), ulRxQual: n(ulRxQual),
+    dlRxLevDbm: n(dlRxLev), dlRxQual: n(dlRxQual),
+    bsPowerDbm: n(bsPower), ulPathLossDb: n(ulPathLoss), dlPathLossDb: n(dlPathLoss),
+  };
+}
+
+export interface CachedGsmSignalSample {
+  imsi: string; timestamp: string;
+  msPowerDbm: number | null; timingAdvance: number | null;
+  ulRxLevDbm: number | null; ulRxQual: number | null;
+  dlRxLevDbm: number | null; dlRxQual: number | null;
+  bsPowerDbm: number | null; ulPathLossDb: number | null; dlPathLossDb: number | null;
+  bts: number;
+  nickname: string | null; msisdn: string | null;
+}
+
+let cachedGsmSignalSamples: CachedGsmSignalSample[] = [];
+
+// Real, 2026-09-25 finding (adversarial review, item 3 of the Grafana-
+// dashboards task): filtering to IMSIs currently present in cachedBtsByImsi
+// (osmo-bsc's own live `show lchan` output, refreshed on the identical 15s
+// cadence above) is what actually makes an idle/detached UE's reading
+// disappear from the exported gauges once gsm-metrics.ts's collect() calls
+// .reset() before repopulating. path_loss's own query has NO time bound —
+// it returns the latest-ever row for every IMSI that has EVER produced a
+// measurement report, so without this filter a UE that went idle days ago
+// would keep re-appearing as if freshly measured, forever, defeating the
+// whole point of reset-then-repopulate (a stale-but-plausible number with
+// no way to tell it's stale — quietly worse than the panel just being
+// blank). Same gating/try-catch/fire-then-interval shape as
+// startBtsCacheRefresh above — see its own comment for why.
+function startGsmSignalCacheRefresh(logger: pino.Logger, subscriberRepo: ISubscriberRepository): void {
+  const refresh = async () => {
+    const configured = fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-bsc.cfg`) && fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-mgw.cfg`);
+    if (!configured) return;
+    try {
+      const { stdout } = await nsenter('sqlite3', [
+        HOST_MEAS_DB,
+        `SELECT ${MEAS_ROW_COLUMNS} FROM path_loss p ` +
+        `INNER JOIN (SELECT imsi, MAX(id) AS max_id FROM path_loss WHERE imsi IS NOT NULL AND imsi != '' GROUP BY imsi) latest ` +
+        `ON p.imsi = latest.imsi AND p.id = latest.max_id ORDER BY p.imsi;`,
+      ]);
+      const rows = stdout.split('\n').map(l => l.trim()).filter(Boolean).map(parseMeasRow);
+      const allSubs = await subscriberRepo.findAllFull();
+      const byImsi = new Map(allSubs.map(s => [s.imsi, s]));
+      // Real bug, found live 2026-09-26: gating on `cachedBtsByImsi.has()`
+      // (show lchan's own occupancy snapshot, refreshed on its own
+      // independent 15s interval) missed real, fresh measurements from 2 of
+      // 3 actually-online UEs — a dedicated channel (SDCCH signaling, a
+      // brief Location Update, etc.) can come and go well within one
+      // show-lchan poll interval, so cross-referencing occupancy AT READ
+      // TIME systematically undercounts anything shorter than a sustained
+      // voice call. The staleness problem this filter was actually meant to
+      // solve (see the comment this replaced) is about the AGE of the
+      // reading itself, not whether some OTHER, independently-timed cache
+      // currently agrees the UE is mid-session — so gate on the row's own
+      // timestamp instead.
+      // Real, live-observed correction, tuned THREE times now — the first
+      // two (90s, then 5min, then 15min) were all guesses padded off a
+      // single spot-check gap, and all three were wrong for the same
+      // reason: an idle-but-attached 2G UE doesn't report continuously, so
+      // any one-off "biggest gap I've seen" observation understates the
+      // real period. Root-caused properly 2026-09-26 by pulling several
+      // hours of REAL timestamps per IMSI instead of spot-checking: all 3
+      // real IMSIs on this deployment report at a precise, consistent
+      // ~30-minute interval (e.g. 14:04:13, 14:34:16, 15:04:19, 15:34:21,
+      // ...) — a periodic Location/Routing-Area-Update timer, not random
+      // idle burstiness as earlier comments here assumed. The prior
+      // 15-minute window was almost exactly HALF that real period, so
+      // every UE was visible for the first half of each cycle and
+      // invisible for the second half, forever — a real, reported,
+      // perfectly periodic "gap that repeats at the same interval" in
+      // every timeseries panel, and (since all 3 IMSIs' cycles land
+      // within a few minutes of each other) a real, empty "Per-UE Current
+      // 2G Signal" table for a chunk of every half hour. 40 minutes gives
+      // the confirmed ~30-minute period a real, deliberate margin (not
+      // another one-off pad) while still making a truly detached UE's
+      // last-ever reading disappear within well under an hour.
+      //
+      // Still a real, inherent tradeoff: this window is now grounded in a
+      // properly-measured period rather than a guess, but a network with a
+      // DIFFERENT periodic-update interval configured would need this
+      // re-measured, not assumed. See memory gsm_2g_signal_dashboard_progress
+      // for the full history if this needs revisiting again.
+      const FRESHNESS_WINDOW_MS = 40 * 60_000;
+      const nowMs = Date.now();
+      cachedGsmSignalSamples = rows
+        .filter(r => {
+          const ts = Date.parse(`${r.timestamp.replace(' ', 'T')}Z`);
+          return Number.isFinite(ts) && (nowMs - ts) <= FRESHNESS_WINDOW_MS;
+        })
+        .map(r => {
+          const sub = byImsi.get(r.imsi);
+          return {
+            ...r,
+            // Best-effort BTS label only now, not the staleness gate —
+            // falls back to 0 (this deployment's only configured BTS, and
+            // a reasonable default on any host rather than dropping an
+            // otherwise-fresh, real reading just because the separate
+            // occupancy cache hasn't caught up yet).
+            bts: cachedBtsByImsi.get(r.imsi) ?? 0,
+            nickname: sub?.nickname ?? null,
+            msisdn: sub?.msisdn?.[0] ?? null,
+          };
+        });
+    } catch (err) {
+      logger.debug({ err: String(err) }, 'gsm: signal-sample cache refresh failed (meas.db unreachable) — keeping last-known cache');
+    }
+  };
+  refresh();
+  setInterval(refresh, 15_000);
+}
+
+export function getCachedGsmSignalSamples(): CachedGsmSignalSample[] {
+  return cachedGsmSignalSamples;
+}
+
+// ── GPRS/EDGE data traffic (Traffic History unification) ───────────────────
+//
+// 2G subscriber data traffic does NOT go through Open5GS's own SMF/UPF —
+// osmo-sgsn + osmo-ggsn is a completely separate GGSN implementation with its
+// own IP pool and its own tun device. osmo-sgsn's own VTY already does
+// per-subscriber byte accounting AND carries cell attribution in the same
+// place (`show mm-context all pdp`) — confirmed live 2026-09-26, real output:
+//
+//   MM Context for IMSI <imsi>, ...
+//     GMM State: ..., Routeing Area: ..., Cell ID: <n>
+//     SGSN MM Context Statistics:            <- this subscriber's OWN cumulative
+//       User Data  Bytes    ( In): ...          total across ALL its PDP contexts
+//       User Data  Bytes    (Out): ...           combined — NOT used below
+//     PDP Context IMSI: <imsi>, SAPI: ..., NSAPI: ..., TI: ...
+//       APN: ...
+//       PDP Address: IPv4 <ip>
+//      SGSN PDP Context Statistics:          <- THIS one PDP context's own bytes
+//       User Data  Bytes    ( In): ...           — used below, summed per IMSI
+//       User Data  Bytes    (Out): ...            across however many PDP
+//                                                  contexts that IMSI holds
+//
+// Only the inner, per-PDP-context numbers are used — summed per IMSI — so a
+// subscriber holding more than one concurrent APN is attributed correctly
+// instead of relying on the outer MM-level total (which only coincidentally
+// matches in the common single-PDP-context case). A GPRS-attached subscriber
+// with ZERO active PDP contexts is a real, valid, non-error VTY shape
+// (confirmed live) and is correctly skipped — nothing to report, not a
+// fabricated zero.
+//
+// (In)/(Out) are from the SGSN's own point of view on the Gb interface: data
+// SGSN receives FROM the MS is uplink (In → upBytes); data SGSN sends TO the
+// MS is downlink (Out → downBytes) — same up/down convention already used by
+// every other traffic metric in this codebase.
+const SGSN_VTY_PORT = 4245;
+
+export interface GprsSubscriberTraffic {
+  imsi: string;
+  cellId: number | null;
+  upBytes: number;
+  downBytes: number;
+}
+
+export function parseMmContextPdp(raw: string): GprsSubscriberTraffic[] {
+  const results: GprsSubscriberTraffic[] = [];
+  const blocks = raw.split(/(?=^MM Context for IMSI )/m).filter(b => b.trim().startsWith('MM Context for IMSI'));
+  for (const block of blocks) {
+    const imsiMatch = block.match(/^MM Context for IMSI (\d+)/);
+    if (!imsiMatch) continue;
+    const imsi = imsiMatch[1];
+    const cellMatch = block.match(/Cell ID:\s*(\d+)/);
+    const cellId = cellMatch ? parseInt(cellMatch[1], 10) : null;
+
+    // Drop the first chunk (the MM-context header + its own outer
+    // "SGSN MM Context Statistics:" block) — only real per-PDP-context
+    // chunks (one per concurrent APN) remain.
+    const pdpBlocks = block.split(/(?=^\s*PDP Context IMSI:)/m).slice(1);
+    let upBytes = 0;
+    let downBytes = 0;
+    let hasPdp = false;
+    for (const pdpBlock of pdpBlocks) {
+      const inMatch = pdpBlock.match(/User Data\s+Bytes\s+\(\s*In\):\s*(\d+)/);
+      const outMatch = pdpBlock.match(/User Data\s+Bytes\s+\(Out\):\s*(\d+)/);
+      if (inMatch && outMatch) {
+        hasPdp = true;
+        upBytes += parseInt(inMatch[1], 10);
+        downBytes += parseInt(outMatch[1], 10);
+      }
+    }
+    if (hasPdp) results.push({ imsi, cellId, upBytes, downBytes });
+  }
+  return results;
+}
+
+// Resolves an SGSN-reported Cell ID (BtsEntry.cellIdentity, an
+// operator-set BSSGP/RA value) to the array-INDEX bts numbering the
+// existing 2G signal gauges use (osmo-bsc's own "BTS N" numbering from
+// `show lchan`, matching `btsBlock()`'s own array index at generation
+// time) — these are two different number spaces in this codebase and must
+// not be conflated.
+function resolveBtsIndexByCellId(cellId: number | null, state: GsmState): number | null {
+  if (cellId === null) return null;
+  const idx = state.btsEntries.findIndex(e => e.cellIdentity === cellId);
+  return idx >= 0 ? idx : null;
+}
+
+let cachedGprsTrafficByImsi = new Map<string, GprsSubscriberTraffic>();
+
+function startGprsTrafficCacheRefresh(logger: pino.Logger): void {
+  const refresh = async () => {
+    const configured = fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-sgsn.cfg`) && fs.existsSync(`${HOST_OSMOCOM_DIR}/osmo-ggsn.cfg`);
+    if (!configured) return;
+    try {
+      const raw = await osmoVtyCommand(SGSN_VTY_PORT, 'show mm-context all pdp');
+      const rows = parseMmContextPdp(raw);
+      cachedGprsTrafficByImsi = new Map(rows.map(r => [r.imsi, r]));
+    } catch (err) {
+      logger.debug({ err: String(err) }, 'gsm: GPRS traffic cache refresh failed (SGSN VTY unreachable) — keeping last-known cache');
+    }
+  };
+  refresh();
+  setInterval(refresh, 15_000);
+}
+
+/** Public: per-subscriber 2G data traffic, with BTS resolved to the same array-index numbering the signal gauges use. Used by both the Prometheus exporter (gsm2g-traffic-metrics.ts) and the shared radio-info gauge (radio-info-metrics.ts). */
+export function getCachedGprsTrafficByImsi(): Array<GprsSubscriberTraffic & { bts: number | null; radioName: string | null }> {
+  const state = loadGsmState();
+  return Array.from(cachedGprsTrafficByImsi.values()).map(r => {
+    const bts = resolveBtsIndexByCellId(r.cellId, state);
+    return { ...r, bts, radioName: bts !== null ? state.btsEntries[bts]?.name ?? null : null };
+  });
+}
+
+/** Public: GGSN's own tun-device aggregate byte counters, for the `internet` APN's data plane — mirrors gtp-bandwidth.ts's own UPF tun-device read exactly, just pointed at the GGSN's device instead. Deliberately a DISTINCT metric name from the 4G/5G open5gs_gtp_* family when exported (see gsm2g-traffic-metrics.ts) — GGSN's APN and Open5GS's DNN are both literally named "internet" on this deployment, and a prom-client Gauge keyed on an identical label tuple from two independent collect() sources would have one silently overwrite the other on whichever scrape ran last, not "sum" — a same-name reuse would be strictly worse than a name collision, not just redundant. */
+export async function getGgsnTunCounters(): Promise<{ apn: string; rxBytes: number; txBytes: number } | null> {
+  const state = loadGsmState();
+  const apn = state.ggsnApn || 'gprs';
+  const dev = state.ggsnTunDevice || 'apn-gprs';
+  try {
+    const [rxRaw, txRaw] = await Promise.all([
+      fs.promises.readFile(`/proc/1/root/sys/class/net/${dev}/statistics/rx_bytes`, 'utf-8'),
+      fs.promises.readFile(`/proc/1/root/sys/class/net/${dev}/statistics/tx_bytes`, 'utf-8'),
+    ]);
+    const rxBytes = parseInt(rxRaw.trim(), 10);
+    const txBytes = parseInt(txRaw.trim(), 10);
+    if (isNaN(rxBytes) || isNaN(txBytes)) return null;
+    return { apn, rxBytes, txBytes };
+  } catch {
+    // Device not present (GGSN not installed/configured, or APN removed) —
+    // expected churn on a deployment without 2G GPRS enabled, not an error.
+    return null;
+  }
+}
+
 export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
+  startBtsCacheRefresh(logger);
+  ensureMeasDbIndex(logger);
+  startGsmSignalCacheRefresh(logger, subscriberRepo);
+  startGprsTrafficCacheRefresh(logger);
 
   // GET /api/gsm/status
   router.get('/status', async (_req: Request, res: Response) => {
@@ -1454,7 +2043,9 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // POST /api/gsm/install — streaming apt install of osmo-bsc + osmo-mgw +
   // osmo-bts (the latter bundles the virtual/trx backends both — see the
-  // plan's Phase 0/1 note on why one package covers both).
+  // plan's Phase 0/1 note on why one package covers both). Thin wrapper —
+  // see installGsm() above for the actual logic, extracted so a
+  // bootstrap/restore orchestrator can call it in-process too.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -1463,37 +2054,8 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-    // Runs an nsenter'd bash script to completion, streaming its output,
-    // resolving with its exit code — same shape as ims-controller.ts's own
-    // spawnStream, kept local here since this is this file's first
-    // multi-phase streamed install (previously a single one-shot apt-get).
-    const spawnStream = (bashScript: string): Promise<number> => new Promise((resolve) => {
-      const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
-      child.stdout?.on('data', (d: Buffer) => write(d.toString()));
-      child.stderr?.on('data', (d: Buffer) => write(d.toString()));
-      child.on('close', (code) => resolve(code ?? 1));
-    });
-    const baseExitCode = await spawnStream(
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y osmo-bsc osmo-mgw osmo-bts osmo-bsc-meas-utils osmo-pcu osmo-sgsn osmo-ggsn 2>&1"
-    );
-    write(baseExitCode === 0
-      ? '✅ osmo-bsc, osmo-mgw, osmo-bts, osmo-bsc-meas-utils, osmo-pcu, osmo-sgsn, osmo-ggsn installed.'
-      : `❌ Base 2G/GSM package install failed (exit ${baseExitCode}).`);
-
-    // osmo-sip-connector (SIP tab) — built from clean upstream source, no
-    // package exists for it. Built alongside the rest of the module on every
-    // Install so a fresh/re-run install always ends up with it available,
-    // same as everything else on this page — actually wiring it into a real
-    // call path (the "remote" SIP target) happens on the SIP tab's own
-    // Configure, not here.
-    write('\n=== Building osmo-sip-connector (SIP tab) ===');
-    const sipConnExitCode = await spawnStream(buildOsmoSipConnectorScript());
-    write(sipConnExitCode === 0
-      ? '✅ osmo-sip-connector built.'
-      : `⚠️ WARNING: osmo-sip-connector build FAILED (see errors above) — the SIP tab will show as not installed. Fix the underlying issue and re-run Install; the build is idempotent and will retry automatically.`);
-
-    const ok = baseExitCode === 0 && sipConnExitCode === 0;
-    await auditLogger.log({ action: 'gsm_install', user, details: `base exit ${baseExitCode}, sipconn exit ${sipConnExitCode}`, success: ok });
+    const result = await installGsm(write);
+    await auditLogger.log({ action: 'gsm_install', user, details: result.error ?? 'ok', success: result.success });
     res.end();
   });
 
@@ -1524,39 +2086,17 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   router.post('/sip/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const state = loadGsmState();
-      const current = { ...GSM_STATE_DEFAULTS.sip, ...state.sip } as NonNullable<GsmState['sip']>;
-      const remoteHost = ((req.body.remoteHost as string) ?? current.remoteHost ?? '').trim();
-      if (!remoteHost) {
-        res.status(400).json({ success: false, error: 'remoteHost is required — this is the SIP peer 2G calls will be sent to/received from.' });
+      const result = await configureGsmSip(req.body);
+      if (!result.success) {
+        res.status(400).json(result);
         return;
       }
-      const sip = {
-        localIp: ((req.body.localIp as string) || current.localIp || '0.0.0.0').trim(),
-        localPort: Number(req.body.localPort ?? current.localPort ?? 5060),
-        remoteHost,
-        remotePort: Number(req.body.remotePort ?? current.remotePort ?? 5060),
-      };
-      state.sip = sip;
-      saveGsmState(state);
-
-      fs.mkdirSync('/proc/1/root/etc/osmocom', { recursive: true });
-      writeHostCfg(`/proc/1/root${SIPCONN_CFG_PATH}`, osmoSipConnectorCfg(sip.localIp, sip.localPort, sip.remoteHost, sip.remotePort));
-      fs.writeFileSync(`/proc/1/root${SIPCONN_UNIT_PATH}`, osmoSipConnectorSystemdUnit(), 'utf-8');
-      await nsenter('systemctl', ['daemon-reload']);
-      const wasActive = (await nsenter('systemctl', ['is-active', 'osmo-sip-connector']).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
-      if (wasActive) {
-        await nsenter('systemctl', ['restart', 'osmo-sip-connector']);
-      } else {
-        await nsenter('systemctl', ['enable', '--now', 'osmo-sip-connector']);
-      }
-
       // Deliberately does NOT touch osmo-msc's MNCC mode — that's an
       // explicit, separate operator choice (POST /sip/mncc-mode below), not
       // an automatic side effect of editing the connector's own local/remote
       // address. Configuring this daemon and actually routing live calls to
       // it are two different decisions.
-      await auditLogger.log({ action: 'gsm_sip_configure', user, details: `local=${sip.localIp}:${sip.localPort} remote=${sip.remoteHost}:${sip.remotePort}`, success: true });
+      await auditLogger.log({ action: 'gsm_sip_configure', user, details: `local=${result.sip!.localIp}:${result.sip!.localPort} remote=${result.sip!.remoteHost}:${result.sip!.remotePort}`, success: true });
       res.json({ success: true });
     } catch (err) {
       await auditLogger.log({ action: 'gsm_sip_configure', user, details: String(err), success: false });
@@ -1637,7 +2177,23 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // (enforced client-side in AddBtsModal; every server-side call site below
   // is reached only via that form).
   async function provisionRemoteRadio(remoteIp: string, bscOmlIp: string): Promise<void> {
-    await nsenter('ipaccess-config', ['-o', bscOmlIp, '-r', remoteIp], 20000);
+    // Real, confirmed-live bug (2026-09-24): every call site passes
+    // state.bscMgwBindIp as the "own IP" argument, but that field defaults
+    // to 127.0.0.1 (it's the MGCP/MGW control-plane bind, unrelated to OML)
+    // — telling a REAL remote radio to send OML to loopback, which it
+    // obviously can't reach ("No route to host", confirmed live against a
+    // real ip.access nanoBTS on the same /24). -o just needs to be any real
+    // host IP the radio's own subnet can reach — osmo-bsc's own OML/IPA
+    // listener has no bind-IP restriction (binds all interfaces), so this
+    // doesn't need to match anything else. Prefer the host's real main
+    // (default-route) interface IP; only fall back to the passed-in
+    // bscOmlIp if that can't be detected for some reason.
+    let ownIp = bscOmlIp;
+    try {
+      const main = await detectMainInterface();
+      if (main?.ip) ownIp = main.ip;
+    } catch { /* fall back to bscOmlIp below */ }
+    await nsenter('ipaccess-config', ['-o', ownIp, '-r', remoteIp], 20000);
   }
 
   // GET /api/gsm/subscribers — read-only unified-subscriber view for 2G.
@@ -1661,69 +2217,22 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     res.json({ success: true, subscribers });
   });
 
-  const MEAS_ROW_COLUMNS =
-    `p.imsi || '|' || p.timestamp || '|' || COALESCE(p.ms_l1_pwr,'') || '|' || COALESCE(p.ms_l1_ta,'') || '|' || ` +
-    `COALESCE(p.ul_rx_lev_full,'') || '|' || COALESCE(p.ul_rx_qual_full,'') || '|' || ` +
-    `COALESCE(p.dl_rx_lev_full,'') || '|' || COALESCE(p.dl_rx_qual_full,'') || '|' || ` +
-    `COALESCE(p.bs_power,'') || '|' || COALESCE(p.ul_path_loss_full,'') || '|' || COALESCE(p.dl_path_loss_full,'')`;
-
-  function parseMeasRow(line: string) {
-    const [imsi, timestamp, msL1Pwr, msL1Ta, ulRxLev, ulRxQual, dlRxLev, dlRxQual, bsPower, ulPathLoss, dlPathLoss] = line.split('|');
-    const n = (v: string) => (v === '' ? null : Number(v));
-    return {
-      imsi, timestamp,
-      msPowerDbm: n(msL1Pwr), timingAdvance: n(msL1Ta),
-      ulRxLevDbm: n(ulRxLev), ulRxQual: n(ulRxQual),
-      dlRxLevDbm: n(dlRxLev), dlRxQual: n(dlRxQual),
-      bsPowerDbm: n(bsPower), ulPathLossDb: n(ulPathLoss), dlPathLossDb: n(dlPathLoss),
-    };
-  }
-
-  // GET /api/gsm/signal/overview — latest 2G measurement sample per IMSI,
-  // cross-referenced against Open5GS's own subscriber list for
-  // nickname/msisdn exactly like radio-signal-controller.ts's own read-time
-  // join (no identity duplicated into meas.db itself — osmo-bsc already
-  // resolves the IMSI for us before it ever leaves the meas-feed UDP
-  // datagram, so unlike the 4G feature there's no separate backfill step).
+  // GET /api/gsm/signal/overview — latest 2G measurement sample per IMSI.
+  // Real bug, found live 2026-10-03: this handler used to run its own
+  // separate, unfiltered `path_loss` query (duplicating startGsmSignalCacheRefresh's
+  // own logic, including the same nickname/msisdn join) instead of reusing
+  // getCachedGsmSignalSamples() — and unlike that cache, it never applied
+  // the 40-minute FRESHNESS_WINDOW_MS staleness filter (see that function's
+  // own extensive comment: a UE's LAST-EVER `path_loss` row has no time
+  // bound at all, so a subscriber that was only ever measured once, weeks
+  // ago, kept showing up here — and therefore in the Dashboard's "2G active"
+  // count, the GSM Signal page, and the RAN page's A-interface section — as
+  // if it were currently active, forever. Fixed by reusing the same
+  // already-correct, already-measured cache every other "is this 2G UE
+  // currently active" consumer in this file relies on, instead of a second,
+  // subtly-different implementation of the same query.
   router.get('/signal/overview', async (_req: Request, res: Response) => {
-    try {
-      const { stdout } = await nsenter('sqlite3', [
-        HOST_MEAS_DB,
-        // Exclude rows with no resolved subscriber — osmo-bsc's meas-feed
-        // also emits measurement reports for channels in setup/RACH before
-        // an identity is known, which osmo-meas-udp2db stores with an empty
-        // imsi. Those aren't a "UE" and were inflating the active count
-        // (e.g. dashboard showing 2G "2/1").
-        `SELECT ${MEAS_ROW_COLUMNS} FROM path_loss p ` +
-        `INNER JOIN (SELECT imsi, MAX(id) AS max_id FROM path_loss WHERE imsi IS NOT NULL AND imsi != '' GROUP BY imsi) latest ` +
-        `ON p.imsi = latest.imsi AND p.id = latest.max_id ORDER BY p.imsi;`,
-      ]);
-      const rows = stdout.split('\n').map(l => l.trim()).filter(Boolean).map(parseMeasRow);
-      const allSubs = await subscriberRepo.findAllFull();
-      const byImsi = new Map(allSubs.map(s => [s.imsi, s]));
-      // Live "which UE is on which BTS right now" — best-effort, doesn't
-      // fail the whole request if the VTY is briefly unreachable.
-      let btsByImsi = new Map<string, number>();
-      try {
-        const lchanRaw = await bscVtyCommand('show lchan');
-        btsByImsi = new Map(parseActiveLchans(lchanRaw).map(x => [x.imsi, x.bts]));
-      } catch { /* VTY unreachable — every sample just gets bts: null */ }
-      const samples = rows.map(r => {
-        const sub = byImsi.get(r.imsi);
-        return {
-          ...r,
-          nickname: sub?.nickname ?? null,
-          msisdn: sub?.msisdn?.[0] ?? null,
-          bts: btsByImsi.has(r.imsi) ? btsByImsi.get(r.imsi)! : null,
-        };
-      });
-      res.json({ success: true, samples });
-    } catch {
-      // meas.db doesn't exist yet (module not configured, or no real UE has
-      // triggered a measurement report yet) — same as HLR's own
-      // "DB doesn't exist yet" handling elsewhere in this file.
-      res.json({ success: true, samples: [] });
-    }
+    res.json({ success: true, samples: getCachedGsmSignalSamples() });
   });
 
   // GET /api/gsm/signal/history?imsi=... — time series for one subscriber's
@@ -2192,9 +2701,19 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     const user = (req as any).user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
-      for (const svc of lifecycleServices(state)) await nsenter('systemctl', ['start', svc]);
+      // `enable --now`, not plain `start`. Nothing in this module ever enabled
+      // these units, so they only ran until the next reboot — and the 2G/3G
+      // stack's apparent boot survival was entirely accidental: osmo-hnbgw and
+      // osmo-sip-connector happen to be enabled and pull osmo-stp/osmo-msc/
+      // osmo-bsc/osmo-mgw in as dependencies. osmo-sgsn/osmo-ggsn are in
+      // nobody's dependency chain, so GPRS/EDGE silently stayed down after the
+      // 2026-10-06 reboot while this module's own state still said
+      // gprsEnabled: true — confirmed live, with no journal entries at all for
+      // either unit. Enabling makes boot survival explicit and not dependent on
+      // whether some other optional module happens to be installed.
+      for (const svc of lifecycleServices(state)) await nsenter('systemctl', ['enable', '--now', svc]);
       await reapplyBtsLocks(state);
-      await auditLogger.log({ action: 'gsm_start', user, details: 'gsm services started', success: true });
+      await auditLogger.log({ action: 'gsm_start', user, details: 'gsm services started + enabled at boot', success: true });
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ success: false, error: String(err) });
@@ -2203,8 +2722,11 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      for (const svc of lifecycleServices(loadGsmState()).reverse()) await nsenter('systemctl', ['stop', svc]);
-      await auditLogger.log({ action: 'gsm_stop', user, details: 'gsm services stopped', success: true });
+      // `disable --now` is the counterpart to /start's `enable --now`: a plain
+      // `stop` against an enabled unit would come straight back on the next
+      // reboot, so "stopped" would silently not mean stopped.
+      for (const svc of lifecycleServices(loadGsmState()).reverse()) await nsenter('systemctl', ['disable', '--now', svc]);
+      await auditLogger.log({ action: 'gsm_stop', user, details: 'gsm services stopped + disabled at boot', success: true });
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ success: false, error: String(err) });

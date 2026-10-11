@@ -73,6 +73,17 @@ export interface SasConfig {
   // Multi-band support
   frequencyBands:           SasFrequencyBand[];
   updatedAt:                Date;
+  // Real, 2026-09-24 finding: the grant keeper (sas-service.ts's
+  // runGrantKeeper()) used to renew ANY stale-looking grant forever with no
+  // ceiling — confirmed live on production keeping two real Nokia CBSDs
+  // "AUTHORIZED" for 15-28 days with zero actual protocol contact. Optional
+  // (not required) since existing 'sas_config' Mongo documents predate this
+  // field — getConfig() returns the raw document with no default-merging,
+  // so a missing value must be handled by the READER (?? 168), not assumed
+  // present. Already editable via the existing generic PUT /admin/config
+  // route (updateConfig() accepts any partial SasConfig field, no
+  // allowlist) — no new UI wiring needed to tune it operator-side.
+  grantKeeperMaxStaleHours?: number;
 }
 
 // ─── Custom slot for interference-group band policy ───────────────────────────
@@ -90,6 +101,18 @@ export interface GroupBandPolicy {
   // Optional custom slots — if set, returned verbatim instead of auto-slicing.
   // Empty array = give the FULL band to every CBSD in the group (no slicing).
   customSlots?: GroupBandSlot[];
+  // Operator-selectable per-group toggle (generalized 2026-09-28 from a
+  // hardcoded single-radio fix — see spectrumInquiry()'s own comment for
+  // the full story) for radios whose SAS client tiles a full-band scan
+  // into many narrow (e.g. 10MHz) inquiredSpectrum entries instead of
+  // asking for one specific channel width: skips out-of-band entries
+  // rather than redirecting them (which can produce invalid/inverted
+  // ranges for a large entry count), and combines every in-band entry
+  // into a single spanning availableChannel instead of echoing back
+  // several adjacent narrow ones. Off by default — every already-working
+  // vendor (Sercomm CA, Baicells wide-scan) depends on the existing
+  // per-entry echo behavior and must not have this enabled.
+  combineChannels?: boolean;
   updatedAt:    Date;
 }
 

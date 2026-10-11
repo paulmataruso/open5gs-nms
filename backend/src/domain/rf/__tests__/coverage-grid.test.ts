@@ -32,6 +32,18 @@ describe('coverage-grid', () => {
     }
   });
 
+  // Real, 2026-09-24 finding: unlike resolution (which only trades away
+  // precision over the SAME requested area), a radius far beyond any real
+  // single-site LTE/CBRS use case changes what area is actually being
+  // analyzed and can run long enough to hit nginx's default 120s
+  // proxy_read_timeout — so this is a hard rejection, not a silent clamp.
+  test('radius beyond MAX_RADIUS_M is rejected outright, not clamped', async () => {
+    const res = await calculateCoverageGrid({ ...baseInput, radiusM: 500_000 });
+    expect(res.ok).toBe(false);
+    expect(res.error?.reason).toMatch(/radiusM/);
+    expect(res.error?.availableInputs?.radiusM).toBe(500_000);
+  });
+
   test('a cell near boresight is predicted stronger than the same physical point when the antenna points away from it', async () => {
     const pointingAtIt = await calculateCoverageGrid({ ...baseInput, azimuthDeg: 0 });
     const pointingAwayFromIt = await calculateCoverageGrid({ ...baseInput, azimuthDeg: 180 });

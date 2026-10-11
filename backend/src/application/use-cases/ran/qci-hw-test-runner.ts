@@ -30,10 +30,38 @@ export const QCI_HW_TEST_CSHIM_DIR = `${QCI_HW_TEST_DIR}/cshim`;
 // The one real portability caveat of this whole feature: it needs Open5GS's
 // own compiled S1AP ASN.1 codec (headers + .so files), which only exist on a
 // host where Open5GS was built from source with its dev artifacts still
-// present — not a packaged/stripped install. Overridable via env var for a
-// deployment where that tree lives somewhere else; defaults to where it's
-// confirmed present on this project's own dev host.
-export const OPEN5GS_SRC_DIR = process.env.OPEN5GS_SRC_DIR || '/home/paulmataruso/open5gs';
+// present — not a packaged/stripped install.
+//
+// `OPEN5GS_SRC_DIR` wins if set. Otherwise the tree is located by probing the
+// places it plausibly lives, newest-first by likelihood, instead of hardcoding
+// one. The previous default was a literal developer home directory
+// (`/home/paulmataruso/open5gs`), which no other host would ever have — this
+// feature was unusable anywhere else without knowing to set an env var nobody
+// documents outside these two files' own error strings. That path is kept last
+// in the list so this deployment keeps working unchanged.
+const OPEN5GS_SRC_CANDIDATES = [
+  '/opt/open5gs',
+  '/usr/local/src/open5gs',
+  '/usr/src/open5gs',
+  '/root/open5gs',
+  '/home/paulmataruso/open5gs',
+];
+
+// Probed once: a source tree does not move while this process runs, and both
+// consumers call through here on every request.
+function detectOpen5gsSrcDir(): string {
+  for (const dir of OPEN5GS_SRC_CANDIDATES) {
+    // Same marker isOpen5gsSrcTreeAvailable() checks — a built tree, not just
+    // a directory that happens to exist.
+    if (fs.existsSync(`${HOST_ROOT}${dir}/build/lib/s1ap/libogss1ap.so`)) return dir;
+  }
+  // Nothing found: return the first candidate so the error messages downstream
+  // name a concrete path, and so a later build into a standard location is
+  // picked up on the next process start.
+  return OPEN5GS_SRC_CANDIDATES[0];
+}
+
+export const OPEN5GS_SRC_DIR = process.env.OPEN5GS_SRC_DIR || detectOpen5gsSrcDir();
 
 // nfqueue/v2's own go.mod requires this — confirmed live during the original
 // qciprobe build (go get auto-upgraded from 1.22.2 to 1.24.0).

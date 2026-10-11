@@ -160,7 +160,16 @@ export async function installTwamp(write: (s: string) => void): Promise<{ succes
         `export GOMODCACHE=${TWAMP_DIR}/.gomodcache\n` +
         `cd ${TWAMP_DIR}\n` +
         `[ -f go.mod ] || go mod init twamp-client\n` +
-        `go get github.com/ncode/twamp@latest\n` +
+        // Pinned, not @latest. This project PATCHES this library's vendored
+        // source (patch-bind-ip.py — the public API has no bind-IP option), and
+        // that patch is located by matching exact source text. On @latest, an
+        // upstream change silently makes two installs weeks apart produce
+        // different binaries, and eventually breaks the install outright. It
+        // does at least fail LOUDLY today (the patch script exits 1 on a
+        // no-match and the script runs under `set -e`), so this is a
+        // reproducibility fix rather than a silent-corruption one. This is the
+        // exact pseudo-version this deployment has vendored and built against.
+        `go get github.com/ncode/twamp@v0.0.0-20260210183209-0bd8d3125e13\n` +
         // go get alone only records the direct dependency's go.sum entry —
         // confirmed live: a bare `go build` right after it fails with
         // "missing go.sum entry" for ncode/twamp's own transitive deps
@@ -319,6 +328,7 @@ export function createTwampRouter(
   twampMonitor: TwampMonitor,
   logger: pino.Logger,
   auditLogger: IAuditLogger,
+  removeTargetMetrics: (target: string) => void,
 ): Router {
   const router = Router();
   const col = () => db.collection<TwampTargetDoc>(TWAMP_TARGETS_COLLECTION);
@@ -450,7 +460,23 @@ export function createTwampRouter(
     if (pollIntervalSeconds !== undefined) update.pollIntervalSeconds = pollIntervalSeconds;
     if (enabled !== undefined) update.enabled = enabled;
     try {
+      // Fetch the CURRENT (pre-update) name before applying the update — if this
+      // request disables the target, that's the name its metrics/monitor state is
+      // actually tracked under right now, regardless of whether this same request
+      // also renames it.
+      const before = enabled === false ? await col().findOne({ _id: id }) : null;
       await col().updateOne({ _id: id }, { $set: update });
+      // Real, confirmed-live 2026-09-29 finding (full-session wiring audit): disabling
+      // a target (as opposed to deleting it) never called forgetTarget()/
+      // removeTargetMetrics() — TwampMonitor.tick() only ever iterates enabled
+      // targets, so a disabled one's 9 gauges (including "Up"=1) kept reporting
+      // their last-known values forever instead of a gap, the same bug the DELETE
+      // route below was already fixed for. Re-enabling needs no symmetric action —
+      // tick() picks an enabled target back up on its own next cycle.
+      if (enabled === false && before) {
+        twampMonitor.forgetTarget(String(id));
+        removeTargetMetrics(before.name);
+      }
       await auditLogger.log({ action: 'twamp_target_update', user, details: `id=${req.params.id}`, success: true });
       res.json({ success: true });
     } catch (err) {
@@ -464,7 +490,17 @@ export function createTwampRouter(
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'Invalid id' }); }
     try {
+      const target = await col().findOne({ _id: id });
       await col().deleteOne({ _id: id });
+      // Both calls below are needed, not just one — see TwampMonitor.
+      // forgetTarget()'s and TwampMetrics.removeTargetSeries()'s own
+      // comments: the monitor's in-memory cache never self-prunes a
+      // deleted target, and a Prometheus Gauge never self-clears a label
+      // combination collect() stops visiting — without both, this
+      // target's last-known metric values (e.g. a healthy RTT reading)
+      // would stay frozen in Grafana forever instead of disappearing.
+      twampMonitor.forgetTarget(String(id));
+      if (target) removeTargetMetrics(target.name);
       await auditLogger.log({ action: 'twamp_target_delete', user, details: `id=${req.params.id}`, success: true });
       res.json({ success: true });
     } catch (err) {

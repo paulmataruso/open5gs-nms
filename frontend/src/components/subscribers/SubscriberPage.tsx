@@ -1980,7 +1980,13 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
     setAssigningPlan(true);
     try {
       const result = await chargingPlansApi.assign(planId, [sub.imsi]);
-      if (result.success) {
+      if (result.success && result.conflicted) {
+        // Real, 2026-09-24 finding: a conflicted assignment still reports
+        // HTTP success (it's a deliberate skip, not an error) — the old
+        // unconditional "Assigned" toast here was misleading, since nothing
+        // was actually assigned.
+        toast.error(`Not assigned — this subscriber has a real balance on a different OCS product (likely managed directly via OCS's own admin GUI). Review manually.`);
+      } else if (result.success) {
         toast.success(`Assigned to "${plans?.find(p => p._id === planId)?.name}"`);
         onPlanChanged?.();
       } else {
@@ -3336,7 +3342,21 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                     clearSelection();
                     close();
                     if (result.success) {
-                      toast.success(`Assigned to "${p.name}"${result.failed ? ` (${result.failed} failed)` : ''}`);
+                      const suffixes = [
+                        result.failed ? `${result.failed} failed` : null,
+                        result.conflicted ? `${result.conflicted} skipped — real balance on a different OCS product` : null,
+                      ].filter(Boolean);
+                      // Real, 2026-09-24 finding (adversarial critic pass):
+                      // this used to always show a green success toast even
+                      // when EVERY selected subscriber conflicted/failed and
+                      // zero were actually assigned — the zero-progress
+                      // outcome was buried in a parenthetical suffix on an
+                      // otherwise-celebratory message.
+                      if (!result.assigned) {
+                        toast.error(`Nothing assigned to "${p.name}"${suffixes.length ? ` (${suffixes.join(', ')})` : ''}`);
+                      } else {
+                        toast.success(`Assigned to "${p.name}"${suffixes.length ? ` (${suffixes.join(', ')})` : ''}`);
+                      }
                     } else {
                       toast.error(result.error || 'Assign failed');
                     }
@@ -3608,8 +3628,13 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                                 const result = await chargingPlansApi.assign(p._id, [sub.imsi]);
                                 await fetchPlans();
                                 close();
-                                if (result.success) toast.success(`Assigned "${sub.imsi}" to "${p.name}"`);
-                                else toast.error(result.error || 'Assign failed');
+                                if (result.success && result.conflicted) {
+                                  toast.error(`Not assigned — "${sub.imsi}" has a real balance on a different OCS product. Review manually.`);
+                                } else if (result.success) {
+                                  toast.success(`Assigned "${sub.imsi}" to "${p.name}"`);
+                                } else {
+                                  toast.error(result.error || 'Assign failed');
+                                }
                               }}
                               className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-nms-surface-2 text-left whitespace-nowrap"
                             >

@@ -64,8 +64,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    VoWiFi, and the DNS/FQDN Migration Wizard all use the same single BIND9 instance for
    different zones. As of 2026-07-17: `bind-controller.ts` (the DNS/BIND9 page) is the
    sole owner of `named.conf.options` (forwarders, listen-on) — it exposes safe,
-   targeted-upsert functions (`readForwarders`/`writeForwarders`,
-   `readListenOn`/`writeListenOn`, both exported) that other modules import and merge
+   targeted-upsert functions (`readListenOn`/`writeListenOn` are exported; **correction 2026-10-10**: `readForwarders`/`writeForwarders` are module-PRIVATE, not exported as an earlier version of this entry claimed) that other modules import and merge
    into, rather than writing their own copy of the whole file. **If you're adding a new
    module that needs BIND to listen on a specific IP, import `writeListenOn` from
    `bind-controller.ts` and merge your IP in — do not write `named.conf.options`
@@ -118,6 +117,180 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    so it doesn't hit the trigger. If you ever do touch `frr.conf`
    programmatically for a network statement, use the live `vtysh` method,
    never a full `systemctl restart frr`.
+   **Confirmed live (2026-09-24), a genuinely different failure mode from the
+   crash above — the crash-guard patch has a real gap, not just "stops every
+   recurrence":** the patch correctly prevents the frr#943 assertion crash
+   (`eigrp_fsm_event_nq_fcn()`, logged as `Non-Query event for prefix ...
+   with no feasible successor — skipping active transition instead of
+   asserting (frr#943 crash-guard)`), but doesn't clean up the successor
+   entry it skipped past — eigrpd kept running with a corrupted topology
+   entry for two real prefixes (`10.0.2.0/24`, the CBRS radio network, and
+   `172.16.1.0/24`), silently substituting a garbage next-hop IP that
+   **changed on every recompute** (`32.75.128.75` → `128.42.216.139` →
+   `0.0.0.0` across three separate checks) instead of a static leftover
+   value — not cosmetic, not just log noise. Root trigger: the `router
+   eigrp 1` config had `network 192.168.253.0/30` when the real interface
+   subnet is a `/24` — a declared-mask-narrower-than-real-mask mismatch that
+   happened to still cover this host's, the real neighbor's, and (that day)
+   a second/unexpected peer's addresses (all four coincidentally fell inside
+   `.0`–`.3`), and something about that mismatch combined with the second
+   peer sending unrecognized data (`Unknown TLV type: 0x0103`, repeated) is
+   what pushed eigrpd into the crash-guard's skip path in the first place.
+   **Real, confirmed impact — not hypothetical**: the corrupted successor
+   got installed into the *kernel* as a genuine ECMP multipath
+   nexthop group (`ip route show <prefix>` showed `nhid <N>` with two
+   members, one `nexthop via <real-neighbor> dev ens20 weight 1`, the other
+   just `nexthop dev ens20 weight 1` — no `via` address at all, meaning the
+   kernel treated it as on-link). Per-flow ECMP hashing meant *some*
+   destinations in the affected prefix resolved correctly and others
+   silently blackholed (confirmed live: a real attached radio's IP resolved
+   via `ip route get` as on-link with no gateway, and sat `INCOMPLETE` in
+   the ARP table since the kernel kept trying to ARP for it directly on a
+   segment it was never actually on) — a live, partial RAN outage, not a
+   theoretical one. **Detection signature**: `show ip eigrp topology`
+   listing 2+ successors for a prefix where one next-hop is an
+   undocumented/unrecognized IP (or `0.0.0.0`) that changes value across
+   repeated checks, corroborated by `ip route show <prefix>` showing a
+   multipath nexthop group with a `via`-less member. **What did NOT fix
+   it**: the documented-safe incremental `vtysh` method above (`no network
+   .../30` + `network .../24`, no adjacency reset) — applying it while the
+   topology was already corrupted didn't clear the bad entry and actively
+   spread the corruption to the previously-good one (the real neighbor's
+   own successor entry became `0.0.0.0` too right after). **What fixed it,
+   confirmed live**: a full `systemctl restart frr` — it came back with a
+   completely clean, single-successor topology for both prefixes, and did
+   **not** crash (same crash-guard-patched binary, unchanged by the
+   restart). This is a real, deliberate exception to "never restart" above,
+   not a contradiction of it: that guidance is about avoiding a resync-
+   triggered crash on an otherwise-healthy neighbor while making a routine
+   config change; this was recovering from a topology *already* corrupted
+   beyond what an incremental change could repair, where restarting is the
+   only known-working remedy and the crash-guard patch makes it safe to try.
+   **Takeaways for next time**: (1) always verify a `network` statement's
+   declared mask actually matches the interface's real configured mask —
+   don't assume a narrower mask that still happens to cover the known
+   peers is harmless; (2) if you see the detection signature above, don't
+   waste time on incremental `vtysh` fixes — go straight to `systemctl
+   restart frr` and verify the crash-guard patch is still the binary that
+   comes back up (`strings /usr/lib/frr/eigrpd | grep -F "frr#943
+   crash-guard"`, the same check `backup-restart-usecase.ts`'s
+   `checkFrrCrashGuard()` already automates).
+   **Recurred again, confirmed live 2026-09-25, wider blast radius than
+   either prior occurrence**: this time 15+ prefixes showed the 3-successor
+   corruption simultaneously (not just 1-2), with garbage next-hops
+   `5.0.0.0`/`33.0.0.0` (yet another pair of values, confirming the exact
+   garbage IP is not diagnostic — only the detection *signature* is:
+   `show ip eigrp topology` showing 2+ successors where one next-hop is
+   undocumented/changing, corroborated by `ip route show <prefix>` showing
+   a `via`-less kernel nexthop group member). **Directly, operationally
+   relevant to the TWAMP module**: `10.0.2.0/24` — the exact prefix holding
+   this deployment's real TWAMP-monitored radio targets — was one of the
+   corrupted prefixes, meaning per-flow ECMP hashing was actively
+   blackholing some fraction of TWAMP's own probe traffic to those
+   radios, a real, concrete example of this bug degrading a *different*
+   feature's own data quality, not just a generic "some routes are wrong"
+   abstraction. Fixed the same way, `systemctl restart frr` — pre-checked
+   the crash-guard patch was still present, confirmed the restart itself
+   was a clean signal-triggered stop/start (verified via `journalctl -u
+   frr`, not just "it came back up") with a single normal neighbor-adjacency
+   resync, not a crash, and confirmed the kernel route for `10.0.2.0/24`
+   went back to a single unambiguous nexthop afterward. Root trigger for
+   *this* occurrence not separately root-caused (the fix is the same
+   either way) — if this keeps recurring, the recurring trigger itself
+   (not just the mitigation) may be worth properly root-causing.
+   **Recurred a 4th time, confirmed live 2026-09-30**: user reported real,
+   live LTE/5G outage; confirmed core NFs/Kamailio all still `active`
+   (ruling out an NF crash) before acting, and per the user's own explicit,
+   repeated, urgent instruction (they had already diagnosed it as FRR)
+   restarted it immediately. Same detection signature and same fix as
+   every prior recurrence: `journalctl -u frr` showed the same `Unknown
+   TLV type: 0x0103` pattern followed by a single clean
+   `Neighbor(192.168.253.1) adjacency became full` (no crash — confirmed
+   the crash-guard patch string was still present in the binary that came
+   back up), `show ip eigrp neighbors` showed exactly the one real
+   neighbor, `show ip eigrp topology` showed every prefix back to "1
+   successors" including `10.0.2.0/24`/`172.16.0.0/24`, and `ip route
+   show 10.0.2.0/24` confirmed a single clean kernel nexthop. User
+   confirmed LTE/5G restored immediately after. **This is now a real,
+   recurring pattern (4 confirmed occurrences) with a consistent, reliable
+   fix but no confirmed root cause of the recurring TRIGGER itself** — if
+   this keeps happening, the underlying cause (not just this mitigation)
+   genuinely warrants dedicated investigation rather than continuing to
+   treat each occurrence as independent.
+   **Recurred a 5th time minutes later, same session, 2026-09-30** — same
+   user-reported outage pattern, same explicit "restart it now" + "keep
+   watch on it" instruction, same fix, same clean recovery signature.
+   Given a second recurrence within the SAME short window, `systemctl
+   is-active frr` was then checked proactively (not just reactively) after
+   every subsequent host-affecting action for the rest of that session —
+   stayed `active` throughout roughly 90 minutes and ~40 checks covering a
+   live Kamailio module swap + restart, 3 backend container rebuilds, and
+   a live-API testing pass exercising real actions across every module —
+   no 6th recurrence during that window, so nothing else that session
+   independently triggered it.
+   **A real, concrete root-cause LEAD surfaced the same session, still not
+   acted on** (found by a read-only live-API testing pass, independently
+   re-confirmed directly against the real running config): `show running-
+   config`'s `router eigrp 1` block currently declares `network
+   192.168.253.0/24`, but the real transit interface (`ens20`) is
+   configured `192.168.253.2/30` — a genuine declared-mask-wider-than-
+   real-mask mismatch, the same general class of root trigger as the
+   2026-09-25 occurrence documented above (which had the mismatch in the
+   OPPOSITE direction — declared narrower, `/30`, when the real interface
+   was a `/24`). Confirmed independently via `vtysh -c "show running-
+   config"` and `ip -4 addr show ens20` directly, not just trusted from
+   the agent that first noticed it. **Deliberately NOT acted on** —
+   editing an EIGRP `network` statement is exactly the class of change
+   this same pattern's own guidance above says requires a manual,
+   deliberate operator step (never auto-edited), and this was found
+   mid-incident by an agent whose actual task was live-API testing, not
+   FRR remediation. If this comes up again: this specific mismatch (declared
+   `/24` vs real `/30` on the `192.168.253.0` transit network) is a
+   real, standing candidate worth checking/correcting deliberately via the
+   documented safe `vtysh` incremental method (not a blind `systemctl
+   restart`) — `no network 192.168.253.0/24` + `network 192.168.253.0/30`
+   under `router eigrp 1`, then `write memory` — the NEXT time the
+   topology is confirmed clean (not mid-corruption; recall the
+   2026-09-25 entry's own finding that the safe incremental method
+   actively spread corruption when applied to an ALREADY-corrupted
+   topology, so only attempt this right after a confirmed-clean state,
+   e.g. immediately following one of these `systemctl restart frr`
+   recoveries).
+   **DONE — applied and verified live 2026-10-07, on explicit user
+   instruction. This mask mismatch is no longer open; do not "fix" it
+   again.** `router eigrp 1` now declares `network 192.168.253.0/30`,
+   matching `ens20`'s real `192.168.253.2/30`, persisted to
+   `/etc/frr/frr.conf`. Pre-flight (all four confirmed before touching
+   anything): crash-guard patch still present in the running
+   `/usr/lib/frr/eigrpd`; topology clean (0 prefixes with anything other
+   than "1 successors", 29 prefixes total); exactly one real neighbor
+   (`192.168.253.1`); and — worth knowing for next time — `show ip eigrp
+   neighbors` reports `Uptime`/`SRTT` as `0` and `RTO` as `2`
+   permanently. Those are unimplemented display fields in FRR's eigrpd,
+   **not** a flapping adjacency; confirmed by `journalctl -u frr` being
+   essentially silent (1 line in 45 minutes, zero adjacency events).
+   Don't misread those zeros as churn and abort the change.
+   **Deliberate deviation from the order written above**: applied
+   `network .../30` FIRST, then `no network .../24`, so `ens20` was
+   never momentarily uncovered by any `network` statement. Doing the
+   removal first risks pulling the interface out of the EIGRP process
+   and forcing a re-add, which is a fresh neighbor resync — precisely
+   the documented frr#943 crash trigger. Adding is the proven-safe
+   operation per this same pattern, so front-load it. Use this order if
+   you ever correct another `network` statement on a transit interface
+   that carries the adjacency itself.
+   **Verification that it was non-disruptive** (the useful signal is the
+   neighbor's `Seq Num`): it read `31` both immediately before and
+   immediately after the change, proving the adjacency was never torn
+   down or resynced; `systemctl show frr -p ActiveEnterTimestamp` was
+   unchanged (no restart); `ip route show` was **byte-identical**
+   before and after (zero kernel route changes); topology stayed clean
+   at the same 29 prefixes; `10.0.2.0/24` kept its single clean nexthop
+   (same `nhid`); and all 14 established radio SCTP connections
+   survived. Whether this actually stops the recurrence is of course
+   not provable yet — it removes a confirmed, real misconfiguration of
+   the same class as the 2026-09-25 trigger, but a 6th recurrence would
+   mean the trigger lies elsewhere.
 
 8. **MME hostname vs IP behavior** (4G-side version of gotcha #6): Open5GS MME also
    calls `getaddrinfo()` synchronously during config parse for SGs-AP peer addresses —
@@ -170,8 +343,19 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     speak Diameter Rx to PCRF (`ims_qos`/`cdp`/`cdp_avp` Kamailio modules, gated by
     `#!define WITH_RX` in `pcscfIncludeCfg()`'s generated `pcscf.cfg` — confirmed
     live 2026-07-26 this was fully built in a prior session but left disabled by one
-    commented-out line). `pcscfDiameterXml()` deliberately has NO `<Peer>` element for
-    PCRF (accept-only — P-CSCF and PCRF both trying to actively connect to each other
+    commented-out line). **Correction, 2026-10-10**: an earlier version of this entry said
+    `pcscfDiameterXml()` deliberately has NO `<Peer>` element for PCRF
+    (accept-only). That is **false** — it unconditionally emits
+    `<Peer FQDN="${p.pcrfFqdn}" port="${p.pcrfPort}"/>` plus a matching
+    `<DefaultRoute>`, and the live `pcscf.xml` has it. Do NOT delete it: the
+    code's own adjacent comment explains `<Peer>` is what drives CER/CEA and
+    that cdp's config parser silently ignores `<ConnectPeer>`, so removing it
+    breaks the Rx interface — and it would also take P-CSCF's cdp `peers`
+    count to 0, which is the condition that makes the lost `cdp.so`
+    process-slot patch bite (see TODO.md). The element is labelled
+    `EXPERIMENT 2026-08-01` in the source with no recorded conclusion; treat
+    the live, working config as the authority. (Original text, for history:
+    `pcscfDiameterXml()` has no `<Peer>` element for PCRF (accept-only — P-CSCF and PCRF both trying to actively connect to each other
     causes a real, confirmed connect/disconnect flap that starves all INVITE
     processing). `upsertPcrfPcscfPeer()` cleans up stale `ConnectPeer` entries from
     old PLMNs on every Configure run — don't remove that cleanup, stale entries
@@ -270,12 +454,35 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     `POST /extensions` handler, so two operators running both modules with no
     intention of ever bridging them can still reuse the same short code
     freely on each side. Real transcoding requirement (first time this
-    project transcodes real call audio, not just relays it): the new trunk
-    endpoints allow both codec families (`gsm,amrwb,amr` on PSTN's side,
-    `amrwb,amr,gsm` on Asterisk-2G's side — codec ORDER matters, each lists
-    its own downstream leg's native codec first to bias negotiation toward
-    exactly one transcode hop instead of risking two), `direct_media=no` is a
-    hard functional requirement here (not just inherited B2BUA hardening
+    project transcodes real call audio, not just relays it): the two new
+    trunk endpoints (`asterisk2g_trunk` on PSTN's side, `pstn_trunk` on
+    Asterisk-2G's side — the two ends of the same physical inter-Asterisk
+    trunk) are **hard-restricted to `allow=gsm` only, nothing else**.
+    **Real bug, confirmed live 2026-09-26, corrected from this pattern's own
+    original text**: both endpoints originally also allowed `amrwb`/`amr`,
+    on the theory that listing each endpoint's own native codec FIRST in
+    `allow=` would bias negotiation toward exactly one transcode hop without
+    hard-blocking the other codec. That bias never worked — both endpoints'
+    effective `codec_prefs_outgoing_offer` (one explicit, on `asterisk2g_
+    trunk`; one Asterisk's own default, on `pstn_trunk`) resolves the offered
+    codec from what's *pending* on the OTHER leg or this endpoint's
+    *configured* order, in a way that ends up narrowing to AMR in one
+    direction and to AMR-first in the other — completely bypassing the
+    intended gsm-biasing order in both cases. Net effect: raw AMR could reach
+    Asterisk-2G's own GSM-only `sipconn` leg unconverted, producing one-way
+    audio (confirmed via packet capture: identical SSRC/payload type on both
+    sides of what should have been a real transcode boundary). A codec
+    absent from `allow=` can never appear in an offer or answer for that
+    endpoint no matter what `codec_prefs_outgoing_offer` says, so restricting
+    both ends of this trunk to `gsm` only forecloses the entire bug class —
+    the AMR↔GSM transcode is now always forced onto PSTN Gateway's own
+    Asterisk (`asterisk2g_trunk`↔`scscf_trunk`), never left ambiguous. If you
+    ever add another codec-family boundary between two B2BUA legs, don't
+    rely on `allow=` order as a soft bias — either hard-restrict one side to
+    the single codec its real downstream requires, or verify the actual
+    negotiated codec on the wire, not just what the config file implies.
+    `direct_media=no` is a hard functional requirement here (not just
+    inherited B2BUA hardening
     habit — Asterisk must stay in the RTP path on both legs for transcoding
     to happen at all), and both new endpoints carry `rtp_keepalive=5` from
     day one (the no-audio bug fixed live 2026-09-14, see the PSTN/Asterisk-2G
@@ -297,6 +504,20 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     full arc — if a 2G TCH-assignment failure ever resurfaces, check
     `show bts 0`'s live `Features:` list against `codec-support`/
     `amr-config` before assuming it's hardware again.
+    **Real bug, confirmed live 2026-09-26 — full-MSISDN cross-RAN dialing
+    never actually worked**: `extensions2gConf()`'s `subscriberMsisdnBlocks`
+    (Asterisk-2G's own exact-match-per-subscriber-MSISDN block, built in
+    `regenerateExtensions2g()`) was generated from EVERY subscriber
+    returned by `findAllFull()`, not just ones actually reachable via
+    `sipconn`/osmo-msc. A 4G/5G-only subscriber's MSISDN got the same
+    exact-match block as a real 2G subscriber, shadowing the `_X.`→
+    `pstn_trunk` catch-all below it — dialing that MSISDN from the 2G side
+    re-tried it through `sipconn` instead, and osmo-msc correctly rejected
+    it as an unknown subscriber ("far end did not ring" / "call can't be
+    connected", confirmed live against real test calls). Fixed by filtering
+    to `s.gsmEnabled` before building this block — a real 2G subscriber's
+    own MSISDN still routes via `sipconn` exactly as before, and everyone
+    else now correctly falls through to `pstn_trunk`.
 
 17. **SigScale OCS (Diameter Gy charging): `smf.conf` now has THREE
     independently-owned `ConnectPeer` lines — Gx (Open5GS core, untouched by any
@@ -357,10 +578,15 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     `ConnectTo` takes an IP directly and never needed this, so SMF's own Gy
     peer never surfaced it. If you add a `<Peer>` whose FQDN isn't already
     covered by this file's own IMS BIND zone, add an `/etc/hosts` entry for
-    it too (`upsertOcsHostsEntry()` in `ims-controller.ts` is the reusable
-    pattern — mirrors the pre-existing HSS peer's own `/etc/hosts` line,
-    `configureIms()` step 9) or cdp fails with a real, reproduced "Name or
-    service not known". (2) **cdp does not bind its outbound Diameter
+    it too, or cdp fails with a real, reproduced "Name or service not known".
+    **Correction 2026-10-10**: an earlier version of this entry named
+    `upsertOcsHostsEntry()` as the reusable pattern for that. No such
+    function exists anywhere in the repo. The real mechanism is
+    `upsertOcsDnsRecord()` (`ims-controller.ts`), which writes a BIND **zone
+    record**, not an `/etc/hosts` line — and the stray OCS line actually
+    present in `/etc/hosts` is a dead leftover from a superseded draft. Use
+    `upsertOcsDnsRecord()`; the pre-existing HSS peer's own `/etc/hosts`
+    line (`configureIms()` step 9) is the older idiom. (2) **cdp does not bind its outbound Diameter
     connection to the peer's own configured listen address — freeDiameter
     does.** Registering S-CSCF's real configured IP (`scscfIp`, e.g.
     `127.0.1.2`) as OCS's trusted client produced a real, reproduced
@@ -390,8 +616,14 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     (`command(0x106) never arrived for leg(...)`). Widened to 15s for just
     that call site via a new `start_cmd_timer_t()` helper (every other
     caller — RTP_CREATE, REL_CNF, REL_IND — stays at the original 5s);
-    baked into `osmo-sip-connector-build.ts` (`BUILD_REV` 2,
-    `SIPCONN_SETUP_COMPL_TIMEOUT_PATCH`) so a reinstall picks it up too.
+    baked into `osmo-sip-connector-build.ts` (`SIPCONN_SETUP_COMPL_TIMEOUT_
+    PATCH`) so a reinstall picks it up too. **Widened again to 30s
+    (`BUILD_REV` 3, 2026-09-26)** after a real 19-call mixed 2G/4G/5G/PSTN
+    test session reproduced this exact timer firing on 3 separate calls
+    even at 15s — still an explicit stopgap, not a confirmed root cause
+    (worth a fresh capture with Asterisk verbose logging enabled — both
+    instances' `asterisk.conf` now sets `verbose = 3` for this — before
+    widening a third time if 30s still isn't enough).
     (2) Asterisk-2G's `[2g-loopback]` dialplan (`extensions2gConf()` in
     `asterisk-2g-controller.ts`) never had a real path to an external PSTN
     number — its `_X.` catch-all was built only for "2G subscriber dials
@@ -427,7 +659,42 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     nanoBTS unit is one of the next steps under consideration as of this
     date.
 
-## Feature inventory (as of v2.0-beta_0.62, 2026-09-22)
+20. **`nsenter -p` forks internally before exec'ing the wrapped command —
+    a plain `execFile`/`spawn` + timeout only kills the tracked top PID and
+    orphans the real process.** This is unconditional on whether the
+    wrapped command itself forks: even a bare, non-forking binary
+    (`kamcmd`, `sleep`) ends up a grandchild of whatever Node process
+    started it, invisible to any timeout logic that only tracks the one
+    PID it spawned (documented util-linux behavior — a process cannot
+    `setns()` itself into a new PID namespace, only its future children
+    can; see `nsenter --help`'s own `-F, --no-fork` entry). Confirmed live
+    2026-09-25 chasing a real bug in `ocs-controller.ts`'s Erlang-RPC chain
+    (`runOcsEval` → `runuser` → `bash` → `erl`), then found to also be
+    `LocalHostExecutor.executeCommand()`'s own underlying mechanism — the
+    single most widely-used host-execution path in this codebase, with
+    `KamailioStatsMonitor` alone calling through it every 15s forever in
+    production, making it the highest-consequence caller found so far.
+    Fixed by `backend/src/infrastructure/system/safe-nsenter.ts`
+    (`safeNsenter()`): spawn `detached: true` so `nsenter` leads its own
+    process group and every descendant inherits that PGID, so a timeout or
+    stdout-overflow can `process.kill(-pid, 'SIGKILL')` the WHOLE group
+    instead of Node's single-PID default. `LocalHostExecutor` and
+    `ocs-controller.ts` are on this fixed path; `gsm-controller.ts` was
+    retrofitted 2026-09-29 after a full-session audit found 3 separate 15s
+    `setInterval` polling loops (VTY signal/traffic caches) still going
+    through a local, unfixed `nsenter()` helper with real timeout headroom
+    concerns. **Many other files still have their own local, unfixed
+    `execFileAsync('nsenter', ...)` + timeout helper** (grep for that exact
+    string) — most are one-shot request handlers or long detached build
+    scripts (frr/kamailio/rtpengine source-build, osmo-\* builds), which
+    only orphan on a rare, individual timeout, a much lower-consequence
+    shape than a forever-running poll loop. If you add a NEW `nsenter()`
+    caller that runs on any kind of recurring interval/loop, use
+    `safeNsenter` from the start rather than copying one of the still-local
+    per-file helpers — that's exactly the pattern that hid this bug for as
+    long as it went unnoticed.
+
+## Feature inventory (as of v2.0-beta_0.64, 2026-09-30)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -435,7 +702,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | SEPP (N32 roaming) | stable | `sepp-controller.ts`, `sepp-config.ts` | `SeppEditor.tsx` |
 | Framed Routing | stable | `subscriber-management.ts`, `ip-utils.ts` | `SubscriberPage.tsx` |
 | DNS/FQDN Migration Wizard | stable, actively used | `dns-migration-usecase.ts`, `dns-migration-controller.ts`, `bind-controller.ts` | `DnsMigrationPage.tsx`, `BindPage.tsx` |
-| IMS / VoLTE (PyHSS-based) | stable — real UE-to-UE calling with full audio confirmed working end-to-end over **direct IMS** on both real iPhone and Android hardware, PLMN 001-01, incl. dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface. Earlier notes in this project's history describing Android as broken (a direct-IMS PRACK-relay socket bug, plus separate Asterisk/PSTN-path issues) are stale — confirmed fixed | `ims-controller.ts` | `IMSPage.tsx` |
+| IMS / VoLTE (PyHSS-based) | stable — real UE-to-UE calling with full audio confirmed working end-to-end over **direct IMS** on both real iPhone and Android hardware, PLMN 001-01, incl. dedicated QCI=1 bearers via the P-CSCF↔PCRF Rx interface. Earlier notes in this project's history describing Android as broken (a direct-IMS PRACK-relay socket bug, plus separate Asterisk/PSTN-path issues) are stale — confirmed fixed. **4G↔5G cross-RAT calling (VoNR), opt-in** — requires the separate, opt-in Kamailio 5.8.8→6.0.8 source rebuild (`kamailio-source-build.ts`/`/api/kamailio/source-build/*`; SCP's N5/Npcf_PolicyAuthorization interface is genuinely HTTP/2-only, fixed via `http_client_request_v2pk()`, added in Kamailio 6.0) plus a PCF `qos_profiles` config entry (`qosVoNR` → 5QI=1, already default in `pcf.yaml`). `pcscfIncludeCfg()` only `#!define`s `WITH_N5` when `isKamailioHttp2Capable()` confirms Kamailio 6.0+ is actually running — **do not remove this gate**: `http_client_request_v2pk()` doesn't exist in stock 5.8.8 at all, and calling it is a fatal config-PARSE error (P-CSCF won't start), not a runtime failure — confirmed 2026-09-30 by literally reproducing it against a real 5.8.8 binary. On a 5.8.8-only deployment (the default — every fresh install, and any existing deployment that hasn't separately run the 6.0.8 build), VoNR/cross-RAT calling stays at its prior limitation (Rx fails for a 5G leg) while everything else including direct-IMS 4G-4G/5G-5G-same-generation calling is unaffected. The 6.0.8 build's own patching step now automatically reapplies `kamailio-ims-modules-build.ts`'s `CCR_C_PATCH`/`IMS_RO_C_PATCH`/`SAVE_C_PATCH`/`CMD_C_PATCH_KAMAILIO6`/`CDP_COMMON_C_PATCH`/`CDP_ACCTSM_C_PATCH`/`SECVERIFY_C_PATCH` (the `ims_charging`/`cdp`/`ims_ipsec_pcscf`/`ims_registrar_pcscf` AVP/behavioral fixes) every time it runs — no manual reapplication needed. **N5 AppSession-ID lifecycle (PATCH-if-exists/POST-if-new/DELETE-on-call-end) implemented 2026-10-02** in `mo.cfg`/`mt.cfg` via the pre-provisioned-but-previously-unused `mo_call_id_to_call_app_session_and_ue_ip_map`/`mt_...` htables. **CONFIRMED WORKING END-TO-END on a real device, 2026-10-03**: a real 4G→5G call (0004 calling the Pixel 7 on genuine standalone NR, phone's own "Voice Network Type: NR_SA" cross-checked and confirmed accurate — PCRF explicitly logged `No Gx Session found` for the 5G leg, ruling out any EPS-Fallback-to-LTE explanation) completed with a real `200 OK`, a live multi-second conversation, and a clean `BYE` — and the full AppSession lifecycle fired correctly: initial `POST` (HTTP 201, real AppSession ID), a mid-call `UPDATE` renegotiation correctly reusing it via `PATCH` (HTTP 200, same ID — confirmed NOT creating a duplicate), then `DELETE` at hangup. Ro/Gy billing (`cdp.so` fix below) also completed cleanly for the same call. **This is the first real, end-to-end, device-confirmed validation of this project's own N5/VoNR implementation with the full AppSession lifecycle actually exercised**, not just a signaling-level success. One small, benign, NOT-fully-root-caused loose end observed in this same call: at `BYE`, `MT_N5_CALL_PCF_POLICY_AUTH_DELETE` fired twice for the same Call-ID from two different worker processes (P-CSCF relays one in-dialog message through its own MO/MT route split, which can invoke the same per-leg cleanup route more than once per message) — the first found and deleted the real AppSession (PCF returned `405`, not `204`, a minor oddity also not yet explained), the second then correctly found nothing (`sht_rm()` already having removed the entry) but logged `AppSession 0` instead of the expected "No call AppSession found" text, meaning `$sht(...)` returned non-`$null` in that instant despite the key being gone — doesn't affect call correctness (the failure path is designed to be non-fatal either way) but is worth a closer look if seen again. **What's still genuinely unresolved: whether this same success holds in NR-ONLY (no LTE) radio mode** — the investigation that led here started from a real, reproducible failure (`480 Temporarily not available` on 4G→5G, and a device-side "no mobile network" error on a 5G UE dialing out) that was initially assumed to be mode-independent; it has NOT yet been re-tested specifically in NR-only mode since the N5 AppSession fix and a real, unrelated Ro/Gy `cdp.so` charging bug (also found and fixed the same session — see that gotcha below) were deployed. Do not assume either way until specifically re-tested. Full arc: memory `kamailio_6_source_build_progress.md` and `pyhss_diameter_hang_and_pixel_5g_rejection_open.md`; PROJECT_STATE.md Known Issues §12. | `ims-controller.ts`, `kamailio-source-build.ts` | `IMSPage.tsx` |
 | SMS | stable — **SMS over IMS is the default/primary path** (real phones prefer it whenever IMS-registered anyway; this is also the confirmed-working baseline). SMS over SGs (osmo-\*) is available as an opt-in, experimental alternative via a "SMS Delivery Mode" toggle on the SMS/MMS page (`POST /api/ims/sms-delivery-mode`) — selecting it hard-blocks SIP MESSAGE at S-CSCF (`#!ifdef BLOCK_IMS_SMS` in `kamailio_scscf.cfg`) so it can't silently fall through to peer-to-peer IMS delivery instead. Real two-UE SGs delivery has an open, unresolved bug (P-CSCF `ims_ipsec_pcscf` failing to relay a locally-generated reply back through the IPsec tunnel — see memory: sms-over-ims-vs-sgs-delivery-mode) — don't enable SGs mode without reading that first. Both `sms-controller.ts` and `ims-controller.ts` are involved; `configureIms()`/`/status` both default fresh deployments to `'ims'`. | `sms-controller.ts`, `ims-controller.ts` | `SMSPage.tsx` |
 | MMS (VectorCore MMSC) | beta — real end-to-end MMS confirmed working on a real UE (2026-07-30), after fixing two real bugs: VectorCore logs its whole MM1 request path at Debug while shipping configured at Info (looked exactly like requests weren't reaching the app at all — set to `debug`), and real phones send MMS PDUs with no usable `From` field, which VectorCore expects a GGSN/PGW-style `X-MSISDN` HTTP header to supply. Fixed with a small compiled-Go reverse proxy (`mm1-msisdn-proxy.go`, its own `vectorcore-mm1-proxy` systemd unit, built during every Configure from the same already-guaranteed Go toolchain — deliberately not Node, which isn't a documented prerequisite anywhere in this project) sitting in front of VectorCore's real public `:8002`, resolving sender MSISDN from the UE's Framed-Routing IP and injecting the header — see memory: `mms-mm1-msisdn-header-injection-fix`. `ENABLE_MMS_MODULE` defaults **disabled** (opt-in). Lives as a second tab on the SMS/MMS page, not a separate nav entry. | `mms-controller.ts` | `SMSPage.tsx` (MMS tab) |
 | PSTN / Voice Gateway (Asterisk) | **stable** — internal short-code/MSISDN dialing and Cross-RAN Calling (one toggle on the Voice Gateway page's Extensions tab, bridges this instance to Asterisk-2G — see architectural pattern #16, confirmed live 2026-09-15 with real over-the-air calls in both directions, full bidirectional audio, packet-verified) are both confirmed stable; signaling AND audio both confirmed working end-to-end (full duplex, both call directions, both the PSTN-extension dialing method and normal MSISDN dialing, over VoWiFi) — see `PROJECT_STATE.md`'s Handoff Summary for the real bugs found and fixed to get there. The external SIP trunk + inbound DID mapping mechanism (all 4 buildable phases) has been tested with real external calling and confirmed working, including a real inbound call routed to a 2G subscriber with full audio (2026-09-21, see that same date's Handoff Summary entry for the early-ringback fix this needed) — a real commercial trunk provider account is not currently linked, since there's nothing to connect to on this deployment, not because the mechanism is unfinished. `ENABLE_PSTN_MODULE` defaults **disabled** (opt-in) | `pstn-controller.ts`, `asterisk-2g-controller.ts` | `PstnGatewayPage.tsx` |
@@ -443,11 +710,11 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | eSIM generation (Simlessly API) | stable | `esim-generator.ts`, `esim-controller.ts` | `EsimGeneratorModal.tsx` |
 | Subscriber Groups | stable | `subscriber-groups-controller.ts` | `SubscriberPage.tsx` (grouping UI) |
 | Syslog Forwarding | stable | `syslog-controller.ts` | `SyslogForwardingModal.tsx` |
-| Major Event Classification | stable | `major-event-classifier.ts` | `MajorEventsView.tsx` |
+| Major Event Classification | stable — the "view in context" card (`LogContextModal.tsx`) now also extracts structured protocol fields (TEID, S_NSSAI, PLMN, GUTI, correlation IDs, whatever else is actually present) scoped to just the selected event, via a generic `KEY[VALUE]` bracket-tag scanner (`log-event-details.ts`) rather than a hardcoded field list — confirmed working in the browser UI (user-confirmed 2026-10-06), on top of the earlier verification via the real compiled function against live log data. See memory: `major_events_log_detail_extraction` | `major-event-classifier.ts`, `log-event-details.ts` | `MajorEventsView.tsx` |
 | FRR source build + crash-guard patch | stable | `frr-source-build.ts`, `frr-source-build-controller.ts` | `FrrSourceBuildTab.tsx` |
 | Sercomm NR provisioning | stable | `sercomm-nr-controller.ts` | `SercommNRTab.tsx` |
 | UE Validation (UERANSIM 5G + srsRAN 4G) | stable | `validation-controller.ts` | `ValidationPage.tsx` |
-| CBRS SAS server | stable | `sas-service.ts`, `sas-controller.ts` | `SASPage.tsx` |
+| CBRS SAS server | stable — has a real, deliberately-scoped WINNF-TS-0016 Category B `installationParam` validation gap: `registration()` hard-exempts exactly ONE named radio identity (`fccId=#2345CBSDTEST01`/`serial=AH193701274.NR`, a `CATEGORY_B_TEST_EXEMPT_*` constant pair) from the missing-lat/long/height/heightType rejection, per explicit user instruction on this being a test harness — every other Category B registration still gets the real rejection. Don't widen this without the same explicit direction. See memory: `sas_pki_and_nokia_grant_investigation` for the full arc — that same radio (Nokia AirScale 5G) still, as of 2026-09-28, has never sent a single `/grant` despite this and every other fix tried; unresolved. | `sas-service.ts`, `sas-controller.ts` | `SASPage.tsx` |
 | GenieACS radio provisioning | stable | `genieacs-controller.ts` | `AutoConfigPage.tsx`, `FemtoConfigTab.tsx` |
 | Traffic History (aggregate + per-subscriber) | stable | `subscriber-ip-accounting.ts`, `prometheus-metrics.ts`, `traffic-history-controller.ts` | `TrafficHistoryPage.tsx` |
 | Security Gateway (SecGW) | alpha — real IPsec tunnels confirmed live for both radio vendors simultaneously: 3 Baicells eNBs (IKEv2 Configuration Payload/virtual-IP based) and 1 Nokia AirScale (static tunnel endpoints + traffic selectors, no CP) — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME, 2026-08-14). See architectural pattern #15 for why Baicells and Nokia are configured completely differently. `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in). | `secgw-controller.ts`, `secgw-build.ts` | `SecGWPage.tsx` |
@@ -457,10 +724,11 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | 3G UMTS (OsmoHNBGW) | **alpha** — Home NodeB Gateway bridging a 3G femtocell's Iuh interface to the existing osmo-msc (IuCS) and osmo-sgsn (IuPS) over the already-running osmo-stp. `osmo-hnbgw` isn't an apt package on this host — built from source, pinned to tag `1.3.0` (NOT the `1.9.0` every other daemon here uses — its own version numbering is independent, and `1.9.0` needs a newer `libosmocore` than this host has; confirmed live 2026-09-13 via a real scratch build). Adds a new `cs7`/IuPS point-code block into the 2G module's own `osmo-sgsn.cfg` via ownership-merge (never a blind overwrite — see `vty-config-ownership.ts`), and a third, dedicated OsmoMGW instance (own config/systemd unit/loopback `127.0.1.8`, reusing the already-installed `osmo-mgw` binary). `osmo-stp.cfg`/`osmo-msc.cfg` need **zero changes** — confirmed live from both HNBGW's and MSC's own logs (STP's existing dynamic-ASP-registration + MSC's existing SCCP link both already handle it). Subscriber credentials need no new provisioning either — reuses the 2G module's own `gsmEnabled` flag and its `auc_3g` MILENAGE row (confirmed via OsmoHLR's own manual: the same row serves both 2G and full UMTS AKA). A software test HNB, **OsmoHNodeB** (tag `0.1.0`, same source-build pattern, needs its own dedicated GTP-U bind `127.0.1.9` — its default collides fatally with Open5GS's own UPF), deployable from the module's own page, proved a full live HNBAP registration end-to-end before any real hardware was touched. Real hardware target: an ip.access nano3G — unlike 2G's OML, Iuh/HNBAP has no remote-provisioning push, so a real HNB self-registers once pointed at this gateway's IP on its own local config, rather than being discovered/pushed-to from this NMS. `ENABLE_HNBGW_MODULE` defaults **disabled** (opt-in). | `hnbgw-controller.ts`, `osmo-hnbgw-build.ts`, `osmo-hnodeb-build.ts` | `HnbPage.tsx`, RAN page's "3G UMTS" section |
 | SigScale OCS (Online Charging, Diameter Gy) | **beta** — real-time prepaid credit-control charging for 4G/EPC PDN sessions, wiring Open5GS SMF's own native Gy client (present since v2.4.7, previously completely dormant in this deployment) to a newly-installed SigScale OCS (Erlang/OTP, real apt package via a pinned Google-Cloud-hosted `.deb`, not source-built). Full one-button Configure: writes OCS's own `sys.config`, registers SMF as a trusted Diameter client via `ocs:add_client/6` (RPC into the real running node — Mnesia only works there, not on a throwaway node), upserts the `ocs.*` Gy `ConnectPeer` into `smf.conf`, restarts `open5gs-smfd`, and verifies a real `STATE_OPEN` Gy connection from SMF's own log — end-to-end confirmed live 2026-09-16. **4G/EPC only — 5G NR sessions are never charged by this integration**; see architectural pattern #17 for why SigScale's 5G product (`chf`) was researched and explicitly excluded (Open5GS SMF has no Nchf client upstream). Pattern #17 also covers the 4 real bugs found getting the Gy peer to actually connect (port conflict, wildcard-bind conflict, default-deny client registration, Origin-Host/Realm mismatch) and the exclusive-naming-slot scheme that lets this module and VoWiFi both safely own one `ConnectPeer` line each inside the same `smf.conf`. No rating-plan/balance/subscriber CRUD in this NMS — Setup tab links out to OCS's own Polymer web GUI and REST API docs instead, matching this project's established "link out, don't reimplement" convention for full third-party apps. **Voice/airtime charging (Diameter Ro), added 2026-09-17, confirmed fully working end-to-end** — completes the dormant `#!ifdef WITH_RO` block `kamailio_scscf.cfg` already carried (same "built, left disabled" shape as pattern #13's Rx interface); shares OCS's existing Gy listener (same Diameter Application-Id 4), new `setVoiceChargingEnabled()`/`POST /api/ims/voice-charging` toggle (in `ims-controller.ts`, defaults **off**, same risk class as Gy). Getting a real call to actually complete took 2 cdp-vs-freeDiameter connectivity bugs (architectural pattern #18) plus **five separate real bugs inside the compiled `ims_charging.so` module itself** — duplicate Origin-Host/Realm AVPs, two AVPs that don't belong in a CCR at all (Accounting-Record-Type/Number, Vendor-Specific-Application-Id), a missing mandatory Auth-Application-Id, and a subscriber-identity format (`sip:` URI vs `tel:` URI) OCS's lookup didn't recognize — every one confirmed via OCS's own `erlang.log`, not guessed. All five are now real unified-diff patches baked into `kamailio-ims-modules-build.ts` (`CCR_C_PATCH`/`IMS_RO_C_PATCH`, same `apt-get source` → `patch` → build → ABI-verify → `.apt-original`-backup → deploy pipeline already used for `ims_ipsec_pcscf`/`ims_registrar_pcscf`), not just hand-patched on one host — independently verified by running the real generator script end-to-end against a fresh source fetch. Full bug-by-bug writeup: memory `sigscale_ocs_module_progress`. `ENABLE_OCS_MODULE` defaults **disabled** (opt-in). | `ocs-controller.ts` | `OcsPage.tsx` |
 | Charging Plans (simple data + voice caps GUI) | **beta, voice half confirmed working end-to-end 2026-09-17** — a deliberately simplified layer over SigScale OCS's own full rating-plan vocabulary, per explicit user request ("the sigscale gui is to complex"). One GUI "Plan" (name + data cap GB + voice cap minutes) = one OCS bundle offer referencing a data sub-offer (`specification="4"`) and a voice sub-offer (`specification="5"`, source-confirmed correct against the real rating engine's `?IMSVOICE` guard). New `nms_charging_plans` Mongo collection mirrors Subscriber Groups' own CRUD/assignment shape exactly; subscriber assignment reachable both from the Subscribers page's bulk-select toolbar AND a per-row "Set plan" control in the Plan column (added after the bulk-only flow proved hard to discover). **Real bug, found chasing a usage readout stuck at 0 despite a confirmed real charge**: `assignSubscribersToPlan()` linked a subscriber's IMSI and MSISDN to OCS **separately**, landing them on two disconnected products with independent buckets — Gy (data) keys off IMSI, Ro (voice) keys off MSISDN, so a subscriber's data and voice usage silently drew from unrelated pools. Fixed to link every identity for one subscriber to a single shared product atomically; full mechanics (including a second bug in the fix's own "already linked" short-circuit) in memory `sigscale_ocs_module_progress`. Depends on SigScale OCS being installed/configured first; the voice half additionally depends on the Ro toggle above. **An "Unlimited" plan (1,000,000 GB / 1,000,000 min — a deliberately huge finite cap, not a dedicated no-cap code path, to avoid exercising an untested interaction with the still-unresolved `charge2` crash below) is auto-provisioned by `ensureDefaultUnlimitedPlan()` on every OCS Configure, idempotent by plan name.** A cap at/above 100,000 GB or minutes renders as "Unlimited" in the UI instead of the raw number (`ChargingPlansPage.tsx`, `TrafficHistoryPage.tsx`, and the Subscribers page's plan dropdown all apply this). A real, still-unresolved **OCS-side rating-engine bug** (`ocs_rating:charge2`, `function_clause` on `type: final`/termination) periodically leaks stuck Gy/Ro reservations across multiple subscribers — no longer needs manual intervention: `OcsReservationGuard` (`backend/src/application/use-cases/ocs/ocs-reservation-guard.ts`, started unconditionally in `index.ts`, on by default) sweeps every 30 minutes and clears any reservation entry older than 2 hours via a balance-preserving Mnesia write (`remain` never touched, verified live). The deep root cause itself is still not fixed (no exact-version source obtainable for the installed 3.4.73 release, and the `.beam` has neither debug info nor an exported `charge2` to probe) — the guard is a mitigation, not a patch. Full diagnostic arc, including a complete captured crash dump and the recommended next step (file it as a SigScale GitHub issue), in memory `sigscale_ocs_module_progress`. | `charging-plans-controller.ts`, `ocs-reservation-guard.ts` | `ChargingPlansPage.tsx` |
-| Call History (CDR module) | **beta** — unified call detail records across PSTN, 2G, and 4G/5G IMS, synced into a new `nms_cdr` Mongo collection (retention-configurable TTL index, default 180 days) from each system's own real source rather than a new primary store (same CLAUDE.md pattern #12 distinction as Traffic History vs. Prometheus). Three independent phases, staged by risk: **Phase 1** (PSTN Gateway Asterisk CSV tailing) stable, verified against a real 76+-row dataset. **Phase 2** (Asterisk-2G) — fixed a real bug where `asterisk-2g-controller.ts` never created the `cdr-csv/` subdirectory `cdr_csv.so` needs, so it silently never wrote a single record; code deployed, but a real end-to-end test-call confirmation is still outstanding. **Phase 3** (direct 4G/5G IMS-to-IMS calls, the one path with no B2BUA CDR of its own) — Kamailio's own `acc` module, basic flag-based `db_flag`/`db_missed_flag` accounting (deliberately NOT `acc`'s newer `cdr_enable`, which needs a module literally named `dialog` that this deployment doesn't load — see `ims-controller.ts`'s `scscfIncludeCfg()` comment), gated behind its own `WITH_CDR` build flag plus a runtime toggle (`setCdrAccountingEnabled()`, "Direct IMS Call Recording" on the Call History page's Settings panel) independent of the module's own compile-time gate, same shape as OCS's Ro toggle. **Confirmed fully working end-to-end live 2026-09-17** against 3 real test calls (answered, a rang-then-fell-to-voicemail call, and a PSTN-Gateway-routed call captured correctly as its real two separate B2BUA-split dialogs) — see architectural pattern #16's sibling gotcha (added this same day) on why the live host's static template was stale and needed a manual redeploy before the toggle could do anything. `missed_calls` (busy/rejected calls) is implemented per Kamailio's well-documented, stable module behavior but not yet empirically verified live — no real busy-call test was available this session. A voicemail pickup is indistinguishable from a normal human answer at the SIP/`acc` level (both are real 2xx-terminated INVITE transactions) — documented in the UI's info banner, not a bug. Full arc: memory `cdr_module_progress`. | `cdr-store.ts`, `cdr-sync-monitor.ts`, `cdr-controller.ts` | `CallHistoryPage.tsx` |
+| Call History (CDR module) | **beta** — unified call detail records across PSTN, 2G, and 4G/5G IMS, synced into a new `nms_cdr` Mongo collection (retention-configurable TTL index, default 180 days) from each system's own real source rather than a new primary store (same CLAUDE.md pattern #12 distinction as Traffic History vs. Prometheus). Three independent phases, staged by risk: **Phase 1** (PSTN Gateway Asterisk CSV tailing) stable, verified against a real 76+-row dataset. **Phase 2** (Asterisk-2G) — fixed a real bug where `asterisk-2g-controller.ts` never created the `cdr-csv/` subdirectory `cdr_csv.so` needs, so it silently never wrote a single record; **confirmed working live 2026-09-25** (found independently by two agents researching the Asterisk Grafana dashboard, then re-confirmed via a direct aggregation query — 75 real rows with correct dispositions/durations from real Cross-RAN Calling test calls). **Phase 3** (direct 4G/5G IMS-to-IMS calls, the one path with no B2BUA CDR of its own) — Kamailio's own `acc` module, basic flag-based `db_flag`/`db_missed_flag` accounting (deliberately NOT `acc`'s newer `cdr_enable`, which needs a module literally named `dialog` that this deployment doesn't load — see `ims-controller.ts`'s `scscfIncludeCfg()` comment), gated behind its own `WITH_CDR` build flag plus a runtime toggle (`setCdrAccountingEnabled()`, "Direct IMS Call Recording" on the Call History page's Settings panel) independent of the module's own compile-time gate, same shape as OCS's Ro toggle. **Confirmed fully working end-to-end live 2026-09-17** against 3 real test calls (answered, a rang-then-fell-to-voicemail call, and a PSTN-Gateway-routed call captured correctly as its real two separate B2BUA-split dialogs) — see architectural pattern #16's sibling gotcha (added this same day) on why the live host's static template was stale and needed a manual redeploy before the toggle could do anything. `missed_calls` (busy/rejected calls) is implemented per Kamailio's well-documented, stable module behavior but not yet empirically verified live — no real busy-call test was available this session. A voicemail pickup is indistinguishable from a normal human answer at the SIP/`acc` level (both are real 2xx-terminated INVITE transactions) — documented in the UI's info banner, not a bug. Full arc: memory `cdr_module_progress`. | `cdr-store.ts`, `cdr-sync-monitor.ts`, `cdr-controller.ts` | `CallHistoryPage.tsx` |
 
-| IP Plan Tool | **beta** — bulk re-address a whole deployment from one page instead of visiting every module's own, via an explicit "Propose → review → Apply" flow (never an ambient background sync — a full redesign after direct user correction of the original silent-write-back version). `GET /api/ip-plan` always reads each module's own **current** live state fresh, never a registry; `POST /api/ip-plan/propose {subnet}` is a pure preview computing non-colliding suggestions (`ip-suggest.ts`); `POST /api/ip-plan/apply` is the only write path, an async job (`ip-plan-apply-usecase.ts`, same polling pattern as `module-fixall-usecase.ts`) that live-applies opt-in-per-row for secgw-gateway/vowifi-epdg/gsm-bsc-mgw+gsm-sgsn-gb/ims-pcscf+ims-rtpengine/pstn-external-trunk/mms-mm1/all 7 core-17 address fields (batched into one `AutoConfigUseCase.execute()` call, `applyInterfaces`/`applyPfcp` toggled only for groups actually touched, `localUpfOnly`/`localSgwuOnly` explicitly forced off when a PFCP field is checked since that flag would otherwise silently no-op the change) — while sepp-sbi/sepp-n32c/sepp-n32f/bind-dns are **registry-only, unconditionally**, since SEPP's only live-apply path is a full 17-NF core restart, disproportionate for 3 fields. IMS is ordered before PSTN/MMS in the same batch (both depend on it) with an explicit short-circuit if IMS's own step fails partway through a run. The old bulk-save route and its frontend client method were deleted outright as part of the rewrite (not just stopped being called) — a deliberate verification mechanism so any stale call site fails to compile instead of silently doing nothing; confirmed zero remaining `ipPlanApi.save()` call sites anywhere in the frontend. **Not yet independently confirmed with a live Propose → Apply click-through** — built and audited against its own approved plan with no deviations found, but that audit was a static code read, not a live test. | `ip-plan-controller.ts`, `ip-plan-apply-usecase.ts`, `ip-suggest.ts`, `main-interface.ts` | `IpPlanTab.tsx` (a tab on the Auto-Configuration Wizard page) |
+| IP Plan Tool | **beta** — bulk re-address a whole deployment from one page instead of visiting every module's own, via an explicit "Propose → review → Apply" flow (never an ambient background sync — a full redesign after direct user correction of the original silent-write-back version). `GET /api/ip-plan` always reads each module's own **current** live state fresh, never a registry; `POST /api/ip-plan/propose {subnet}` is a pure preview computing non-colliding suggestions (`ip-suggest.ts`); `POST /api/ip-plan/apply` is the only write path, an async job (`ip-plan-apply-usecase.ts`, same polling pattern as `module-fixall-usecase.ts`) that live-applies opt-in-per-row for secgw-gateway/vowifi-epdg/gsm-bsc-mgw+gsm-sgsn-gb/ims-pcscf+ims-rtpengine/pstn-external-trunk/mms-mm1/all 7 core-17 address fields (batched into one `AutoConfigUseCase.execute()` call, `applyInterfaces`/`applyPfcp` toggled only for groups actually touched, `localUpfOnly`/`localSgwuOnly` explicitly forced off when a PFCP field is checked since that flag would otherwise silently no-op the change) — while sepp-sbi/sepp-n32c/sepp-n32f/bind-dns are **registry-only, unconditionally**, since SEPP's only live-apply path is a full 17-NF core restart, disproportionate for 3 fields. IMS is ordered before PSTN/MMS in the same batch (both depend on it) with an explicit short-circuit if IMS's own step fails partway through a run. The old bulk-save route and its frontend client method were deleted outright as part of the rewrite (not just stopped being called) — a deliberate verification mechanism so any stale call site fails to compile instead of silently doing nothing; confirmed zero remaining `ipPlanApi.save()` call sites anywhere in the frontend. **Confirmed working end-to-end with a real live Propose → Apply click-through (user-confirmed 2026-10-06)**, on top of the earlier static audit against its own approved plan (which found no deviations). Known edge case still worth knowing: an MME/AMF interface currently bound by interface name (`dev:`) rather than a static address reads as "not configured", and applying a plan there converts it to address-binding. | `ip-plan-controller.ts`, `ip-plan-apply-usecase.ts`, `ip-suggest.ts`, `main-interface.ts` | `IpPlanTab.tsx` (a tab on the Auto-Configuration Wizard page) |
 | RAN Kill Switches (Dashboard) | **beta** — five header buttons (Block RAN, plus Block 2G/3G/4G/5G individually) that bulk-block every currently connected/registered radio of that generation, each flashing red (`animate-flash-red`) for as long as anything of that generation is currently blocked and doubling as the unblock-all action while flashing (explicit user request). 4G (`radio-block-controller.ts`) and 5G (`gnb-block-controller.ts`) reuse pre-existing nftables mechanisms unchanged. **3G had no blocking mechanism of any kind before this feature** — built `hnb-block-service.ts`/`sqlite-hnb-block-repository.ts`/`hnb-block-controller.ts` from scratch mirroring `gnb-block-service.ts`'s exact shape (own nftables table `open5gs_nms_hnb_block`), with one real difference from every other generation's block service: HNBGW's Iuh port is operator-configurable in this project (`HnbgwState.iuhLocalPort`, unlike S1AP/NGAP's fixed 3GPP port numbers), so the service reads it live via an injected `getIuhPort()` callback and encodes the port into each rule's own tracking comment (`hnb_block_<ip>_<port>`) so a port change while blocked is detected as "no longer desired" by the existing reconcile loop instead of silently leaving a dead rule. 2G reuses the real per-BTS osmo-bsc admin-lock (`blockBtsByIdx`, extracted from the pre-existing single-BTS route so the new bulk `/bts/block-all` route can drive it) — genuinely different blast radius (drops camped UEs immediately, real device impact) than the other three's mild host-only nftables rules, so its button/copy are deliberately distinct rather than looking identical. **Building this feature's 2G path surfaced a real, long-standing bug — see the 2G GSM gotcha below.** | `radio-block-controller.ts`, `gnb-block-controller.ts`, `hnb-block-controller.ts`, `gsm-controller.ts` | `DashboardPage.tsx`, `RANPage.tsx` (same flash-red treatment extended to every individual per-radio Block/Unblock button) |
+| TWAMP (Backhaul Link Quality) | **stable** — RFC 5357 TWAMP client + reflector, own thin Go wrappers (`twamp-client.go`/`twamp-server.go`) around `github.com/ncode/twamp`, vendored+patched for multi-homed bind-IP support (see that patch's own header comment). Client side runs short-lived tests against operator-added targets (currently 3 real Nokia radios on this deployment, all TWAMP-Light) on a per-target poll cadence; reflector side is the reverse direction (an always-on systemd service, `twamp-server.service`, answering inbound tests from other TWAMP-capable devices) — independent of each other. History persists to `nms_twamp_history` (retention-configurable TTL index); live status/metrics reuse the existing Prometheus+Grafana stack (`twamp.json` dashboard, uid `twamp-backhaul`, 11 metrics) rather than a new store, same pattern as Traffic History. **Real bug fixed 2026-09-25** (found building that dashboard): TWAMP-Light blocks per-LOST-packet on the binary's own `-timeout-ms`/`-interval-ms`, previously never passed explicitly and never accounted for by the external Node-side safety timeout — as few as 2-3 lost packets out of a normal 10-packet test could exceed that external budget, and the empty stdout this produced was silently parsed as a valid-but-all-blank result (`JSON.parse('{}')` doesn't throw) instead of a real error, hiding real packet loss as no-data-at-all. Fixed by deriving both the binary's own flags and the external timeout from the same shared constants, and no longer accepting empty stdout as a silent success — confirmed live against a real currently-lossy target (10/10 loss, real `"reflector unreachable"` error now returned in ~40s instead of a blank result). Also fixed the same session: the 8 success-gated Prometheus gauges (RTT/jitter/loss/one-way-delay) never called `.remove()` on a failed test, so a target that stopped succeeding kept showing its last-good value frozen forever instead of a gap — same bug existed a second way for a fully deleted target, since `TwampMonitor`'s in-memory cache never pruned one either. `ENABLE_TWAMP_MODULE` defaults **disabled** (opt-in). | `twamp-controller.ts`, `twamp-runner.ts`, `twamp-monitor.ts`, `twamp-metrics.ts`, `twamp-history.ts` | `TwampPage.tsx` |
 
 Full detail on any of these: `docs/features.md`.
 
@@ -472,7 +740,10 @@ Full detail on any of these: `docs/features.md`.
   older docs/memory referencing 999/070 are stale).
 - **Radio IPs** (verify before trusting — deployments change):
   - `10.0.2.100–102` — Baicells eNB(s), B48, 4G/LTE
-  - `10.0.2.214` — Nokia AirScale Pico BTS, B66, 4G/LTE
+  - `10.0.2.47` — Nokia AirScale Pico BBU, B66, 4G/LTE side (re-IP'd from
+    `10.0.2.214` as of 2026-09-27 — the same physical unit, now split into
+    separate 4G/5G IPs; `.214` is stale, don't trust older notes citing it)
+  - `10.0.2.48` — same Nokia AirScale Pico BBU, 5G NR side
   - `172.16.0.117` — Sercomm SCE5164-B48 gNB, B48, 5G NR
   - EIGRP neighbor for the RAN-facing routes: `192.168.253.1` on `ens20`.
 - **SAS bands**: Baicells B48 CBRS (group `baicells`, 3550–3700 MHz, 20 MHz slots),
@@ -486,12 +757,29 @@ Full detail on any of these: `docs/features.md`.
 ## Known-fixed gotchas worth knowing about (so you don't reintroduce them)
 
 - **nginx needs two self-signed certs to start at all** (`nginx/setup-sas-cert.sh`,
-  run by the `cert-init` Docker service): `sas.crt`/`sas.key` (any hostname) and
+  run by the `cert-init` Docker service): the SAS cert pair and
   `acs.crt`/`acs.key` (must be `CN=acs.sc.sercomm.com` — hardcoded in `nginx.conf`'s
   `server_name`). Missing either one means nginx fails to start entirely (it loads
   every `conf.d/` server block up front) — found on a genuinely fresh install where
   only the `sas.crt` generator existed; `acs.crt` had only ever been created manually
   on the original dev host and nobody noticed the script never made it.
+  **The SAS side is a real two-tier PKI now, not a single flat self-signed
+  cert** (changed live 2026-09-27): `sas.crt`/`sas.key`/`sas.pem` is a proper
+  root CA (`basicConstraints=CA:TRUE`) — this is what a radio's own "install
+  CBRS vendor chain" flow should be pointed at (downloadable at
+  `/sas-cert/sas.crt` or `.pem`, same bytes, two extensions since some
+  radios' upload UIs validate on extension). `sas-leaf.crt`/`sas-leaf.key`
+  is the actual TLS server identity nginx presents (signed BY that root,
+  not self-signed); `sas-fullchain.crt` (leaf+root concatenated) is what
+  `nginx.conf`'s `ssl_certificate` directive actually references. Root
+  cause: Nokia AirScale's own CBRS Cert Management rejected the old flat
+  self-signed leaf outright ("Invalid trust chain - intermediate CA or root
+  CA of EE/RA is missing") since it had no `CA:TRUE` marker for firmware to
+  recognize as a real trust anchor — confirmed live, and confirmed the
+  rebuild didn't break already-connected radios (Baicells/Sercomm kept
+  heartbeating successfully through the nginx restart that deployed it).
+  If you ever touch these files again: `sas.crt` is the root now, not a
+  leaf — don't hand it to nginx's own `ssl_certificate` directive directly.
 - **`.gitignore` must exclude runtime data**: `mongo_docker/`, `hlr.db*`, `sms.db`,
   `backend/radio-backups/` — these contain real subscriber keys/PII and are NOT
   meant to be committed. Already fixed once (2026-07-16) after nearly being swept
@@ -594,6 +882,128 @@ Full detail on any of these: `docs/features.md`.
   `configure_loop()`-style reconciliation loop first, and whether a
   dedicated `force_rf_lock`-style config-tree command already exists for
   it.
+- **The same "editing repo source doesn't redeploy an already-built
+  artifact" class of bug above also applies to `kamailio-source-build.ts`'s
+  own patching step — fixing the build SCRIPT doesn't retroactively patch a
+  module that was already compiled by an older version of it.** Found live
+  2026-09-30: the `==STEP:patching==` block (applies `CMD_C_PATCH_KAMAILIO6`/
+  `SAVE_C_PATCH`/`CCR_C_PATCH`/`IMS_RO_C_PATCH` to a fresh Kamailio 6.0.8
+  clone) was added to the script mid-session, but the host's actually-
+  deployed `ims_charging.so` had been built by an earlier run that predated
+  that addition — 100% stock, zero patches. This silently broke Ro/Gy
+  charging (`cdp: Sending CCR with no/incorrect accounting record type AVP`
+  → immediate CCR failure), which blocked **every single IMS call setup on
+  both 4G and 5G** for about 24 hours, since the Ro CCR-Initial fires before
+  S-CSCF routes the INVITE onward. Zero effect on registration (which is why
+  it looked like "IMS is broken" with no obvious single cause) — only calls.
+  A prior same-session *targeted* fix (a surgical `make modules
+  modules="src/modules/ims_ipsec_pcscf"` rebuild of just the 2 P-CSCF
+  modules) was real and correct for THOSE modules, but got misremembered/
+  summarized afterward as "all 4 patches now live" without independently
+  re-verifying `ims_charging` — don't let a partial rebuild's success imply
+  a sibling module sharing the same patch step is also current. Detection
+  signature: compare the deployed `.so`'s checksum/mtime against the
+  snapshot taken at the START of the most recent *full* rebuild
+  (`/etc/open5gs-nms/kamailio-source-build-snapshots/<ts>/modules-dir/`) —
+  if they match, it predates that rebuild. A `kamailio -V`-style version
+  string ending `-dirty` (vs. a clean tag) is a cheap signal a patch was
+  actually applied to the source tree that produced the running binary.
+  Fix: re-run the FULL `/api/kamailio/source-build/start` pipeline (not a
+  single-module `make modules` shortcut), then verify with a real test call
+  (e.g. via the IMS Test Number feature or a direct `asterisk -rx "channel
+  originate PJSIP/<imsi>@scscf_trunk application Echo"`), not just a clean
+  build log. Full writeup: memory `kamailio_6_source_build_progress.md`
+  (its own "all 4 patches live" claim was the thing that turned out wrong —
+  read the correction at the end of that file, not just the top).
+  **Recurred a 4th time, confirmed live 2026-10-02/03, same underlying
+  mechanism, different module**: the live-deployed `cdp.so` (shared by
+  P/I/S-CSCF) predated `CDP_COMMON_C_PATCH`/`CDP_ACCTSM_C_PATCH` being added
+  to the pipeline — both patches ARE correctly wired into
+  `kamailio-source-build.ts` (confirmed by reading the script directly, not
+  assumed), this was purely a stale-deployed-artifact problem, same as the
+  3rd recurrence above. Real, confirmed-live impact: `ims_charging.so` (ccr.c/
+  ims_ro.c) had ALREADY been correctly patched to stop sending
+  Accounting-Record-Type (a Diameter Base Accounting AVP that has no defined
+  slot in Credit-Control and that OCS's own strict dictionary rejects) — but
+  `cdp.so`'s own `cc_acc_client_stateful_sm_process()` had NOT been given its
+  matching patch to tolerate that AVP's resulting absence, so it fell through
+  to the exact same `Sending CCR with no/incorrect accounting record type AVP`
+  error on literally every call. A mismatched *pair* of patches (one side
+  applied, the other not) produces an identical-looking failure to "nothing
+  patched at all" — checking only one module in the pair is not enough.
+  Fixed via the same targeted `make modules modules="src/modules/cdp"`
+  rebuild + swap. **Found a real, separate, higher-severity bug fixing
+  this live**: swapping the rebuilt `cdp.so` into place with a plain
+  `cp` (overwriting the existing file's content in-place) while ~100+ live
+  Kamailio worker processes already had that exact file memory-mapped
+  **corrupted their in-memory code and crashed all 3 processes with
+  `SIGILL`** almost immediately — a worker page-faulting into a not-yet-
+  rewritten part of the file mid-copy reads a mix of old and new bytes and
+  executes it as garbage. The automated `kamailio-source-build.ts` pipeline
+  is NOT vulnerable to this (confirmed by reading it: it explicitly
+  `systemctl stop`s all 4 Kamailio services BEFORE `make install` copies
+  anything, so nothing is ever mapped during the write) — this is
+  specifically a risk for the **manual, targeted single-module
+  `make modules` + hand-swap** shortcut this project's own history uses
+  repeatedly for a fast, non-disruptive fix (see the 2026-09-30 "surgical
+  rebuild" mention above, and `kamailio_6_source_build_progress.md`'s whole
+  history of this technique). **Fix/rule for any future manual `.so` swap
+  while the owning service(s) are still running: never `cp` over the live
+  path directly — copy the new file to a temp name in the SAME directory,
+  then `mv`/rename it into place.** A rename swaps the directory entry
+  atomically; any process with the old inode already open/mapped keeps
+  seeing fully-consistent old bytes until it actually restarts, and nothing
+  can ever observe a half-written file. Confirmed live: the identical fix,
+  redeployed via rename instead of `cp`, caused zero disruption to the
+  already-running processes. Full writeup: memory
+  `kamailio_6_source_build_progress.md`.
+- **Restarting `kamailio-pcscf` for ANY reason — even just to deploy an
+  unrelated `.cfg`/module change — wipes every currently-registered UE's
+  real IPsec SA, and this is invisible unless you specifically check for
+  it.** Confirmed live repeatedly in one session, 2026-10-02/03: the
+  registrar (`ulpcscf.status`) keeps showing AoRs as "registered" with a
+  normal-looking `Expires` countdown even with **zero** matching entries in
+  `ip xfrm state` — the SIP registration-state table and the kernel IPsec
+  SA table are two entirely independent subsystems that can desync, and the
+  registrar side gives no indication anything is wrong. A call touching an
+  affected UE doesn't fail cleanly — it manifests as a real, several-second
+  delay (Kamailio trying and failing to actually deliver the request over
+  the dead tunnel) before a local error, which can look exactly like a
+  network/radio-layer problem if you don't check `ip xfrm state` directly.
+  The only fix is the affected device re-registering for real (toggle
+  Airplane Mode, or a full restart) — there is no server-side remediation.
+  If you restart `kamailio-pcscf` more than once in a debugging session,
+  re-check (or have the operator re-toggle) EVERY device involved in the
+  next test, not just the one you most recently fixed something for.
+- **Manually deploying a static IMS Kamailio template file (copying straight
+  from the built `dist/config/ims-templates/...` tree to its real host path,
+  bypassing `deployImsTemplate()`) skips that function's own
+  `__TOKEN__`-style substitutions, silently leaving the literal placeholder
+  text live in production.** Confirmed live 2026-10-02: manually
+  redeploying `kamailio_pcscf.cfg` this way left
+  `rtpengine_sock="1 == udp:__RTPENGINE_IP__:2223"` completely unsubstituted
+  — `__RTPENGINE_IP__` isn't a real hostname, so every single call's RTP
+  handling failed immediately (`build_rtpp_socks(): Name or service not
+  known` → `no available proxies`), a real, total outage for the RTP/NAT
+  side of every call, 4G and 5G alike, until caught and fixed. `mo.cfg`/
+  `mt.cfg` happen to have no such tokens so this specific case was silent
+  on those two files, but any manual redeploy of a template using
+  `deployImsTemplate()`'s substitution feature needs the same substitutions
+  applied by hand, or needs to go through the real install/configure flow
+  instead. Grep the freshly-deployed file for `__[A-Z_]*__` as a cheap,
+  reliable check before trusting a manual redeploy.
+- **This host's MySQL/MariaDB `max_connections` (151, the compiled-in
+  default) was genuinely too low for this deployment's own steady-state
+  load** — confirmed live 2026-10-02 (`Max_used_connections` peaked at
+  exactly 152, one over the cap) when a `kamailio-pcscf` restart's own
+  startup connection burst, on top of what S/I-CSCF, SMSC, and PyHSS
+  already hold open, tipped it over and took the whole service down
+  (one `ims_usrloc_pcscf` worker's DB connect failing with "Too many
+  connections" aborts the entire Kamailio startup, not just that one
+  worker). Raised to 300 and persisted in
+  `/etc/mysql/mariadb.conf.d/50-server.cnf` (`max_connections = 300`,
+  with a comment explaining why) — if this project adds more DB-backed
+  services, watch `Threads_connected` vs this ceiling again.
 
 ## User / workflow conventions
 

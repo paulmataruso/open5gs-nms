@@ -138,6 +138,22 @@ export function readPstnState(): PstnState | null {
   try { return JSON.parse(fs.readFileSync(HOST_PSTN_STATE, 'utf-8')); } catch { return null; }
 }
 
+// Mirrors isAsterisk2gInstalled()'s own exact shape (asterisk-2g-controller.ts)
+// — same one-directional-static / lazy-import-back rule (CLAUDE.md pattern
+// #16): asterisk-2g-controller.ts imports this lazily, never statically.
+// Real, 2026-09-23 finding: PSTN's own uninstall already correctly checks
+// isAsterisk2gInstalled() before deciding whether to purge the shared
+// asterisk/asterisk-modules packages — but asterisk-2g's own uninstall never
+// had the reverse check at all, it *always* skipped the purge unconditionally
+// (a deliberate design at the time, per that handler's own comment) — so
+// uninstalling PSTN first correctly deferred to Asterisk-2G still being
+// present, and uninstalling Asterisk-2G never purged regardless of order,
+// permanently orphaning the shared package if both are removed. This export
+// lets asterisk-2g's uninstall become order-independent too.
+export function isPstnInstalled(): boolean {
+  return fs.existsSync(HOST_PSTN_STATE);
+}
+
 export function writePstnState(state: PstnState): void {
   fs.mkdirSync(`${HOST_ROOT}/etc/open5gs`, { recursive: true });
   fs.writeFileSync(HOST_PSTN_STATE, JSON.stringify(state, null, 2), 'utf-8');
@@ -321,14 +337,30 @@ function pjsipPstnConf(asteriskIp: string, core: PstnCoreWiring, peers: PstnPeer
   // PJSIP transport is the local UDP socket bound to asteriskIp:ASTERISK_PORT
   // — every endpoint on this instance shares the one transport regardless of
   // how many distinct peers reference it; a second type=transport on the
-  // same bind would just fail to load). allow= is ordered gsm before
-  // amrwb/amr — this endpoint ultimately feeds toward Asterisk-2G's
-  // GSM-only sipconn endpoint, so biasing negotiation toward GSM-FR here
-  // keeps the call to exactly one transcode hop rather than risking a
-  // double transcode. direct_media=no is a hard functional requirement
-  // here, not inherited B2BUA hardening habit: transcoding is only possible
-  // while Asterisk itself stays in the RTP path on both legs. See
-  // CLAUDE.md's Cross-RAN Calling pattern entry for the full design.
+  // same bind would just fail to load). direct_media=no is a hard functional
+  // requirement here, not inherited B2BUA hardening habit: transcoding is
+  // only possible while Asterisk itself stays in the RTP path on both legs.
+  // See CLAUDE.md's Cross-RAN Calling pattern entry for the full design.
+  //
+  // Real bug found live 2026-09-26 (real cross-RAN test calls, both
+  // directions): allow= originally also listed amrwb/amr after gsm here, on
+  // the theory that listing gsm FIRST would bias negotiation toward it while
+  // still tolerating AMR, keeping the call to exactly one transcode hop.
+  // That bias never actually applied — codec_prefs_outgoing_offer below uses
+  // prefer:pending,operation:intersect, which narrows this leg's offer to
+  // whatever's ALREADY pending on the OTHER leg (e.g. AMR from scscf_trunk)
+  // before this endpoint's own allow= order ever gets a say. Since amrwb/amr
+  // were in this endpoint's allow= list too, the intersect kept AMR and
+  // dropped gsm entirely, regardless of gsm being listed first — confirmed
+  // live via packet capture as a real cause of one-way audio (raw AMR
+  // reaching Asterisk-2G's GSM-only sipconn leg undecoded). Fixed by hard-
+  // restricting allow= to gsm only: a codec absent from allow= can never
+  // appear in an offer or answer for this endpoint no matter what
+  // codec_prefs_outgoing_offer says, so the AMR<->GSM transcode is now
+  // always forced onto THIS endpoint's own bridge with scscf_trunk (the only
+  // place it can actually happen), never left ambiguous. See
+  // asterisk-2g-controller.ts's pjsip2gConf() for the matching fix on
+  // pstn_trunk, the other end of this same physical trunk.
   const crossRanBlock = crossRanPeer ? `
 [asterisk2g_trunk]
 type=identify
@@ -344,8 +376,6 @@ type=endpoint
 context=pstn-internal
 disallow=all
 allow=gsm
-allow=amrwb
-allow=amr
 aors=asterisk2g_trunk
 transport=transport-trunk
 direct_media=no
@@ -616,10 +646,20 @@ ${ringing} same => n,Dial(PJSIP/${target},60)
   // per-mapping Dial() logic completes it unchanged. This side never needs
   // to know which subscriber a 2G short code actually resolves to.
   const crossRanEntries = crossRanPeerCodes.map(e => {
-    // Every entry here is GSM-routed by definition (see comment above) --
-    // same early-Ringing() treatment as didBlocks/autoDialBlocks, unconditional.
+    // Real bug, confirmed live 2026-10-03: this used to call Ringing()
+    // immediately before Dial(), copied defensively from didBlocks' real
+    // external-PBX-timeout fix (see that block's own comment) without that
+    // justification actually applying here -- the caller for this block is
+    // always an internal IMS/Kamailio subscriber via scscf_trunk, never an
+    // external PSTN trunk with its own premature-CANCEL timer. Confirmed
+    // via packet-level SIP trace: Ringing()+Dial() made Asterisk's own
+    // B2BUA answer back to scscf_trunk come out `a=inactive` instead of
+    // `sendrecv`, which made chan_pjsip substitute local MusicOnHold onto
+    // the bridged 2G-facing leg -- the real 2G phone heard hold music
+    // instead of the real caller's voice. Removed; matches the
+    // already-clean plain NoOp->Dial() shape the reverse (2G->4G/5G)
+    // direction already uses.
     const body = `1,NoOp(Cross-RAN -> 2G short code ${e.extension}${e.label ? ' (' + e.label + ')' : ''})
- same => n,Ringing()
  same => n,Dial(PJSIP/${e.extension}@asterisk2g_trunk,60)
  same => n,Hangup()
 `;
@@ -1128,6 +1168,13 @@ export async function configurePstn(
       await nsenter('ip', ['addr', 'add', `${asteriskIp}/8`, 'dev', 'lo']).catch(() => {});
 
       ensureIncludes();
+      // Real, 2026-09-24 finding: disableChanSip() used to run only from
+      // installPstn(), never from here — modules.conf's `noload =>
+      // chan_sip.so` line never self-healed on a plain Configure re-run
+      // (unlike Asterisk-2G's own ensureChanSipDisabled2g(), already called
+      // on every Configure). Safe/idempotent to call unconditionally —
+      // matches the parity Asterisk-2G already has.
+      disableChanSip();
       // Preserve the existing Cross-RAN Calling wiring across a routine
       // Configure call — this rewrites pjsip_pstn.conf wholesale, so without
       // re-deriving this, an unrelated re-Configure would silently drop the
@@ -1152,7 +1199,18 @@ export async function configurePstn(
       await ensureNativeRtpBridgeSuspended();
       await writeDispatcherEntry(asteriskIp);
 
-      writePstnState({ asteriskIp, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, configuredWithVersion: getAppVersion() });
+      // Real, confirmed-live bug (2026-09-24): this used to build a brand-new
+      // object literal here instead of spreading `existing` first (every
+      // OTHER writePstnState() call site in this file does) — silently
+      // dropping externalTrunk from disk on every single Configure run,
+      // even though the local `externalTrunk` var two lines above already
+      // has the correct value. Confirmed this had already fired on
+      // production: the live trunk was still up (pjsip_pstn.conf + the
+      // nftables allowlist both intact) while .pstn-config.json had already
+      // lost the field, one "Configure" click away from tearing the real
+      // trunk down. `existing ?? {}` guards the legitimate first-ever-
+      // Configure case where existing is null.
+      writePstnState({ ...(existing ?? {}), asteriskIp, echoTestNumber, crossRanEnabled: existing?.crossRanEnabled, configuredWithVersion: getAppVersion() });
 
       return { success: true, message: 'Asterisk configured and wired into S-CSCF\'s dispatcher.', asteriskIp };
     } catch (err) {

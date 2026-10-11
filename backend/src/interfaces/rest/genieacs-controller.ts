@@ -1030,6 +1030,18 @@ export function createGenieacsRouter(
   router.post('/preview-sercomm/:deviceId', requireAdmin, (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const input        = req.body as SercommProvisionInput;
+    // Unlike the Baicells /preview above, buildSercommTasks() had no
+    // caller-side guard at all — freqBand/txPower are unconditionally
+    // `.split()` regardless of caEnable/sasEnable, so a request missing
+    // either one crashed with an unhandled TypeError (generic 500) instead
+    // of a clear validation error. Mirrors the Baicells check's shape,
+    // scoped to the fields buildSercommTasks() always needs regardless of
+    // caEnable/sasEnable (not the conditional CA/SAS-only ones).
+    const required = ['mcc','mnc','tac','mmeIp','mmeCfgIdList','earfcn','pci','cellIdentity','txPower','bandwidth','freqBand','syncSource','carrierNumber'] as const;
+    const missing = required.filter(k => input[k] == null || input[k] === '');
+    if (missing.length) {
+      return void res.status(400).json({ success: false, error: `Missing fields: ${missing.join(', ')}` });
+    }
     const sasServerUrl = req.body.sasServerUrl as string | undefined;
     logger.info({ sasUserId: input.sasUserId, sasEnable: input.sasEnable }, 'Sercomm preview-sercomm received');
     const encodedId    = encodeDeviceId(deviceId);

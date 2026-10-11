@@ -27,6 +27,7 @@ import { earfcnToFrequencyMhz } from './lte-bands';
 import { HATA_FREQ_RANGE_MHZ, HATA_TX_HEIGHT_RANGE_M, HATA_RX_HEIGHT_RANGE_M, COST231_FREQ_RANGE_MHZ } from './hata-model';
 import { computeSiteSignalAtPoint, ResolvedSiteParams } from './site-signal';
 import { getLandCoverClass, environmentFromWorldCoverClass, WorldCoverClass } from './landcover-provider';
+import { MAX_RADIUS_M } from './coverage-grid';
 import { sumPowersDbm } from './units';
 import { thermalNoiseDbm, thermalNoiseEquation } from './noise';
 import { LOG_DISTANCE_ENVIRONMENT_PRESETS } from './log-distance-model';
@@ -235,6 +236,15 @@ export async function calculateMultiSiteInterference(input: InterferenceGridInpu
   if (!(input.radiusM > 0)) {
     return errResult({ reason: 'radiusM must be a positive number', missingInputs: ['radiusM'] });
   }
+  if (input.radiusM > MAX_RADIUS_M) {
+    // Same request-level guard as coverage-grid.ts's own check (imported
+    // constant, not redefined) — see that file's comment for why.
+    return errResult({
+      reason: `radiusM exceeds the ${MAX_RADIUS_M / 1000}km cap for a single calculation`,
+      missingInputs: [],
+      availableInputs: { radiusM: input.radiusM, maxRadiusM: MAX_RADIUS_M },
+    });
+  }
   if (!(input.bandwidthHz > 0)) {
     return errResult({ reason: 'bandwidthHz must be a positive number', missingInputs: ['bandwidthHz'] });
   }
@@ -282,6 +292,7 @@ export async function calculateMultiSiteInterference(input: InterferenceGridInpu
       const signals: {
         site: InterferenceSiteInput; dbm: number; combinedLossDb: number; azimuthOffsetDeg: number; elevationOffsetDeg: number;
         losClassification: LosClassification | undefined; fresnelClearancePercent: number | null | undefined;
+        terrainDataResolved: boolean | undefined;
       }[] = [];
       for (const { site, params } of resolvedSites) {
         const signal = await computeSiteSignalAtPoint(params, cellLat, cellLon, logger);
@@ -290,13 +301,14 @@ export async function calculateMultiSiteInterference(input: InterferenceGridInpu
             site, dbm: signal.totalReceivedPowerDbm, combinedLossDb: signal.combinedLossDb,
             azimuthOffsetDeg: signal.azimuthOffsetDeg, elevationOffsetDeg: signal.elevationOffsetDeg,
             losClassification: signal.losClassification, fresnelClearancePercent: signal.fresnelClearancePercent,
+            terrainDataResolved: signal.terrainDataResolved,
           });
           if (signal.modelWarnings) for (const w of signal.modelWarnings) itmModelWarnings.add(w);
         }
       }
 
       if (signals.length === 0) {
-        cells.push({ lat: cellLat, lon: cellLon, row, col, servingSiteId: null, servingDbm: null, sinrDb: null, losClassification: undefined, fresnelClearancePercent: undefined });
+        cells.push({ lat: cellLat, lon: cellLon, row, col, servingSiteId: null, servingDbm: null, sinrDb: null, losClassification: undefined, fresnelClearancePercent: undefined, terrainDataResolved: undefined });
         noDataCount++;
         continue;
       }
@@ -310,6 +322,7 @@ export async function calculateMultiSiteInterference(input: InterferenceGridInpu
         lat: cellLat, lon: cellLon, row, col,
         servingSiteId: serving.site.id, servingDbm: serving.dbm, sinrDb,
         losClassification: serving.losClassification, fresnelClearancePercent: serving.fresnelClearancePercent,
+        terrainDataResolved: serving.terrainDataResolved,
       };
       cells.push(cell);
 

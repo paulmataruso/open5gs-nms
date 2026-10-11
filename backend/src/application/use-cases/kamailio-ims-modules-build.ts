@@ -35,6 +35,50 @@ export const CMD_C_MARKER = 'NMS patch, confirmed live 2026-09-12 against a real
 export const SAVE_C_MARKER = 'same fallback shape as';
 export const CCR_C_MARKER = 'NMS patch, confirmed live 2026-09-17 against a real SigScale OCS';
 export const ROC_C_MARKER = 'this deployment\'s own';
+export const CDP_COMMON_C_MARKER = 'NMS patch 2026-10-01';
+export const CDP_ACCTSM_C_MARKER = 'NMS patch 2026-10-01';
+export const SECVERIFY_C_MARKER = 'IPSEC_FORWARD_ADD_SECVERIFY';
+export const CDP_MOD_C_MARKER = 'NMS patch: cdp process slot';
+
+// Real bug, fixed live 2026-08-02 and nearly lost again 2026-10-03: stock
+// cdp_mod.c registers one fewer process slot than the module actually forks
+// (`2 + workers + 2*peers`, when the timer process is a third fixed one on top
+// of the two accounted for), so cdp's own timer fails to start with "Process
+// limit exceeded" -- which takes out Cx/Rx Diameter, i.e. every HSS and PCRF
+// interaction P/I/S-CSCF make, under load.
+//
+// This lived ONLY as an inline `sed` inside ims-controller.ts's Install step,
+// guarded by a bare `cdp.so.patched` marker file. That combination lost the fix
+// silently and completely: the Kamailio 6.0.8 source build's own `make install`
+// replaced cdp.so (2026-10-03) with a build carrying CDP_COMMON_C_PATCH and
+// CDP_ACCTSM_C_PATCH but NOT this one, while the Aug-2 marker file stayed
+// behind -- so Install's own `[ -f "$MARKER" ] && exit 0` guaranteed it would
+// never be reapplied either. Exactly the "fixing the build script doesn't
+// retroactively patch an already-built module" class CLAUDE.md documents, with
+// a stale marker making it permanent rather than merely stale.
+//
+// It is a real patch constant now so the 6.0.8 pipeline applies it like every
+// other one, and Install's marker is content-hashed rather than presence-only.
+// Confirmed byte-identical applicability against all three source trees on this
+// host (5.8.8+ubuntu24.04, the ims-modules tree, and the 6.0.8 tree).
+export const CDP_MOD_C_PATCH = String.raw`--- a/src/modules/cdp/cdp_mod.c
++++ b/src/modules/cdp/cdp_mod.c
+@@ -258,8 +258,12 @@
+ 	}
+ #endif
+ 
+-	register_procs(2 + config->workers + 2 * config->peers_cnt);
+-	cfg_register_child(2 + config->workers + 2 * config->peers_cnt);
++	/* NMS patch: cdp process slot -- cdp forks a third fixed process (the
++	 * timer) beyond the two counted here, so the stock count is one short and
++	 * the timer dies with "Process limit exceeded", taking Cx/Rx Diameter with
++	 * it under load. */
++	register_procs(3 + config->workers + 2 * config->peers_cnt);
++	cfg_register_child(3 + config->workers + 2 * config->peers_cnt);
+ 	return 0;
+ }
+ 
+`;
 
 // Real bug, root-caused and fixed live 2026-09-12 against the stock (unmodified)
 // ims_ipsec_pcscf Kamailio module (kamailio-ims-modules package, NOT this
@@ -143,6 +187,87 @@ export const CMD_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cmd.c
  		goto cleanup;
 `;
 
+// Kamailio 6.x-scoped variant of CMD_C_PATCH above, used by
+// kamailio-source-build.ts (the 6.0.8 git-source build), NOT kamailio-ims-modules-build.ts
+// itself. Confirmed live 2026-09-29: Kamailio's own upstream already fixed the second bug
+// CMD_C_PATCH fixes (the reg_state stomp, hunk 4 above -- `ci.reg_state =
+// pcontact->reg_state;` already exists verbatim in a pristine, unmodified 6.0.8 checkout,
+// at the exact same semantic location) somewhere between 5.8.8 and 6.0.8 -- applying
+// CMD_C_PATCH unmodified against 6.0.8 still "succeeds" via patch's fuzz-2 leniency, but
+// silently produces a REAL duplicate-assignment bug (confirmed live: two consecutive
+// `ci.reg_state = pcontact->reg_state;` lines), not just a cosmetic/harmless no-op. The
+// first bug (the ipsec_create() unconditional hard-fail on NULL security_temp, hunks 1-3)
+// is still genuinely present in 6.0.8 -- confirmed via a real `patch --fuzz=0` dry-run,
+// those three hunks apply with only line-offset, no fuzz, meaning the surrounding code is
+// byte-identical to 5.8.8 there. So: same fix, hunk 4 dropped for this target only.
+export const CMD_C_PATCH_KAMAILIO6 = String.raw`--- a/src/modules/ims_ipsec_pcscf/cmd.c
++++ b/src/modules/ims_ipsec_pcscf/cmd.c
+@@ -841,13 +841,23 @@
+ 		goto cleanup;
+ 	}
+ 
+-	// Get security parameters
+-	if(pcontact->security_temp == NULL) {
+-		LM_ERR("No security parameters found in contact\n");
+-		goto cleanup;
+-	}
+-
+-	if(pcontact->security_temp->type != SECURITY_IPSEC) {
++	// NMS patch, confirmed live 2026-09-12 against a real iOS UE: this used
++	// to hard-fail here unconditionally whenever security_temp was NULL --
++	// but that's the normal, expected state for a contact record keyed by a
++	// UE's newly-negotiated protected port on its very first successful
++	// registration (as opposed to a later refresh): the 401 challenge's own
++	// ipsec_create() call populated security_temp on a DIFFERENT contact
++	// record (keyed by the UE's original, unprotected port), and nothing
++	// ever links the two. The "re-registration" branch below already
++	// doesn't actually need security_temp -- it derives everything from
++	// req_sec_params (parsed fresh from the current REGISTER request) and
++	// only *optionally* touches security_temp for old_s, already guarded by
++	// a NULL check. So: stop hard-failing here: only fail where
++	// security_temp is actually dereferenced without a request-derived
++	// fallback available, exactly at that point below instead of
++	// pre-emptively here.
++	if(pcontact->security_temp != NULL
++			&& pcontact->security_temp->type != SECURITY_IPSEC) {
+ 		LM_ERR("Unsupported security type: %d\n",
+ 				pcontact->security_temp->type);
+ 		goto cleanup;
+@@ -868,7 +878,8 @@
+ 
+ 	// Update contacts only for initial registration, for re-registration the existing contacts shouldn't be updated.
+ 	if(ci.via_port == SIP_PORT
+-			|| (pcontact->security_temp->data.ipsec->port_ps == 0
++			|| (pcontact->security_temp != NULL
++					&& pcontact->security_temp->data.ipsec->port_ps == 0
+ 					&& pcontact->security_temp->data.ipsec->port_pc == 0)) {
+ 		LM_DBG("Registration for contact with AOR [%.*s], VIA [%d://%.*s:%d], "
+ 			   "received_host [%d://%.*s:%d]\n",
+@@ -876,10 +887,20 @@
+ 				ci.via_host.s, ci.via_port, ci.received_proto,
+ 				ci.received_host.len, ci.received_host.s, ci.received_port);
+ 
+-		if(req_sec_params == NULL)
++		if(req_sec_params == NULL) {
++			// NMS patch: previously an unconditional (and, per the removed
++			// check above, now possibly NULL) dereference -- guard it
++			// explicitly instead of relying on the check that used to sit
++			// above this whole if/else.
++			if(pcontact->security_temp == NULL) {
++				LM_ERR("No security parameters found in contact or "
++					   "request\n");
++				goto cleanup;
++			}
+ 			s = pcontact->security_temp->data.ipsec;
+-		else
++		} else {
+ 			s = req_sec_params->data.ipsec;
++		}
+ 	} else {
+ 		LM_DBG("RE-Registration for contact with AOR [%.*s], VIA "
+ 			   "[%d://%.*s:%d], received_host [%d://%.*s:%d]\n",
+`;
+
 // Real bug, root-caused and fixed live 2026-09-12 in the stock (unmodified)
 // ims_registrar_pcscf Kamailio module: save.c's update_contacts() (fired on
 // the authenticated REGISTER's 200 OK, the only place that promotes a contact
@@ -159,11 +284,17 @@ export const CMD_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cmd.c
 // its reg_state is wrong. Fixed with a via-URI-based fallback search before
 // giving up -- same shape as this same module's own getContactP() /
 // is_registered_fallback2ip.
+// Verified live 2026-09-29 with a real `patch -p1 --forward --batch --fuzz=0` dry-run
+// (this constant already applied cleanly even before this note -- regenerated via a real
+// diff -u for the same blank-context-line robustness as CCR_C_PATCH/IMS_RO_C_PATCH below,
+// not because this one was ever observed to fail). Also confirmed to apply unmodified
+// against a pristine Kamailio 6.0.8 tree -- unlike CMD_C_PATCH, save.c has no 6.x-specific
+// variant.
 export const SAVE_C_PATCH = String.raw`--- a/src/modules/ims_registrar_pcscf/save.c
 +++ b/src/modules/ims_registrar_pcscf/save.c
-@@ -228,19 +228,38 @@
+@@ -254,19 +254,38 @@
  				}
-
+ 
  				ul.lock_udomain(_d, &puri.host, port, puri.proto);
 -				if(ul.get_pcontact(_d, &ci, &pcontact, 0)
 -						!= 0) { //need to insert new contact
@@ -267,12 +398,19 @@ export const SAVE_C_PATCH = String.raw`--- a/src/modules/ims_registrar_pcscf/sav
 // reservation granted, a clean CCA on CCR-Terminate, and -- verified
 // directly against OCS's own Mnesia bucket record, not just the CCA -- a
 // real 5-second debit against the subscriber's granted allowance.
+// Verified live 2026-09-29 with a real `patch -p1 --forward --batch --fuzz=0` dry-run
+// against a freshly cloned, unmodified Kamailio 6.0.8 tree (same file/line-numbers as
+// 5.8.8 here -- this module's ccr.c was untouched upstream between versions) -- also
+// reused as-is by kamailio-source-build.ts for the 6.x build path. Kept in this exact
+// diff -u-produced form (blank context lines are a single space + newline, not empty --
+// a previous hand-rolled version of this constant used empty context lines, which only
+// ever applied via patch's fuzz-2 leniency, confirmed live to fail at --fuzz=0).
 export const CCR_C_PATCH = String.raw`--- a/src/modules/ims_charging/ccr.c
 +++ b/src/modules/ims_charging/ccr.c
-@@ -277,11 +277,32 @@
+@@ -277,11 +277,32 @@ AAAMessage *Ro_write_CCR_avps(AAAMessage *ccr, Ro_CCR_t *x)
  			goto error;
  	}
-
+ 
 -	if(!cdp_avp->base.add_Accounting_Record_Type(
 -			   &(ccr->avpList), x->acct_record_type))
 -		goto error;
@@ -305,13 +443,18 @@ export const CCR_C_PATCH = String.raw`--- a/src/modules/ims_charging/ccr.c
 +	 */
 +	if(!cdp_avp->base.add_Auth_Application_Id(&(ccr->avpList), IMS_Ro))
  		goto error;
-
+ 
  	if(x->user_name)
 `;
 
+// Verified live 2026-09-29 with a real `patch -p1 --forward --batch --fuzz=0` dry-run
+// against a freshly cloned, unmodified Kamailio 6.0.8 tree (same file/line-numbers as
+// 5.8.8 here -- this module's ims_ro.c was untouched upstream between versions) -- also
+// reused as-is by kamailio-source-build.ts for the 6.x build path. Same diff -u-produced
+// blank-context-line fix as CCR_C_PATCH above.
 export const IMS_RO_C_PATCH = String.raw`--- a/src/modules/ims_charging/ims_ro.c
 +++ b/src/modules/ims_charging/ims_ro.c
-@@ -158,6 +158,39 @@
+@@ -158,6 +158,39 @@ static void format_subscription_id(
  			subscription_id->s += 1;
  			subscription_id->len -= 1;
  		}
@@ -351,10 +494,10 @@ export const IMS_RO_C_PATCH = String.raw`--- a/src/modules/ims_charging/ims_ro.c
  	} else {
  		*subscription_id_type =
  				Subscription_Type_IMPU; //default is END_USER_SIP_URI
-@@ -806,10 +839,13 @@
+@@ -806,10 +839,13 @@ void send_ccr_interim(
  	if(!(ccr = Ro_new_ccr(auth, ro_ccr_data)))
  		goto error;
-
+ 
 -	if(!Ro_add_vendor_specific_appid(
 -			   ccr, IMS_vendor_id_3GPP, IMS_Ro, 0 /*acct id*/)) {
 -		LM_ERR("Problem adding Vendor specific ID\n");
@@ -369,23 +512,23 @@ export const IMS_RO_C_PATCH = String.raw`--- a/src/modules/ims_charging/ims_ro.c
  	ro_session->hop_by_hop += 1;
  	if(!Ro_add_cc_request(ccr, RO_CC_INTERIM, ro_session->hop_by_hop)) {
  		LM_ERR("Problem adding CC-Request data\n");
-@@ -1131,9 +1167,9 @@
-
+@@ -1131,9 +1167,9 @@ void send_ccr_stop_with_param(
+ 
  	LM_DBG("Created new CCR\n");
-
+ 
 -	if(!Ro_add_vendor_specific_appid(ccr, IMS_vendor_id_3GPP, IMS_Ro, 0)) {
 -		LM_ERR("Problem adding Vendor specific ID\n");
 -	}
 +	/* NMS patch, confirmed live 2026-09-17 -- see the sibling call site
 +	 * above and Ro_write_CCR_avps()'s own patch comment (ccr.c).
 +	 */
-
+ 
  	ro_session->hop_by_hop += 1;
  	if(!Ro_add_cc_request(ccr, RO_CC_STOP, ro_session->hop_by_hop)) {
-@@ -1449,10 +1485,9 @@
+@@ -1449,10 +1485,9 @@ int Ro_Send_CCR(struct sip_msg *msg, struct dlg_cell *dlg, int dir,
  	if(!(ccr = Ro_new_ccr(cc_acc_session, ro_ccr_data)))
  		goto error;
-
+ 
 -	if(!Ro_add_vendor_specific_appid(ccr, IMS_vendor_id_3GPP, IMS_Ro, 0)) {
 -		LM_ERR("Problem adding Vendor specific ID\n");
 -		goto error;
@@ -396,6 +539,325 @@ export const IMS_RO_C_PATCH = String.raw`--- a/src/modules/ims_charging/ims_ro.c
 
  	if(!Ro_add_cc_request(ccr, cc_event_type, cc_event_number)) {
  		LM_ERR("Problem adding CC-Request data\n");
+`;
+
+// Real bug found live 2026-10-01, a direct SIDE EFFECT of CCR_C_PATCH above (not a
+// separate, unrelated regression): removing Accounting-Record-Type/Number from every
+// CCR -- correct, since OCS's strict decoder rejects them -- means cdp's own GENERIC
+// "cc_acc" (Credit-Control Accounting client) session state machine, which `ims_charging`
+// uses for every Ro session (AAACreateCCAccSession() in ims_ro.c), can no longer tell
+// what kind of CCR is being sent: cc_acc_client_stateful_sm_process() (cdp's own
+// acctstatemachine.c, confirmed byte-identical between the original 5.8.8 tree and this
+// 6.0.8 one -- this has always been cdp's behavior, not a 6.0.8 regression) reads
+// Accounting-Record-Type specifically to decide START vs UPDATE vs TERMINATE, and with
+// it gone, every CCR falls through to a `default:` branch logging "Sending CCR with
+// no/incorrect accounting record type AVP" and never advances the session out of
+// ACC_CC_ST_IDLE. Confirmed via full source trace (and an isolated scratch-copy
+// compile/link of a patched `cdp` module in full, zero warnings/errors) that this does
+// NOT block the CCR-Initial from transmitting at all (nothing on the send path actually
+// checks this session state) -- but it DOES permanently block
+// ims_charging/ims_ro.c's send_ccr_interim(), which explicitly requires
+// state == ACC_CC_ST_OPEN before sending a mid-call CCR-Update, a state this session can
+// now never reach. Net effect: once a call's initial Ro reservation window elapses
+// (interim_update_credits=30 in this deployment's kamailio_scscf.cfg; OCS has been
+// observed granting 60s regardless of the 30s requested, with the renewal timer armed at
+// granted-minus-buffer, so in practice this needs a call longer than ~55s to surface),
+// the renewal CCR-Update silently never fires and the call's own timer is abandoned
+// rather than ever being correctly renewed or the dialog explicitly torn down -- a
+// billing-continuity gap (the call keeps running, OCS never meters/bills any time spent
+// beyond the first reservation), not a dropped-call symptom. Confirmed via this
+// deployment's own OCS accounting log: across 117 historical real Ro-voice sessions,
+// zero ever contain a CC-Request-Type=2 (interim) record.
+//
+// Fix: cdp itself gets a new, narrowly-scoped fallback -- when Accounting-Record-Type is
+// entirely absent (the exact condition CCR_C_PATCH produces), re-derive the same
+// "what kind of CCR is this" signal from CC-Request-Type (AVP 416, RFC 4006 section 8.3,
+// mandatory on every real CCR -- confirmed ims_charging's own Ro_add_cc_request() always
+// adds it on every CCR-Initial/Interim/Stop path), mapped onto the numbering the existing
+// switch statements already handle. The original Accounting-Record-Type check still runs
+// first and still wins whenever present, so this only ever engages in the one specific
+// case this deployment's own CCR_C_PATCH created. Confirmed (via a tree-wide grep) that
+// `ims_charging` is cdp's ONLY consumer anywhere of AAACreateCCAccSession/ACCT_CC_CLIENT/
+// ACC_CC_ST_*/ACC_CC_EV_* -- this cannot affect VoWiFi's S6b or OCS's own SMF-side Gy
+// peer, both freeDiameter-based, not cdp-based. Verified via an isolated scratch-copy
+// full `make cdp.so` rebuild (not a syntax-only check) -- zero warnings (including
+// -Wimplicit-function-declaration/-Wimplicit-int), zero errors, clean link, both new and
+// existing symbols present via `nm -D`.
+//
+// NOT currently wired into this file's own buildKamailioImsModulesScript() below, since
+// that script never rebuilds cdp.so at all (only ims_ipsec_pcscf/ims_registrar_pcscf/
+// ims_charging, reusing the apt-installed stock cdp) -- this patch only takes effect via
+// kamailio-source-build.ts's 6.0.8 pipeline, which already includes 'cdp' in
+// REQUIRED_MODULES. If this project ever extends the 5.8.8 path to also rebuild cdp,
+// this same patch (confirmed byte-identical applicability against both trees' cdp source)
+// should be wired in there too.
+export const CDP_COMMON_C_PATCH = String.raw`--- a/src/modules/cdp/common.c
++++ b/src/modules/cdp/common.c
+@@ -18,6 +18,28 @@ int get_accounting_record_type(AAAMessage *msg)
+ 	return -1;
+ }
+
++/**
++ * NMS patch 2026-10-01: a pure Credit-Control (RFC 4006) client has no
++ * Accounting-Record-Type AVP at all -- that AVP belongs to Diameter Base
++ * Accounting (RFC 6733 section 9), not Credit-Control, and a strict peer
++ * can reject a CCR that carries it. get_accounting_record_type() then
++ * always returns -1 for such a client, which is exactly what
++ * cc_acc_client_stateful_sm_process() (acctstatemachine.c) otherwise reads
++ * as "unknown/malformed request". CC-Request-Type (AVP 416) is the
++ * Credit-Control-native equivalent -- RFC 4006 section 8.3 requires it on
++ * every CCR -- so this is a read-only lookup callers can use as a fallback
++ * signal for the same "what kind of request is this" question, without
++ * touching the existing Accounting-Record-Type check at all.
++ */
++int get_cc_request_type(AAAMessage *msg)
++{
++	AAA_AVP *avp = AAAFindMatchingAVP(msg, 0, AVP_CC_Request_Type, 0, 0);
++	if(avp && avp->data.len == 4) {
++		return get_4bytes(avp->data.s);
++	}
++	return -1;
++}
++
+ int get_result_code(AAAMessage *msg)
+ {
+ 	AAA_AVP *avp, *avp2;
+--- a/src/modules/cdp/common.h
++++ b/src/modules/cdp/common.h
+@@ -14,6 +14,7 @@
+
+ int get_result_code(AAAMessage *msg);
+ int get_accounting_record_type(AAAMessage *msg);
++int get_cc_request_type(AAAMessage *msg);
+
+
+ #endif /* COMMON_H_ */
+`;
+
+// See CDP_COMMON_C_PATCH's own comment above for the full rationale -- this is the other
+// half of the same fix, wiring get_cc_request_type() into the 3 places
+// cc_acc_client_stateful_sm_process() calls get_accounting_record_type() as a fallback
+// that only engages when the latter returns -1 (AVP absent entirely). Fails closed: a
+// message that HAS the AVP but with some other unrecognized value, or that lacks BOTH
+// AVPs, still falls through to the original (unchanged) error path.
+export const CDP_ACCTSM_C_PATCH = String.raw`--- a/src/modules/cdp/acctstatemachine.c
++++ b/src/modules/cdp/acctstatemachine.c
+@@ -126,6 +126,24 @@ int cc_acc_client_stateful_sm_process(
+ 				case ACC_CC_EV_SEND_REQ: //were sending a message - CCR
+ 					//assert this is an initial request. we can't move from IDLE with anything else
+ 					record_type = get_accounting_record_type(msg);
++					if(record_type == -1) {
++						/* NMS patch 2026-10-01: no Accounting-Record-Type AVP
++						 * at all on this CCR (a pure Credit-Control client
++						 * that never sends Diameter Base Accounting AVPs --
++						 * see get_cc_request_type()'s own comment in
++						 * common.c). Re-derive the same "is this a START"
++						 * signal from CC-Request-Type instead, mapped onto
++						 * the Accounting-Record-Type numbering the switch
++						 * below already understands, so every existing case
++						 * runs completely unchanged. Only engages when the
++						 * AVP this code was originally written for is
++						 * missing entirely -- a message that HAS the AVP but
++						 * with some other unrecognized value still falls
++						 * through to the original error below, unchanged. */
++						if(get_cc_request_type(msg)
++								== AVP_CC_Request_Type_Initial_Request)
++							record_type = 2 /*START RECORD*/;
++					}
+ 					switch(record_type) {
+ 						case 2 /*START RECORD*/:
+ 							LM_DBG("sending CCR START record on session\n");
+@@ -152,6 +170,22 @@ int cc_acc_client_stateful_sm_process(
+ 				case ACC_CC_EV_SEND_REQ: //were sending a message - CCR
+ 					//make sure it is either an update or a termination.
+ 					record_type = get_accounting_record_type(msg);
++					if(record_type == -1) {
++						/* NMS patch 2026-10-01: see the matching fallback in
++						 * the ACC_CC_ST_IDLE/ACC_CC_EV_SEND_REQ case above
++						 * for the full rationale. Same mapping, covering the
++						 * Update and Termination requests sent from OPEN. */
++						switch(get_cc_request_type(msg)) {
++							case AVP_CC_Request_Type_Update_Request:
++								record_type = 3 /*UPDATE RECORD*/;
++								break;
++							case AVP_CC_Request_Type_Termination_Request:
++								record_type = 4 /*TERMINATE RECORD*/;
++								break;
++							default:
++								break;
++						}
++					}
+ 					switch(record_type) {
+ 						case 3 /*UPDATE RECORD*/:
+ 							LM_DBG("sending CCR UPDATE record on session\n");
+@@ -247,8 +281,11 @@ int cc_acc_client_stateful_sm_process(
+ 			 * In this event you would incorrectly ignore the CCR-T
+ 			 * Solution is to change state to change state to ACC_CC_ST_PENDING_T if CCR-T is sent while in this state  */
+ 			if(event == ACC_CC_EV_SEND_REQ && msg
+-					&& get_accounting_record_type(msg)
+-							   == 4 /*TERMINATE RECORD*/) {
++					&& (get_accounting_record_type(msg) == 4 /*TERMINATE RECORD*/
++							/* NMS patch 2026-10-01: same Accounting-Record-Type-
++							 * absent fallback as the IDLE/OPEN cases above. */
++							|| get_cc_request_type(msg)
++									   == AVP_CC_Request_Type_Termination_Request)) {
+ 				LM_ERR("Received CCR-T while in state ACC_CC_ST_PENDING_U, "
+ 					   "just going to change to ACC_CC_ST_PENDING_T\n");
+ 				s->u.cc_acc.state = ACC_CC_ST_PENDING_T;
+`;
+
+// Real bug found live 2026-10-01: a real Google Pixel 7 (5G-attached, Android build
+// CP3A.260905.009) could neither place nor receive any IMS voice call -- confirmed via a
+// live, manually-decoded packet capture (the IPsec SA uses cipher_null, so the ESP
+// payload is in the clear under a thin wrapper) that the device's own IMS stack sends a
+// `100 Trying` then, within the same second, a deliberate `480 Temporarily not available`
+// (confirmed genuinely from the device -- `Server: Google_Pixel7_Android ...` in the
+// response) for every single call-establishing INVITE delivered to it, regardless of
+// caller (reproduced with a caller-agnostic test that has zero 4G/charging/N5 involvement
+// on the caller side at all, isolating this to the MT/network-to-UE delivery path). The
+// Pixel's own OPTIONS-keepalive 200 OK responses (unrelated to any call, always healthy)
+// unconditionally declare `Require: sec-agree` / `Proxy-Require: sec-agree` (RFC 3329 IMS
+// security-mechanism-agreement) -- i.e. its IMS stack treats sec-agree confirmation as
+// mandatory. The actual INVITE P-CSCF forwards to it has no `Security-Verify` header at
+// all. Root-caused in `ims_ipsec_pcscf/cmd.c`'s `ipsec_forward()` (the function used for
+// EVERY UE's MT delivery, including this deployment's own real, already-working iPhone):
+// confirmed via direct source read that it only ever adds `Require`/`Security-Verify`
+// sec-agree headers on a REGISTER 200 OK reply (gated explicitly on `SIP_REPLY` + status
+// 200 + the original request being a REGISTER) -- never on an INVITE in either direction.
+// Confirmed this is stock, unmodified-by-this-project upstream Kamailio 6.0.8 behavior,
+// not a regression introduced by CMD_C_PATCH_KAMAILIO6/SAVE_C_PATCH above (both touch
+// different functions -- ipsec_create()'s REGISTER-time security_temp handling and
+// save.c's contact-promotion fallback, respectively -- neither anywhere near
+// ipsec_forward(); confirmed via this deployment's own `ip xfrm state`/P-CSCF logs that
+// the Pixel's contact and SA were cleanly resolved with zero errors for the failing
+// transaction, ruling out a stale/mismatched-contact explanation too). Most likely
+// explanation for why this previously worked: the Pixel's own Android build started
+// strictly enforcing sec-agree on calls via an OTA update, exposing a long-standing gap
+// in this project's own P-CSCF config that real-world devices had simply tolerated until
+// now -- not a server-side regression, but the correct fix regardless, since RFC
+// 3329/3GPP TS 24.229-compliant behavior is to confirm sec-agree on every request over an
+// IPsec-protected tunnel, not just REGISTER.
+//
+// Fix: a new opt-in flag bit (IPSEC_FORWARD_ADD_SECVERIFY, confirmed via a real grep that
+// bits 0-9 are the only ones already in use) and a new add_security_verify_header()
+// function -- byte-identical parameter syntax to this same file's own, already-working
+// add_security_server_header() (3GPP TS 24.229 / RFC 3329 -- Security-Server and
+// Security-Verify share an identical grammar, just at different protocol phases), reusing
+// the exact same `ipsec_t *s` pointer ipsec_forward() already resolved and validated
+// moments earlier for this same packet, so there's no new lookup and no new failure mode.
+// Wired into ipsec_forward() gated on `SIP_REQUEST` (never fires for a reply, so it can
+// never collide with the existing REGISTER-200-OK block, which is gated on SIP_REPLY --
+// mutually exclusive on message type) and the new flag bit, which is deliberately opted
+// into from exactly ONE call site in this project's own P-CSCF config
+// (route[MT]'s initial-request ipsec_forward() call in mt.cfg) -- REGISTER processing,
+// MO-direction forwarding, and in-dialog MT requests (route[MT_indialog]) are all left
+// completely unchanged, matching 3GPP's own scoping of sec-agree confirmation to initial
+// requests. Verified via a real, isolated `make` of just this module against a freshly
+// patched copy of the real live source tree (not a syntax-only check): clean compile,
+// zero warnings (including with -Wall -Wextra -Wimplicit-function-declaration added), the
+// new `add_security_verify_header` symbol confirmed present via `nm -D` alongside the
+// pre-existing `add_security_server_header`.
+export const SECVERIFY_C_PATCH = String.raw`--- a/src/modules/ims_ipsec_pcscf/cmd.c
++++ b/src/modules/ims_ipsec_pcscf/cmd.c
+@@ -100,6 +100,21 @@
+ #define IPSEC_FORWARD_USEVIA (1 << 8)
+ /* if set - try TCP if corresponding UDP socket is not found */
+ #define IPSEC_FORWARD_TRYTCP (1 << 9)
++/* NMS patch, confirmed live 2026-10-01: if set - add Require/Security-Verify
++ * sec-agree headers (RFC 3329) to a request being forwarded into a UE's
++ * IPsec tunnel. Upstream only ever adds these on a REGISTER 200 OK reply
++ * (see the existing block in ipsec_forward() below) -- never on an INVITE,
++ * in either direction. A real device (confirmed: a Google Pixel 7 running a
++ * 2026-09 Android build) was found live to require sec-agree confirmation
++ * on every call-establishing INVITE too, not just REGISTER -- it silently
++ * rejects (480, no ring, matching a real "no mobile network" dialer error)
++ * an otherwise completely valid INVITE delivered correctly over its own
++ * already-established IPsec SA, purely because this confirmation is
++ * missing. Scoped to its own opt-in flag bit so it only applies where
++ * explicitly requested (route[MT]'s initial-request ipsec_forward() call)
++ * -- REGISTER processing, MO-direction forwarding, and in-dialog MT
++ * requests are all unaffected. */
++#define IPSEC_FORWARD_ADD_SECVERIFY (1 << 10)
+
+ /* if set - delete unused tunnels before every registration */
+ #define IPSEC_CREATE_DELETE_UNUSED_TUNNELS 0x01
+@@ -809,6 +824,50 @@
+ 	return 0;
+ }
+
++// NMS patch, confirmed live 2026-10-01: same parameter syntax as
++// add_security_server_header() above (3GPP TS 24.229 / RFC 3329 -- the two
++// headers share an identical grammar, just at different protocol phases),
++// used to confirm the already-negotiated IPsec SA on a request being
++// forwarded into it, gated behind IPSEC_FORWARD_ADD_SECVERIFY. See that
++// flag's own comment for the full rationale.
++int add_security_verify_header(struct sip_msg *m, ipsec_t *s)
++{
++	str *sec_header = NULL;
++	if((sec_header = pkg_malloc(sizeof(str))) == NULL) {
++		LM_ERR("Error allocating pkg memory for security-verify header\n");
++		return -1;
++	}
++	memset(sec_header, 0, sizeof(str));
++
++	char sec_hdr_buf[1024];
++	memset(sec_hdr_buf, 0, sizeof(sec_hdr_buf));
++	sec_header->len = snprintf(sec_hdr_buf, sizeof(sec_hdr_buf) - 1,
++			"Security-Verify: "
++			"ipsec-3gpp;q=0.1;prot=esp;mod=trans;spi-c=%d;spi-s=%d;port-c=%d;"
++			"port-s=%"
++			"d;alg=%.*s;ealg=%.*s\r\n",
++			s->spi_pc, s->spi_ps, s->port_pc, s->port_ps, s->r_alg.len,
++			s->r_alg.s, s->r_ealg.len, s->r_ealg.s);
++
++	if((sec_header->s = pkg_malloc(sec_header->len)) == NULL) {
++		LM_ERR("Error allocating pkg memory for security-verify payload\n");
++		pkg_free(sec_header);
++		return -1;
++	}
++	memcpy(sec_header->s, sec_hdr_buf, sec_header->len);
++
++	if(cscf_add_header(m, sec_header, HDR_OTHER_T) != 1) {
++		LM_ERR("Error adding security-verify header to request!\n");
++		pkg_free(sec_header->s);
++		pkg_free(sec_header);
++		return -1;
++	}
++
++	pkg_free(sec_header);
++
++	return 0;
++}
++
+ int ipsec_create(struct sip_msg *m, udomain_t *d, int _cflags)
+ {
+ 	pcontact_t *pcontact = NULL;
+@@ -1260,6 +1319,25 @@
+
+ 	ret = IPSEC_CMD_SUCCESS; // all good, return SUCCESS
+
++	// NMS patch, confirmed live 2026-10-01: see IPSEC_FORWARD_ADD_SECVERIFY's
++	// own comment for the full rationale. Placed before the sibling
++	// REGISTER-200-OK block below (mirrors its own error-handling shape --
++	// a failure here still reports the already-set SUCCESS, same as that
++	// block already does) so a request that needs it gets it regardless of
++	// anything that block does, and vice versa; the two conditions
++	// (SIP_REQUEST here, SIP_REPLY there) are mutually exclusive on the
++	// very first line of this function, so they can never both fire for
++	// the same message.
++	if(m->first_line.type == SIP_REQUEST
++			&& (_cflags & IPSEC_FORWARD_ADD_SECVERIFY)) {
++		if(add_require_secagree_header(m) != 0) {
++			goto cleanup;
++		}
++		if(add_security_verify_header(m, s) != 0) {
++			goto cleanup;
++		}
++	}
++
+ 	if(m->first_line.type == SIP_REPLY
+ 			&& m->first_line.u.reply.statuscode == 200
+ 			&& req->first_line.u.request.method_value == METHOD_REGISTER) {
 `;
 
 export const IMS_MODULES_BUILD_STEPS = [

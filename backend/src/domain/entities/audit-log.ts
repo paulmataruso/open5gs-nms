@@ -55,6 +55,10 @@ export type AuditAction =
   | 'frr_source_build_complete'
   | 'frr_source_build_failed'
   | 'frr_source_build_rollback'
+  | 'kamailio_source_build_start'
+  | 'kamailio_source_build_rollback'
+  | 'rtpengine_source_build_start'
+  | 'rtpengine_source_build_rollback'
   | 'sms_install'
   | 'sms_uninstall'
   | 'sms_configure'
@@ -263,7 +267,11 @@ export type AuditAction =
   | 'cdr_sync_force_run'
   | 'cdr_kamailio_acc_enable'
   | 'cdr_kamailio_acc_disable'
-  | 'ocs_reservation_guard_sweep';
+  | 'ocs_reservation_guard_sweep'
+  | 'pyhss_diameter_guard_restart'
+  | 'fresh_host_bootstrap'
+  | 'backup_restart_after_restore'
+  | 'backup_full_restore';
 
 export interface AuditLogEntry {
   id: string;

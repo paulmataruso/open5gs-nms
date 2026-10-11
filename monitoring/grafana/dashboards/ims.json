@@ -1,0 +1,298 @@
+{
+  "title": "IMS / VoLTE Network Dashboard",
+  "uid": "ims-main",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "ims", "volte", "sip"],
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "📞 IMS Overview", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "IMS Subscribers",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_ims_subs", "legendFormat": "IMS Subscribers", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Active Calls",
+      "description": "S-CSCF's own dialog_ng:active — the single authoritative source (not summed across instances).",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_dialogs_active{role=\"scscf\"}", "legendFormat": "Active Calls", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Active Registrations",
+      "description": "S-CSCF's own ims_usrloc_scscf:active_contacts.",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_registered_contacts{role=\"scscf\"}", "legendFormat": "Active Registrations", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Active Media Sessions (rtpengine)",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_sessions_active", "legendFormat": "Active Media Sessions", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Kamailio Instances Up",
+      "description": "min() across all 4 roles' own open5gs_ims_kamailio_up — 1 only if every instance's last kamcmd query succeeded.",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "min(open5gs_ims_kamailio_up)", "legendFormat": "Kamailio", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "rtpengine Up",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_up", "legendFormat": "rtpengine", "refId": "A" }]
+    },
+
+    { "id": 10, "type": "row", "title": "📡 Diameter — PyHSS (Cx / Peer Connectivity)", "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 11, "type": "timeseries", "title": "HSS Cx Diameter Messages",
+      "description": "PyHSS's own prom_diam_*_application_id_total counters (application_id=16777216 is Cx), split by diameter_cmd_code (300=UAR, 301=SAR, 302=LIR, 303=MAR). Same data as the main Open5GS dashboard's own Cx panel, included here for a self-contained IMS view.",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_request_count_application_id_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"303\"}", "legendFormat": "MAR", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_response_count_application_id_successful_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"303\"}", "legendFormat": "MAA", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_request_count_application_id_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"301\"}", "legendFormat": "SAR", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_request_count_application_id_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"300\"}", "legendFormat": "UAR", "refId": "D" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "PyHSS Diameter Watchdog Success Rate",
+      "description": "Success rate of Diameter's own DWR/DWA watchdog keepalive — a real connectivity signal, independent of whether any Cx traffic is happening. No data when there's been no recent watchdog exchange.",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit", "custom": { "lineWidth": 2, "fillOpacity": 5 }, "max": 1, "min": 0 } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(prom_diam_response_count_application_id_successful_total{diameter_application_id=\"0\",diameter_cmd_code=\"280\"}[5m]) / rate(prom_diam_request_count_application_id_total{diameter_application_id=\"0\",diameter_cmd_code=\"280\"}[5m])", "legendFormat": "DWA / DWR Success Rate", "refId": "A" }]
+    },
+
+    { "id": 15, "type": "row", "title": "💬 Kamailio — SIP Signaling", "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 16, "type": "timeseries", "title": "SIP Requests by Method × Instance",
+      "description": "Cumulative since each instance's own last restart (resets to 0 on a kamailio-<role> restart — a real, frequent event, every IMS Configure click restarts these processes).",
+      "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_sip_requests_total{method=~\"register|invite|bye|message\"}", "legendFormat": "{{role}} {{method}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 17, "type": "timeseries", "title": "SIP Replies by Class × Instance",
+      "gridPos": { "x": 12, "y": 15, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_sip_replies_total", "legendFormat": "{{role}} {{class}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 18, "type": "table", "title": "SIP Replies by Exact Code (401/404/407/480/486)",
+      "description": "Useful for spotting auth-challenge, not-found, proxy-auth, timeout, or busy spikes at a glance.",
+      "gridPos": { "x": 0, "y": 23, "w": 12, "h": 8 },
+      "options": { "showHeader": true },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_sip_replies_by_code_total", "legendFormat": "{{role}} {{code}}", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true } } }]
+    },
+    {
+      "id": 19, "type": "timeseries", "title": "SIP Transactions by Final Class × Instance",
+      "gridPos": { "x": 12, "y": 23, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_transactions_total", "legendFormat": "{{role}} {{class}}", "refId": "A" }]
+    },
+
+    { "id": 22, "type": "row", "title": "📇 Registrations & Dialogs", "gridPos": { "x": 0, "y": 31, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 23, "type": "timeseries", "title": "Registered Contacts / IMPUs by Instance",
+      "gridPos": { "x": 0, "y": 32, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_registered_contacts", "legendFormat": "{{role}} contacts", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_registered_impus", "legendFormat": "{{role}} IMPUs", "refId": "B" }
+      ]
+    },
+    {
+      "id": 24, "type": "timeseries", "title": "Registration Success/Failed by Instance",
+      "gridPos": { "x": 12, "y": 32, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_registration_success_total", "legendFormat": "{{role}} success", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_registration_failed_total", "legendFormat": "{{role}} failed", "refId": "B" }
+      ]
+    },
+    {
+      "id": 25, "type": "timeseries", "title": "Active / Processed Dialogs (P-CSCF, S-CSCF)",
+      "description": "I-CSCF is stateless routing — no dialog_ng group, so it never appears here.",
+      "gridPos": { "x": 0, "y": 40, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_dialogs_active", "legendFormat": "{{role}} active", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_dialogs_processed_total", "legendFormat": "{{role}} processed (cumulative)", "refId": "B" }
+      ]
+    },
+
+    { "id": 28, "type": "row", "title": "🎙️ VoLTE QoS — P-CSCF ↔ PCRF Rx (dedicated QCI=1 bearers)", "gridPos": { "x": 0, "y": 48, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 29, "type": "timeseries", "title": "Active Rx Sessions by Type",
+      "description": "CLAUDE.md architectural pattern #13 — the P-CSCF↔PCRF Rx interface that creates dedicated QCI=1 voice bearers for real ringing phones. This is the first dashboard visibility into this feature.",
+      "gridPos": { "x": 0, "y": 49, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_rx_registration_sessions_active", "legendFormat": "Registration", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_rx_media_sessions_active", "legendFormat": "Media (dedicated bearer)", "refId": "B" }
+      ]
+    },
+    {
+      "id": 30, "type": "timeseries", "title": "Rx AAR Success/Fail by Type",
+      "gridPos": { "x": 12, "y": 49, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_rx_aar_total", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+
+    { "id": 33, "type": "row", "title": "💳 Voice Charging (Ro) — Kamailio Side", "gridPos": { "x": 0, "y": 57, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 34, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 58, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "S-CSCF's own view of Ro sessions. For balance/billing detail, see the SigScale OCS dashboard." }
+    },
+    {
+      "id": 35, "type": "stat", "title": "Active Ro Sessions",
+      "gridPos": { "x": 0, "y": 60, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_ro_sessions_active", "legendFormat": "Active Ro Sessions", "refId": "A" }]
+    },
+    {
+      "id": 36, "type": "stat", "title": "Billed Seconds (cumulative)",
+      "gridPos": { "x": 4, "y": 60, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "s" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_ro_billed_seconds_total", "legendFormat": "Billed Seconds", "refId": "A" }]
+    },
+    {
+      "id": 37, "type": "timeseries", "title": "CCR Volume by Type × Result",
+      "gridPos": { "x": 8, "y": 60, "w": 16, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_ro_ccr_total", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+
+    { "id": 40, "type": "row", "title": "🔊 Media Relay (rtpengine)", "gridPos": { "x": 0, "y": 68, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 41, "type": "timeseries", "title": "Active / Transcoded Sessions",
+      "gridPos": { "x": 0, "y": 69, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_sessions_active", "legendFormat": "Active", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_sessions_transcoded", "legendFormat": "Transcoded", "refId": "B" }
+      ]
+    },
+    {
+      "id": 42, "type": "timeseries", "title": "Byte / Packet Rate (Kernel vs Userspace)",
+      "description": "Reveals whether the kernel-accelerated relay path is actually being used — real audio should mostly show up on the kernel plane once established.",
+      "gridPos": { "x": 12, "y": 69, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_byte_rate", "legendFormat": "{{plane}}", "refId": "A" }]
+    },
+    {
+      "id": 43, "type": "timeseries", "title": "RTP Port Pool Usage",
+      "gridPos": { "x": 0, "y": 77, "w": 8, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "max": 1, "min": 0 } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_port_pool_used / clamp_min(open5gs_ims_rtpengine_port_pool_max, 1)", "legendFormat": "Port pool used", "refId": "A" }]
+    },
+    {
+      "id": 44, "type": "timeseries", "title": "Call Quality — One-Way / Zero-Way Streams (cumulative)",
+      "description": "Direct signal for the B2BUA dual-dialog RTP relay gap class documented in CLAUDE.md architectural patterns #14 and #16 — a stream that only ever carries traffic in one direction, or never at all, is exactly what those real incidents looked like from rtpengine's own point of view. Resets to 0 on an rtpengine restart.",
+      "gridPos": { "x": 8, "y": 77, "w": 8, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_call_quality_streams_total", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+    {
+      "id": 45, "type": "timeseries", "title": "MOS Average",
+      "description": "Stays at 0 unless RTCP-based call-quality measurement has real data to report — this deployment's rtpengine.conf doesn't explicitly enable --measure-rtp, so a flat 0 here may just mean the feature isn't turned on, not that quality is bad.",
+      "gridPos": { "x": 16, "y": 77, "w": 8, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "max": 5, "min": 0 } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_mos_average", "legendFormat": "MOS", "refId": "A" }]
+    },
+    {
+      "id": 46, "type": "timeseries", "title": "Managed / Rejected / Timeout Sessions (cumulative)",
+      "gridPos": { "x": 0, "y": 85, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_managed_sessions_total", "legendFormat": "Managed", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_rejected_sessions_total", "legendFormat": "Rejected", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_rtpengine_timeout_sessions_total", "legendFormat": "Timeout", "refId": "C" }
+      ]
+    },
+
+    { "id": 50, "type": "row", "title": "🩺 Operational Health", "gridPos": { "x": 0, "y": 93, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 51, "type": "timeseries", "title": "Shared Memory Usage % by Instance",
+      "gridPos": { "x": 0, "y": 94, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "max": 1, "min": 0 } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_shmem_used_bytes / clamp_min(open5gs_ims_kamailio_shmem_total_bytes, 1)", "legendFormat": "{{role}}", "refId": "A" }]
+    },
+    {
+      "id": 52, "type": "timeseries", "title": "DNS Resolution Failures by Instance",
+      "description": "See CLAUDE.md gotcha #6/#18 — every 5GC NF and cdp-based Diameter peer does synchronous DNS resolution and fatally aborts (or, for cdp, fails the whole request) if it can't resolve. A nonzero count here is worth investigating immediately.",
+      "gridPos": { "x": 12, "y": 94, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_dns_failures_total", "legendFormat": "{{role}}", "refId": "A" }]
+    },
+    {
+      "id": 53, "type": "timeseries", "title": "Diameter Avg Response Time (ms) by Instance",
+      "gridPos": { "x": 0, "y": 102, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_diameter_avg_response_time_ms", "legendFormat": "{{role}}", "refId": "A" }]
+    },
+    {
+      "id": 54, "type": "timeseries", "title": "Diameter Timeouts / MySQL Errors / Blocked IPs",
+      "gridPos": { "x": 12, "y": 102, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_diameter_timeouts_total", "legendFormat": "{{role}} diameter timeouts", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_mysql_driver_errors_total", "legendFormat": "{{role}} mysql errors", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_blocked_ips", "legendFormat": "{{role}} pike-blocked IPs", "refId": "C" }
+      ]
+    }
+
+  ]
+}

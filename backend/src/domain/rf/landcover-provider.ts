@@ -167,6 +167,27 @@ async function writeDiskCache(tileKey: string, bytes: Buffer, etag: string | nul
   }
 }
 
+// Same gap and fix as elevation-provider.ts's own failedTileCache (see that
+// comment) — WorldCover's FETCH_TIMEOUT_MS is even larger (30s), so an
+// unremembered fetch failure here is the more expensive of the two per-point
+// repeated-timeout cases.
+const NEGATIVE_CACHE_TTL_MS = 60 * 60 * 1000;
+const failedTileCache = new Map<string, number>();
+
+function isRecentlyFailed(tileKey: string): boolean {
+  const failedAt = failedTileCache.get(tileKey);
+  if (failedAt === undefined) return false;
+  if (Date.now() - failedAt > NEGATIVE_CACHE_TTL_MS) {
+    failedTileCache.delete(tileKey);
+    return false;
+  }
+  return true;
+}
+
+function markTileFailed(tileKey: string): void {
+  failedTileCache.set(tileKey, Date.now());
+}
+
 const imageCache = new Map<string, GeoTIFFImage>();
 
 function imageCacheGet(tileKey: string): GeoTIFFImage | undefined {
@@ -196,6 +217,8 @@ async function loadImage(tileKey: string, logger?: pino.Logger): Promise<GeoTIFF
   const cached = imageCacheGet(tileKey);
   if (cached) return cached;
 
+  if (isRecentlyFailed(tileKey)) return null;
+
   let bytes: Buffer | null = null;
   try {
     bytes = await fs.readFile(tilePath(tileKey));
@@ -205,7 +228,10 @@ async function loadImage(tileKey: string, logger?: pino.Logger): Promise<GeoTIFF
 
   if (!bytes) {
     const fetched = await fetchTile(tileKey, logger);
-    if (!fetched) return null;
+    if (!fetched) {
+      markTileFailed(tileKey);
+      return null;
+    }
     bytes = fetched.bytes;
     await writeDiskCache(tileKey, fetched.bytes, fetched.etag);
   }

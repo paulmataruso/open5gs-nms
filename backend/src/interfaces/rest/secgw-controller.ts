@@ -1295,6 +1295,34 @@ export async function configureSecgw(input: {
     }
 }
 
+// Writes one radio's own swanctl conf.d file from its state — the exact same
+// logic POST /radios/:id/enable already runs per-radio (extracted here so
+// backup-restart-usecase.ts can call it for every radio in one pass after a
+// restore). Real, 2026-09-23 finding: configureSecgw() only ever rewrites the
+// gateway-level config (CA, swanctl.conf, the systemd unit) — it never
+// touches conf.d/, so a restore that brings back `.secgw-state.json`'s
+// `radios` array but not swanctl's own generated output silently strands
+// every existing radio with no connection definition to reconnect with.
+// Caller is responsible for `swanctl --load-all` once after writing all of
+// them — not done here, to avoid N redundant reloads for N radios.
+export function writeRadioConfFile(radio: SecGwRadio, state: SecGwState): void {
+  if (!state.gatewayIp || !state.gatewayFqdn) {
+    throw new Error('SecGW is not configured (missing gatewayIp/gatewayFqdn) — cannot write a radio conf file yet.');
+  }
+  fs.mkdirSync(HOST_SWANCTL_CONFD_DIR, { recursive: true });
+  fs.writeFileSync(`${HOST_SWANCTL_CONFD_DIR}/${radio.id}.conf`, swanctlRadioConnConf({
+    radioId: radio.id, gatewayIp: state.gatewayIp, gatewayFqdn: state.gatewayFqdn,
+    peerIdentity: radio.peerIdentity, localTs: radio.localTs,
+    remoteTsAddress: radio.remoteTs.replace(/\/32$/, ''), poolAddress: radio.poolAddress,
+    vendor: radio.vendor, authMode: radio.authMode, psk: radio.psk,
+    ikeEncryption: radio.ikeEncryption, ikeIntegrity: radio.ikeIntegrity, ikeDhGroup: radio.ikeDhGroup,
+    espEncryption: radio.espEncryption, espIntegrity: radio.espIntegrity, espDhGroup: radio.espDhGroup,
+    ikeReauthEnabled: radio.ikeReauthEnabled, pfsEnabled: radio.pfsEnabled, pfsDhGroup: radio.pfsDhGroup,
+    dpdDelaySeconds: radio.dpdDelaySeconds, ikeSaLifetimeSeconds: radio.ikeSaLifetimeSeconds,
+    childSaLifetimeSeconds: radio.childSaLifetimeSeconds,
+  }), 'utf-8');
+}
+
 export interface SecgwStalenessResult {
   installedOnDisk: boolean;
   hasSavedConfig: boolean;
@@ -1862,18 +1890,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
       if (radio.status === 'revoked') { res.status(409).json({ success: false, error: 'Radio is revoked' }); return; }
       if (!state.gatewayIp || !state.gatewayFqdn) { res.status(409).json({ success: false, error: 'SecGW is not configured' }); return; }
 
-      fs.mkdirSync(HOST_SWANCTL_CONFD_DIR, { recursive: true });
-      fs.writeFileSync(`${HOST_SWANCTL_CONFD_DIR}/${radio.id}.conf`, swanctlRadioConnConf({
-        radioId: radio.id, gatewayIp: state.gatewayIp, gatewayFqdn: state.gatewayFqdn,
-        peerIdentity: radio.peerIdentity, localTs: radio.localTs,
-        remoteTsAddress: radio.remoteTs.replace(/\/32$/, ''), poolAddress: radio.poolAddress,
-        vendor: radio.vendor, authMode: radio.authMode, psk: radio.psk,
-        ikeEncryption: radio.ikeEncryption, ikeIntegrity: radio.ikeIntegrity, ikeDhGroup: radio.ikeDhGroup,
-        espEncryption: radio.espEncryption, espIntegrity: radio.espIntegrity, espDhGroup: radio.espDhGroup,
-        ikeReauthEnabled: radio.ikeReauthEnabled, pfsEnabled: radio.pfsEnabled, pfsDhGroup: radio.pfsDhGroup,
-        dpdDelaySeconds: radio.dpdDelaySeconds, ikeSaLifetimeSeconds: radio.ikeSaLifetimeSeconds,
-        childSaLifetimeSeconds: radio.childSaLifetimeSeconds,
-      }), 'utf-8');
+      writeRadioConfFile(radio, state);
       await nsenter('swanctl', ['--load-all'], 15000);
 
       radio.enabled = true;

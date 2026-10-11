@@ -98,14 +98,35 @@ export function ensureMmeAcceptsUeDetachPeer(localIdentity: string): boolean {
     return false; // no mme.conf at all — MME/Diameter not set up on this host
   }
   const line = `ConnectPeer = "${localIdentity}" { No_TLS; };`;
-  if (content.includes(line)) return false;
+
+  // Strip any PREVIOUS ue-detach peer before adding the current one. The
+  // identity embeds the PLMN (ue-detach.epc.mnc<mnc>.mcc<mcc>...), so a
+  // deployment that changes MCC/MNC — via the DNS/FQDN Migration Wizard or
+  // Auto-Config, both routine here — derives a new identity and used to get a
+  // SECOND ConnectPeer line appended while the old PLMN's line stayed forever.
+  // That accretion is not harmless: CLAUDE.md pattern #13 records stale
+  // ConnectPeer entries from old PLMNs genuinely interfering with a real
+  // Diameter connection (freeDiameter misrouting CEAs into a stale peer's
+  // state machine), which is why upsertPcrfPcscfPeer() does this same cleanup.
+  //
+  // Scoped strictly to this module's own `ue-detach.` identity prefix, never
+  // the whole file — mme.conf's other ConnectPeer lines (hss.*) belong to
+  // Open5GS itself. Same exclusive-naming-slot rule as pattern #17.
+  const ownPeer = /^[ \t]*ConnectPeer\s*=\s*"ue-detach\.[^"]*"[^\n]*\n?/gm;
+  const before = content;
+  content = content.replace(ownPeer, '');
 
   const marker = /^ConnectPeer = "hss\.[^\n]*$/m;
   if (marker.test(content)) {
     content = content.replace(marker, (m) => `${m}\n${line}`);
   } else {
-    content += `\n${line}\n`;
+    content = `${content.replace(/\n+$/, '')}\n${line}\n`;
   }
+
+  // Only report a change — and so only trigger the caller's MME restart — when
+  // the file genuinely differs. Re-running with an unchanged PLMN rewrites the
+  // same bytes and must stay a no-op.
+  if (content === before) return false;
   fs.writeFileSync(path, content, 'utf-8');
   return true;
 }

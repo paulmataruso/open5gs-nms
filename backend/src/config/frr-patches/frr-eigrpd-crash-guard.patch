@@ -1,0 +1,132 @@
+diff --git a/eigrpd/eigrp_fsm.c b/eigrpd/eigrp_fsm.c
+index 99b090eeb6..9e684c425b 100644
+--- a/eigrpd/eigrp_fsm.c
++++ b/eigrpd/eigrp_fsm.c
+@@ -423,7 +423,21 @@ int eigrp_fsm_event_nq_fcn(struct eigrp_fsm_action_message *msg)
+ 	struct list *successors = eigrp_topology_get_successor(prefix);
+ 	struct eigrp_route_descriptor *ne;
+ 
+-	assert(successors); // If this is NULL we have shit the bed, fun huh?
++	if (!successors) {
++		/*
++		 * NMS crash-guard (frr#943): a Non Query FSM event can fire for a
++		 * prefix that currently has no feasible successor (topology-table
++		 * entries exist but none carry the SUCCESSOR flag yet). This used
++		 * to hit assert(successors) and abort the whole eigrpd process,
++		 * withdrawing every EIGRP-learned route. Treat it as "no route
++		 * available for this prefix right now" instead of crashing — DUAL
++		 * will re-evaluate it on the next update/query cycle.
++		 */
++		zlog_warn(
++			"EIGRP AS: %d Non-Query event for prefix %pFX with no feasible successor — skipping active transition instead of asserting (frr#943 crash-guard)",
++			eigrp->AS, &prefix->destination);
++		return 1;
++	}
+ 
+ 	ne = listnode_head(successors);
+ 	prefix->state = EIGRP_FSM_STATE_ACTIVE_1;
+@@ -450,7 +464,13 @@ int eigrp_fsm_event_q_fcn(struct eigrp_fsm_action_message *msg)
+ 	struct list *successors = eigrp_topology_get_successor(prefix);
+ 	struct eigrp_route_descriptor *ne;
+ 
+-	assert(successors); // If this is NULL somebody poked us in the eye.
++	if (!successors) {
++		/* NMS crash-guard (frr#943) — see eigrp_fsm_event_nq_fcn() above */
++		zlog_warn(
++			"EIGRP AS: %d Query event for prefix %pFX with no feasible successor — skipping active transition instead of asserting (frr#943 crash-guard)",
++			eigrp->AS, &prefix->destination);
++		return 1;
++	}
+ 
+ 	ne = listnode_head(successors);
+ 	prefix->state = EIGRP_FSM_STATE_ACTIVE_3;
+@@ -509,11 +529,16 @@ int eigrp_fsm_event_lr(struct eigrp_fsm_action_message *msg)
+ 	if (prefix->state == EIGRP_FSM_STATE_ACTIVE_3) {
+ 		struct list *successors = eigrp_topology_get_successor(prefix);
+ 
+-		assert(successors); // It's like Napolean and Waterloo
+-
+-		ne = listnode_head(successors);
+-		eigrp_send_reply(ne->adv_router, prefix);
+-		list_delete(&successors);
++		if (!successors) {
++			/* NMS crash-guard (frr#943) — see eigrp_fsm_event_nq_fcn() above */
++			zlog_warn(
++				"EIGRP AS: %d Local Reply for prefix %pFX with no feasible successor — skipping reply instead of asserting (frr#943 crash-guard)",
++				eigrp->AS, &prefix->destination);
++		} else {
++			ne = listnode_head(successors);
++			eigrp_send_reply(ne->adv_router, prefix);
++			list_delete(&successors);
++		}
+ 	}
+ 
+ 	prefix->state = EIGRP_FSM_STATE_PASSIVE;
+@@ -532,7 +557,13 @@ int eigrp_fsm_event_dinc(struct eigrp_fsm_action_message *msg)
+ 	struct list *successors = eigrp_topology_get_successor(msg->prefix);
+ 	struct eigrp_route_descriptor *ne;
+ 
+-	assert(successors); // Trump and his big hands
++	if (!successors) {
++		/* NMS crash-guard (frr#943) — see eigrp_fsm_event_nq_fcn() above */
++		zlog_warn(
++			"EIGRP AS: %d Distance Increase event for prefix %pFX with no feasible successor — skipping instead of asserting (frr#943 crash-guard)",
++			msg->eigrp->AS, &msg->prefix->destination);
++		return 1;
++	}
+ 
+ 	ne = listnode_head(successors);
+ 	msg->prefix->state = msg->prefix->state == EIGRP_FSM_STATE_ACTIVE_1
+@@ -563,12 +594,17 @@ int eigrp_fsm_event_lr_fcs(struct eigrp_fsm_action_message *msg)
+ 	if (prefix->state == EIGRP_FSM_STATE_ACTIVE_2) {
+ 		struct list *successors = eigrp_topology_get_successor(prefix);
+ 
+-		assert(successors); // Having a spoon and all you need is a
+-				    // knife
+-		ne = listnode_head(successors);
+-		eigrp_send_reply(ne->adv_router, prefix);
++		if (!successors) {
++			/* NMS crash-guard (frr#943) — see eigrp_fsm_event_nq_fcn() above */
++			zlog_warn(
++				"EIGRP AS: %d Local Reply (FCS) for prefix %pFX with no feasible successor — skipping reply instead of asserting (frr#943 crash-guard)",
++				eigrp->AS, &prefix->destination);
++		} else {
++			ne = listnode_head(successors);
++			eigrp_send_reply(ne->adv_router, prefix);
+ 
+-		list_delete(&successors);
++			list_delete(&successors);
++		}
+ 	}
+ 	prefix->req_action |= EIGRP_FSM_NEED_UPDATE;
+ 	listnode_add(eigrp->topology_changes_internalIPV4, prefix);
+@@ -587,7 +623,13 @@ int eigrp_fsm_event_lr_fcn(struct eigrp_fsm_action_message *msg)
+ 	struct eigrp_route_descriptor *best_successor;
+ 	struct list *successors = eigrp_topology_get_successor(prefix);
+ 
+-	assert(successors); // Routing without a stack
++	if (!successors) {
++		/* NMS crash-guard (frr#943) — see eigrp_fsm_event_nq_fcn() above */
++		zlog_warn(
++			"EIGRP AS: %d Local Reply (FCN) for prefix %pFX with no feasible successor — skipping instead of asserting (frr#943 crash-guard)",
++			eigrp->AS, &prefix->destination);
++		return 1;
++	}
+ 
+ 	prefix->state = prefix->state == EIGRP_FSM_STATE_ACTIVE_0
+ 				? EIGRP_FSM_STATE_ACTIVE_1
+@@ -615,7 +657,13 @@ int eigrp_fsm_event_qact(struct eigrp_fsm_action_message *msg)
+ 	struct list *successors = eigrp_topology_get_successor(msg->prefix);
+ 	struct eigrp_route_descriptor *ne;
+ 
+-	assert(successors); // Cats and no Dogs
++	if (!successors) {
++		/* NMS crash-guard (frr#943) — see eigrp_fsm_event_nq_fcn() above */
++		zlog_warn(
++			"EIGRP AS: %d Query-Active event for prefix %pFX with no feasible successor — skipping instead of asserting (frr#943 crash-guard)",
++			msg->eigrp->AS, &msg->prefix->destination);
++		return 1;
++	}
+ 
+ 	ne = listnode_head(successors);
+ 	msg->prefix->state = EIGRP_FSM_STATE_ACTIVE_2;

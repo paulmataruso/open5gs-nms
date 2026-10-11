@@ -131,10 +131,72 @@ function ensureApparmorOverride(extraDirs: string[]): boolean {
 
 // Pulls target host/port/protocol back out of a previously-written conf file, so the
 // status endpoint can show what's currently configured without keeping separate state.
-function parseTarget(raw: string): SyslogTarget | null {
+// Exported: this file's own config drop-in IS the state (no JSON side-file exists for
+// this module), so a bootstrap/restore orchestrator that has just restored
+// 71-open5gs-nms-forward.conf needs this to recover the target before it can call
+// configureSyslog() again to reapply the AppArmor/frr-group side effects.
+export function parseTarget(raw: string): SyslogTarget | null {
   const m = raw.match(/Target="([^"]+)"\s+Port="(\d+)"\s+Protocol="(udp|tcp)"/);
   if (!m) return null;
   return { host: m[1], port: parseInt(m[2], 10), protocol: m[3] as 'udp' | 'tcp' };
+}
+
+// apt-installs + enables/starts rsyslog. Extracted from the /install route so
+// a bootstrap/restore orchestrator can call this in-process too.
+export async function installSyslog(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
+  return new Promise((resolve) => {
+    const child = exec(
+      `nsenter -t 1 -m -u -i -p -- bash -c 'DEBIAN_FRONTEND=noninteractive apt install -y rsyslog && systemctl enable rsyslog && systemctl start rsyslog'`
+    );
+    child.stdout?.on('data', (d: Buffer) => write(d.toString()));
+    child.stderr?.on('data', (d: Buffer) => write(d.toString()));
+    child.on('close', (code) => {
+      const ok = code === 0;
+      write(ok ? '\n✅ rsyslog installed and started.\n' : `\n❌ Install failed (exit ${code}).\n`);
+      resolve(ok ? { success: true } : { success: false, error: `exit code ${code}` });
+    });
+  });
+}
+
+// Writes the forwarding drop-in, fixes the frr-group/AppArmor prerequisites,
+// validates with rsyslogd's own dry-run, then restarts rsyslog. Extracted
+// from the /configure route for the same reason as installSyslog() — also
+// what a restore orchestrator should call (with the target recovered via
+// parseTarget() from the just-restored conf file) instead of a bare
+// `systemctl restart rsyslog`, since a fresh host wouldn't have the
+// AppArmor/frr-group side effects applied yet even with the file in place.
+export async function configureSyslog(target: SyslogTarget): Promise<{ success: boolean; error?: string; target?: SyslogTarget }> {
+  const { stdout: whichOut } = await nsenter('which', ['rsyslogd']).catch(() => ({ stdout: '' }));
+  if (!whichOut.trim()) {
+    return { success: false, error: 'rsyslog is not installed — install it first' };
+  }
+
+  const conf = generateRsyslogConf(target);
+
+  const { stdout: groupsOut } = await nsenter('id', ['-nG', 'syslog']).catch(() => ({ stdout: '' }));
+  if (!groupsOut.split(/\s+/).includes('frr')) {
+    await nsenter('usermod', ['-aG', 'frr', 'syslog']).catch(() => {});
+  }
+
+  const apparmorChanged = ensureApparmorOverride([GENIEACS_LOG_HOST_DIR]);
+  if (apparmorChanged) {
+    await nsenter('apparmor_parser', ['-r', HOST_APPARMOR_PROFILE_REAL_PATH]).catch(() => {});
+  }
+
+  if (!fs.existsSync(HOST_RSYSLOG_D)) fs.mkdirSync(HOST_RSYSLOG_D, { recursive: true });
+  const tmpHostPath = `${OUR_CONF_HOST_PATH}.tmp`;
+  fs.writeFileSync(tmpHostPath, conf, 'utf-8');
+  fs.renameSync(tmpHostPath, OUR_CONF_HOST_PATH);
+
+  try {
+    await nsenter('rsyslogd', ['-N1', '-f', '/etc/rsyslog.conf']);
+  } catch (validateErr: any) {
+    fs.unlinkSync(OUR_CONF_HOST_PATH);
+    return { success: false, error: `Generated config failed validation — not applied. ${validateErr.stderr || String(validateErr)}` };
+  }
+
+  await nsenter('systemctl', ['restart', 'rsyslog']);
+  return { success: true, target };
 }
 
 export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
@@ -192,26 +254,19 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
     }
   });
 
-  // POST /api/syslog/install — streams `apt install rsyslog` output, same pattern as chrony install
+  // POST /api/syslog/install — thin wrapper, see installSyslog() above.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
-    const child = exec(
-      `nsenter -t 1 -m -u -i -p -- bash -c 'DEBIAN_FRONTEND=noninteractive apt install -y rsyslog && systemctl enable rsyslog && systemctl start rsyslog'`
-    );
-    child.stdout?.on('data', (d: Buffer) => res.write(d.toString()));
-    child.stderr?.on('data', (d: Buffer) => res.write(d.toString()));
-    child.on('close', async (code) => {
-      const ok = code === 0;
-      await auditLogger.log({ action: 'syslog_install', user, details: `exit code ${code}`, success: ok });
-      res.write(ok ? '\n✅ rsyslog installed and started.\n' : `\n❌ Install failed (exit ${code}).\n`);
-      res.end();
-    });
+    const result = await installSyslog((s) => res.write(s));
+    await auditLogger.log({ action: 'syslog_install', user, details: result.error ?? 'ok', success: result.success });
+    res.end();
   });
 
-  // POST /api/syslog/configure  { host, port, protocol }
+  // POST /api/syslog/configure  { host, port, protocol } — thin wrapper, see
+  // configureSyslog() above for the actual logic.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
@@ -227,54 +282,17 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
         return res.status(400).json({ success: false, error: 'protocol must be "udp" or "tcp"' });
       }
 
-      const { stdout: whichOut } = await nsenter('which', ['rsyslogd']).catch(() => ({ stdout: '' }));
-      if (!whichOut.trim()) {
-        return res.status(400).json({ success: false, error: 'rsyslog is not installed — install it first' });
+      const result = await configureSyslog({ host, port: portNum, protocol });
+      if (!result.success) {
+        await auditLogger.log({ action: 'syslog_configure', user, details: result.error || 'unknown error', success: false });
+        return res.status(400).json({ success: false, error: result.error });
       }
-
-      const conf = generateRsyslogConf({ host, port: portNum, protocol });
-
-      // rsyslog drops privileges to the unprivileged "syslog" user after startup (standard
-      // Debian/Ubuntu behavior), which can't read frr.log (owned frr:frr, mode 640, no
-      // world-read). Add "syslog" to the "frr" group so group-read permission covers it —
-      // this only ADDS a supplementary group, it doesn't touch any existing membership.
-      const { stdout: groupsOut } = await nsenter('id', ['-nG', 'syslog']).catch(() => ({ stdout: '' }));
-      if (!groupsOut.split(/\s+/).includes('frr')) {
-        await nsenter('usermod', ['-aG', 'frr', 'syslog']).catch(() => {});
-      }
-
-      // AppArmor confines rsyslogd to /var/log/** by default — GenieACS logs live outside
-      // that, so they need an explicit local-override rule (see ensureApparmorOverride).
-      const apparmorChanged = ensureApparmorOverride([GENIEACS_LOG_HOST_DIR]);
-      if (apparmorChanged) {
-        await nsenter('apparmor_parser', ['-r', HOST_APPARMOR_PROFILE_REAL_PATH]).catch(() => {});
-      }
-
-      if (!fs.existsSync(HOST_RSYSLOG_D)) fs.mkdirSync(HOST_RSYSLOG_D, { recursive: true });
-      // Write to a temp file first and validate with rsyslogd's dry-run before touching the
-      // real path — a syntax error in our config must never take down the host's rsyslog.
-      const tmpHostPath = `${OUR_CONF_HOST_PATH}.tmp`;
-      fs.writeFileSync(tmpHostPath, conf, 'utf-8');
-      fs.renameSync(tmpHostPath, OUR_CONF_HOST_PATH);
-
-      try {
-        await nsenter('rsyslogd', ['-N1', '-f', '/etc/rsyslog.conf']);
-      } catch (validateErr: any) {
-        fs.unlinkSync(OUR_CONF_HOST_PATH);
-        await auditLogger.log({ action: 'syslog_configure', user, details: `validation failed: ${validateErr.stderr || validateErr}`, success: false });
-        return res.status(400).json({
-          success: false,
-          error: `Generated config failed validation — not applied. ${validateErr.stderr || String(validateErr)}`,
-        });
-      }
-
-      await nsenter('systemctl', ['restart', 'rsyslog']);
       await auditLogger.log({
         action: 'syslog_configure', user,
         details: `forwarding to ${host}:${portNum}/${protocol}`,
         success: true,
       });
-      res.json({ success: true, target: { host, port: portNum, protocol } });
+      res.json({ success: true, target: result.target });
     } catch (err) {
       await auditLogger.log({ action: 'syslog_configure', user, details: String(err), success: false });
       logger.error({ err: String(err) }, 'syslog configure error');

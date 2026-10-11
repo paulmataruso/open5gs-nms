@@ -73,6 +73,34 @@ export function elevationFromTile(tile: Int16Array, size: number, coords: TileCo
   return value === VOID_VALUE ? null : value;
 }
 
+// Real, 2026-09-24 finding: a grid/interference calculation queries many
+// lat/lon points that can land in the SAME missing tile (ocean, void, an
+// air-gapped host, or just a transient network blip against the public S3
+// mirror) — without remembering a fetch failure, loadTile() re-attempted the
+// full FETCH_TIMEOUT_MS-bounded download on every single point in that tile,
+// serialized (each point awaits the previous one). A coverage/interference
+// grid with many cells over open ocean, or run on a host with no outbound
+// internet at all, could turn one calculation into dozens of back-to-back
+// 15s timeouts — minutes to hours of wall-clock for what should fail fast
+// once. TTL (not permanent) so a genuine transient outage against the public
+// mirror can still self-heal on a later request without a process restart.
+const NEGATIVE_CACHE_TTL_MS = 60 * 60 * 1000;
+const failedTileCache = new Map<string, number>();
+
+function isRecentlyFailed(tileKey: string): boolean {
+  const failedAt = failedTileCache.get(tileKey);
+  if (failedAt === undefined) return false;
+  if (Date.now() - failedAt > NEGATIVE_CACHE_TTL_MS) {
+    failedTileCache.delete(tileKey);
+    return false;
+  }
+  return true;
+}
+
+function markTileFailed(tileKey: string): void {
+  failedTileCache.set(tileKey, Date.now());
+}
+
 const memoryCache = new Map<string, Int16Array>();
 
 function cacheGet(tileKey: string): Int16Array | undefined {
@@ -137,10 +165,15 @@ async function loadTile(tileKey: string, logger?: pino.Logger): Promise<Int16Arr
   const cached = cacheGet(tileKey);
   if (cached) return cached;
 
+  if (isRecentlyFailed(tileKey)) return null;
+
   let raw = await readDiskCache(tileKey);
   if (!raw) {
     raw = await downloadTile(tileKey, logger);
-    if (!raw) return null;
+    if (!raw) {
+      markTileFailed(tileKey);
+      return null;
+    }
     await writeDiskCache(tileKey, raw);
   }
 

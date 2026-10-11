@@ -85,6 +85,20 @@ export class TwampMonitor {
             (err): TwampTestResult => ({ success: false, error: String(err) }),
           )
           .then(result => {
+            // Real race, confirmed live 2026-09-30 (full-session API verification
+            // pass): a target deleted (or disabled) while its test is still
+            // in-flight got its cache entry correctly cleared by forgetTarget()
+            // below, but this callback — which only resolves later, after the
+            // in-flight test finishes — unconditionally re-.set() it right back,
+            // resurrecting a permanent ghost Prometheus series that survived even
+            // repeated forgetTarget() calls (there was nothing left to forget by
+            // then; the damage was this stale write happening AFTER). Guard: only
+            // write back if this.lastRunAt still holds the exact timestamp this
+            // tick set for this target — forgetTarget() deletes that entry
+            // entirely, and a target re-added before this resolves would have a
+            // NEWER timestamp, so either case safely no-ops here instead of
+            // writing stale data for a target this monitor should no longer track.
+            if (this.lastRunAt.get(id) !== now) return;
             this.latest.set(id, { targetId: id, name: t.name, host: t.host, timestamp: Date.now(), ...result });
             return recordTwampHistorySample(this.db, t, result)
               .catch(err => this.logger.error({ err: String(err) }, 'failed to record twamp history sample'));
@@ -97,5 +111,19 @@ export class TwampMonitor {
 
   async getLatestResults(): Promise<TwampCachedResult[]> {
     return Array.from(this.latest.values());
+  }
+
+  // Drops a deleted target's cached result so it stops reappearing in
+  // getLatestResults() forever. Without this, deleting a target in Mongo
+  // left its last-known result cached here indefinitely (tick() only ever
+  // ADDS/updates entries for currently-enabled targets — it never prunes
+  // one that disappeared from the collection) — meaning the Prometheus
+  // exporter's collect() loop (twamp-metrics.ts) would keep visiting the
+  // phantom entry on every scrape and re-set its last frozen value right
+  // back, even after the controller explicitly removes the Gauge series at
+  // delete time. Found 2026-09-25 alongside the related Gauge-staleness fix.
+  forgetTarget(targetId: string): void {
+    this.latest.delete(targetId);
+    this.lastRunAt.delete(targetId);
   }
 }

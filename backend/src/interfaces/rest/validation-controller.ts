@@ -21,7 +21,7 @@ const moduleLogger = pino({ name: 'validation-controller' });
 const execFileAsync = promisify(execFile);
 
 export const VALIDATION_DIR = '/tmp/ue-validation';
-const UERANSIM_IMAGE = 'free5gc/ueransim:latest';
+export const UERANSIM_IMAGE = 'free5gc/ueransim:latest';
 // Unlike UERANSIM_IMAGE, this is NOT a published image — it's built locally
 // from the Dockerfile at SRSRAN_BUILD_CONTEXT (mounted into this container
 // read-only; see docker-compose.yml's backend `./srsran4g:/app/srsran4g:ro`
@@ -332,7 +332,7 @@ async function dockerLogs(name: string): Promise<string> {
   } catch { return ''; }
 }
 
-async function dockerPull(image: string): Promise<void> {
+export async function dockerPull(image: string): Promise<void> {
   await execFileAsync('docker', ['pull', image], { timeout: 300_000 });
 }
 
@@ -1187,7 +1187,7 @@ async function listRunningValContainers(): Promise<Set<string>> {
 // in memory: without this, every backend restart that catches a session
 // between "containers exited" and "user clicked stop" leaks that session's
 // v4-*/v5-* dummy interfaces permanently.
-async function reconcileOrphanedSessions(logger: pino.Logger): Promise<void> {
+async function reconcileOrphanedSessions(subscriberRepo: ISubscriberRepository, logger: pino.Logger): Promise<void> {
   if (!fs.existsSync(VALIDATION_DIR)) return;
   const running = await listRunningValContainers();
 
@@ -1203,6 +1203,16 @@ async function reconcileOrphanedSessions(logger: pino.Logger): Promise<void> {
         // dummy interfaces would otherwise never get cleaned up again.
         for (const name of session.dummyInterfaces ?? []) {
           try { await deleteDummyInterface(name); } catch { /* already gone, fine */ }
+        }
+        // Real, 2026-09-24 finding: this branch tore down dummy interfaces
+        // but never removed the session's own VAL-TEST-* Mongo subscriber
+        // docs — mirrors stopSession()'s own safety-gated cleanup (only
+        // ever deletes a subscriber whose nickname actually starts with
+        // VAL_NICKNAME_PREFIX) so a host reboot/dockerd restart mid-session
+        // (containers run with no --restart policy) no longer permanently
+        // orphans real Mongo documents with nothing to prompt cleanup.
+        for (const imsi of session.imsis ?? []) {
+          try { await safeDeleteTestImsi(imsi, subscriberRepo, logger); } catch { /* ok */ }
         }
         continue;
       }
@@ -1232,6 +1242,36 @@ async function reconcileOrphanedSessions(logger: pino.Logger): Promise<void> {
       logger.info({ name }, 'Removed orphaned validation dummy interface with no live session');
     } catch { /* ok */ }
   }
+}
+
+// Real, 2026-09-24 finding: a session left "running" because an operator
+// never clicked Stop persists its VAL-TEST-* subscribers and live
+// containers indefinitely — arguably the more probable real-world orphan
+// path than reconcileOrphanedSessions()'s own crash-recovery case above. A
+// literal Mongo TTL index would be wrong here (can't distinguish "stale"
+// from "actively in use by a still-running container," risking deleting
+// live credentials out from under an in-progress test) — this instead
+// reuses the same already-safe stopSession() path a manual Stop click
+// takes, just triggered by elapsed time instead of an operator action.
+// 4 hours is generous for the documented attach/PDU-session/idle/paging-
+// ping validation flow (not a soak test).
+const SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+
+function startSessionMaxAgeSweep(subscriberRepo: ISubscriberRepository, logger: pino.Logger): void {
+  setInterval(async () => {
+    const now = Date.now();
+    for (const session of sessions.values()) {
+      if (session.status !== 'running') continue;
+      if (now - session.startedAt.getTime() <= SESSION_MAX_AGE_MS) continue;
+      step(session, `Session exceeded max age (${SESSION_MAX_AGE_MS / 3_600_000}h) — auto-stopping`, logger);
+      logger.warn({ sessionId: session.id, ageMs: now - session.startedAt.getTime() }, 'Validation session exceeded max age, auto-stopping');
+      try {
+        await stopSession(session, subscriberRepo, logger);
+      } catch (err) {
+        logger.warn({ sessionId: session.id, err: String(err) }, 'Failed to auto-stop aged-out validation session');
+      }
+    }
+  }, 5 * 60 * 1000);
 }
 
 // ─── Router ───────────────────────────────────────────────────────────────
@@ -1768,8 +1808,9 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
     }
   });
 
-  reconcileOrphanedSessions(logger).catch(err =>
+  reconcileOrphanedSessions(subscriberRepo, logger).catch(err =>
     logger.error({ err: String(err) }, 'Validation session reconciliation failed'));
+  startSessionMaxAgeSweep(subscriberRepo, logger);
 
   return router;
 }

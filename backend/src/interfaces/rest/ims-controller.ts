@@ -13,7 +13,9 @@ import { parseKamcmdOutput } from '../../infrastructure/system/kamcmd-parser';
 import { ImsCallStatsMonitor } from '../../application/use-cases/ims/call-stats-monitor';
 import { loadState as loadVowifiState } from './vowifi-controller';
 import { buildSmfLateCsrPatchScript } from '../../application/use-cases/smf-late-csr-patch';
-import { buildKamailioImsModulesScript } from '../../application/use-cases/kamailio-ims-modules-build';
+import { buildSmfGxPeerhostPatchScript } from '../../application/use-cases/smf-gx-peerhost-patch';
+import { buildKamailioImsModulesScript, verifyKamailioImsModulesPatch } from '../../application/use-cases/kamailio-ims-modules-build';
+import { isKamailioHttp2Capable } from '../../application/use-cases/kamailio-source-build';
 import { VECTORCORE_SMSC_SIP_ADDRESS } from './vectorcore-smsc-controller';
 import { getOcsPeerInfo, addOcsDiameterClient } from './ocs-controller';
 import { formatPstnDispatcherEntry } from './pstn-controller';
@@ -39,6 +41,20 @@ const HOST_MME_YAML            = '/proc/1/root/etc/open5gs/mme.yaml';
 const HOST_PCRF_FD_CONF        = '/proc/1/root/etc/freeDiameter/pcrf.conf';
 const HOST_UPF_YAML            = '/proc/1/root/etc/open5gs/upf.yaml';
 const HOST_IMS_STATE           = '/proc/1/root/etc/open5gs/.ims-config.json';
+
+// Cheap, safe-default reader for the SMS/MMS dashboard's exporter — same
+// shape as sms-controller.ts's own getMscMnccMode() (never throws, defaults
+// to the base mode when the file/field is missing rather than treating a
+// not-yet-configured IMS as an error).
+export function getSmsDeliveryMode(): 'sgs' | 'ims' | 'vectorcore' {
+  if (!fs.existsSync(HOST_IMS_STATE)) return 'ims';
+  try {
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    return state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
+  } catch {
+    return 'ims';
+  }
+}
 // Tracks which NMS app version last successfully ran POST /install — separate
 // from HOST_IMS_STATE (which tracks Configure), since Install and Configure
 // are independent actions with independent staleness. Anything that changes
@@ -62,13 +78,116 @@ const HOST_HSS_YAML            = '/proc/1/root/etc/open5gs/hss.yaml';
 // address, marked with the __RTPENGINE_IP__ placeholder token.
 const IMS_TEMPLATES_DIR        = path.join(__dirname, '../../config/ims-templates');
 
+// PyHSS upstream has no release cadence this project can track, so the pin is a
+// commit — the exact tree this deployment has run since 2026-07-31, with all
+// three of this project's PyHSS patches confirmed applying cleanly against it.
+// Same idiom as vowifi-build.ts's VECTORCORE_EPDG_COMMIT/VECTORCORE_AAA_COMMIT.
+// `git describe` calls it 1.0.2-330-gcc27997.
+const PYHSS_COMMIT = 'cc279971f1420668150551e56d6a8fb8561b324d';
+
 function deployImsTemplate(templateRelPath: string, destPath: string, substitutions: Record<string, string> = {}): void {
   let content = fs.readFileSync(path.join(IMS_TEMPLATES_DIR, templateRelPath), 'utf-8');
   for (const [token, value] of Object.entries(substitutions)) {
     content = content.split(`__${token}__`).join(value);
   }
+  // Refuse to deploy a template that still has an unsubstituted __TOKEN__.
+  // This is the mechanism behind the documented total-RTP outage: a manual
+  // redeploy of kamailio_pcscf.cfg left `__RTPENGINE_IP__` literal, so every
+  // call's RTP handling failed with "Name or service not known". Today only
+  // that one token exists and its caller substitutes it correctly, but a new
+  // token added to a template with an un-updated caller would deploy the
+  // literal placeholder silently. Failing loudly here is strictly better than
+  // writing a config that cannot work.
+  const leftover = content.match(/__[A-Z0-9_]+__/g);
+  if (leftover) {
+    throw new Error(
+      `deployImsTemplate(${templateRelPath}): refusing to write ${destPath} — ` +
+      `unsubstituted token(s) remain: ${[...new Set(leftover)].join(', ')}. ` +
+      `Add them to this call's substitutions map.`,
+    );
+  }
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, content, 'utf-8');
+}
+
+// Every static template configureIms() deploys verbatim, with the per-host
+// tokens each one needs. Shared by the deploy loop and
+// checkImsTemplateStaleness() below, so a template can never be added to one
+// and silently left out of the other.
+//
+// dispatcher.list is deliberately absent from this list: both this module and
+// pstn-controller.ts write it, and PSTN owns the real entry once configured
+// (see formatPstnDispatcherEntry()'s own comment), so a live copy differing
+// from the bundled placeholder is the correct state, not staleness.
+const IMS_STATIC_TEMPLATES: ReadonlyArray<{
+  template: string;
+  dest: string;
+  tokens?: readonly string[];
+}> = [
+  { template: 'kamailio_pcscf/kamailio_pcscf.cfg',  dest: `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`, tokens: ['RTPENGINE_IP'] },
+  { template: 'kamailio_pcscf/route/mo.cfg',        dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/mo.cfg` },
+  { template: 'kamailio_pcscf/route/mt.cfg',        dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/mt.cfg` },
+  { template: 'kamailio_pcscf/route/register.cfg',  dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/register.cfg` },
+  { template: 'kamailio_pcscf/route/rtp.cfg',       dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/rtp.cfg`, tokens: ['RTPENGINE_IP'] },
+  { template: 'kamailio_icscf/kamailio_icscf.cfg',  dest: `${HOST_KAMAILIO_ICSCF_DIR}/kamailio_icscf.cfg` },
+  { template: 'kamailio_scscf/kamailio_scscf.cfg',  dest: `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg` },
+  { template: 'kamailio_scscf/CxDataType_Rel7.xsd', dest: `${HOST_KAMAILIO_SCSCF_DIR}/CxDataType_Rel7.xsd` },
+];
+
+export interface ImsTemplateStaleness {
+  /** Host paths whose live content differs from what this build would deploy. */
+  stale: string[];
+  /** Host paths that should exist but don't. */
+  missing: string[];
+  checked: number;
+}
+
+/**
+ * Compare every deployed static Kamailio template against the one this build
+ * bundles, by content.
+ *
+ * `configStale`/`installStale` next to this only compare a recorded version
+ * STRING against the running app version, which is both too loose and too
+ * tight: a version bump that touched nothing IMS-related reads as stale, while
+ * editing a template without bumping the version reads as current. That second
+ * case is the one that actually hurts, and it has bitten this deployment twice
+ * — a `kamailio_scscf.cfg` a full day stale so `setCdrAccountingEnabled(true)`
+ * reported success with no `acc` module loaded at all (2026-09-17), and a
+ * manually-redeployed `kamailio_pcscf.cfg` left holding a literal
+ * `__RTPENGINE_IP__`, which failed every call's RTP handling (2026-10-02).
+ * Both were found by reading files during an outage; this makes them a status
+ * field instead.
+ *
+ * `rtpEngineIp` comes from the saved Configure state so token-bearing templates
+ * are rendered exactly as they were deployed. Without it those templates can't
+ * be compared meaningfully, so they are skipped rather than reported as false
+ * positives.
+ */
+export function checkImsTemplateStaleness(rtpEngineIp?: string): ImsTemplateStaleness {
+  const stale: string[] = [];
+  const missing: string[] = [];
+  let checked = 0;
+
+  for (const entry of IMS_STATIC_TEMPLATES) {
+    if (entry.tokens?.includes('RTPENGINE_IP') && !rtpEngineIp) continue;
+    let expected: string;
+    try {
+      expected = fs.readFileSync(path.join(IMS_TEMPLATES_DIR, entry.template), 'utf-8');
+    } catch {
+      continue; // Template not bundled in this build — nothing to compare against.
+    }
+    if (rtpEngineIp) expected = expected.split('__RTPENGINE_IP__').join(rtpEngineIp);
+    checked++;
+    let live: string;
+    try {
+      live = fs.readFileSync(entry.dest, 'utf-8');
+    } catch {
+      missing.push(entry.dest.replace('/proc/1/root', ''));
+      continue;
+    }
+    if (live !== expected) stale.push(entry.dest.replace('/proc/1/root', ''));
+  }
+  return { stale, missing, checked };
 }
 
 export interface IpsecSaInfo {
@@ -299,7 +418,7 @@ const OCS_CLIENT_SOURCE_IP = '127.0.0.1';
 
 // ── Kamailio include-file templates (written by Configure) ───────────────────
 
-function pcscfIncludeCfg(p: { pcscfIp: string; pcscfPort: number; imsDomain: string; epcDomain: string; additionalDomains?: string[] }): string {
+export function pcscfIncludeCfg(p: { pcscfIp: string; pcscfPort: number; imsDomain: string; epcDomain: string; additionalDomains?: string[]; http2N5Available: boolean }): string {
   const extraAliases = (p.additionalDomains ?? []).map(d => `alias=pcscf.${d}`).join('\n');
   return `# Open5GS NMS — P-CSCF include (generated by Configure)
 listen=udp:${p.pcscfIp}:${p.pcscfPort}
@@ -311,6 +430,14 @@ listen=tcp:${p.pcscfIp}:${p.pcscfPort}
 #!define IPSEC_MAX_CONN 10
 #!define IPSEC_DELETE_UNUSED_TUNNELS 1
 #!define IPSEC_FORWARD_FLAGS 897
+// NMS patch, confirmed live 2026-10-01 (critic-caught before deploy): the C-level
+// IPSEC_FORWARD_ADD_SECVERIFY (1<<10) added to ims_ipsec_pcscf/cmd.c lives in a
+// completely separate namespace from this .cfg preprocessor -- referencing it from
+// mt.cfg without this matching #!define is a guaranteed fatal config-parse error
+// (reproduced directly: 'kamailio -c' on a minimal repro file), the same failure
+// class as the WITH_N5/stock-5.8.8 gotcha above. Value must stay in sync with the
+// C header if that bit ever moves.
+#!define IPSEC_FORWARD_ADD_SECVERIFY 1024
 #!define RX_IMS_REG_DIALOG_DIRECTION 3
 #!define RX_AF_SIGNALING_IP "${p.pcscfIp}"
 #!substdef "/N5_BIND_IP/${p.pcscfIp}/g"
@@ -331,11 +458,54 @@ ${extraAliases}
 #!subst "/PCRF_REALM/${p.epcDomain}/g"
 #!define DB_URL "mysql://pcscf:heslo@127.0.0.1/pcscf"
 #!define SQLOPS_DBURL "pcscf=>mysql://pcscf:heslo@127.0.0.1/pcscf"
+// Both Rx (4G, PCRF/Gx) and N5 (5G, PCF/N7) are deliberately enabled together,
+// not mutually exclusive — this deployment serves 4G and 5G UEs on the SAME
+// P-CSCF/S-CSCF/I-CSCF, unlike the upstream reference this N5 support was
+// ported from (herlesupreeth/docker_open5gs), which only ever runs one or the
+// other because its 4G and 5G deployments are entirely separate IMS cores.
+// mt.cfg/mo.cfg's MT_aar_reply/MO_aar_reply try Rx first and fall back to N5
+// only on Rx's real failure (confirmed live 2026-09-29: Rx can never succeed
+// for a 5G/NR UE at all — PCRF has no Gx session for it, by architecture, not
+// as a bug — see those files' own comments for the full explanation). Do not
+// go back to disabling WITH_N5 without also reverting that fallback logic,
+// or a 4G-only deployment's Rx failures would try to fall back to a PCF that
+// was never actually being used.
+// WITH_N5 itself is conditional, not a blind #!define — real, confirmed-live
+// 2026-09-29 finding: route[MO/MT_N5_CALL_PCF_POLICY_AUTH] calls
+// http_client_request_v2pk(), which doesn't exist in stock Kamailio 5.8.8's
+// http_client module AT ALL — not a runtime failure, a FATAL CONFIG PARSE
+// ERROR (confirmed via a real 'kamailio -c' check against the actual 5.8.8
+// binary), which would take P-CSCF down completely, not just VoNR calling.
+// Both N5 routes are fully wrapped in one #!ifdef WITH_N5/#!endif block, so
+// leaving WITH_N5 undefined makes Kamailio's preprocessor strip them before
+// the parser ever sees them — safe, and exactly the state this template
+// shipped in before N5 support was wired up (see isKamailioHttp2Capable()'s
+// own comment, kamailio-source-build.ts). On a 5.8.8-only deployment this
+// means 5G/VoNR calling stays at its prior, known limitation (Rx fails for a
+// 5G leg, call fails) — real but strictly less bad than P-CSCF not starting.
 #!define WITH_RX
-##!define WITH_N5
+${p.http2N5Available ? '#!define WITH_N5' : '##!define WITH_N5 // undefined: Kamailio 6.0+ not detected — see the comment above'}
 #!define WITH_NAT
 #!define FORCE_RTPRELAY
 #!define WITH_TCP
+// Real bug, confirmed live 2026-09-29: WITH_PING_TCP/WITH_PING_UDP (below)
+// correctly populate the natping/natpingfrom htables with every UE's real
+// contact at REGISTER time, but route[NATPING] (kamailio_pcscf.cfg) — the
+// rtimer-driven loop that actually SENDS the keepalive OPTIONS every 5s —
+// is gated behind WITH_NATPING, which was never defined. Half-wired: data
+// collected, never acted on. Real, reproduced consequence: idle TCP/TLS
+// connections to UEs (particularly ones with gaps between activity, e.g.
+// during test-call sessions) go stale well before their SIP registration
+// Expires, causing "call failed" on the next INVITE attempt — P-CSCF tries
+// a fresh outbound TCP connect to a contact that's actually dead, hits its
+// own connect timeout (~3s), and synthesizes a local error response. Real,
+// live packet-capture evidence: a 3-second silent gap between "pending
+// outbound connect initiated" and a synthesized error response, with the
+// UE's own REGISTER-based Expires nowhere near expired. Confirmed the
+// natping mechanism itself already correctly handles TCP/TLS/UDP alias
+// formats (see event_route[uac:reply] in kamailio_pcscf.cfg) — genuinely
+// just missing this one #!define.
+#!define WITH_NATPING
 #!define WITH_IPSEC
 #!define WITH_IMS_HDR_CACHE
 #!define WITH_PING_UDP
@@ -689,6 +859,17 @@ redis:
   host: localhost
   port: 6379
 
+# metricService.py's own real Prometheus exporter (config.get('metric', {}),
+# confirmed against its live source) — without this section it silently
+# falls back to its own default 127.0.0.1:9191, which works but collides
+# with nothing declaring it explicitly. Own dedicated loopback, matching
+# this project's per-daemon-loopback convention (.1=icscf .2=scscf .3=hss
+# .4=pstn .5=vectorcore-smsc .6=gsm .7=asterisk-2g .8=hnbgw-mgw .9=osmo-
+# hnodeb .10=OCS Gy — .11 confirmed free, 2026-09-25).
+metric:
+  bind_ip: "127.0.1.11"
+  bind_port: 9191
+
 logging:
   level: INFO
   logfiles:
@@ -914,6 +1095,38 @@ WantedBy=multi-user.target
 `;
 }
 
+// Real, 2026-09-25 finding: PyHSS ships a genuine Prometheus exporter
+// (metricService.py, prometheus_client-based) fed by real sendMetric() calls
+// already firing from hssService.py/diameterService.py/apiService.py on
+// every real event — but this NMS never installed it, so PyHSS's Cx/IMS-
+// subscriber-count data was structurally unreachable by Prometheus/Grafana
+// regardless of any dashboard query fix. It's a pure Redis-queue consumer +
+// its own HTTP exporter (make_wsgi_app/start_http_server) — needs
+// redis-server directly, same as pyhss-hss's own dependency, not a
+// functional dependency on pyhss-hss/diameter/api themselves (any of the
+// three could be the one actually producing the Redis events it reads).
+function pyhssMetricsUnit(): string {
+  return `[Unit]
+Description=PyHSS Prometheus Metrics Exporter
+After=network.target redis-server.service
+Requires=redis-server.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pyhss
+Environment=PYTHONUNBUFFERED=1
+Environment=PYHSS_CONFIG=/opt/pyhss/config.yaml
+ExecStart=/usr/bin/python3 /opt/pyhss/services/metricService.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+`;
+}
+
 // ── SMSC templates ────────────────────────────────────────────────────────────
 
 function smscIncludeCfg(p: { smscIp: string; imsDomain: string }): string {
@@ -954,7 +1167,23 @@ function smscMainCfg(smsWorkerIntervalSeconds: number = 30): string {
   // except smsWorkerIntervalSeconds (originally hardcoded 30 - the rtimer poll
   // interval for the store-and-forward SMS_WORKER route, see route[SMS_WORKER]
   // below) is now configurable - exposed via the SMS/MMS page and
-  // POST /api/ims/sms-worker-interval, see setSmsWorkerInterval().
+  // POST /api/ims/sms-worker-interval, see setSmsWorkerInterval() — and,
+  // added 2026-09-25, `loadmodule "ctl.so"` + its binrpc modparam, giving
+  // SMSC the same kamcmd control socket its 3 sibling instances already
+  // have (`/run/kamailio_{pcscf,icscf,scscf}/kamailio_ctl`, confirmed live
+  // — SMSC was simply never ported this line, no documented reason found).
+  // Read-only management interface, kamailio-stats-monitor.ts's own IMS
+  // dashboard metrics are the only current consumer.
+  // Real, 2026-09-25 finding (caught live, after deploying — ctl.so alone
+  // wasn't enough): `stats.get_statistics` itself is registered by the
+  // `kex` module ("Kamailio EXtra commands"), not by ctl.so — ctl.so only
+  // provides the binrpc transport/socket. Confirmed live: kex.so IS loaded
+  // by P-CSCF and I-CSCF's own static templates (kamailio_pcscf.cfg,
+  // kamailio_icscf.cfg) but was, like ctl.so, never ported into SMSC's own
+  // inline-generated config. Without it, the socket exists and accepts
+  // connections, but every stats.get_statistics call fails with
+  // "500 - command stats.get_statistics not found" — confirmed live on
+  // this exact host before this line was added.
   return `#!KAMAILIO
 
 include_file "smsc.cfg"
@@ -1007,7 +1236,10 @@ loadmodule "usrloc.so"
 loadmodule "registrar.so"
 loadmodule "pua.so"
 loadmodule "pua_reginfo.so"
+loadmodule "ctl.so"
+loadmodule "kex.so"
 
+modparam("ctl", "binrpc", "unix:/var/run/kamailio_smsc/kamailio_ctl")
 modparam("sqlops", "sqlcon", SMS_DB_URL)
 modparam("dialplan", "db_url", DIALPLAN_PUA_DB_URL)
 modparam("uac", "restore_mode", "none")
@@ -1607,11 +1839,25 @@ function getImsConfigManifest(): ConfigFileEntry[] {
   const entries: Omit<ConfigFileEntry, 'exists'>[] = [
     { group: 'P-CSCF', label: 'pcscf.cfg (include)',   path: '/etc/kamailio_pcscf/pcscf.cfg',   language: 'ini', restartServices: ['kamailio-pcscf'] },
     { group: 'P-CSCF', label: 'pcscf.xml (Diameter)',  path: '/etc/kamailio_pcscf/pcscf.xml',   language: 'xml', restartServices: ['kamailio-pcscf'] },
+    // Added 2026-10-04: the static route-logic files (as opposed to the
+    // generated per-toggle include above) were previously invisible to this
+    // manifest entirely -- no GUI visibility, no API read/write, and no way
+    // for the api-regression suite's generic "read every manifest entry"
+    // case to ever notice if a real fix in one of these (e.g. the N5 QoS
+    // port-mismatch / fr_timer fixes found live 2026-10-04) got lost on a
+    // future template edit. These 4 are where that entire night's real bugs
+    // actually lived, so they're exposed here as a deliberate, scoped
+    // exception to the "only the generated include" pattern I-CSCF/S-CSCF
+    // still follow -- not a general policy change for every module.
+    { group: 'P-CSCF', label: 'kamailio_pcscf.cfg (main)', path: '/etc/kamailio_pcscf/kamailio_pcscf.cfg', language: 'ini', restartServices: ['kamailio-pcscf'] },
+    { group: 'P-CSCF', label: 'route/mo.cfg',              path: '/etc/kamailio_pcscf/route/mo.cfg',       language: 'ini', restartServices: ['kamailio-pcscf'] },
+    { group: 'P-CSCF', label: 'route/mt.cfg',              path: '/etc/kamailio_pcscf/route/mt.cfg',       language: 'ini', restartServices: ['kamailio-pcscf'] },
+    { group: 'P-CSCF', label: 'route/rtp.cfg',             path: '/etc/kamailio_pcscf/route/rtp.cfg',      language: 'ini', restartServices: ['kamailio-pcscf'] },
     { group: 'I-CSCF', label: 'icscf.cfg (include)',   path: '/etc/kamailio_icscf/icscf.cfg',   language: 'ini', restartServices: ['kamailio-icscf'] },
     { group: 'I-CSCF', label: 'icscf.xml (Diameter)',  path: '/etc/kamailio_icscf/icscf.xml',   language: 'xml', restartServices: ['kamailio-icscf'] },
     { group: 'S-CSCF', label: 'scscf.cfg (include)',   path: '/etc/kamailio_scscf/scscf.cfg',   language: 'ini', restartServices: ['kamailio-scscf'] },
     { group: 'S-CSCF', label: 'scscf.xml (Diameter)',  path: '/etc/kamailio_scscf/scscf.xml',   language: 'xml', restartServices: ['kamailio-scscf'] },
-    { group: 'PyHSS', label: 'config.yaml',              path: '/opt/pyhss/config.yaml',              language: 'yaml', restartServices: ['pyhss-api', 'pyhss-diameter', 'pyhss-hss'] },
+    { group: 'PyHSS', label: 'config.yaml',              path: '/opt/pyhss/config.yaml',              language: 'yaml', restartServices: ['pyhss-api', 'pyhss-diameter', 'pyhss-hss', 'pyhss-metrics'] },
     { group: 'PyHSS', label: 'default_ifc.xml',          path: '/opt/pyhss/default_ifc.xml',          language: 'xml',  restartServices: [] },
     { group: 'PyHSS', label: 'default_sh_user_data.xml', path: '/opt/pyhss/default_sh_user_data.xml', language: 'xml',  restartServices: [] },
     { group: 'RTPengine',   label: 'rtpengine.conf',     path: '/etc/rtpengine/rtpengine.conf',          language: 'ini',       restartServices: ['rtpengine-daemon'] },
@@ -1633,6 +1879,7 @@ function getImsConfigManifest(): ConfigFileEntry[] {
     { group: 'Systemd Units', label: 'pyhss-diameter.service', path: '/etc/systemd/system/pyhss-diameter.service', language: 'ini', restartServices: ['pyhss-diameter'] },
     { group: 'Systemd Units', label: 'pyhss-hss.service',      path: '/etc/systemd/system/pyhss-hss.service',      language: 'ini', restartServices: ['pyhss-hss'] },
     { group: 'Systemd Units', label: 'pyhss-api.service',      path: '/etc/systemd/system/pyhss-api.service',      language: 'ini', restartServices: ['pyhss-api'] },
+    { group: 'Systemd Units', label: 'pyhss-metrics.service',  path: '/etc/systemd/system/pyhss-metrics.service',  language: 'ini', restartServices: ['pyhss-metrics'] },
   ];
 
   return entries.map(e => ({ ...e, exists: fs.existsSync(`/proc/1/root${e.path}`) }));
@@ -2148,6 +2395,212 @@ export function readCurrentImsConfig(): ImsConfigureFullInput | null {
   }
 }
 
+// Real, 2026-09-24 finding: this was ONLY ever reachable via the manual
+// POST /sync-subscribers button — backup-restart-usecase.ts's own IMS
+// reapply calls configureIms() alone, which never touches PyHSS's
+// subscriber records at all. A restore therefore always brought back a
+// fully-configured, fully-running IMS stack with ZERO subscribers able to
+// register — confirmed live: the user had to click this by hand after
+// every restore this whole session. Extracted from the route handler
+// (previously ~244 lines inline, unchanged logic) specifically so
+// backup-restart-usecase.ts can call it directly, the same way
+// configureIms() itself already is.
+export async function syncImsSubscribers(
+  subscriberRepo: ISubscriberRepository,
+  logger: pino.Logger,
+): Promise<{ synced: number; failed: string[]; removed: number; total: number }> {
+  if (!fs.existsSync(HOST_IMS_STATE)) {
+    throw new Error('IMS not configured — run Configure first.');
+  }
+  const savedState = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const imsDomain  = savedState.imsDomain;
+  const savedConfig = savedState.config ?? {};
+
+  const allSubs = await subscriberRepo.findAllFull();
+  const toSync  = allSubs.filter(s => s.msisdn && s.msisdn.length > 0 && s.security?.k);
+
+  const primaryMcc = savedConfig.mcc ?? '';
+  const primaryMnc = savedConfig.mnc ?? '';
+  const additionalPlmns: { mcc: string; mnc: string }[] = savedConfig.additionalPlmns ?? [];
+  const allPlmns = [
+    { mcc: primaryMcc, mnc: primaryMnc, domain: imsDomain },
+    ...additionalPlmns.map((p: { mcc: string; mnc: string }) => ({
+      mcc: p.mcc, mnc: p.mnc, domain: deriveImsDomain(p.mcc, p.mnc),
+    })),
+  ];
+
+  const domainForImsi = (imsi: string): string => {
+    for (const plmn of allPlmns) {
+      if (imsi.startsWith(plmn.mcc + plmn.mnc)) return plmn.domain;
+    }
+    return imsDomain;
+  };
+
+  const scscfPort = savedConfig.scscfPort ?? 6060;
+  const scscfIp   = savedConfig.scscfIp   ?? '127.0.1.2';
+  try {
+    const updatedYaml = pyhssConfigYaml({
+      imsDomain,
+      mcc: primaryMcc, mnc: primaryMnc,
+      scscfIp, scscfPort,
+      hssIp: '127.0.1.3',
+      additionalPlmns,
+    });
+    fs.writeFileSync('/proc/1/root/opt/pyhss/config.yaml', updatedYaml, 'utf-8');
+    await nsenter('systemctl', ['restart', 'pyhss-hss', 'pyhss-diameter']).catch(() => {});
+    const deadline = Date.now() + 45000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try { await pyhssApiCall('GET', '/apn/list'); ready = true; break; } catch { /* not up yet */ }
+      await new Promise(r => setTimeout(r, 1500));
+    }
+    if (!ready) logger.warn('PyHSS API did not become ready within 45s after restart — sync will likely fail');
+  } catch (e) {
+    logger.warn({ err: String(e) }, 'Could not update pyHSS config during sync — continuing anyway');
+  }
+
+  let synced = 0;
+  const failed: string[] = [];
+
+  {
+    let internetApnId = 1;
+    try {
+      const apnList: any[] = await pyhssApiCall('GET', '/apn/list');
+      const existing = Array.isArray(apnList) ? apnList.find((a: any) => a.apn === 'internet') : null;
+      if (existing) {
+        internetApnId = existing.apn_id;
+      } else {
+        const created = await pyhssApiCall('PUT', '/apn/', {
+          apn: 'internet', apn_ambr_dl: 999999, apn_ambr_ul: 999999, qci: 9, arp_priority: 4,
+        });
+        internetApnId = created.apn_id ?? 1;
+      }
+    } catch { /* use default apn_id=1 */ }
+
+    const syncImsiSet = new Set(toSync.map(s => s.imsi));
+    const msisdnOwnerMap = new Map<string, { imsi: string; id: number }>();
+    try {
+      const imsAll: any[] = await pyhssApiCall('GET', '/ims_subscriber/list');
+      if (Array.isArray(imsAll)) {
+        for (const e of imsAll) {
+          if (e.msisdn) msisdnOwnerMap.set(String(e.msisdn), { imsi: String(e.imsi), id: e.ims_subscriber_id });
+        }
+      }
+    } catch { /* proceed without conflict map */ }
+
+    for (const sub of toSync) {
+      const imsi   = sub.imsi;
+      const msisdn = sub.msisdn![0];
+      const k      = (sub.security?.k ?? '').toUpperCase();
+      const opc    = (sub.security?.opc ?? '').toUpperCase();
+      const amf    = (sub.security?.amf ?? '8000').toString();
+      const sqnNum = Number(sub.security?.sqn ?? 0);
+
+      if (!/^\d+$/.test(imsi) || !/^\d+$/.test(msisdn) || !/^[0-9a-fA-F]{32}$/.test(k)) {
+        failed.push(`${imsi}: invalid IMSI/MSISDN/K format`);
+        continue;
+      }
+
+      try {
+        let existingIms: any = null;
+        try { existingIms = await pyhssApiCall('GET', `/ims_subscriber/ims_subscriber_imsi/${imsi}`); } catch { /* not found */ }
+        if (existingIms?.ims_subscriber_id) {
+          try { await pyhssApiCall('DELETE', `/ims_subscriber/${existingIms.ims_subscriber_id}`); } catch { /* ignore */ }
+          msisdnOwnerMap.delete(String(existingIms.msisdn ?? msisdn));
+        }
+
+        let existingSub: any = null;
+        try { existingSub = await pyhssApiCall('GET', `/subscriber/imsi/${imsi}`); } catch { /* not found */ }
+        if (existingSub?.subscriber_id) {
+          try { await pyhssApiCall('DELETE', `/subscriber/${existingSub.subscriber_id}`); } catch { /* ignore */ }
+        }
+
+        let existingAuc: any = null;
+        try { existingAuc = await pyhssApiCall('GET', `/auc/imsi/${imsi}`); } catch { /* not found */ }
+        if (existingAuc?.auc_id) {
+          try { await pyhssApiCall('DELETE', `/auc/${existingAuc.auc_id}`); } catch { /* ignore */ }
+        }
+
+        const conflict = msisdnOwnerMap.get(msisdn);
+        if (conflict && conflict.imsi !== imsi) {
+          if (!syncImsiSet.has(conflict.imsi)) {
+            try { await pyhssApiCall('DELETE', `/ims_subscriber/${conflict.id}`); } catch { /* ignore */ }
+            msisdnOwnerMap.delete(msisdn);
+          } else {
+            throw new Error(`MSISDN ${msisdn} is also assigned to IMSI ${conflict.imsi} — fix duplicate MSISDNs on the Subscribers page`);
+          }
+        }
+
+        const newAuc = await pyhssApiCall('PUT', '/auc/', { ki: k, opc, amf, sqn: sqnNum, imsi });
+        const aucId  = newAuc.auc_id;
+
+        await pyhssApiCall('PUT', '/subscriber/', {
+          imsi, msisdn, auc_id: aucId,
+          default_apn: internetApnId,
+          apn_list: String(internetApnId),
+          enabled: true,
+        });
+
+        const subDomain   = domainForImsi(imsi);
+        const subScscfUri = `sip:scscf.${subDomain}:${scscfPort}`;
+        await pyhssApiCall('PUT', '/ims_subscriber/', {
+          imsi, msisdn,
+          msisdn_list: msisdn,
+          scscf: subScscfUri,
+          scscf_realm: subDomain,
+          scscf_peer: `scscf.${subDomain}`,
+          ifc_path: 'pyhss/default_ifc.xml',
+        });
+
+        msisdnOwnerMap.set(msisdn, { imsi, id: 0 });
+        synced++;
+      } catch (e) {
+        failed.push(`${imsi}: ${(e as Error).message ?? String(e)}`);
+        logger.warn({ imsi, err: String(e) }, 'PyHSS subscriber sync failed');
+      }
+    }
+  }
+
+  let removed = 0;
+  try {
+    const currentImsiSet = new Set(toSync.map(s => s.imsi));
+    const imsAll: any[] = await pyhssApiCall('GET', '/ims_subscriber/list');
+    const staleImsis = Array.isArray(imsAll)
+      ? imsAll.filter(e => e.imsi && !currentImsiSet.has(String(e.imsi))).map(e => String(e.imsi))
+      : [];
+
+    for (const staleImsi of staleImsis) {
+      try {
+        let existingIms: any = null;
+        try { existingIms = await pyhssApiCall('GET', `/ims_subscriber/ims_subscriber_imsi/${staleImsi}`); } catch { /* not found */ }
+        if (existingIms?.ims_subscriber_id) {
+          await pyhssApiCall('DELETE', `/ims_subscriber/${existingIms.ims_subscriber_id}`).catch(() => {});
+        }
+
+        let existingSub: any = null;
+        try { existingSub = await pyhssApiCall('GET', `/subscriber/imsi/${staleImsi}`); } catch { /* not found */ }
+        if (existingSub?.subscriber_id) {
+          await pyhssApiCall('DELETE', `/subscriber/${existingSub.subscriber_id}`).catch(() => {});
+        }
+
+        let existingAuc: any = null;
+        try { existingAuc = await pyhssApiCall('GET', `/auc/imsi/${staleImsi}`); } catch { /* not found */ }
+        if (existingAuc?.auc_id) {
+          await pyhssApiCall('DELETE', `/auc/${existingAuc.auc_id}`).catch(() => {});
+        }
+
+        removed++;
+      } catch (e) {
+        logger.warn({ imsi: staleImsi, err: String(e) }, 'PyHSS stale subscriber cleanup failed');
+      }
+    }
+  } catch (e) {
+    logger.warn({ err: String(e) }, 'Could not fetch PyHSS ims_subscriber list for cleanup — skipping');
+  }
+
+  return { synced, failed, removed, total: toSync.length };
+}
+
 export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsDomain: string }> {
   const {
     pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
@@ -2238,9 +2691,10 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // 1. P-CSCF include config + Diameter XML
   const epcDomain = deriveEpcDomain(mcc, mnc);
   const { fqdn: pcrfFqdn, port: pcrfPort } = readPcrfFreeDiameterInfo();
+  const http2N5Available = await isKamailioHttp2Capable();
   fs.mkdirSync(HOST_KAMAILIO_PCSCF_DIR, { recursive: true });
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.cfg`,
-    pcscfIncludeCfg({ pcscfIp, pcscfPort, imsDomain, epcDomain, additionalDomains }), 'utf-8');
+    pcscfIncludeCfg({ pcscfIp, pcscfPort, imsDomain, epcDomain, additionalDomains, http2N5Available }), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.xml`,
     pcscfDiameterXml({ pcscfIp, imsDomain, pcrfFqdn, pcrfPort }), 'utf-8');
 
@@ -2293,14 +2747,13 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // never written by either /install or /configure — only ever placed once, by
   // hand, on one dev host — so every OTHER host's P/I/S-CSCF units referenced a
   // main cfg file that never existed).
-  deployImsTemplate('kamailio_pcscf/kamailio_pcscf.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`, { RTPENGINE_IP: rtpEngineIp });
-  deployImsTemplate('kamailio_pcscf/route/mo.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/mo.cfg`);
-  deployImsTemplate('kamailio_pcscf/route/mt.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/mt.cfg`);
-  deployImsTemplate('kamailio_pcscf/route/register.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/register.cfg`);
-  deployImsTemplate('kamailio_pcscf/route/rtp.cfg', `${HOST_KAMAILIO_PCSCF_DIR}/route/rtp.cfg`, { RTPENGINE_IP: rtpEngineIp });
+  // Driven off IMS_STATIC_TEMPLATES so this and checkImsTemplateStaleness()
+  // can never disagree about which files are template-owned.
+  for (const entry of IMS_STATIC_TEMPLATES) {
+    deployImsTemplate(entry.template, entry.dest,
+      entry.tokens?.includes('RTPENGINE_IP') ? { RTPENGINE_IP: rtpEngineIp } : {});
+  }
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/dispatcher.list`, pcscfDispatcherList(icscfIp, icscfPort), 'utf-8');
-  deployImsTemplate('kamailio_icscf/kamailio_icscf.cfg', `${HOST_KAMAILIO_ICSCF_DIR}/kamailio_icscf.cfg`);
-  deployImsTemplate('kamailio_scscf/kamailio_scscf.cfg', `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg`);
   // dispatcher.list is a file BOTH this module and pstn-controller.ts write
   // to — PSTN Gateway owns the real dispatcher entry once configured (see
   // formatPstnDispatcherEntry()'s own comment). Found live 2026-09-18: this
@@ -2322,7 +2775,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // candidate S-CSCFs are left to retry (confirmed live, 2026-07-17). Sourced
   // directly from Kamailio's own ims_registrar_scscf module source — the exact
   // schema its own C code validates against, not a hand-authored guess.
-  deployImsTemplate('kamailio_scscf/CxDataType_Rel7.xsd', `${HOST_KAMAILIO_SCSCF_DIR}/CxDataType_Rel7.xsd`);
+  // (deployed by the IMS_STATIC_TEMPLATES loop above.)
 
   // 4c. Systemd units for P/I/S-CSCF + all 3 PyHSS services — same gap as 4b:
   // these generator functions existed but were never actually called anywhere.
@@ -2332,6 +2785,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-hss.service`, pyhssHssUnit(), 'utf-8');
   fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-diameter.service`, pyhssDiameterUnit(), 'utf-8');
   fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-api.service`, pyhssApiUnit(), 'utf-8');
+  fs.writeFileSync(`${HOST_SYSTEMD_DIR}/pyhss-metrics.service`, pyhssMetricsUnit(), 'utf-8');
 
   // 5. daemon-reload — picks up every unit file written in 3b/4c above.
   await nsenter('systemctl', ['daemon-reload']);
@@ -2479,7 +2933,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // entry (cdp's "Empty routing table" error) after a Configure re-run that fixed
   // icscf.xml — enable+restart for these four instead of enable --now.
   const kamailioCscfServices = new Set(['kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc']);
-  const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-hss', 'pyhss-api', 'pyhss-diameter',
+  const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-hss', 'pyhss-api', 'pyhss-diameter', 'pyhss-metrics',
                 'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
   // Collected rather than thrown immediately — a restart failing partway through this
   // ordered list shouldn't stop the rest from at least being attempted (or skip step 17's
@@ -2956,8 +3410,22 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
     // templates (kamailio_pcscf.cfg loads sctp+json, kamailio_scscf.cfg loads
     // presence) — confirmed live, 2026-07-17: omitting any of these makes the
     // corresponding kamailio-*.service crash-loop on "could not find module".
-    const basePkgs = 'kamailio kamailio-ims-modules kamailio-mysql-modules kamailio-tls-modules kamailio-extra-modules kamailio-utils-modules ' +
-      'kamailio-presence-modules kamailio-sctp-modules kamailio-json-modules ' +
+    // Real defect found in the 2026-10-10 readiness audit: this list was
+    // installed unconditionally, so IMS Install itself would apt-install the
+    // 5.8.x packages straight over a 6.0.8 source build, reverting all of that
+    // build's patches. With WITH_N5 active in pcscf.cfg, 5.8.x has no
+    // http_client_request_v2pk() -- a FATAL config-parse error, so P-CSCF
+    // would then refuse to start at all. The packages are also apt-held by the
+    // build itself now, which would make this apt-get fail rather than
+    // downgrade; skipping them outright keeps Install clean instead of noisy.
+    const { isKamailioSourceBuildComplete, KAMAILIO_APT_PKGS } = await import('./kamailio-source-build-controller');
+    const srcBuilt = isKamailioSourceBuildComplete();
+    if (srcBuilt) {
+      write('A Kamailio 6.0.8 source build is active — skipping the kamailio apt packages\n' +
+            `so this Install cannot downgrade over it (${KAMAILIO_APT_PKGS.length} packages skipped, and they are apt-held).\n`);
+    }
+    const kamailioPkgs = srcBuilt ? '' : KAMAILIO_APT_PKGS.join(' ') + ' ';
+    const basePkgs = kamailioPkgs +
       'mariadb-server bind9 bind9utils mariadb-client dnsutils git dpkg-dev libxml2-dev';
     const pyhssPkgs = ' redis-server python3-pip python3-venv python3-dev';
     const basePkgsExitCode = await spawnStream(
@@ -2968,16 +3436,91 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
         'check which package apt could not locate/install and fix before re-running Install.\n');
     }
 
+    // Raise MariaDB's max_connections into a file apt will never own.
+    //
+    // Real defect found in the 2026-10-10 readiness audit: this value was an
+    // unmanaged hand edit in /etc/mysql/mariadb.conf.d/50-server.cnf, which is
+    // a dpkg CONFFILE — so IMS Remove (which purges mariadb-server) deletes it,
+    // and a fresh install never had it. The stock default is 151, and this
+    // deployment measured Max_used_connections at exactly 152 during a P-CSCF
+    // restart's own connection burst on 2026-10-02, taking the whole service
+    // down: one ims_usrloc_pcscf worker failing to connect aborts all of
+    // Kamailio's startup, not just that worker. S/I-CSCF, SMSC and PyHSS all
+    // hold pools open concurrently, so the ceiling is genuinely load-bearing.
+    //
+    // A 99-prefixed drop-in loads after 50-server.cnf and so wins, and apt
+    // never owns it, so a purge/reinstall cycle cannot silently revert it.
+    try {
+      write('\n=== Ensuring MariaDB max_connections (apt-proof drop-in) ===\n');
+      const myCnfDir = '/proc/1/root/etc/mysql/mariadb.conf.d';
+      if (fs.existsSync(myCnfDir)) {
+        const myCnf = `${myCnfDir}/99-open5gs-nms.cnf`;
+        const desired = [
+          '# Written by open5gs-nms IMS Install. Do not hand-edit.',
+          '#',
+          '# The stock 151 is genuinely too low for this stack: P-CSCF, I-CSCF,',
+          '# S-CSCF, the SMSC and PyHSS all hold connection pools open at once,',
+          '# and a P-CSCF restart burst measured 152 in use on 2026-10-02, which',
+          '# took IMS down entirely (one usrloc worker failing to connect aborts',
+          '# all of Kamailio startup). Kept in a 99- drop-in because apt owns',
+          '# 50-server.cnf and a purge would delete the value from there.',
+          '[mysqld]',
+          'max_connections = 300',
+          '',
+        ].join('\n');
+        const existing = fs.existsSync(myCnf) ? fs.readFileSync(myCnf, 'utf-8') : '';
+        if (existing !== desired) {
+          fs.writeFileSync(myCnf, desired, 'utf-8');
+          write('Wrote /etc/mysql/mariadb.conf.d/99-open5gs-nms.cnf (max_connections = 300).\n');
+          const r = await nsenter('systemctl', ['restart', 'mariadb']).then(() => true).catch(() => false);
+          write(r ? 'mariadb restarted to pick it up.\n'
+                  : '⚠️  Could not restart mariadb — the drop-in applies on its next restart.\n');
+        } else {
+          write('Already present and current — nothing to do.\n');
+        }
+      } else {
+        write('⚠️  /etc/mysql/mariadb.conf.d not present — skipping (is mariadb-server installed?).\n');
+      }
+    } catch (err) {
+      write(`⚠️  Could not write the MariaDB drop-in: ${String(err)} — raise max_connections manually.\n`);
+    }
+
     // Patch cdp.so: the stock Kamailio 5.x cdp_mod.c registers one fewer process slot
     // than it actually forks, causing the CDP timer to fail with "Process limit exceeded"
     // — which breaks Cx/Rx Diameter (HSS/PCRF signaling) under load.
     // Fix: bump the register_procs() count from (2+workers+2*peers) to (3+workers+2*peers).
+    //
+    // Skipped outright once the 6.0.8 source build owns Kamailio, and that is a
+    // correctness requirement, not just tidiness. `dpkg -s kamailio` still
+    // reports 5.8.8+ubuntu24.04 on a source-built host (the build installs over
+    // the apt tree without going through dpkg), so this block would fetch 5.8.8
+    // source, compile a 5.8.8 cdp.so, and drop it on top of the running 6.0.8
+    // one — a module-interface ABI mismatch that stops every CSCF from loading
+    // cdp at all. The 6.0.8 pipeline carries this same fix as
+    // CDP_MOD_C_PATCH now, so there is nothing left for this block to do there.
     write('\n=== Patching cdp.so (process slot fix) ===\n');
-    const cdpPatchExitCode = await spawnStream(
+    if (srcBuilt) {
+      write('A Kamailio 6.0.8 source build is active — skipping. That pipeline applies\n' +
+            'this same fix as CDP_MOD_C_PATCH, and patching from apt 5.8.8 source here\n' +
+            'would overwrite the 6.0.8 cdp.so with an ABI-incompatible one.\n');
+    }
+    const cdpPatchExitCode = srcBuilt ? 0 : await spawnStream(
       'set -e\n' +
       'CDP_SO=/usr/lib/x86_64-linux-gnu/kamailio/modules/cdp.so\n' +
       'MARKER=/usr/lib/x86_64-linux-gnu/kamailio/modules/cdp.so.patched\n' +
-      '[ -f "$MARKER" ] && echo "cdp.so already patched — skipping." && exit 0\n' +
+      // The marker used to be a bare `touch`ed empty file, checked for presence
+      // only. That lost this patch silently and permanently: the 6.0.8 source
+      // build replaced cdp.so on 2026-10-03 with a build that did NOT carry
+      // this fix, the Aug-2 marker stayed behind, and `[ -f "$MARKER" ] &&
+      // exit 0` then guaranteed Install would never reapply it. The marker now
+      // records the hash of the cdp.so this step actually produced, so anything
+      // that later replaces the binary is detected and the patch is redone.
+      'if [ -s "$MARKER" ] && [ -f "$CDP_SO" ] && \\\n' +
+      '   [ "$(cat "$MARKER")" = "$(sha256sum "$CDP_SO" | awk \'{print $1}\')" ]; then\n' +
+      '  echo "cdp.so already patched (hash matches marker) — skipping."\n' +
+      '  exit 0\n' +
+      'fi\n' +
+      '[ -f "$MARKER" ] && echo "Marker present but cdp.so no longer matches it — the binary was replaced, reapplying."\n' +
       'KVER=$(dpkg -s kamailio 2>/dev/null | grep ^Version | awk \'{print $2}\')\n' +
       'echo "Kamailio version: $KVER"\n' +
       // Real incident (2026-07-17): the previous check here — `grep -qr "deb-src"
@@ -3004,12 +3547,28 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
       'SRCDIR=$(ls -d /tmp/kamailio-*/src 2>/dev/null | head -1 | sed "s|/src$||")\n' +
       '[ -z "$SRCDIR" ] && echo "ERROR: kamailio source not found" && exit 1\n' +
       'echo "Source dir: $SRCDIR"\n' +
-      'sed -i "s/register_procs(2 + config->workers/register_procs(3 + config->workers/g" "$SRCDIR/src/modules/cdp/cdp_mod.c"\n' +
-      'sed -i "s/cfg_register_child(2 + config->workers/cfg_register_child(3 + config->workers/g" "$SRCDIR/src/modules/cdp/cdp_mod.c"\n' +
+      'CDP_MOD_C="$SRCDIR/src/modules/cdp/cdp_mod.c"\n' +
+      'sed -i "s/register_procs(2 + config->workers/register_procs(3 + config->workers/g" "$CDP_MOD_C"\n' +
+      'sed -i "s/cfg_register_child(2 + config->workers/cfg_register_child(3 + config->workers/g" "$CDP_MOD_C"\n' +
+      // `sed -i` exits 0 when its expression matches nothing, so an upstream
+      // source change would have made this a silent no-op that still wrote the
+      // marker and printed success. Verify the edit actually landed.
+      'if ! grep -q "register_procs(3 + config->workers" "$CDP_MOD_C" || \\\n' +
+      '   ! grep -q "cfg_register_child(3 + config->workers" "$CDP_MOD_C"; then\n' +
+      '  echo "ERROR: the process-slot edit did not apply — upstream cdp_mod.c has changed shape. Review manually."\n' +
+      '  exit 1\n' +
+      'fi\n' +
       'cd "$SRCDIR" && make modules modules=src/modules/cdp 2>&1\n' +
-      'cp "$SRCDIR/src/modules/cdp/cdp.so" "$CDP_SO"\n' +
-      'touch "$MARKER"\n' +
-      'echo "✅ cdp.so patched successfully."'
+      // Never `cp` over a live-mapped .so: a running worker page-faulting into
+      // a half-rewritten file executes a mix of old and new bytes and dies with
+      // SIGILL — confirmed live 2026-10-03, which took all 3 Kamailio processes
+      // down at once. A rename swaps the directory entry atomically, so any
+      // process holding the old inode keeps seeing consistent old bytes until
+      // it restarts, and nothing can observe a partial file.
+      'cp "$SRCDIR/src/modules/cdp/cdp.so" "$CDP_SO.new"\n' +
+      'mv "$CDP_SO.new" "$CDP_SO"\n' +
+      'sha256sum "$CDP_SO" | awk \'{print $1}\' > "$MARKER"\n' +
+      'echo "✅ cdp.so patched successfully (marker records its hash; restart Kamailio to load it)."'
     );
     if (cdpPatchExitCode !== 0) {
       write('\n⚠️ WARNING: cdp.so patch FAILED (see errors above). Kamailio\'s CDP module ' +
@@ -3044,12 +3603,48 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
     write('\n=== Installing PyHSS ===\n');
     const pyhssInstalled = fs.existsSync('/proc/1/root/opt/pyhss');
     if (!pyhssInstalled) {
-      write('Cloning PyHSS...\n');
-      await spawnStream('git clone https://github.com/nickvsnetworking/pyhss /opt/pyhss 2>&1');
+      write(`Cloning PyHSS at pinned commit ${PYHSS_COMMIT.slice(0, 12)}...\n`);
+      // Pinned, not a bare clone of upstream's default branch. This project
+      // applies three real patches to PyHSS source at Install time, each
+      // located by matching specific text (the Answer_16777216_300/_302 UAA/LIA
+      // crash-guard in lib/diameter.py, and the scshf_realm -> mcc/mnc domain
+      // fix in default_ifc.xml — both documented in CLAUDE.md). An unpinned
+      // clone means a fresh install gets whatever upstream HEAD happens to be
+      // that day, so those patch sites can move or vanish and the patches
+      // silently stop applying — and two installs a week apart end up running
+      // different PyHSS builds, which makes "works on this host" unreproducible.
+      await spawnStream(
+        'set -e\n' +
+        'git clone https://github.com/nickvsnetworking/pyhss /opt/pyhss 2>&1\n' +
+        `cd /opt/pyhss && git checkout ${PYHSS_COMMIT} 2>&1\n` +
+        'echo "PyHSS at $(git rev-parse --short HEAD) ($(git describe --tags 2>/dev/null || echo untagged))"',
+      );
     } else {
-      write('PyHSS already cloned — skipping clone.\n');
+      // Deliberately not force-moving an existing tree to the pin: it carries
+      // this deployment's applied patches and local state, and a checkout here
+      // would revert them mid-Install. Report the divergence instead.
+      const { stdout: head } = await nsenter('git', ['-C', '/opt/pyhss', 'rev-parse', 'HEAD'])
+        .catch(() => ({ stdout: '' }));
+      const at = head.trim();
+      write(`PyHSS already cloned — skipping clone (at ${at.slice(0, 12) || 'unknown'}).\n`);
+      if (at && at !== PYHSS_COMMIT) {
+        write(`⚠️  This tree is NOT the pinned commit (${PYHSS_COMMIT.slice(0, 12)}). It was cloned\n` +
+              '   before this pin existed, or moved by hand. Left alone deliberately — it holds\n' +
+              '   this deployment\'s applied patches. The patch steps below verify their own\n' +
+              '   sites and will report if any no longer match.\n');
+      }
     }
-    const basePyhssDepsExitCode = await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y libmariadb-dev pkg-config 2>&1');
+    // Real, 2026-09-23 fresh-VM finding: libmariadb-dev + pkg-config alone
+    // were NOT enough for pip to build mysqlclient's C extension (a real,
+    // reproduced `ModuleNotFoundError: No module named 'MySQLdb'` at PyHSS's
+    // own runtime, despite this apt-get step itself reporting success) —
+    // needed default-libmysqlclient-dev (the mysql_config binary specifically,
+    // distinct from mariadb_config) and build-essential (a genuinely fresh
+    // minimal image doesn't guarantee gcc/make are already present, unlike
+    // this project's own long-lived reference host where some earlier step
+    // had already pulled them in for something else). Confirmed live: adding
+    // these three and re-running the pip install below fixed it.
+    const basePyhssDepsExitCode = await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y libmariadb-dev default-libmysqlclient-dev pkg-config build-essential 2>&1');
     // --break-system-packages (PEP 668) is only understood by pip >= 23.0.1 -
     // older pip3 (as shipped on some fresh hosts) rejects it outright with
     // "no such option: --break-system-packages" and the whole install never
@@ -3083,6 +3678,29 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
         'PyHSS will not start correctly. Fix the underlying issue and re-run Install.\n');
     } else {
       write('✅ PyHSS installed.\n');
+    }
+
+    // Best-effort install of py-spy (a sampling Python profiler/stack-dump
+    // tool) — not a PyHSS dependency, used by pyhss-diameter-guard.ts to
+    // capture forensic context when it detects the pyhss-diameter hang
+    // signature (see that file's header). Deliberately non-fatal: the
+    // guard's actual detection/restart logic doesn't depend on py-spy being
+    // present, this just makes a future diagnostic capture richer when it
+    // is. --break-system-packages is safe here specifically because py-spy
+    // is a standalone Rust binary with a thin wheel wrapper and no real
+    // Python dependencies of its own to conflict with anything PyHSS needs.
+    const pySpyExitCode = await spawnStream(
+      'if command -v py-spy >/dev/null 2>&1; then\n' +
+      '  echo "py-spy already installed."\n' +
+      '  exit 0\n' +
+      'fi\n' +
+      'pip3 install --break-system-packages py-spy 2>&1 || pip3 install --ignore-installed py-spy 2>&1\n'
+    );
+    if (pySpyExitCode !== 0) {
+      write('\n⚠️ py-spy install failed (non-fatal — IMS still works; this only reduces the ' +
+        'detail available in a future pyhss-diameter-guard diagnostic capture).\n');
+    } else {
+      write('✅ py-spy available for diagnostics.\n');
     }
 
     // Patch PyHSS's Answer_16777216_300() (Cx UAA) and Answer_16777216_302()
@@ -3177,6 +3795,90 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
       write('✅ PyHSS diameter.py patched.\n');
     }
 
+    // Patch PyHSS's hssService.py: Generate_Prom_Stats() (diameter.py) — the
+    // function that would populate prom_ims_subs/prom_mme_subs/prom_pcrf_subs,
+    // the gauges behind this NMS's own "IMS Subscribers" Grafana panel — exists
+    // in stock PyHSS but is never called anywhere in the codebase (confirmed
+    // live 2026-09-25, dead code). It must run on its OWN background thread,
+    // never inline in handleQueue() — that's PyHSS's single-threaded, blocking
+    // Diameter message loop, and Generate_Prom_Stats does blocking DB I/O
+    // (3 full ORM queries via SQLAlchemy) — inlining it would stall real
+    // Diameter processing on every 30s tick. Same idempotent/line-anchored/
+    // fail-loud idiom as the UAA/LIA patch directly above.
+    write('\n=== Patching PyHSS hssService.py (background Prometheus stats thread) ===\n');
+    const pyhssMetricsPatchExitCode = await spawnStream(
+      'set -e\n' +
+      'python3 - <<\'PYEOF\'\n' +
+      'import sys\n' +
+      'path = "/opt/pyhss/services/hssService.py"\n' +
+      'with open(path) as f:\n' +
+      '    lines = f.readlines()\n' +
+      'changed = False\n' +
+      'import_idx = None\n' +
+      'for i, line in enumerate(lines):\n' +
+      '    if line.strip().startswith("import os, sys, json, time, traceback, socket"):\n' +
+      '        import_idx = i\n' +
+      '        break\n' +
+      'if import_idx is None:\n' +
+      '    print("ERROR: expected stdlib import line not found in hssService.py — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '    sys.exit(1)\n' +
+      'if "threading" not in lines[import_idx]:\n' +
+      '    lines[import_idx] = lines[import_idx].rstrip("\\n") + ", threading\\n"\n' +
+      '    changed = True\n' +
+      'if not any("_prom_stats_loop" in l for l in lines):\n' +
+      '    main_idx = None\n' +
+      '    for i, line in enumerate(lines):\n' +
+      '        if line.startswith("def main():"):\n' +
+      '            main_idx = i\n' +
+      '            break\n' +
+      '    if main_idx is None:\n' +
+      '        print("ERROR: def main() not found in hssService.py — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '        sys.exit(1)\n' +
+      '    loop_fn_lines = [\n' +
+      '        "def _prom_stats_loop(hssService):\\n",\n' +
+      '        "    # open5gs-nms: runs Generate_Prom_Stats() on a background thread —\\n",\n' +
+      '        "    # see main()\'s own comment for why this can never be inline.\\n",\n' +
+      '        "    while True:\\n",\n' +
+      '        "        try:\\n",\n' +
+      '        "            hssService.diameterLibrary.Generate_Prom_Stats()\\n",\n' +
+      '        "        except Exception:\\n",\n' +
+      '        "            pass\\n",\n' +
+      '        "        time.sleep(30)\\n",\n' +
+      '        "\\n",\n' +
+      '        "\\n",\n' +
+      '    ]\n' +
+      '    lines[main_idx:main_idx] = loop_fn_lines\n' +
+      '    changed = True\n' +
+      'handlequeue_idx = None\n' +
+      'for i, line in enumerate(lines):\n' +
+      '    if "hssService.handleQueue()" in line:\n' +
+      '        handlequeue_idx = i\n' +
+      '        break\n' +
+      'if handlequeue_idx is None:\n' +
+      '    print("ERROR: hssService.handleQueue() call not found — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '    sys.exit(1)\n' +
+      'if "_prom_stats_loop" not in lines[handlequeue_idx - 1]:\n' +
+      '    indent = lines[handlequeue_idx][:len(lines[handlequeue_idx]) - len(lines[handlequeue_idx].lstrip())]\n' +
+      '    lines.insert(handlequeue_idx, indent + "# open5gs-nms: background Prometheus stats thread (never inline — see _prom_stats_loop)\\n" + indent + "threading.Thread(target=_prom_stats_loop, args=(hssService,), daemon=True).start()\\n")\n' +
+      '    changed = True\n' +
+      'if changed:\n' +
+      '    with open(path, "w") as f:\n' +
+      '        f.writelines(lines)\n' +
+      '    print("patched")\n' +
+      'else:\n' +
+      '    print("already patched — skipping")\n' +
+      'PYEOF\n' +
+      'python3 -m py_compile /opt/pyhss/services/hssService.py\n'
+    );
+    if (pyhssMetricsPatchExitCode !== 0) {
+      write('\n⚠️ WARNING: hssService.py background-stats patch FAILED (see errors above). ' +
+        'The "IMS Subscribers" Grafana panel will keep reading 0 — pyhss-metrics itself will ' +
+        'still run, but Generate_Prom_Stats() never gets called to populate its gauge. Fix the ' +
+        'underlying issue and re-run Install, the patch is idempotent and will retry automatically.\n');
+    } else {
+      write('✅ PyHSS hssService.py patched.\n');
+    }
+
     // Patch PyHSS's default_ifc.xml: its <PrivateID>/<Identity> elements built
     // the subscriber's permanent SIP identity domain from `scscf_realm` — a
     // *transient* Diameter-routing field on the ims_subscriber row that
@@ -3246,6 +3948,148 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
       write('✅ PyHSS default_ifc.xml patched.\n');
     }
 
+    // Patch PyHSS's diameterService.py/messagingAsync.py (pyhss-diameter):
+    // a real, recurring hang found live 2026-10-01 — PyHSS's Diameter Cx
+    // peer connection stays I_Open (confirmed via `cdp.list_peers`) while
+    // silently stopping all processing, surfacing as `500 Server error on
+    // LIR` on Kamailio's side; only `systemctl restart pyhss-diameter`
+    // recovered it, and it recurred repeatedly (4+ times in ~2 hours).
+    // `hssService.py` (`pyhss-hss`, the actual Cx business-logic processor)
+    // was independently confirmed NOT the hung component — its own PID had
+    // been running continuously for 25+ hours spanning every hang, and a
+    // live `py-spy dump` showed it correctly idle. The hang is isolated to
+    // `diameterService.py`'s own asyncio socket layer: `awaitMessage()`
+    // (messagingAsync.py) calls Redis `BLPOP`/`BLMPOP` with no timeout
+    // (blocks forever), no `socket_timeout` is configured on the Redis
+    // client at all, and every peer reconnect (any pcscf/scscf/icscf
+    // restart) cancels an in-flight per-connection writer task via
+    // `asyncio.wait(..., FIRST_COMPLETED)` + `.cancel()` — a combination
+    // that can leave a blocking call with no bounded recovery path. This
+    // patch makes every blocking Redis call in this service self-healing
+    // (a stalled wait now times out and retries instead of hanging
+    // forever) rather than requiring a manual restart — note this is
+    // hardening against a confirmed failure *symptom*, not a 100%-proven
+    // single root cause (an adversarial code-level review of the exact
+    // installed redis-py 5.0.0 found real built-in defenses against the
+    // specific "corrupted pooled connection" mechanism first suspected,
+    // so treat this as defense-in-depth, not a guaranteed fix — see
+    // memory pyhss_diameter_hang_investigation.md for the full arc,
+    // including why a direct live reproduction was never caught). Also
+    // fixes a real, separate `UnboundLocalError` risk in
+    // `validateDiameterInbound()` — same bug shape as the already-shipped
+    // diameter.py UAA/LIA crash-guard above, just in this file's own
+    // exception handler (not the hang cause — it's independently caught
+    // and swallowed by the caller — but worth closing on the same pass).
+    // Idempotent (line-anchored, not offset-based), fails loudly if
+    // upstream PyHSS changes either file's shape enough to break an
+    // anchor, same as every other patch in this function.
+    write('\n=== Patching PyHSS diameterService.py/messagingAsync.py (pyhss-diameter hang hardening) ===\n');
+    const pyhssHangPatchExitCode = await spawnStream(
+      'set -e\n' +
+      'python3 - <<\'PYEOF\'\n' +
+      'import sys\n' +
+      'changed_any = False\n' +
+      '\n' +
+      '# messagingAsync.py: give every Redis client a bounded socket timeout,\n' +
+      '# and give the per-connection outbound BLPOP a bounded wait so a stalled\n' +
+      '# read raises and retries instead of hanging forever.\n' +
+      'path = "/opt/pyhss/lib/messagingAsync.py"\n' +
+      'with open(path) as f:\n' +
+      '    src = f.read()\n' +
+      'orig_src = src\n' +
+      'replacements = [\n' +
+      '    ("self.redisClient = redis.Redis(unix_socket_path=unixSocketPath)",\n' +
+      '     "self.redisClient = redis.Redis(unix_socket_path=unixSocketPath, socket_timeout=15, socket_connect_timeout=5)"),\n' +
+      '    ("self.redisClient = redis.Redis(host=host, port=port)",\n' +
+      '     "self.redisClient = redis.Redis(host=host, port=port, socket_timeout=15, socket_connect_timeout=5)"),\n' +
+      '    ("message =  (await(self.redisClient.blpop(key)))",\n' +
+      '     "message =  (await(self.redisClient.blpop(key, timeout=10)))"),\n' +
+      ']\n' +
+      'for old, new in replacements:\n' +
+      '    if new in src:\n' +
+      '        continue\n' +
+      '    if old not in src:\n' +
+      '        print("ERROR: anchor not found in messagingAsync.py: " + repr(old) + " — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '        sys.exit(1)\n' +
+      '    src = src.replace(old, new, 1)\n' +
+      '    changed_any = True\n' +
+      'if src != orig_src:\n' +
+      '    with open(path, "w") as f:\n' +
+      '        f.write(src)\n' +
+      '    print("messagingAsync.py: patched")\n' +
+      'else:\n' +
+      '    print("messagingAsync.py: already patched — skipping")\n' +
+      '\n' +
+      '# diameterService.py: writeOutboundData() must treat a timed-out/empty\n' +
+      '# awaitMessage() result as "nothing to send yet, loop again" rather than\n' +
+      '# "connection closed, tear the writer down" (indexing \'\'[1] currently\n' +
+      '# raises IndexError, caught generically as a connection-closed signal) —\n' +
+      '# required once the blpop above gets a real timeout instead of blocking\n' +
+      '# forever, or every idle period would start dropping the Kamailio\n' +
+      '# connection. A short sleep on the empty path only (not the real-message\n' +
+      '# path) rate-limits a genuinely fast-failing Redis error instead of\n' +
+      '# busy-spinning; validateDiameterInbound() gets the same None-init crash\n' +
+      '# guard as the diameter.py UAA/LIA patch above, for the same reason.\n' +
+      'path = "/opt/pyhss/services/diameterService.py"\n' +
+      'with open(path) as f:\n' +
+      '    src = f.read()\n' +
+      'orig_src = src\n' +
+      '\n' +
+      'old_d = (\n' +
+      '    "        try:\\n"\n' +
+      '    "            packetVars, avps = await(self.diameterLibrary.decodeDiameterPacket(inboundData))"\n' +
+      ')\n' +
+      'new_d = (\n' +
+      '    "        packetVars, avps = None, None\\n"\n' +
+      '    "        try:\\n"\n' +
+      '    "            packetVars, avps = await(self.diameterLibrary.decodeDiameterPacket(inboundData))"\n' +
+      ')\n' +
+      'if new_d in src:\n' +
+      '    pass\n' +
+      'elif old_d not in src:\n' +
+      '    print("ERROR: anchor not found in diameterService.py for validateDiameterInbound — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '    sys.exit(1)\n' +
+      'else:\n' +
+      '    src = src.replace(old_d, new_d, 1)\n' +
+      '    changed_any = True\n' +
+      '\n' +
+      'old_c = (\n' +
+      '    "                pendingOutboundMessage = (await(self.redisWriterMessaging.awaitMessage(key=f\\"diameter-outbound-{clientAddress}-{clientPort}\\", usePrefix=True, prefixHostname=self.hostname, prefixServiceName=\'diameter\')))[1]\\n"\n' +
+      ')\n' +
+      'new_c = (\n' +
+      '    "                rawOutboundMessage = await(self.redisWriterMessaging.awaitMessage(key=f\\"diameter-outbound-{clientAddress}-{clientPort}\\", usePrefix=True, prefixHostname=self.hostname, prefixServiceName=\'diameter\'))\\n"\n' +
+      '    "                if not rawOutboundMessage:\\n"\n' +
+      '    "                    await(asyncio.sleep(1))\\n"\n' +
+      '    "                    continue\\n"\n' +
+      '    "                pendingOutboundMessage = rawOutboundMessage[1]\\n"\n' +
+      ')\n' +
+      'if new_c in src:\n' +
+      '    pass\n' +
+      'elif old_c not in src:\n' +
+      '    print("ERROR: anchor not found in diameterService.py for writeOutboundData — PyHSS source may have changed, skipping patch, please review manually.")\n' +
+      '    sys.exit(1)\n' +
+      'else:\n' +
+      '    src = src.replace(old_c, new_c, 1)\n' +
+      '    changed_any = True\n' +
+      '\n' +
+      'if src != orig_src:\n' +
+      '    with open(path, "w") as f:\n' +
+      '        f.write(src)\n' +
+      '    print("diameterService.py: patched")\n' +
+      'else:\n' +
+      '    print("diameterService.py: already patched — skipping")\n' +
+      'PYEOF\n' +
+      'python3 -m py_compile /opt/pyhss/lib/messagingAsync.py /opt/pyhss/services/diameterService.py\n'
+    );
+    if (pyhssHangPatchExitCode !== 0) {
+      write('\n⚠️ WARNING: PyHSS diameterService.py/messagingAsync.py hang-hardening patch FAILED ' +
+        '(see errors above). pyhss-diameter may keep hanging on a peer reconnect race until this ' +
+        'is fixed and Install is re-run — the patch is idempotent and will retry automatically.\n');
+    } else {
+      write('✅ PyHSS diameterService.py/messagingAsync.py patched (pyhss-diameter hang hardening).\n');
+      await nsenter('systemctl', ['restart', 'pyhss-diameter']).catch(() => {});
+    }
+
     // Patch Open5GS SMF's "Late/overlapping Create Session Request" gap
     // (src/smf/gsm-sm.c): smf_gsm_state_operational() silently drops a
     // Create Session Request that collides with an already-operational
@@ -3274,6 +4118,34 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
       write('✅ Open5GS SMF patched (or already up to date).\n');
     }
 
+    // Patch Open5GS SMF's Gx "wrong-peer" gap (src/smf/gx-path.c): the very
+    // first Gx CCR of a new session relies entirely on freeDiameter's
+    // realm+Application-Id candidate selection to reach PCRF, with no
+    // Destination-Host — and this deployment's SMF has three same-realm
+    // Diameter peers (pcrf/aaa/ocs), one of which (SigScale OCS) also
+    // advertises Gx's Application-Id in its own CER despite not
+    // implementing it. Confirmed live 2026-10-02 chasing a real "iPhone
+    // keeps connecting then disconnecting from LTE" report: a real Gx CCR
+    // got routed to OCS instead of PCRF, PCRF's own log showed it never
+    // arrived, and ~7.5s later MME's GTP Holding Timeout tore the whole
+    // session down. Builds a patched open5gs-smfd the same way as the
+    // late-overlapping-CSR patch above (same source tree, same
+    // commit-matching, same automatic rollback if the new binary doesn't
+    // come up healthy) — this step failing is a warning, not a hard
+    // Install failure, same reasoning as that patch.
+    write('\n=== Patching Open5GS SMF (Gx wrong-peer fix) ===\n');
+    const smfGxPatchExitCode = await spawnStream(buildSmfGxPeerhostPatchScript());
+    if (smfGxPatchExitCode !== 0) {
+      write('\n⚠️ WARNING: Open5GS SMF Gx wrong-peer patch FAILED or was skipped ' +
+        '(see errors above) — a Gx CCR may still intermittently misroute to another ' +
+        'same-realm Diameter peer (e.g. SigScale OCS, if installed), causing a PDU ' +
+        'session to silently hang until the UE\'s own GTP retransmit timer gives up ' +
+        'and the attach is torn down and retried. Fix the underlying issue and ' +
+        're-run Install — this step is idempotent.\n');
+    } else {
+      write('✅ Open5GS SMF patched for the Gx wrong-peer fix (or already up to date).\n');
+    }
+
     // Record which app version this Install ran under — drives the
     // "Reinstall available" banner (installStale in /status) so a future
     // release that changes an Install-time step (a new patch, a fixed
@@ -3297,6 +4169,19 @@ export interface ImsStalenessResult {
   configStale: boolean;
   installedWithVersion?: string;
   configuredWithVersion?: string;
+  /**
+   * Deployed static templates whose content differs from this build's, and ones
+   * missing entirely — host paths, from checkImsTemplateStaleness().
+   *
+   * Separate from `configStale` on purpose: that flag only compares version
+   * STRINGS, so it reads "current" for the failure mode that actually keeps
+   * happening here (a template edited without a version bump, or a hand
+   * redeploy — see checkImsTemplateStaleness()'s own comment for the two real
+   * outages). Without this, Fix All would report nothing to do while the live
+   * routing scripts were genuinely out of date.
+   */
+  staleTemplates: string[];
+  missingTemplates: string[];
 }
 
 // Cheap, standalone version of the staleness-comparison logic already
@@ -3326,7 +4211,26 @@ export async function getImsStaleness(): Promise<ImsStalenessResult> {
   }
   const installStale = installed && installedWithVersion !== appVersion;
 
-  return { installed, hasSavedConfig, installStale, configStale, installedWithVersion, configuredWithVersion };
+  // Content comparison, not a version-string compare. Needs the rtpEngineIp the
+  // deployment was actually configured with so token-bearing templates render
+  // exactly as they were deployed; without it those are skipped rather than
+  // reported as false positives.
+  let rtpEngineIp: string | undefined;
+  if (hasSavedConfig) {
+    try {
+      rtpEngineIp = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'))?.config?.rtpEngineIp;
+    } catch { /* corrupt */ }
+  }
+  const templates = installed
+    ? checkImsTemplateStaleness(rtpEngineIp)
+    : { stale: [], missing: [], checked: 0 };
+
+  return {
+    installed, hasSavedConfig, installStale, configStale,
+    installedWithVersion, configuredWithVersion,
+    staleTemplates: templates.stale,
+    missingTemplates: templates.missing,
+  };
 }
 
 export function createImsRouter(
@@ -3417,6 +4321,16 @@ export function createImsRouter(
         } catch { /* corrupt */ }
       }
       const installStale = installed && installedWithVersion !== appVersion;
+
+      // Content-based staleness, independent of the two version-string flags
+      // above — see checkImsTemplateStaleness()'s own comment for the two real
+      // outages that came from a deployed template silently differing from the
+      // one in the build. Also surfaces the compiled-module patch state, which
+      // had a verification function with no callers at all until now.
+      const templates = checkImsTemplateStaleness(currentConfig?.rtpEngineIp);
+      const modulePatches = installed
+        ? await verifyKamailioImsModulesPatch().catch(() => undefined)
+        : undefined;
 
       const services = {
         pcscf:            svcActive(pcscfRes),
@@ -3510,6 +4424,8 @@ export function createImsRouter(
         configStale,
         installedWithVersion,
         installStale,
+        templates,
+        modulePatches,
         smsDeliveryMode,
         smsWorkerIntervalSeconds,
         voiceChargingEnabled,
@@ -3841,242 +4757,12 @@ export function createImsRouter(
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      if (!fs.existsSync(HOST_IMS_STATE)) {
-        return res.status(400).json({ success: false, error: 'IMS not configured — run Configure first.' });
-      }
-      const savedState = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
-      const imsDomain  = savedState.imsDomain;
-      const savedConfig = savedState.config ?? {};
-
-      const allSubs = await subscriberRepo.findAllFull();
-      const toSync  = allSubs.filter(s => s.msisdn && s.msisdn.length > 0 && s.security?.k);
-
-      // Build list of all known PLMNs (primary + additional) for per-subscriber domain lookup
-      const primaryMcc = savedConfig.mcc ?? '';
-      const primaryMnc = savedConfig.mnc ?? '';
-      const additionalPlmns: { mcc: string; mnc: string }[] = savedConfig.additionalPlmns ?? [];
-      const allPlmns = [
-        { mcc: primaryMcc, mnc: primaryMnc, domain: imsDomain },
-        ...additionalPlmns.map((p: { mcc: string; mnc: string }) => ({
-          mcc: p.mcc, mnc: p.mnc, domain: deriveImsDomain(p.mcc, p.mnc),
-        })),
-      ];
-
-      // Pick the IMS domain whose MCC+MNC prefix matches the subscriber's IMSI.
-      // Falls back to primary domain for unrecognised prefixes.
-      const domainForImsi = (imsi: string): string => {
-        for (const plmn of allPlmns) {
-          if (imsi.startsWith(plmn.mcc + plmn.mnc)) return plmn.domain;
-        }
-        return imsDomain;
-      };
-
-      // Ensure pyHSS config.yaml reflects the current PLMN list (covers the case where
-      // additional PLMNs were added after the initial Configure run).
-      const scscfPort = savedConfig.scscfPort ?? 6060;
-      const scscfIp   = savedConfig.scscfIp   ?? '127.0.1.2';
-      try {
-        const updatedYaml = pyhssConfigYaml({
-          imsDomain,
-          mcc: primaryMcc, mnc: primaryMnc,
-          scscfIp, scscfPort,
-          hssIp: '127.0.1.3',
-          additionalPlmns,
-        });
-        fs.writeFileSync('/proc/1/root/opt/pyhss/config.yaml', updatedYaml, 'utf-8');
-        // Restart pyHSS so the new scscf_pool takes effect before subscriber records land.
-        // pyhss-api Requires=pyhss-hss (see pyhssApiUnit() above), so this restart cascades
-        // to pyhss-api too — and PyHSS's own startup (Diameter library init, then Flask)
-        // reliably takes ~25-30s, confirmed live (2026-07-17). A fixed 3s wait here used to
-        // be enough only because pyhss-api's unit previously had no dependency on pyhss-hss
-        // at all (it was orphaned/never wired up — see the module-level comment above
-        // IMS_TEMPLATES_DIR); now that the dependency is correct, every single subscriber
-        // sync call was hitting a PyHSS API that hadn't finished starting yet and failing
-        // uniformly. Poll for real readiness instead of guessing a fixed delay.
-        await nsenter('systemctl', ['restart', 'pyhss-hss', 'pyhss-diameter']).catch(() => {});
-        const deadline = Date.now() + 45000;
-        let ready = false;
-        while (Date.now() < deadline) {
-          try { await pyhssApiCall('GET', '/apn/list'); ready = true; break; } catch { /* not up yet */ }
-          await new Promise(r => setTimeout(r, 1500));
-        }
-        if (!ready) logger.warn('PyHSS API did not become ready within 45s after restart — sync will likely fail');
-      } catch (e) {
-        logger.warn({ err: String(e) }, 'Could not update pyHSS config during sync — continuing anyway');
-      }
-
-      let synced = 0;
-      const failed: string[] = [];
-
-      {
-        // ── PyHSS sync via REST API ───────────────────────────────────────────────
-
-        // Ensure internet APN exists (needed as default_apn for subscriber)
-        let internetApnId = 1;
-        try {
-          const apnList: any[] = await pyhssApiCall('GET', '/apn/list');
-          const existing = Array.isArray(apnList) ? apnList.find((a: any) => a.apn === 'internet') : null;
-          if (existing) {
-            internetApnId = existing.apn_id;
-          } else {
-            const created = await pyhssApiCall('PUT', '/apn/', {
-              apn: 'internet', apn_ambr_dl: 999999, apn_ambr_ul: 999999, qci: 9, arp_priority: 4,
-            });
-            internetApnId = created.apn_id ?? 1;
-          }
-        } catch { /* use default apn_id=1 */ }
-
-        // Pre-fetch all PyHSS IMS subscribers to detect MSISDN conflicts across IMSIs
-        const syncImsiSet = new Set(toSync.map(s => s.imsi));
-        const msisdnOwnerMap = new Map<string, { imsi: string; id: number }>();
-        try {
-          const imsAll: any[] = await pyhssApiCall('GET', '/ims_subscriber/list');
-          if (Array.isArray(imsAll)) {
-            for (const e of imsAll) {
-              if (e.msisdn) msisdnOwnerMap.set(String(e.msisdn), { imsi: String(e.imsi), id: e.ims_subscriber_id });
-            }
-          }
-        } catch { /* proceed without conflict map */ }
-
-        for (const sub of toSync) {
-          const imsi   = sub.imsi;
-          const msisdn = sub.msisdn![0];
-          const k      = (sub.security?.k ?? '').toUpperCase();
-          const opc    = (sub.security?.opc ?? '').toUpperCase();
-          const amf    = (sub.security?.amf ?? '8000').toString();
-          const sqnNum = Number(sub.security?.sqn ?? 0);
-
-          if (!/^\d+$/.test(imsi) || !/^\d+$/.test(msisdn) || !/^[0-9a-fA-F]{32}$/.test(k)) {
-            failed.push(`${imsi}: invalid IMSI/MSISDN/K format`);
-            continue;
-          }
-
-          try {
-            // Delete-then-recreate: handles any field change (k, opc, amf, msisdn, etc.)
-            // Delete order: IMS subscriber → subscriber → AUC (reverse dependency)
-            let existingIms: any = null;
-            try { existingIms = await pyhssApiCall('GET', `/ims_subscriber/ims_subscriber_imsi/${imsi}`); } catch { /* not found */ }
-            if (existingIms?.ims_subscriber_id) {
-              try { await pyhssApiCall('DELETE', `/ims_subscriber/${existingIms.ims_subscriber_id}`); } catch { /* ignore */ }
-              msisdnOwnerMap.delete(String(existingIms.msisdn ?? msisdn));
-            }
-
-            let existingSub: any = null;
-            try { existingSub = await pyhssApiCall('GET', `/subscriber/imsi/${imsi}`); } catch { /* not found */ }
-            if (existingSub?.subscriber_id) {
-              try { await pyhssApiCall('DELETE', `/subscriber/${existingSub.subscriber_id}`); } catch { /* ignore */ }
-            }
-
-            let existingAuc: any = null;
-            try { existingAuc = await pyhssApiCall('GET', `/auc/imsi/${imsi}`); } catch { /* not found */ }
-            if (existingAuc?.auc_id) {
-              try { await pyhssApiCall('DELETE', `/auc/${existingAuc.auc_id}`); } catch { /* ignore */ }
-            }
-
-            // Check if target MSISDN is still held by a different IMSI in PyHSS
-            const conflict = msisdnOwnerMap.get(msisdn);
-            if (conflict && conflict.imsi !== imsi) {
-              if (!syncImsiSet.has(conflict.imsi)) {
-                // Stale entry (IMSI no longer in Open5GS) — remove it
-                try { await pyhssApiCall('DELETE', `/ims_subscriber/${conflict.id}`); } catch { /* ignore */ }
-                msisdnOwnerMap.delete(msisdn);
-              } else {
-                // Genuine duplicate: two Open5GS subscribers share the same MSISDN
-                throw new Error(`MSISDN ${msisdn} is also assigned to IMSI ${conflict.imsi} — fix duplicate MSISDNs on the Subscribers page`);
-              }
-            }
-
-            // Create order: AUC → subscriber → IMS subscriber
-            const newAuc = await pyhssApiCall('PUT', '/auc/', { ki: k, opc, amf, sqn: sqnNum, imsi });
-            const aucId  = newAuc.auc_id;
-
-            await pyhssApiCall('PUT', '/subscriber/', {
-              imsi, msisdn, auc_id: aucId,
-              default_apn: internetApnId,
-              apn_list: String(internetApnId),
-              enabled: true,
-            });
-
-            // Use the IMS domain that matches this subscriber's IMSI PLMN prefix
-            const subDomain   = domainForImsi(imsi);
-            const subScscfUri = `sip:scscf.${subDomain}:${scscfPort}`;
-            await pyhssApiCall('PUT', '/ims_subscriber/', {
-              imsi, msisdn,
-              msisdn_list: msisdn,
-              scscf: subScscfUri,
-              scscf_realm: subDomain,
-              scscf_peer: `scscf.${subDomain}`,
-              // Must be set explicitly — PyHSS's own "fall back to the globally
-              // configured Default_iFC" logic doesn't actually work: its SAR
-              // handler (Answer_16777216_301) does
-              // `templateEnv.get_template(ims_subscriber_details['ifc_path'])`
-              // with no None-check, so a NULL ifc_path (the default for a row
-              // created without this field) crashes with `AttributeError:
-              // 'NoneType' object has no attribute 'split'` deep in Jinja2's
-              // loader — confirmed live, 2026-07-17, and it's what was silently
-              // timing out every SIP REGISTER's Server-Assignment-Request.
-              // Path is relative to PyHSS's own Jinja2 FileSystemLoader
-              // (`searchpath="../"`, resolved from its /opt/pyhss cwd → /opt) —
-              // NOT the filesystem's /opt/pyhss/default_ifc.xml absolute path,
-              // which 404s as a template name (confirmed live).
-              ifc_path: 'pyhss/default_ifc.xml',
-            });
-
-            msisdnOwnerMap.set(msisdn, { imsi, id: 0 }); // mark MSISDN as claimed for subsequent subs
-            synced++;
-          } catch (e) {
-            failed.push(`${imsi}: ${(e as Error).message ?? String(e)}`);
-            logger.warn({ imsi, err: String(e) }, 'PyHSS subscriber sync failed');
-          }
-        }
-      }
-
-      // ── Reconciliation cleanup ────────────────────────────────────────────────
-      // Remove PyHSS subscribers whose IMSI no longer exists in Open5GS (deleted
-      // subscriber, or MSISDN/K cleared) — these are never touched by the sync
-      // loop above since it only iterates over currently-eligible `toSync` IMSIs.
-      let removed = 0;
-      try {
-        const currentImsiSet = new Set(toSync.map(s => s.imsi));
-        const imsAll: any[] = await pyhssApiCall('GET', '/ims_subscriber/list');
-        const staleImsis = Array.isArray(imsAll)
-          ? imsAll.filter(e => e.imsi && !currentImsiSet.has(String(e.imsi))).map(e => String(e.imsi))
-          : [];
-
-        for (const staleImsi of staleImsis) {
-          try {
-            let existingIms: any = null;
-            try { existingIms = await pyhssApiCall('GET', `/ims_subscriber/ims_subscriber_imsi/${staleImsi}`); } catch { /* not found */ }
-            if (existingIms?.ims_subscriber_id) {
-              await pyhssApiCall('DELETE', `/ims_subscriber/${existingIms.ims_subscriber_id}`).catch(() => {});
-            }
-
-            let existingSub: any = null;
-            try { existingSub = await pyhssApiCall('GET', `/subscriber/imsi/${staleImsi}`); } catch { /* not found */ }
-            if (existingSub?.subscriber_id) {
-              await pyhssApiCall('DELETE', `/subscriber/${existingSub.subscriber_id}`).catch(() => {});
-            }
-
-            let existingAuc: any = null;
-            try { existingAuc = await pyhssApiCall('GET', `/auc/imsi/${staleImsi}`); } catch { /* not found */ }
-            if (existingAuc?.auc_id) {
-              await pyhssApiCall('DELETE', `/auc/${existingAuc.auc_id}`).catch(() => {});
-            }
-
-            removed++;
-          } catch (e) {
-            logger.warn({ imsi: staleImsi, err: String(e) }, 'PyHSS stale subscriber cleanup failed');
-          }
-        }
-      } catch (e) {
-        logger.warn({ err: String(e) }, 'Could not fetch PyHSS ims_subscriber list for cleanup — skipping');
-      }
-
+      const result = await syncImsSubscribers(subscriberRepo, logger);
       await auditLogger.log({
         action: 'ims_sync_subscribers', user,
-        details: `synced=${synced} failed=${failed.length} removed=${removed}`, success: true,
+        details: `synced=${result.synced} failed=${result.failed.length} removed=${result.removed}`, success: true,
       });
-      res.json({ success: true, synced, failed, removed, total: toSync.length });
+      res.json({ success: true, ...result });
     } catch (err) {
       logger.error({ err: String(err) }, 'ims sync-subscribers error');
       res.status(500).json({ success: false, error: String(err) });
@@ -4227,7 +4913,7 @@ export function createImsRouter(
   router.post('/enable', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api', 'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
+      const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api', 'pyhss-metrics', 'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
       for (const svc of svcs) {
         await nsenter('systemctl', ['start', svc]).catch(() => {});
       }
@@ -4261,7 +4947,7 @@ export function createImsRouter(
         fs.writeFileSync(HOST_UPF_YAML, removeUpfImsSession(upfRaw), 'utf-8');
         await nsenter('systemctl', ['restart', 'open5gs-upfd']).catch(() => {});
       }
-      const stopSvcs = ['kamailio-smsc', 'kamailio-scscf', 'kamailio-icscf', 'kamailio-pcscf', 'rtpengine-daemon', 'pyhss-api', 'pyhss-hss', 'pyhss-diameter'];
+      const stopSvcs = ['kamailio-smsc', 'kamailio-scscf', 'kamailio-icscf', 'kamailio-pcscf', 'rtpengine-daemon', 'pyhss-api', 'pyhss-hss', 'pyhss-diameter', 'pyhss-metrics'];
       for (const svc of stopSvcs) {
         await nsenter('systemctl', ['stop', svc]).catch(() => {});
       }
@@ -4297,7 +4983,7 @@ export function createImsRouter(
     // NOTE: bind9 is deliberately NOT in this list — it's shared infrastructure (VoWiFi's
     // ePDG zone, the DNS/FQDN migration wizard's 5gc/epc zones, SEPP's advertise FQDN all
     // depend on it staying up). Only IMS's own zone gets torn down, in step 5 below.
-    const removeSvcs = ['kamailio-smsc', 'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'rtpengine-daemon', 'pyhss-api', 'pyhss-hss', 'pyhss-diameter'];
+    const removeSvcs = ['kamailio-smsc', 'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'rtpengine-daemon', 'pyhss-api', 'pyhss-hss', 'pyhss-diameter', 'pyhss-metrics'];
     for (const svc of removeSvcs) {
       await nsenter('systemctl', ['stop', svc]).catch(() => {});
       await nsenter('systemctl', ['disable', svc]).catch(() => {});
@@ -4396,7 +5082,7 @@ export function createImsRouter(
 
     // 7. Remove systemd service files and reload
     write('\n=== Removing systemd service files ===\n');
-    const svcFiles = ['kamailio-smsc', 'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api'];
+    const svcFiles = ['kamailio-smsc', 'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api', 'pyhss-metrics'];
     for (const svc of svcFiles) {
       const f = path.join(HOST_SYSTEMD_DIR, `${svc}.service`);
       try { fs.unlinkSync(f); write(`  Removed: ${svc}.service\n`); }
@@ -4428,6 +5114,24 @@ export function createImsRouter(
     );
     await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get autoremove -y 2>&1 || true');
 
+    // 9b. Two real, 2026-09-23-found gaps `apt purge` never closes:
+    //  - Kamailio's 4 config directories (kamailio_pcscf/icscf/scscf/smsc)
+    //    are deployed by this project's own template code, not shipped as
+    //    package conffiles — apt purge only removes what dpkg itself put
+    //    there, leaving these 4 real directories behind untouched, forever.
+    //  - MariaDB's own data directory (/var/lib/mysql, PyHSS's actual HSS/
+    //    subscriber database) is deliberately never touched by `apt purge
+    //    mariadb-server` — databases are treated as precious user data, by
+    //    design, not package files. A real uninstall of THIS module means
+    //    removing it too, not leaving 100+ MB of orphaned subscriber data.
+    write('\n=== Removing Kamailio config directories + MariaDB data ===\n');
+    for (const dir of [HOST_KAMAILIO_PCSCF_DIR, HOST_KAMAILIO_ICSCF_DIR, HOST_KAMAILIO_SCSCF_DIR, HOST_KAMAILIO_SMSC_DIR]) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); write(`  Removed: ${dir.replace('/proc/1/root', '')}\n`); }
+      catch (err) { write(`  Warning removing ${dir}: ${String(err)}\n`); }
+    }
+    try { fs.rmSync('/proc/1/root/var/lib/mysql', { recursive: true, force: true }); write('  Removed: /var/lib/mysql\n'); }
+    catch (err) { write(`  Warning removing /var/lib/mysql: ${String(err)}\n`); }
+
     // 10. Remove NMS IMS state files
     write('\n=== Removing IMS state files ===\n');
     for (const f of [HOST_IMS_STATE, HOST_IMS_SMF_BAK, HOST_IMS_INSTALL_STATE]) {
@@ -4446,7 +5150,7 @@ export function createImsRouter(
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const restartSvcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api',
+      const restartSvcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api', 'pyhss-metrics',
                            'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
       for (const svc of restartSvcs) {
         await nsenter('systemctl', ['restart', svc]).catch(() => {});
@@ -4518,7 +5222,7 @@ export function createImsRouter(
     }
     const allowed = new Set([
       'kamailio-pcscf', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-smsc',
-      'pyhss-api', 'pyhss-diameter', 'pyhss-hss',
+      'pyhss-api', 'pyhss-diameter', 'pyhss-hss', 'pyhss-metrics',
       'rtpengine-daemon', 'bind9', 'open5gs-smfd', 'open5gs-pcrfd',
     ]);
     const bad = services.filter(s => !allowed.has(s));

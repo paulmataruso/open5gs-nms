@@ -59,7 +59,6 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **Configurable resolution** — 5 minute, 15 minute, or 1 hour buckets, plus a flexible time-range picker
 - **Live latest-rate readout** — current Up/Down Mbps shown alongside the chart
 - **Built on the existing Prometheus, not a second time-series store** — reuses the already-deployed Prometheus stack's own `rate()` computation over raw cumulative byte counters exposed by the backend's own `/metrics` endpoint, so retention matches whatever Prometheus is already configured for
-- An earlier version of this feature built its own MongoDB-backed time-series store for this data; it was replaced once it became clear Prometheus was already deployed and already doing the job
 
 ![Traffic History](docs/screenshots/traffic-history.png)
 
@@ -110,7 +109,6 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 - **5G Radio Network Status box** — live N2 and N3 gNodeB IPs on the topology canvas
 - **Active 5G UE Sessions box** — UE IP + IMSI pairs sourced from Open5GS AMF/SMF APIs
 - **Active 4G UE Sessions box** — UE IP + IMSI pairs sourced from Open5GS MME API
-- **Professional Layout** - Manual routing with 90-degree orthogonal connectors
 
 ![Network Topology Visualization](docs/screenshots/topology-network-diagram.png)
 

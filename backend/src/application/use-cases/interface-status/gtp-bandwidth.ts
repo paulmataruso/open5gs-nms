@@ -87,6 +87,31 @@ export class GtpBandwidthMonitor {
     return results;
   }
 
+  /**
+   * Public, stateless, same reasoning as getRawCounters() above — packet
+   * (not byte) counts per DNN tun device. Added 2026-09-26: the Open5GS
+   * core dashboard's own "UPF N3 Packet Rate" panel read
+   * fivegs_ep_n3_gtp_{in,out}datapktn3upf directly — confirmed live those
+   * are real, currently-scraped series that never leave 0, the same
+   * disabled-upstream-code-path issue (open5gs/open5gs#3100) already
+   * documented and worked around for the neighboring byte-throughput panel
+   * (which reads THIS class's own rx/tx byte counters instead of Open5GS's
+   * own equally-dead datavolumeqosleveln3upf). Same tun device, same
+   * `/sys/class/net/.../statistics/` mechanism, just the packet-count files
+   * instead of the byte-count ones — a real, always-populated kernel
+   * counter on any network interface, confirmed live to hold real nonzero
+   * values on this deployment's own ogstun device.
+   */
+  async getRawPacketCounters(): Promise<Array<{ dnn: string; dev: string; rxPackets: number; txPackets: number }>> {
+    const devices = await this.getDnnDevices();
+    const results: Array<{ dnn: string; dev: string; rxPackets: number; txPackets: number }> = [];
+    for (const { dnn, dev } of devices) {
+      const c = await this.readPacketCounter(dev);
+      if (c) results.push({ dnn, dev, rxPackets: c.rx, txPackets: c.tx });
+    }
+    return results;
+  }
+
   private async readCounter(dev: string): Promise<{ rx: number; tx: number } | null> {
     try {
       const [rxRaw, txRaw] = await Promise.all([
@@ -100,6 +125,21 @@ export class GtpBandwidthMonitor {
     } catch {
       // Device not present (e.g. DNN removed from upf.yaml) — skip silently,
       // this is expected churn, not an error.
+      return null;
+    }
+  }
+
+  private async readPacketCounter(dev: string): Promise<{ rx: number; tx: number } | null> {
+    try {
+      const [rxRaw, txRaw] = await Promise.all([
+        this.hostExecutor.readFile(`/proc/1/root/sys/class/net/${dev}/statistics/rx_packets`),
+        this.hostExecutor.readFile(`/proc/1/root/sys/class/net/${dev}/statistics/tx_packets`),
+      ]);
+      const rx = parseInt(rxRaw.trim(), 10);
+      const tx = parseInt(txRaw.trim(), 10);
+      if (isNaN(rx) || isNaN(tx)) return null;
+      return { rx, tx };
+    } catch {
       return null;
     }
   }

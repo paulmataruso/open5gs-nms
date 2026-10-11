@@ -12,6 +12,7 @@ import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 
 type Resolution = '5m' | '15m' | '1h';
+type RanType = '' | '2g' | '4g' | '5g';
 
 const DEFAULT_TIME_RANGE: TimeRangeValue = { type: 'relative', ms: 24 * 60 * 60 * 1000, label: 'Last 24 hours' };
 
@@ -303,6 +304,9 @@ export function TrafficHistoryPage() {
   const [resolutionOverridden, setResolutionOverridden] = useState(false);
   const [imsi, setImsi] = useState<string>('');
   const [subscribers, setSubscribers] = useState<TrafficHistorySubscriber[]>([]);
+  const [radio, setRadio] = useState<string>('');
+  const [radios, setRadios] = useState<string[]>([]);
+  const [ranType, setRanType] = useState<RanType>('');
   const [points, setPoints] = useState<ChartPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [speedTestModalOpen, setSpeedTestModalOpen] = useState(false);
@@ -329,6 +333,9 @@ export function TrafficHistoryPage() {
   useEffect(() => {
     trafficHistoryApi.listSubscribersWithHistory()
       .then(r => setSubscribers(r.subscribers))
+      .catch(() => {});
+    trafficHistoryApi.listRadiosWithHistory()
+      .then(r => setRadios(r.radios))
       .catch(() => {});
   }, []);
 
@@ -379,14 +386,24 @@ export function TrafficHistoryPage() {
     return () => clearInterval(interval);
   }, [loadUeUsage]);
 
+  // A radio or 4G/5G RAN-type filter narrows the subscriber scope even
+  // without a specific IMSI chosen (matching the backend's own
+  // radio/generation-narrowing logic) — only a plain "All" with no radio and
+  // no generation stays a true network-wide aggregate. generation=2g always
+  // implies subscriber scope too, since the 2G aggregate metric family has
+  // its own separate scope=aggregate path the UI doesn't expose yet.
+  const effectiveScope = imsi || radio || ranType ? 'subscriber' : 'aggregate';
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const { from, to, ms } = resolveRange();
       const { points: raw } = await trafficHistoryApi.query({
-        scope: imsi ? 'subscriber' : 'aggregate',
+        scope: effectiveScope,
         resolution,
         imsi: imsi || undefined,
+        radio: radio || undefined,
+        generation: ranType || undefined,
         from: from.toISOString(),
         to: to.toISOString(),
       });
@@ -428,7 +445,7 @@ export function TrafficHistoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [resolveRange, resolution, imsi]);
+  }, [resolveRange, resolution, imsi, radio, ranType, effectiveScope]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -450,7 +467,7 @@ export function TrafficHistoryPage() {
             Traffic History
           </h1>
           <p className="text-sm text-nms-text-dim mt-1">
-            GTP U-Plane throughput over time — aggregate per-DNN or filtered to a single subscriber.
+            Throughput over time — aggregate per-DNN, or filtered by subscriber, radio, or RAN type.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap shrink-0">
@@ -498,6 +515,24 @@ export function TrafficHistoryPage() {
           </select>
         </div>
 
+        <div>
+          <label className="nms-label">Radio</label>
+          <select className="nms-input" value={radio} onChange={e => setRadio(e.target.value)}>
+            <option value="">All radios</option>
+            {radios.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+
+        <div>
+          <label className="nms-label">RAN Type</label>
+          <select className="nms-input" value={ranType} onChange={e => setRanType(e.target.value as RanType)}>
+            <option value="">All</option>
+            <option value="2g">2G</option>
+            <option value="4g">4G</option>
+            <option value="5g">5G</option>
+          </select>
+        </div>
+
         {totals && (
           <div className="flex gap-4 text-sm">
             <div>
@@ -518,7 +553,7 @@ export function TrafficHistoryPage() {
           <div className="p-12 text-center text-nms-text-dim">Loading traffic history...</div>
         ) : points.length === 0 ? (
           <div className="p-12 text-center text-nms-text-dim">
-            No data yet for this range{imsi ? ' / subscriber' : ''}. Data accumulates as Prometheus scrapes the backend's metrics endpoint.
+            No data yet for this range{effectiveScope === 'subscriber' ? ' / filter' : ''}. Data accumulates as Prometheus scrapes the backend's metrics endpoint.
           </div>
         ) : (
           <>

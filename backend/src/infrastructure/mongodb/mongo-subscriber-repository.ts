@@ -126,22 +126,34 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     return this.collection.countDocuments();
   }
 
-  async search(query: string, skip: number = 0, limit: number = 50): Promise<SubscriberListItem[]> {
-    const filter = {
+  private searchFilter(query: string) {
+    return {
       $or: [
         { imsi: { $regex: query, $options: 'i' } },
         { msisdn: { $regex: query, $options: 'i' } },
       ],
     };
+  }
 
+  async search(query: string, skip: number = 0, limit: number = 50): Promise<SubscriberListItem[]> {
     const docs = await this.collection
-      .find(filter)
+      .find(this.searchFilter(query))
       .project({ imsi: 1, nickname: 1, iccid: 1, msisdn: 1, slice: 1 })
       .skip(skip)
       .limit(limit)
       .toArray();
 
     return this.mapToListItems(docs);
+  }
+
+  // Real, confirmed-live 2026-09-30 finding (a full-session live-API verification pass):
+  // SubscriberManagementUseCase.search() had no way to get a real match count — it used
+  // subscribers.length (the page size actually returned, capped at `limit`) as `total`,
+  // breaking "X of Y" pagination for any search matching more results than fit on one
+  // page. Shares searchFilter() with search() above so the count can never drift from
+  // what's actually being counted.
+  async searchCount(query: string): Promise<number> {
+    return this.collection.countDocuments(this.searchFilter(query));
   }
 
   async getNicknamesByImsi(imsis: string[]): Promise<Record<string, string>> {

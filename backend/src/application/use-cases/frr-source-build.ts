@@ -77,7 +77,23 @@ export interface FrrSourceBuildOptions {
   // starts (avoids editing the file and restarting a second time). Daemon names not
   // mentioned are left as whatever the installed/restored daemons file already has.
   daemonOverrides?: Record<string, boolean>;
+  // Real host path to the eigrpd crash-guard patch (pattern #7, frr#943), already written
+  // there by the caller (frr-source-build-controller.ts copies it from this repo's own
+  // src/config/frr-patches/ before invoking the build). Real, confirmed-live finding
+  // (2026-09-24): before this option existed, NO code path ever applied this patch — every
+  // build (including the one "Reinstall"/"Start Build" would produce on a healthy, already-
+  // patched host) silently shipped a fresh, unpatched eigrpd, re-arming the exact crash this
+  // whole file exists to guard against. Only applied when targetTag matches
+  // CRASH_GUARD_PATCH_TAG — the patch's own line numbers are only verified against that
+  // exact FRR release (see docs/frr-eigrpd-crash-guard-patch.md's "Known limitations").
+  crashGuardPatchPath?: string;
 }
+
+// Only verified to apply cleanly against this exact tag — a different FRR release can
+// shift eigrp_fsm.c's line numbers enough that `patch` either fails outright (safe — the
+// build aborts) or, worse, applies against the wrong context silently. Update only after
+// re-verifying the patch against the new tag's own eigrp_fsm.c.
+export const CRASH_GUARD_PATCH_TAG = DEFAULT_FRR_TAG;
 
 // Generates the full build script. Ordered to minimize the live-outage window: everything
 // through a successful compile happens in an isolated build directory without touching the
@@ -161,6 +177,16 @@ start_heartbeat
 git clone --branch ${opts.targetTag} --depth 1 https://github.com/FRRouting/frr.git ${tagDir}
 stop_heartbeat
 cd ${tagDir}
+
+${opts.targetTag === CRASH_GUARD_PATCH_TAG && opts.crashGuardPatchPath ? `
+echo "==STEP:applying_crash_guard_patch=="
+if [ ! -f "${opts.crashGuardPatchPath}" ]; then
+  echo "ERROR: eigrpd crash-guard patch not found at ${opts.crashGuardPatchPath} — aborting rather than building unpatched eigrpd. See docs/frr-eigrpd-crash-guard-patch.md."
+  exit 1
+fi
+patch -p1 --forward -i "${opts.crashGuardPatchPath}"
+echo "eigrpd crash-guard patch (frr#943) applied."
+`.trim() : `echo "Target tag ${opts.targetTag} != ${CRASH_GUARD_PATCH_TAG} (or no patch path given) — skipping eigrpd crash-guard patch, only verified against ${CRASH_GUARD_PATCH_TAG}."`}
 
 ./bootstrap.sh
 start_heartbeat

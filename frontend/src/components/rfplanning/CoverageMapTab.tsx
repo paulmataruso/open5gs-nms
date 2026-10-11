@@ -3,7 +3,7 @@ import * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw';
 import 'leaflet-draw/dist/leaflet.draw.css';
-import { Crosshair, Trash2, FolderOpen, Save, Plus, Scale, Radio as RadioIcon, RadioTower, Target, FileDown, Ungroup } from 'lucide-react';
+import { Crosshair, Trash2, FolderOpen, Save, Plus, Scale, Radio as RadioIcon, RadioTower, Target, FileDown, Ungroup, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { rfPlanningApi, rfPlanningProjectsApi } from '../../api/rfPlanning';
 import type {
@@ -616,17 +616,23 @@ export function CoverageMapTab() {
   // either without duplicating the drawing logic.
   const coverageSource = res?.ok && res.result
     ? {
-        cells: res.result.cells.map(c => ({ lat: c.lat, lon: c.lon, row: c.row, col: c.col, value: c.totalReceivedPowerDbm })),
+        cells: res.result.cells.map(c => ({ lat: c.lat, lon: c.lon, row: c.row, col: c.col, value: c.totalReceivedPowerDbm, terrainDataResolved: c.terrainDataResolved })),
         rows: res.result.rows, cols: res.result.cols, bounds: res.result.bounds,
       }
     : interferenceResult?.ok && interferenceResult.result
       ? {
           cells: interferenceResult.result.cells
             .filter((c): c is typeof c & { servingDbm: number } => c.servingDbm != null)
-            .map(c => ({ lat: c.lat, lon: c.lon, row: c.row, col: c.col, value: c.servingDbm })),
+            .map(c => ({ lat: c.lat, lon: c.lon, row: c.row, col: c.col, value: c.servingDbm, terrainDataResolved: c.terrainDataResolved })),
           rows: interferenceResult.result.rows, cols: interferenceResult.result.cols, bounds: interferenceResult.result.bounds,
         }
       : null;
+
+  // Per-cell fallback-to-flat-earth flag (see CoverageGridCell.terrainDataResolved's
+  // backend comment) — drives the dashed-border discrete-mode treatment below and
+  // the smooth-mode banner, since a flat-earth cell is otherwise numerically and
+  // visually identical to a confirmed clear-line-of-sight one.
+  const unresolvedTerrainCount = coverageSource?.cells.filter(c => c.terrainDataResolved === false).length ?? 0;
 
   // Coverage heatmap render — redraws whenever a new calculation result
   // comes back, the view toggles, or smoothing is switched on/off.
@@ -652,14 +658,19 @@ export function CoverageMapTab() {
         // same class of bug as the active boresight cone above: the click
         // never reaches the radio's own handler, so it falls through to
         // the map's "move the active radio here" click handler instead.
+        const terrainUnresolved = cell.terrainDataResolved === false;
         L.rectangle(
           [[cell.lat - halfLat, cell.lon - halfLon], [cell.lat + halfLat, cell.lon + halfLon]],
           {
             renderer: canvasRendererRef.current ?? undefined,
-            color: dbmToColor(cell.value),
-            weight: 0,
+            // Dashed border + lower fill opacity marks a cell that fell back
+            // to flat-earth (no resolvable terrain profile) — otherwise this
+            // cell's color is indistinguishable from a confirmed clear-LOS one.
+            color: terrainUnresolved ? '#94a3b8' : dbmToColor(cell.value),
+            weight: terrainUnresolved ? 1 : 0,
+            dashArray: terrainUnresolved ? '2,3' : undefined,
             fillColor: dbmToColor(cell.value),
-            fillOpacity: 0.55,
+            fillOpacity: terrainUnresolved ? 0.3 : 0.55,
             interactive: false,
           },
         ).addTo(heatmapGroupRef.current);
@@ -699,11 +710,18 @@ export function CoverageMapTab() {
         if (cell.sinrDb == null) continue;
         // interactive:false — see the matching comment on the coverage
         // heatmap's own rectangles above.
+        const terrainUnresolved = cell.terrainDataResolved === false;
         L.rectangle(
           [[cell.lat - halfLat, cell.lon - halfLon], [cell.lat + halfLat, cell.lon + halfLon]],
           {
             renderer: canvasRendererRef.current ?? undefined,
-            color: sinrToColor(cell.sinrDb), weight: 0, fillColor: sinrToColor(cell.sinrDb), fillOpacity: 0.55,
+            // See the matching comment on the coverage heatmap's own dashed-
+            // border treatment above — same flat-earth-fallback flag.
+            color: terrainUnresolved ? '#94a3b8' : sinrToColor(cell.sinrDb),
+            weight: terrainUnresolved ? 1 : 0,
+            dashArray: terrainUnresolved ? '2,3' : undefined,
+            fillColor: sinrToColor(cell.sinrDb),
+            fillOpacity: terrainUnresolved ? 0.3 : 0.55,
             interactive: false,
           },
         ).addTo(interferenceGroupRef.current);
@@ -1061,6 +1079,16 @@ export function CoverageMapTab() {
   // regardless of T, only `result` itself differs (and isn't read here).
   const activeResult = (res ?? interferenceResult) as CalculationResult<unknown> | null;
 
+  // Drives the legend note + smooth-mode banner for whichever heatmap is
+  // actually on screen right now — coverageSource already covers the
+  // 'coverage' case (single-site or combined-servingDbm); SINR has its own
+  // cell set (filtered by sinrDb rather than servingDbm/value).
+  const activeUnresolvedTerrainCount = activeHeatmap === 'interference'
+    ? (interferenceResult?.ok && interferenceResult.result
+        ? interferenceResult.result.cells.filter(c => c.sinrDb != null && c.terrainDataResolved === false).length
+        : 0)
+    : unresolvedTerrainCount;
+
   return (
     <div className="space-y-6">
       {show3SectorModal && (
@@ -1232,6 +1260,12 @@ export function CoverageMapTab() {
               {l.label} ({l.range})
             </span>
           ))}
+          {!smoothHeatmap && activeUnresolvedTerrainCount > 0 && (
+            <span className="flex items-center gap-1.5" title="These cells had no resolvable terrain profile and fell back to a flat-earth calculation — treat their color as less certain than a solid cell's.">
+              <span className="w-2.5 h-2.5 rounded-sm inline-block bg-transparent" style={{ border: '1px dashed #94a3b8' }} />
+              Terrain data unavailable ({activeUnresolvedTerrainCount} cell{activeUnresolvedTerrainCount === 1 ? '' : 's'})
+            </span>
+          )}
           {activeProject && activeProject.sites.length > 0 && (
             <span className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ backgroundColor: '#a855f7' }} />
@@ -1258,6 +1292,16 @@ export function CoverageMapTab() {
             <input type="checkbox" checked={smoothHeatmap} onChange={e => setSmoothHeatmap(e.target.checked)} className="nms-checkbox" />
             Smooth
           </label>
+          {smoothHeatmap && activeUnresolvedTerrainCount > 0 && (
+            // Smooth mode blends cells into one continuous image, so the
+            // per-cell dashed-border treatment isn't available here — this
+            // banner is the flat-earth-fallback warning's only surfacing in
+            // this mode, beyond the generic request-level warning text.
+            <span className="flex items-center gap-1.5 text-amber-400" title="Switch off Smooth to see exactly which cells these are">
+              <AlertTriangle className="w-3 h-3" />
+              {activeUnresolvedTerrainCount} cell{activeUnresolvedTerrainCount === 1 ? '' : 's'} used a flat-earth fallback (terrain data unavailable)
+            </span>
+          )}
           <span className="ml-auto">
             {polygon.length >= 3 ? `Target area drawn (${polygon.length} vertices)` : 'No target area drawn yet'}
           </span>

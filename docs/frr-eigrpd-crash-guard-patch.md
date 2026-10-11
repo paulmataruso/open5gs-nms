@@ -157,15 +157,26 @@ Full diff: [`docs/patches/frr-eigrpd-crash-guard.patch`](patches/frr-eigrpd-cras
 
 ## Building and deploying it
 
+**As of 2026-09-24, this patch is applied automatically** by the FRR Source Build
+page's "Start Build"/"Reinstall (Source)" action for its one verified tag
+(`frr-source-build.ts`'s `CRASH_GUARD_PATCH_TAG`, currently `frr-10.6.1`) — the patch
+is shipped inside the backend image (`backend/src/config/frr-patches/`) and applied to
+the fresh clone before `./configure`/`make`. A normal build/reinstall from that page is
+now sufficient on its own; the manual procedure below is kept for reference (a
+different target tag, or troubleshooting) and for understanding what the automated
+step actually does.
+
 Uses the exact same from-source build tree the NMS's own "Reinstall (Source)" FRR
 feature already produces (see `backend/src/application/use-cases/frr-source-build.ts`,
 `backend/src/interfaces/rest/frr-source-build-controller.ts`) — a real git checkout of
 `FRRouting/frr` at the `frr-10.6.1` tag, already configured (`./configure` already run,
-`Makefile`/`config.status` present), on the host at `/opt/frr-build/frr`.
+`Makefile`/`config.status` present), on the host at `/opt/frr-build/frr-frr-10.6.1`
+(the exact directory name is `frr-${tag}` — verify with `ls /opt/frr-build/` first,
+since it changes if the target tag ever changes).
 
 ```bash
 # 1. Apply the patch to the existing build tree (skip if already applied)
-cd /opt/frr-build/frr
+cd /opt/frr-build/frr-frr-10.6.1
 git apply /path/to/docs/patches/frr-eigrpd-crash-guard.patch
 
 # 2. Incremental rebuild — only eigrp_fsm.o recompiles and eigrpd relinks,

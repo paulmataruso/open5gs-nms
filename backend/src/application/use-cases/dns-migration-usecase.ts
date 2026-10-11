@@ -3,6 +3,7 @@ import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
+import { checkDnsBootGate, installDnsBootGate } from '../../interfaces/rest/bind-controller';
 import { SERVICE_RESTART_ORDER, SERVICE_UNIT_MAP, ServiceName } from '../../domain/entities/service-status';
 
 const OPEN5GS_DIR        = '/etc/open5gs';
@@ -433,19 +434,51 @@ export class DnsMigrationUseCase {
         }
       }
 
-      const zoneFile = (domain: string, records: DnsEntry[]): string => {
+      // Carry forward every A record this plan does NOT own.
+      //
+      // Real defect found in the 2026-10-10 readiness audit: these zone files
+      // are shared. Phase A only ever models EPC_CONF_SERVICES
+      // (mme/hss/pcrf/smf), but three other modules correctly upsert a single
+      // record each into the same file — VoWiFi's `aaa` (vowifi-controller.ts),
+      // OCS's `ocs` (ims-controller.ts) and SecGW's `secgw`
+      // (secgw-controller.ts). Live-verified all three present. Because
+      // zoneFile() rebuilt purely from plan.dnsEntries, a Phase A re-run — which
+      // the UI labels "DNS only. Zero risk." — silently deleted all three.
+      // Losing `ocs` breaks S-CSCF Ro charging outright, because cdp resolves
+      // its <Peer FQDN> with a synchronous getaddrinfo() (CLAUDE.md pattern
+      // #18), and nothing re-adds `secgw` at all.
+      const preservedFor = async (domain: string, planned: DnsEntry[]): Promise<string[]> => {
+        let existing = '';
+        try { existing = await this.hostExecutor.readFile(`${BIND_ZONES_DIR}/${domain}.zone`); } catch { return []; }
+        const ownedNames = new Set(planned.map(r => r.fqdn.replace(`.${domain}`, '')));
+        // ns1 is regenerated from the SOA block below, never carried forward.
+        ownedNames.add('ns1');
+        const kept: string[] = [];
+        for (const line of existing.split('\n')) {
+          const m = line.match(/^([a-zA-Z0-9_-]+)\s+IN\s+A\s+\S+/);
+          if (m && !ownedNames.has(m[1])) kept.push(line.trimEnd());
+        }
+        return kept;
+      };
+
+      const zoneFile = (domain: string, records: DnsEntry[], preserved: string[]): string => {
         const serial = Math.floor(Date.now() / 1000);
         const dnsIp = records[0]?.ip || '127.0.0.1';
         const lines = records.map(r => `${r.fqdn.replace(`.${domain}`, '')} IN A ${r.ip}`);
-        return `$TTL 300\n$ORIGIN ${domain}.\n\n@   IN SOA   ns1 hostmaster (${serial} 3600 1800 604800 300)\n@   IN NS    ns1\nns1 IN A     ${dnsIp}\n\n${lines.join('\n')}\n`;
+        const extra = preserved.length > 0
+          ? `\n; --- records owned by other modules, preserved across this migration ---\n${preserved.join('\n')}\n`
+          : '';
+        return `$TTL 300\n$ORIGIN ${domain}.\n\n@   IN SOA   ns1 hostmaster (${serial} 3600 1800 604800 300)\n@   IN NS    ns1\nns1 IN A     ${dnsIp}\n\n${lines.join('\n')}\n${extra}`;
       };
 
       const sgcRecords = plan.dnsEntries.filter(e => e.zone === '5gc');
       const epcRecords = plan.dnsEntries.filter(e => e.zone === 'epc');
+      const sgcPreserved = await preservedFor(plan.sgcDomain, sgcRecords);
+      const epcPreserved = await preservedFor(plan.epcDomain, epcRecords);
 
-      await this.hostExecutor.writeFile(`${BIND_ZONES_DIR}/${plan.sgcDomain}.zone`, zoneFile(plan.sgcDomain, sgcRecords));
-      await this.hostExecutor.writeFile(`${BIND_ZONES_DIR}/${plan.epcDomain}.zone`, zoneFile(plan.epcDomain, epcRecords));
-      details.push(`Wrote ${plan.sgcDomain} (${sgcRecords.length} records) and ${plan.epcDomain} (${epcRecords.length} records)`);
+      await this.hostExecutor.writeFile(`${BIND_ZONES_DIR}/${plan.sgcDomain}.zone`, zoneFile(plan.sgcDomain, sgcRecords, sgcPreserved));
+      await this.hostExecutor.writeFile(`${BIND_ZONES_DIR}/${plan.epcDomain}.zone`, zoneFile(plan.epcDomain, epcRecords, epcPreserved));
+      details.push(`Wrote ${plan.sgcDomain} (${sgcRecords.length} records${sgcPreserved.length ? `, ${sgcPreserved.length} other-module records preserved` : ''}) and ${plan.epcDomain} (${epcRecords.length} records${epcPreserved.length ? `, ${epcPreserved.length} other-module records preserved` : ''})`);
 
       let namedLocal = '';
       try { namedLocal = await this.hostExecutor.readFile(`${BIND_DIR}/named.conf.local`); } catch { /* fresh file */ }
@@ -633,6 +666,28 @@ export class DnsMigrationUseCase {
       // own advertise FQDN and FATAL-aborts if it can't resolve) — re-check right before
       // restarting anything in case something reverted the resolver since Phase A ran.
       await this.ensureSystemResolverUsesBind(details);
+
+      // This phase is the exact moment the deployment becomes vulnerable to
+      // pattern #6 at all: once an NF advertises an FQDN instead of an IP, it
+      // resolves that FQDN synchronously at every subsequent startup and
+      // FATAL-aborts if DNS isn't answering yet. Confirmed live 2026-10-06
+      // (power loss) and 2026-09-23 (fresh-host restore) — two different root
+      // causes, same permanent outage, because the stock units give up after 5
+      // attempts in half a second. Install the readiness gate here, before any
+      // NF is restarted onto an FQDN, so the very first reboot after this
+      // migration can't strand the core. Non-fatal and idempotent: a failure
+      // here is a lost robustness improvement, not a reason to abort a
+      // migration whose own steps are all succeeding.
+      try {
+        if (!checkDnsBootGate().installed) {
+          const gate = await installDnsBootGate();
+          details.push(`Installed DNS boot-race gate (open5gs-dns-ready.service) for ${gate.units.length} units`);
+        } else {
+          details.push('DNS boot-race gate already installed and current');
+        }
+      } catch (err) {
+        details.push(`DNS boot-race gate install failed (non-fatal): ${String(err)}`);
+      }
 
       const bySvc = new Map<string, SbiChange[]>();
       for (const change of plan.sbiChanges) {

@@ -48,7 +48,7 @@ function BuildWarningModal({ onAccept, onCancel }: { onAccept: () => void; onCan
             <li className="flex items-start gap-2"><AlertTriangle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" /><span>EIGRP/OSPF/BGP routing goes down for the duration of the build (typically several minutes).</span></li>
             <li className="flex items-start gap-2"><AlertTriangle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" /><span>Radios and any traffic depending on dynamic routes will drop during that window — same blast radius as an eigrpd crash restart, just planned.</span></li>
             <li className="flex items-start gap-2"><CheckCircle className="w-3.5 h-3.5 text-green-400 mt-0.5 shrink-0" /><span>Your live frr.conf/daemons/vtysh.conf are backed up automatically before anything is touched.</span></li>
-            <li className="flex items-start gap-2"><CheckCircle className="w-3.5 h-3.5 text-green-400 mt-0.5 shrink-0" /><span>Rollback reinstalls the stock apt package and restores the backup if the build fails.</span></li>
+            <li className="flex items-start gap-2"><CheckCircle className="w-3.5 h-3.5 text-green-400 mt-0.5 shrink-0" /><span>Rollback restores the exact binaries and config this host had running right before the build (not the stock apt package) if it fails.</span></li>
           </ul>
         </div>
         <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
@@ -119,7 +119,7 @@ export function FrrSourceBuildTab() {
   };
 
   const doRollback = async () => {
-    if (!confirm('Roll back to the stock apt package and restore the backed-up config?')) return;
+    if (!confirm('Roll back to the binaries and config this host had running right before the last build?')) return;
     setBusy('rollback');
     try {
       await frrSourceBuildApi.rollback();
@@ -178,8 +178,8 @@ export function FrrSourceBuildTab() {
               <span className="font-mono text-nms-text">daemons</span>/
               <span className="font-mono text-nms-text">vtysh.conf</span>, purges the apt
               package, builds the target FRR tag from source, and restores your config into the
-              new install. If it fails, Rollback reinstalls the stock package and restores the
-              backup.
+              new install. If it fails, Rollback restores the exact binaries and config this
+              host had running right before the build — not a reinstall of the stock package.
             </p>
           </div>
         )}
@@ -222,7 +222,7 @@ export function FrrSourceBuildTab() {
 
           {state?.status === 'failed' && (
             <button onClick={doRollback} disabled={busy !== null} className="nms-btn-danger flex items-center gap-2 text-sm">
-              {busy === 'rollback' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />} Rollback to APT
+              {busy === 'rollback' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />} Rollback to Snapshot
             </button>
           )}
 

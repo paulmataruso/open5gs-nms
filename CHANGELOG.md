@@ -4,6 +4,272 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [Unreleased]
+
+---
+
+## [v2.0-beta_0.64] - 2026-10-11
+
+### Fixed — IMS / VoLTE / VoNR calling
+
+- 4G-to-4G calls could fail to set up at all. Media authorization for the
+  terminating side used the media relay's own address instead of the real
+  subscriber's, so the policy lookup never matched the subscriber's session.
+- Cross-RAN (2G-to-4G) calls could connect with audio missing in one
+  direction, because media authorization used a stale media port.
+- A call whose media authorization fell back to the 5G policy interface and
+  failed there was dropped outright. It now continues on the default bearer
+  instead, so a transient policy gap degrades call quality rather than
+  ending the call.
+- Two worker processes handling the same offer or answer at once could each
+  allocate a separate media relay for one call, leaving an orphaned relay
+  that carried no return audio.
+- Retransmitted provisional responses no longer trigger repeated policy
+  authorization round trips, which could delay or stall call setup under
+  load.
+- Calls between 4G and 5G now create, update, and release their dedicated
+  voice bearer across the full call lifecycle, instead of leaving it
+  allocated after the call ended.
+- Calls could fail to set up at all while voice charging was enabled,
+  because the Diameter charging request carried an accounting field that
+  does not belong in a credit-control exchange.
+- P-CSCF now allows the same time for a first response as the other CSCFs
+  do, so a momentarily slow handset is no longer cut off before it can ring.
+
+### Fixed — Core network resilience
+
+- The Open5GS network functions now wait for DNS to be answering before
+  starting, and keep retrying if it is not yet. Previously a slow boot — for
+  example after a power loss — could leave most of the core permanently
+  stopped, because each function gave up after five rapid attempts in under
+  a second. Applied automatically on fresh installs, during DNS/FQDN
+  migration, and as part of a restore.
+- Raised this deployment's database connection ceiling, which real
+  steady-state load had begun to exceed and which could take IMS down
+  entirely on a service restart.
+
+---
+
+### Fixed — Configuration safety
+
+- Re-running the Auto-Configuration Wizard no longer erases a configured
+  network slice identifier, which previously removed the slice 5G radios were
+  actually using.
+- The DNS/FQDN Migration Wizard's first phase no longer deletes the DNS records
+  belonging to other modules. Re-running it could previously remove the records
+  VoWiFi, online charging and the security gateway each rely on, which silently
+  broke voice charging.
+- Adding or editing a SUCI home-network key no longer rewrites the whole UDM
+  configuration file, so comments and formatting in it are preserved.
+- Scrape targets you add to the monitoring configuration by hand, and a
+  customised global monitoring block, now survive automatic regeneration
+  instead of being discarded.
+- Removing the 3G gateway no longer leaves orphaned signalling configuration
+  behind in the 2G module's configuration file.
+- The remote-attach diagnostic tool no longer accumulates a stale peer entry
+  each time the network identity changes.
+- Changing the subscriber-database bind address now also applies to the
+  database itself, not just to the component connecting to it. Previously the
+  two could disagree and SMS over SGs would stop working with no error.
+- "Restore Defaults" still restores the upstream defaults, but now tells you up
+  front what that will change — including that your network identity reverts and
+  every attached device will detach.
+
+### Fixed — Routing
+
+- Applying routing changes — subscriber subnets, route filters, interface
+  changes — no longer restarts the routing daemon. It is now applied
+  incrementally, which avoids a known upstream crash that has caused real
+  outages on this deployment.
+- Restoring a backup onto a host that is already routing now applies the
+  restored routing configuration instead of leaving it on disk for you to apply
+  by hand.
+
+### Fixed — Updates and reproducibility
+
+- A new install now pins the exact versions of the external components it
+  builds from source, so two installs performed weeks apart produce the same
+  result.
+- The IMS "out of date" check now compares the actual deployed routing scripts,
+  not just a recorded version number. It previously reported everything current
+  while the live scripts had genuinely diverged — and the Updates prompt now
+  names the specific files affected.
+- Reinstalling IMS can no longer replace a newer, source-built Kamailio with
+  the older packaged one.
+- Live build-log views for the Kamailio and media-relay source builds no longer
+  cut out after two minutes.
+- Monitoring and charging usage readings now report an error when they cannot
+  be retrieved, instead of showing zero.
+
+
+### Added — 2G GSM (Osmocom) real radio access
+
+- New GSM page: CS attach/ciphering, GPRS/EDGE data, and 2G↔4G SMS (via the
+  existing VectorCore SMSC) are stable on real nanoBTS hardware. Real voice
+  calling is alpha — osmo-msc's own call handler can complete signaling but
+  never implements RTP setup (an upstream Osmocom limitation), so real
+  2G↔2G audio needs a second, fully isolated Asterisk instance
+  ("Asterisk-2G") that loops the call back through osmo-sip-connector. One
+  button on the GSM page's "2G Voice" tab installs and wires all of it.
+- Cross-RAN Calling: a single toggle bridges Asterisk-2G to the PSTN
+  Gateway's own Asterisk instance via a dedicated inter-Asterisk trunk, so a
+  2G subscriber can dial a 4G/5G/PSTN number and vice versa. Confirmed
+  working live with real over-the-air calls, full bidirectional audio.
+- RAN Kill Switches (Dashboard): five header buttons (Block RAN, plus
+  per-generation 2G/3G/4G/5G) bulk-block every connected radio of that
+  generation, flashing red while active and doubling as the unblock-all
+  action.
+
+### Added — 3G UMTS (OsmoHNBGW)
+
+- New Home NodeB Gateway bridging a 3G femtocell's Iuh interface to the
+  existing osmo-msc/osmo-sgsn over the already-running osmo-stp — alpha,
+  no real-hardware blast radius beyond a single new NF. A software test HNB
+  (OsmoHNodeB) is available from the module's own page for testing without
+  real femtocell hardware.
+
+### Added — SigScale OCS (Online Charging) + Charging Plans
+
+- Real-time prepaid Diameter credit-control charging: Gy for 4G/EPC data
+  sessions, Ro for voice/airtime, wired to Open5GS SMF's and Kamailio
+  S-CSCF's own previously-dormant charging clients. 5G NR data sessions are
+  not charged by this integration (Open5GS SMF has no Nchf/5G charging
+  client upstream).
+- Charging Plans: a simplified GUI layer over OCS's own rating-plan
+  vocabulary — one "Plan" (data cap + voice cap) per subscriber, assignable
+  in bulk or per-subscriber from the Subscribers page. An "Unlimited" plan
+  is auto-provisioned on every OCS Configure.
+- A background guard now automatically clears stuck Gy/Ro reservations
+  every 30 minutes, mitigating a real, still-open upstream OCS rating-engine
+  crash without needing manual intervention.
+
+### Added — Call History (CDR)
+
+- Unified call detail records across PSTN Gateway, Asterisk-2G, and direct
+  4G/5G IMS-to-IMS calls, with configurable retention. Direct IMS call
+  recording is a separate opt-in toggle on the Call History page.
+
+### Added — IP Plan Tool
+
+- Bulk re-address an entire deployment from one page via an explicit
+  Propose → review → Apply flow, instead of visiting every module's own IP
+  fields individually.
+
+### Added — Major Events log-detail extraction
+
+- The "view in context" card on the Major Events log viewer now extracts
+  structured protocol fields (TEID, S_NSSAI, PLMN, GUTI, correlation IDs,
+  whatever else is actually present) scoped to the selected event, via a
+  generic bracket-tag scanner rather than a hardcoded field list.
+
+### Added — Eight new Grafana dashboards
+
+- Asterisk (PSTN + Asterisk-2G), 2G Signal, IMS/VoLTE, SigScale OCS, SMS/MMS,
+  Traffic History, and TWAMP, plus a rebuild of the existing core-NF
+  dashboard — all auto-provisioned, no manual Grafana setup needed.
+- Traffic History unification: the web page and its dashboard now cover
+  2G+4G+5G traffic together with a radio filter and RAN-type filter, not
+  just 4G/5G.
+
+### Added — TWAMP (Backhaul Link Quality)
+
+- RFC 5357 TWAMP client + reflector for monitoring backhaul link quality
+  (RTT, jitter, loss, one-way delay) to CBRS radios and other TWAMP-capable
+  devices, with history and a live Grafana dashboard.
+
+### Added — Full Backup / fresh-host bootstrap
+
+- `backup-restore/bootstrap-fresh-host.sh` automates a fresh Ubuntu 24.04
+  host's entire prerequisite stack (system packages, Docker, MongoDB,
+  Open5GS's 17 core NFs) end-to-end, idempotent and safe to re-run — see
+  INSTALL.md's Prerequisites section.
+- Full Backup grew from 8 to 12 independently selectable categories: added
+  NMS Login (Users), UI Module Toggles, SigScale OCS Data, and Radio Config
+  Backups, plus new L3/IP Network Config coverage for FRR and host interface
+  addressing (previously not backed up at all).
+- Restoring onto a genuinely new host is now a documented two-step flow:
+  the bootstrap script for base packages, then a Full Restore with "This is
+  a fresh host" checked to install every optional module the backup used
+  before writing its config.
+- Fixed: the Backup page's "Restore Config" button (`POST
+  /restore/selective`) never triggered the post-restore reapply/restart
+  that "Restore Both" already had — a restored config file sat on disk
+  while every live daemon kept running its old config. Now scoped to
+  restarting just the core-17 NFs, matching what that restore path actually
+  touches.
+
+### Fixed — Kamailio 6.0.8 source rebuild: the real fix for 4G↔5G/5G↔5G VoNR calling
+
+- Cross-RAT VoNR calling (a 4G UE calling a 5G UE or vice versa) never
+  worked: 5G's own QoS authorization path (N7/PCF) is genuinely HTTP/2-only,
+  and Kamailio 5.8.8's HTTP client has no HTTP/2 support at all. Added an
+  opt-in Kamailio 5.8.8→6.0.8 source rebuild (`/api/kamailio/source-build/*`,
+  admin-triggered, isolated build with snapshot-based rollback) that brings
+  in `http_client_request_v2pk()`, the real HTTP/2-capable client added in
+  Kamailio 6.0 — confirmed working live with real two-way audio.
+- The rebuild automatically reapplies this project's own `ims_charging`/
+  `ims_ipsec_pcscf`/`ims_registrar_pcscf` behavioral patches (AVP-format
+  fixes for SigScale OCS compatibility, a NAT/re-registration edge case) on
+  every run, so a fresh 6.0.8 compile never silently regresses them.
+- **Fixed a real, serious bug in this same feature before it ever shipped**:
+  the VoNR fix's own config template was unconditionally enabling the N5
+  code path regardless of which Kamailio version was actually installed —
+  calling `http_client_request_v2pk()` on stock 5.8.8 (every fresh install,
+  and any deployment that hasn't separately run the 6.0.8 rebuild) is a
+  fatal config-parse error, not a graceful runtime failure, which would have
+  prevented the P-CSCF service from starting at all. Now gated on a real
+  runtime version check — a 5.8.8-only deployment is unaffected by cross-RAT
+  calling staying at its prior limitation, and every other IMS/VoLTE
+  functionality is untouched either way.
+- Also added an rtpengine 11.5.1.18 source-rebuild path
+  (`/api/rtpengine/source-build/*`), widening two hardcoded receive-loop
+  capacity constants that could otherwise cause a rare real media self-loop
+  under heavy jitter on a busy call.
+- Fixed a Kamailio NAT-keepalive gap (`WITH_NATPING` was never enabled
+  despite the rest of the mechanism being fully wired) that could let idle
+  UE connections go stale before their SIP registration actually expired,
+  causing spurious "call failed" on the next call attempt.
+- Fixed a real rtpengine media self-loop that could drop an otherwise
+  healthy, fully-connected call a few seconds after answer — a SIP
+  retransmission during 5G's own N5 policy-authorization round trip could
+  register the same call's media twice with rtpengine.
+
+### Fixed — Open5GS NF log files had no log rotation, ever
+
+- All 17 core NF log files (`/var/log/open5gs/*.log`) grew completely
+  unbounded for the life of a host, eventually filling a real deployment's
+  disk to 96%. Fresh installs (via `bootstrap-fresh-host.sh`) now get a
+  proper `logrotate.d` policy from day one.
+
+### Fixed — a widespread Prometheus Gauge staleness bug across 7 dashboards' own metrics
+
+- Several Prometheus exporters (SigScale OCS, IMS/Kamailio, IMS/rtpengine,
+  Asterisk, Call History, TWAMP, 2G GSM) kept reporting a metric's
+  last-known value forever after the underlying peer/channel/call/target
+  disappeared or the service went down, instead of showing a gap — every
+  affected exporter now resets cleanly on each scrape.
+- Fixed a real `nsenter`-based process-orphaning bug (a wrapped command
+  surviving its own timeout, invisible to Node from then on) in 2G GSM's own
+  three recurring signal/traffic polling loops.
+
+### Fixed — Traffic History: 2G radio filtering
+
+- Selecting a specific radio while also filtering by RAN Type = 2G silently
+  ignored the radio filter. Selecting a 2G radio without an explicit RAN
+  Type queried the wrong (4G/5G) metric family and always came back empty —
+  there was previously no way to correctly view one specific 2G radio's own
+  traffic through the web UI.
+
+### Fixed — Cross-RAN Calling: a second MSISDN-shadowing regression
+
+- A 4G/5G-only subscriber's own MSISDN could still shadow PSTN routing for
+  2G-originated calls after a full Asterisk-2G Configure (not just after an
+  extensions edit or the Cross-RAN toggle, which were already fixed) —
+  closed the second, previously-missed code path building the same dialplan
+  data.
+
+---
+
 ## [v2.0-beta_0.63] - 2026-09-22
 
 ### Fixed — VoWiFi Live Sessions page crashing to a blank/grey screen

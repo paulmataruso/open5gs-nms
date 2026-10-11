@@ -863,6 +863,26 @@ export async function configureVowifi(input: VowifiConfigureFullInput): Promise<
     dnsConfigured = true;
   } catch { /* non-fatal — configure otherwise succeeded, logged by caller if desired */ }
 
+  // Real, 2026-09-23 finding: configureVowifi() wrote every config file
+  // correctly but never itself brought the two services up — that lived
+  // entirely in the separate POST /start route, which only the manual
+  // "Configure" button's own frontend flow ever calls afterward as a
+  // second step. Any OTHER caller of this function directly — chiefly
+  // backup-restart-usecase.ts's post-restore reapply — got a fully
+  // reconfigured but completely down VoWiFi every time, with no error
+  // anywhere (configure genuinely succeeded, starting was just never
+  // attempted). Every other module's own configureX() already starts its
+  // own services as part of Configure (see configureSecgw()'s own
+  // unconditional restart) — this brings VoWiFi in line rather than
+  // leaving it as the one exception two different real incidents this
+  // session both tripped over.
+  await nsenter('systemctl', ['enable', '--now', 'vowifi-vectorcore-aaa']).catch(() => {});
+  await new Promise(r => setTimeout(r, 1500));
+  // 35s, not the 20s default — see POST /start's own identical comment:
+  // the epdg unit's ExecStartPost polls up to 20s for its tun device to
+  // appear before systemd reports the unit started.
+  await nsenter('systemctl', ['enable', '--now', 'vowifi-vectorcore-epdg'], 35000).catch(() => {});
+
   const newState: VowifiState = {
     ...state, configured: true, configuredAt: new Date().toISOString(),
     configuredWithVersion: VOWIFI_CONFIG_GEN_VERSION,
@@ -1170,14 +1190,29 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
       write('\n=== Removing smf.conf S6b/SWm peer entry ===');
       if (state.aaaFqdn && fs.existsSync(HOST_SMF_CONF)) {
+        // Always strip only THIS module's own ConnectPeer line; never restore
+        // the whole file from the pre-configure backup.
+        //
+        // Real defect found in the 2026-10-10 readiness audit. smf.conf has
+        // three independently-owned ConnectPeer lines (Gx `pcrf.*` owned by the
+        // core, S6b `aaa.*` by VoWiffi, Gy `ocs.*` by SigScale OCS -- CLAUDE.md
+        // pattern #17), and each module snapshots the file into its OWN .bak on
+        // its first Configure. So whether the whole-file restore below clobbered
+        // a sibling depended entirely on configure ORDERING: if OCS was
+        // configured after VoWiFi took its snapshot, a VoWiFi Uninstall would
+        // silently delete the Gy peer and stop all online charging with no
+        // error -- and vice versa. The backups also predate the PLMN migration,
+        // so a restore would revert Identity/Realm too.
+        //
+        // The targeted, prefix-scoped strip was already here in the else branch
+        // and is correct in every case, so it is now the only path. The .bak is
+        // kept purely as an "this module has written here" marker and removed,
+        // matching the idiom ims-controller.ts already uses.
+        const raw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
+        fs.writeFileSync(HOST_SMF_CONF, removeSmfAaaPeer(raw, state.aaaFqdn), 'utf-8');
+        write('Removed this module\'s own S6b/SWm ConnectPeer line from smf.conf (targeted strip — sibling modules\' peers left intact).');
         if (fs.existsSync(HOST_SMF_CONF_BAK)) {
-          fs.copyFileSync(HOST_SMF_CONF_BAK, HOST_SMF_CONF);
-          fs.unlinkSync(HOST_SMF_CONF_BAK);
-          write('Restored smf.conf from pre-configure backup.');
-        } else {
-          const raw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
-          fs.writeFileSync(HOST_SMF_CONF, removeSmfAaaPeer(raw, state.aaaFqdn), 'utf-8');
-          write('Removed the ConnectPeer line directly (no backup was present).');
+          try { fs.unlinkSync(HOST_SMF_CONF_BAK); } catch { /* marker only */ }
         }
         await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
         await new Promise(r => setTimeout(r, 3000));
@@ -1191,14 +1226,29 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
       write('\n=== Removing hss.conf Swx peer entry ===');
       if (state.aaaFqdn && fs.existsSync(HOST_HSS_CONF)) {
+        // Always strip only THIS module's own ConnectPeer line; never restore
+        // the whole file from the pre-configure backup.
+        //
+        // Real defect found in the 2026-10-10 readiness audit. smf.conf has
+        // three independently-owned ConnectPeer lines (Gx `pcrf.*` owned by the
+        // core, S6b `aaa.*` by VoWiffi, Gy `ocs.*` by SigScale OCS -- CLAUDE.md
+        // pattern #17), and each module snapshots the file into its OWN .bak on
+        // its first Configure. So whether the whole-file restore below clobbered
+        // a sibling depended entirely on configure ORDERING: if OCS was
+        // configured after VoWiFi took its snapshot, a VoWiFi Uninstall would
+        // silently delete the Gy peer and stop all online charging with no
+        // error -- and vice versa. The backups also predate the PLMN migration,
+        // so a restore would revert Identity/Realm too.
+        //
+        // The targeted, prefix-scoped strip was already here in the else branch
+        // and is correct in every case, so it is now the only path. The .bak is
+        // kept purely as an "this module has written here" marker and removed,
+        // matching the idiom ims-controller.ts already uses.
+        const raw = fs.readFileSync(HOST_HSS_CONF, 'utf-8');
+        fs.writeFileSync(HOST_HSS_CONF, removeHssAaaPeer(raw, state.aaaFqdn), 'utf-8');
+        write('Removed this module\'s own Swx ConnectPeer line from hss.conf (targeted strip — sibling modules\' peers left intact).');
         if (fs.existsSync(HOST_HSS_CONF_BAK)) {
-          fs.copyFileSync(HOST_HSS_CONF_BAK, HOST_HSS_CONF);
-          fs.unlinkSync(HOST_HSS_CONF_BAK);
-          write('Restored hss.conf from pre-configure backup.');
-        } else {
-          const raw = fs.readFileSync(HOST_HSS_CONF, 'utf-8');
-          fs.writeFileSync(HOST_HSS_CONF, removeHssAaaPeer(raw, state.aaaFqdn), 'utf-8');
-          write('Removed the ConnectPeer line directly (no backup was present).');
+          try { fs.unlinkSync(HOST_HSS_CONF_BAK); } catch { /* marker only */ }
         }
         await nsenter('systemctl', ['restart', 'open5gs-hssd']).catch(() => {});
         await new Promise(r => setTimeout(r, 3000));

@@ -75,6 +75,13 @@ export interface ModuleStaleStatus {
   // with zero/last-saved input (see plan's automation-safety findings).
   canAutoFix: boolean;
   blockedReason?: string;
+  // IMS only, for now: the specific deployed template files whose content
+  // differs from this build's, or are missing. A version-string compare is
+  // structurally blind to this, so without it a deployment running genuinely
+  // out-of-date routing scripts reports nothing to fix. Surfaced per-file so
+  // the UI can name them instead of saying "version mismatch".
+  staleTemplates?: string[];
+  missingTemplates?: string[];
 }
 
 export interface FixAllModuleResult {
@@ -137,12 +144,23 @@ export class ModuleFixAllUseCase {
 
   private async getImsStatus(): Promise<ModuleStaleStatus | null> {
     const s = await getImsStaleness();
-    if (!s.installed || (!s.installStale && !s.configStale)) return null;
+    // Drifted or missing static templates are a real reason to re-Configure:
+    // only a full Configure runs deployImsTemplate(), so nothing else puts the
+    // live routing scripts back. Treated as config-stale because that is what
+    // drives this orchestrator's Configure step, but reported separately so the
+    // UI can say WHICH files drifted rather than just "version mismatch" —
+    // version strings are blind to exactly this case (see
+    // checkImsTemplateStaleness()).
+    const templateDrift = s.staleTemplates.length + s.missingTemplates.length;
+    const configStale = s.configStale || templateDrift > 0;
+    if (!s.installed || (!s.installStale && !configStale)) return null;
     return {
       moduleId: 'ims', label: MODULE_LABELS.ims,
-      installStale: s.installStale, configStale: s.configStale,
+      installStale: s.installStale, configStale,
       installedWithVersion: s.installedWithVersion, configuredWithVersion: s.configuredWithVersion,
       canAutoFix: true,
+      staleTemplates: s.staleTemplates,
+      missingTemplates: s.missingTemplates,
     };
   }
 

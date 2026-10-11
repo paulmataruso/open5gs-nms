@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { IAuditLogger } from '../../../domain/interfaces/audit-logger';
-import { runOcsEval, readState } from '../../../interfaces/rest/ocs-controller';
+import { runOcsEval, readState, getOcsNodeName } from '../../../interfaces/rest/ocs-controller';
 
 // ── OCS stuck-reservation guard ───────────────────────────────────────────
 //
@@ -57,7 +57,7 @@ interface SweepEntry {
 // actually have a stale entry).
 async function sweepScript(): Promise<string> {
   const script = [
-    `Node = 'ocs@open5gs-core',`,
+    `Node = '${await getOcsNodeName()}',`,
     `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
     `Now = erlang:system_time(millisecond),`,
     `ThresholdMs = ${STALE_THRESHOLD_MS},`,
@@ -110,8 +110,38 @@ function parseSweepResults(stdout: string): SweepEntry[] {
   return entries;
 }
 
+// Dashboard-facing sweep bookkeeping (added for the SigScale OCS Grafana
+// dashboard, item 5 of the Grafana dashboard series). Deliberately additive
+// only, and deliberately positioned to run AFTER the real clear/log/audit
+// side effects below, not interleaved with them — a bug in this bookkeeping
+// can produce a wrong dashboard number but can never suppress or alter the
+// guard's actual protective behavior (the Mnesia writes happen inside the
+// unmodified sweepScript()/parseSweepResults() below; the logger.warn()/
+// auditLogger.log() calls are untouched from before this feature existed).
+// The one-layer-up `start()`.catch() below is ALSO untouched — this file's
+// own try/catch only records lastSweepSuccess/lastSweepAt before
+// re-throwing, it never swallows or changes what start() already logs.
+export interface OcsReservationGuardStats {
+  sweepsRun: number;
+  totalCleared: number;
+  totalBucketsAffected: number;
+  lastSweepAt: number; // 0 = never run
+  lastSweepSuccess: boolean;
+  lastSweepClearedCount: number;
+  lastSweepBucketsAffected: number;
+}
+
 export class OcsReservationGuard {
   private timer: NodeJS.Timeout | null = null;
+  private stats: OcsReservationGuardStats = {
+    sweepsRun: 0,
+    totalCleared: 0,
+    totalBucketsAffected: 0,
+    lastSweepAt: 0,
+    lastSweepSuccess: false,
+    lastSweepClearedCount: 0,
+    lastSweepBucketsAffected: 0,
+  };
 
   constructor(private readonly logger: pino.Logger, private readonly auditLogger: IAuditLogger) {}
 
@@ -127,23 +157,47 @@ export class OcsReservationGuard {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
   }
 
+  getStats(): OcsReservationGuardStats {
+    return { ...this.stats };
+  }
+
+  private recordSweepStats(cleared: number, bucketsAffected: number): void {
+    this.stats.lastSweepAt = Date.now();
+    this.stats.lastSweepSuccess = true;
+    this.stats.lastSweepClearedCount = cleared;
+    this.stats.lastSweepBucketsAffected = bucketsAffected;
+    this.stats.totalCleared += cleared;
+    this.stats.totalBucketsAffected += bucketsAffected;
+  }
+
   private async sweep(): Promise<void> {
     if (!readState()) return; // OCS not configured on this deployment yet — nothing to sweep
 
-    const stdout = await sweepScript();
-    const entries = parseSweepResults(stdout);
-    if (entries.length === 0) return; // nothing stale this pass — the common case, stay quiet
+    this.stats.sweepsRun++;
+    try {
+      const stdout = await sweepScript();
+      const entries = parseSweepResults(stdout);
+      if (entries.length === 0) {
+        this.recordSweepStats(0, 0);
+        return; // nothing stale this pass — the common case, stay quiet
+      }
 
-    const totalCleared = entries.reduce((sum, e) => sum + e.clearedCount, 0);
-    this.logger.warn(
-      { entries, totalCleared },
-      `OCS reservation guard: cleared ${totalCleared} stuck reservation(s) across ${entries.length} bucket(s) (ocs_rating:charge2 crash-on-termination leak — see memory sigscale_ocs_module_progress.md)`,
-    );
-    await this.auditLogger.log({
-      action: 'ocs_reservation_guard_sweep',
-      user: 'system',
-      details: `cleared ${totalCleared} stuck reservation(s) across ${entries.length} bucket(s): ${JSON.stringify(entries)}`,
-      success: true,
-    });
+      const totalCleared = entries.reduce((sum, e) => sum + e.clearedCount, 0);
+      this.logger.warn(
+        { entries, totalCleared },
+        `OCS reservation guard: cleared ${totalCleared} stuck reservation(s) across ${entries.length} bucket(s) (ocs_rating:charge2 crash-on-termination leak — see memory sigscale_ocs_module_progress.md)`,
+      );
+      await this.auditLogger.log({
+        action: 'ocs_reservation_guard_sweep',
+        user: 'system',
+        details: `cleared ${totalCleared} stuck reservation(s) across ${entries.length} bucket(s): ${JSON.stringify(entries)}`,
+        success: true,
+      });
+      this.recordSweepStats(totalCleared, entries.length);
+    } catch (err) {
+      this.stats.lastSweepAt = Date.now();
+      this.stats.lastSweepSuccess = false;
+      throw err; // start()'s own .catch() still logs this exactly as before
+    }
   }
 }

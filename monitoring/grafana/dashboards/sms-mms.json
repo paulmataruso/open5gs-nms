@@ -1,0 +1,199 @@
+{
+  "title": "SMS / MMS Dashboard",
+  "uid": "sms-mms",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "sms", "mms", "ims", "vectorcore"],
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "💬 SMS Overview", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "SMS Delivery Mode",
+      "description": "Which SMS delivery path is currently active.",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "IMS (inline SMSC)" }, "1": { "text": "SGs (2G/Osmocom)" }, "2": { "text": "VectorCore SMSC" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_sms_delivery_mode", "legendFormat": "Mode", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Total SMS Sent (All-Time)",
+      "description": "All SIP MESSAGE requests S-CSCF has received, across every delivery mode and restart.",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_total_sms_sent", "legendFormat": "Total SMS", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "SMS Requests Since Restart (S-CSCF)",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_sip_requests_total{role=\"scscf\",method=\"message\"}", "legendFormat": "MESSAGE", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "VectorCore SMSC — Messages In",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(smsc_messages_in_total) or on() vector(0)", "legendFormat": "In", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "VectorCore SMSC — Messages Delivered",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(smsc_messages_out_total) or on() vector(0)", "legendFormat": "Delivered", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "VectorCore SMSC — SMPP Sessions",
+      "description": "Connected SMPP sessions between VectorCore SMSC and the 2G SMSC bridge.",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_smpp_sessions_connected", "legendFormat": "SMPP Sessions", "refId": "A" }]
+    },
+
+    { "id": 10, "type": "row", "title": "📶 SIP MESSAGE Signaling (Kamailio)", "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 11, "type": "timeseries", "title": "SIP MESSAGE Requests by Role",
+      "description": "Cumulative since each role's own last restart.",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_sip_requests_total{method=\"message\"}", "legendFormat": "{{role}}", "refId": "A" }]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "SMSC Role — SIP Replies by Class",
+      "description": "Only carries traffic when SMS Delivery Mode is \"IMS\" — the smsc role is bypassed entirely in the other two modes, so 0 here is expected, not broken.",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ims_kamailio_sip_replies_total{role=\"smsc\"}", "legendFormat": "{{class}}", "refId": "A" }]
+    },
+
+    { "id": 15, "type": "row", "title": "🌐 VectorCore SMSC — Delivery & Store-and-Forward", "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 16, "type": "stat", "title": "Store-and-Forward Queue Depth",
+      "gridPos": { "x": 0, "y": 15, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_store_forward_queued", "legendFormat": "Queued", "refId": "A" }]
+    },
+    {
+      "id": 17, "type": "stat", "title": "Store-and-Forward Expired (All-Time)",
+      "gridPos": { "x": 6, "y": 15, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_store_forward_expired or on() vector(0)", "legendFormat": "Expired", "refId": "A" }]
+    },
+    {
+      "id": 18, "type": "stat", "title": "Store-and-Forward Retries (All-Time)",
+      "gridPos": { "x": 12, "y": 15, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_store_forward_retried_total or on() vector(0)", "legendFormat": "Retries", "refId": "A" }]
+    },
+    {
+      "id": 19, "type": "stat", "title": "SIP Peers Connected",
+      "description": "Registered SIP trunk peers — separate from ad-hoc relayed traffic, so this can read 0 even while messages flow.",
+      "gridPos": { "x": 18, "y": 15, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_sip_peers_connected", "legendFormat": "Peers", "refId": "A" }]
+    },
+    {
+      "id": 20, "type": "timeseries", "title": "Messages In/Out by Interface",
+      "description": "Cumulative since VectorCore SMSC's own last restart.",
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_messages_in_total", "legendFormat": "in · {{interface}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "smsc_messages_out_total", "legendFormat": "out · {{interface}}", "refId": "B" }
+      ]
+    },
+
+    { "id": 26, "type": "row", "title": "📟 SMS-over-SGs (2G/Osmocom Core)", "gridPos": { "x": 0, "y": 27, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 27, "type": "stat", "title": "SMS-over-SGs Poller Up",
+      "gridPos": { "x": 0, "y": 28, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_sgs_sms_up", "legendFormat": "Poller", "refId": "A" }]
+    },
+    {
+      "id": 28, "type": "stat", "title": "SGs SMS — Delivered",
+      "gridPos": { "x": 6, "y": 28, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_sgs_sms_queue_total{status=\"delivered\"}", "legendFormat": "Delivered", "refId": "A" }]
+    },
+    {
+      "id": 29, "type": "stat", "title": "SGs SMS — Pending/Retrying",
+      "gridPos": { "x": 12, "y": 28, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_sgs_sms_queue_total{status=\"pending\"}", "legendFormat": "Pending", "refId": "A" }]
+    },
+    {
+      "id": 30, "type": "stat", "title": "SGs SMS — Expired",
+      "gridPos": { "x": 18, "y": 28, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_sgs_sms_queue_total{status=\"expired\"}", "legendFormat": "Expired", "refId": "A" }]
+    },
+    {
+      "id": 31, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "SMS-over-SGs is an opt-in delivery mode. These panels show osmo-msc's own local SMS queue as a live snapshot, not historical volume." }
+    },
+
+    { "id": 34, "type": "row", "title": "📨 MMS (VectorCore MMSC)", "gridPos": { "x": 0, "y": 34, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 35, "type": "stat", "title": "MMS Queue Depth",
+      "gridPos": { "x": 0, "y": 35, "w": 8, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "vectorcore_mmsc_queue_depth", "legendFormat": "Queued", "refId": "A" }]
+    },
+    {
+      "id": 36, "type": "stat", "title": "MMS Messages Observed (All-Time)",
+      "gridPos": { "x": 8, "y": 35, "w": 8, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "vectorcore_mmsc_message_size_bytes_count or on() vector(0)", "legendFormat": "Messages", "refId": "A" }]
+    },
+    {
+      "id": 37, "type": "stat", "title": "Avg MMS Size (All-Time)",
+      "description": "No messages yet shows instead of a divide-by-zero result when nothing has been processed.",
+      "gridPos": { "x": 16, "y": 35, "w": 8, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "bytes", "mappings": [{ "type": "special", "options": { "match": "nan", "result": { "text": "No messages yet" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "vectorcore_mmsc_message_size_bytes_sum / vectorcore_mmsc_message_size_bytes_count", "legendFormat": "Avg Size", "refId": "A" }]
+    },
+    {
+      "id": 38, "type": "timeseries", "title": "MMS Message Size Over Time",
+      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(vectorcore_mmsc_message_size_bytes_sum[5m]) / rate(vectorcore_mmsc_message_size_bytes_count[5m])", "legendFormat": "Avg Size", "refId": "A" }]
+    },
+
+    { "id": 50, "type": "row", "title": "🩺 Known Limitations", "gridPos": { "x": 0, "y": 47, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 51, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 48, "w": 24, "h": 5 },
+      "options": { "mode": "markdown", "content": "- No per-subscriber (IMSI/MSISDN) filtering — that data exists only via VectorCore's own REST API, not as a metric.\n- \"Since last restart\" counters reset whenever the underlying process restarts.\n- SMS-over-SGs panels show a live queue snapshot, not delivery history.\n- The MM1-MSISDN proxy in front of VectorCore MMSC has no metrics of its own.\n- Kamailio's own per-message accounting only captures the MT leg and only when Direct IMS Call Recording is on — not used as a data source here." }
+    }
+
+  ]
+}

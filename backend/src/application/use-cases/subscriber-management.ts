@@ -173,8 +173,11 @@ export class SubscriberManagementUseCase {
     subscribers: SubscriberListItem[];
     total: number;
   }> {
-    const subscribers = await this.subscriberRepo.search(query, skip, limit);
-    return { subscribers, total: subscribers.length };
+    const [subscribers, total] = await Promise.all([
+      this.subscriberRepo.search(query, skip, limit),
+      this.subscriberRepo.searchCount(query),
+    ]);
+    return { subscribers, total };
   }
 
   async getByImsi(imsi: string): Promise<Subscriber | null> {
@@ -333,6 +336,43 @@ export class SubscriberManagementUseCase {
 
     await this.subscriberRepo.delete(imsi);
     await this.syncStaticRoutes(existing.slice as any, []);
+
+    // Both collections reference members by raw IMSI value, not a foreign
+    // key (same reason the rename path above cascades to
+    // nms_subscriber_groups) — without this, a deleted subscriber leaves an
+    // orphaned IMSI behind: a phantom member in any group's imsis[], or a
+    // ghost entry in a charging plan's imsis[] that (a) permanently blocks
+    // deleting that plan, since the delete endpoint refuses while
+    // imsis.length > 0, and (b) can't be cleared through the normal
+    // reassign-to-another-plan flow either, since that resolves identities
+    // against real subscriber records and a deleted IMSI no longer
+    // resolves to one. Confirmed live via the API regression suite's
+    // charging-plans module.
+    await this.db.collection('nms_subscriber_groups').updateMany(
+      { imsis: imsi },
+      { $pull: { imsis: imsi } as any },
+    );
+    await this.db.collection('nms_charging_plans').updateMany(
+      { imsis: imsi },
+      { $pull: { imsis: imsi } as any },
+    );
+
+    // OCS (if installed) keeps its own service+product+bucket records
+    // keyed by these same identities, entirely independent of Mongo — the
+    // two $pull calls above only clean up this project's own bookkeeping.
+    // Lazy import: subscriber-management.ts is an application-layer
+    // use-case, charging-plans-controller.ts is the interfaces/rest layer
+    // that owns the real OCS RPC logic — same "don't statically import the
+    // REST layer from a use-case, or a sibling module back" shape as the
+    // pstn-controller.ts/asterisk-2g-controller.ts convention. Best-effort:
+    // never let OCS being unreachable block a subscriber delete.
+    try {
+      const { removeSubscriberFromOcs } = await import('../../interfaces/rest/charging-plans-controller');
+      const msisdns = Array.isArray((existing as any).msisdn) ? (existing as any).msisdn : [];
+      await removeSubscriberFromOcs([imsi, ...msisdns]);
+    } catch (err) {
+      this.logger.warn({ imsi, err: String(err) }, 'Subscriber delete: OCS cleanup failed (non-fatal)');
+    }
 
     this.logger.info({ imsi }, 'Subscriber deleted');
     await this.auditLogger.log({

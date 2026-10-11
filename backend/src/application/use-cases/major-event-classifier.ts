@@ -108,7 +108,26 @@ const RULES: EventRule[] = [
   // InitialContextSetupFailure's own Cause (the very first/default bearer, at attach time)
   // is deliberately NOT covered — open5gs only logs it at ogs_debug, which won't appear in
   // this deployment's actual mme.log at its normal run-time log level.
-  { type: 'bearer_setup_failure', serviceScope: ['mme'], test: /Cause\[Group:\d+ Cause:\d+\]/ },
+  //
+  // Real bug, confirmed live 2026-09-29: the bare `Cause[Group:X Cause:Y]` shape above is
+  // NOT unique to E-RAB setup failure — `UEContextReleaseRequest` (a routine, completely
+  // normal UE-context teardown; s1ap-handler.c:2105) ALSO logs a Cause[...] line with its
+  // own release reason, and on this deployment's real mme.log outnumbered genuine E-RAB
+  // failures 259-to-1 (8547 UEContextReleaseRequest + 7 UEContextModificationFailure + 4
+  // Reset vs. 33 real E_RABFailedToSetupListBearerSURes) — the Major Events view was
+  // reporting thousands of false "Bearer setup failed" events that were actually just
+  // normal releases. Confirmed live that E_RABFailedToSetupListBearerSURes's own Cause
+  // line always logs at the exact same Open5GS source reference across every real
+  // occurrence (`s1ap-handler.c:1885`, distinct from every false-positive source) — anchor
+  // on that reference, not the bare Cause[...] shape, to isolate genuine failures. If a
+  // future Open5GS version shifts this line number, this rule will simply stop matching
+  // (safe failure — silently under-counts rather than flooding false positives again); a
+  // live log sample would show the new correct line to update this to.
+  {
+    type: 'bearer_setup_failure',
+    serviceScope: ['mme'],
+    test: /Cause\[Group:\d+ Cause:\d+\] \(\.\.\/src\/mme\/s1ap-handler\.c:1885\)/,
+  },
 
   // 4G: MME's S6a Authentication-Information-Request or Update-Location-Request to HSS
   // failed — most commonly because the IMSI has no subscriber record in HSS at all
@@ -146,7 +165,7 @@ export const EVENT_TYPE_SERVICES: Record<MajorEventType, string[]> = RULES.reduc
 // candidate lines directly out of multi-GB log files without tailing/parsing every line.
 // Keep in sync with RULES above if event patterns change.
 export const MAJOR_EVENT_GREP_PATTERNS: Record<string, string> = {
-  mme: 'eNB-S1 accepted\\[|eNB-S1\\[[0-9.]+\\] connection refused|Attach complete|Detach request|Cause\\[Group:[0-9]+ Cause:[0-9]+\\]|Authentication Information failed \\[[0-9]+\\]|Update Location failed \\[[0-9]+\\]',
+  mme: 'eNB-S1 accepted\\[|eNB-S1\\[[0-9.]+\\] connection refused|Attach complete|Detach request|Cause\\[Group:[0-9]+ Cause:[0-9]+\\] \\(\\.\\./src/mme/s1ap-handler\\.c:1885\\)|Authentication Information failed \\[[0-9]+\\]|Update Location failed \\[[0-9]+\\]',
   amf: 'gNB-N2 accepted\\[|gNB-N2\\[[0-9.]+\\] connection refused|Registration complete|Deregistration request',
   smf: 'UE IMSI\\[[0-9]+\\] APN\\[|Removed Session: UE IMSI:',
   udm: 'No AuthenticationSubscription',
@@ -162,7 +181,7 @@ const IMSI_PATTERNS: RegExp[] = [
   /\[(\d{15})\]/,          // MME bare "[999704281565023]" — exactly 15 digits to avoid false positives
 ];
 
-function extractImsi(line: string): string | undefined {
+export function extractImsi(line: string): string | undefined {
   for (const re of IMSI_PATTERNS) {
     const m = line.match(re);
     if (m) return m[1];

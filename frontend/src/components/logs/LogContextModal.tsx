@@ -9,6 +9,11 @@ interface Props {
   onClose: () => void;
 }
 
+interface LogEventDetail {
+  key: string;
+  value: string;
+}
+
 // Discrete zoom steps (lines shown on each side of the matched line). Fetched once at the
 // max level, then zoom in/out just re-slices the already-fetched window client-side — no
 // re-fetch per click, so zooming feels instant.
@@ -23,6 +28,7 @@ const FETCH_RADIUS = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
 export function LogContextModal({ service, timestamp, message, onClose }: Props) {
   const [lines, setLines] = useState<string[] | null>(null);
   const [matchIndex, setMatchIndex] = useState(-1);
+  const [details, setDetails] = useState<LogEventDetail[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
   const matchRef = useRef<HTMLDivElement>(null);
@@ -36,6 +42,7 @@ export function LogContextModal({ service, timestamp, message, onClose }: Props)
       if (cancelled) return;
       setLines(r.data.lines);
       setMatchIndex(r.data.matchIndex);
+      setDetails(r.data.details ?? []);
     }).catch(err => {
       if (cancelled) return;
       setError(err?.response?.data?.error ?? 'Failed to load log context');
@@ -144,6 +151,26 @@ export function LogContextModal({ service, timestamp, message, onClose }: Props)
                 </div>
               ))}
             </pre>
+          </div>
+        )}
+
+        {lines && details.length > 0 && (
+          <div className="shrink-0 mt-3 pt-3 border-t border-nms-border">
+            <p className="text-xs text-nms-text-dim mb-2">
+              Extracted from the surrounding log lines for this event ({details.length} field{details.length === 1 ? '' : 's'})
+            </p>
+            <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
+              {details.map(({ key, value }) => (
+                <span
+                  key={key}
+                  className="inline-flex items-baseline gap-1 px-2 py-1 rounded bg-nms-surface-2 border border-nms-border text-xs font-mono"
+                  title={`${key}: ${value}`}
+                >
+                  <span className="text-nms-text-dim">{key}</span>
+                  <span className="text-nms-accent font-semibold break-all">{value}</span>
+                </span>
+              ))}
+            </div>
           </div>
         )}
       </div>

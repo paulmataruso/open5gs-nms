@@ -19,6 +19,53 @@ export interface SessionPool {
   dev?: string;   // optional — specific TUN interface name (e.g. ogstun2)
 }
 
+// Force-addresses every session pool's own tun device via a systemd
+// ExecStartPost drop-in on open5gs-upfd — mitigation for a real,
+// 2026-09-23, root-cause-NOT-identified bug: on one real fresh-VM
+// deployment, upfd created its primary pool's tun device (ogstun) but
+// never assigned it an address or brought it up, while a second,
+// otherwise-identically-configured pool on a different dev (ogstun2)
+// always came up correctly — same process, same startup. Ruled out on
+// that VM: Open5GS build version (pinned identical to a host that
+// doesn't show the bug — still reproduced), session-entry shape (single
+// vs dual entries on the same dev), kernel/capability (a manually created
+// tun device with the same address configures fine), AppArmor (zero
+// relevant denials). Safe/idempotent even when not needed — re-asserting
+// an address/up-state that's already correct is a silent no-op — so
+// applied unconditionally rather than trying to detect the specific
+// condition, matching this project's existing "mitigation, not a
+// guaranteed fix" posture for FRR's own pattern-7 crash guard. Called from
+// both AutoConfigUseCase's own NAT step (using the wizard's own input) and
+// backup-restart-usecase.ts (reading the just-restored upf.yaml directly)
+// — a plain restore never goes through AutoConfigUseCase.execute() at all,
+// so without the second call site this mitigation would only ever apply
+// after an operator explicitly re-ran Apply Config.
+export async function writeUpfSessionPoolAddressFix(
+  hostExecutor: IHostExecutor,
+  pools: SessionPool[],
+  logger: pino.Logger,
+): Promise<void> {
+  const addrDevs = pools
+    .filter(p => p.dev && p.gateway && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(p.gateway) && /\/(\d{1,2})$/.test(p.subnet))
+    .reduce((map, p) => {
+      if (!map.has(p.dev!)) map.set(p.dev!, `${p.gateway}/${p.subnet.match(/\/(\d{1,2})$/)![1]}`);
+      return map;
+    }, new Map<string, string>());
+  if (addrDevs.size === 0) return;
+  const waitAndAddress = [...addrDevs.entries()].map(([dev, cidr]) =>
+    `for i in $(seq 1 20); do ip link show ${dev} >/dev/null 2>&1 && break; sleep 0.5; done; ` +
+    `ip addr add ${cidr} dev ${dev} 2>/dev/null; ip link set ${dev} up 2>/dev/null; true`
+  ).join('; ');
+  const dropinDir = '/proc/1/root/etc/systemd/system/open5gs-upfd.service.d';
+  await hostExecutor.executeCommand('mkdir', ['-p', '/etc/systemd/system/open5gs-upfd.service.d']);
+  await hostExecutor.writeFile(
+    `${dropinDir}/session-pool-address-fix.conf`,
+    `[Service]\nExecStartPost=/bin/bash -c "${waitAndAddress}"\n`,
+  );
+  await hostExecutor.executeCommand('systemctl', ['daemon-reload']);
+  logger.info({ devices: [...addrDevs.keys()] }, 'Wrote UPF session-pool address-fix drop-in');
+}
+
 export interface AutoConfigInput {
   // Per-card apply toggles — each defaults to true (applied) when omitted, so
   // existing callers that don't set these keep today's "apply everything"
@@ -184,6 +231,39 @@ export class AutoConfigUseCase {
     private readonly backupPath: string,
   ) {}
 
+  // Real clobber bug, found in the 2026-10-10 readiness audit: both the dry-run
+  // and apply paths below used to rewrite amf.plmn_support with a hardcoded
+  // `s_nssai: [{ sst: 1 }]`, which DESTROYS every operator-configured Slice
+  // Differentiator. On this deployment that meant silently deleting
+  // `{sst:1, sd:19cde1}` -- the slice the 5G radios actually use, and the one
+  // nssf.yaml and smf.yaml both declare -- so a single Auto-Config run would
+  // have broken 5G service, and a fresh install would never have created it at
+  // all. The PLMN id genuinely does need rewriting here; the slice list does
+  // not, and is not something this wizard ever collects from the user.
+  //
+  // So: carry each PLMN's existing s_nssai across unchanged, matching on
+  // mcc/mnc, and fall back to the plain `[{ sst: 1 }]` default only for a PLMN
+  // with no existing entry (a genuinely new one). Open5GS yields mcc/mnc as
+  // numbers on some parse paths and zero-padded strings on others, so compare
+  // numerically rather than by string equality.
+  private buildPlmnSupport(
+    existing: unknown,
+    plmns: Array<{ mcc: string; mnc: string }>,
+  ): Array<{ plmn_id: { mcc: string; mnc: string }; s_nssai: unknown }> {
+    const prior: any[] = Array.isArray(existing) ? existing : [];
+    const samePlmn = (a: unknown, b: unknown) =>
+      a !== undefined && a !== null && b !== undefined && b !== null
+      && Number(a) === Number(b);
+    return plmns.map(plmn => {
+      const match = prior.find((e: any) =>
+        samePlmn(e?.plmn_id?.mcc, plmn.mcc) && samePlmn(e?.plmn_id?.mnc, plmn.mnc));
+      const slices = Array.isArray(match?.s_nssai) && match.s_nssai.length > 0
+        ? match.s_nssai
+        : [{ sst: 1 }];
+      return { plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc }, s_nssai: slices };
+    });
+  }
+
   async preview(input: AutoConfigInput): Promise<AutoConfigPreviewResult> {
     this.logger.info({ input }, 'Generating auto-config preview');
 
@@ -246,7 +326,15 @@ export class AutoConfigUseCase {
 
         if (!modified.sgwu) modified.sgwu = {};
         if (!modified.sgwu.gtpu) modified.sgwu.gtpu = {};
-        modified.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
+        // Only write a real address. `sgwuGtpIP` is typed required but is
+        // derived with `|| ''` when the wizard reads current state (see
+        // preview()'s own extraction), so an empty string is genuinely
+        // reachable — and `server: [{ address: '' }]` is not a no-op, it
+        // replaces a working GTP-U bind on a core NF with an unusable one.
+        // Leaving the existing value alone is always the better failure mode.
+        if (input.sgwuGtpIP) {
+          modified.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
+        }
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -287,11 +375,9 @@ export class AutoConfigUseCase {
             tac: plmn.tac ?? 1,
           }));
 
-          // Update plmn_support with multiple PLMNs
-          modified.amf.plmn_support = input.plmn5g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            s_nssai: [{ sst: 1 }],
-          }));
+          // Update plmn_support PLMN ids, PRESERVING each PLMN's configured
+          // s_nssai -- see buildPlmnSupport. Never hardcode the slice list.
+          modified.amf.plmn_support = this.buildPlmnSupport(modified.amf.plmn_support, input.plmn5g);
         }
 
         const originalYaml = yaml.stringify(original);
@@ -307,7 +393,8 @@ export class AutoConfigUseCase {
 
         if (!modified.upf) modified.upf = {};
 
-        if (applyInterfaces) {
+        if (applyInterfaces && input.upfGtpIP) {
+          // Emptiness-guarded for the same reason as sgwu.gtpu above.
           if (!modified.upf.gtpu) modified.upf.gtpu = {};
           modified.upf.gtpu.server = [{ address: input.upfGtpIP }];
         }
@@ -453,7 +540,12 @@ export class AutoConfigUseCase {
 
         if (!raw.sgwu) raw.sgwu = {};
         if (!raw.sgwu.gtpu) raw.sgwu.gtpu = {};
-        raw.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
+        // Emptiness-guarded — see the matching comment in preview().
+        if (input.sgwuGtpIP) {
+          raw.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
+        } else {
+          this.logger.warn('sgwuGtpIP is empty — leaving sgwu.yaml gtpu.server unchanged');
+        }
 
         configs.sgwu.rawYaml = raw;
         await this.configRepo.saveSgwu(configs.sgwu);
@@ -500,8 +592,17 @@ export class AutoConfigUseCase {
         const raw = configs.sgwu.rawYaml as any;
         if (!raw.sgwu) raw.sgwu = {};
         if (!raw.sgwu.pfcp) raw.sgwu.pfcp = {};
+        // Always the loopback. This used to read
+        // `localSgwuOnly ? '127.0.0.6' : '127.0.0.6'` — both branches
+        // identical, so the condition never did anything and the code implied
+        // a configurability that does not exist. Unlike UPF (which has a real
+        // `localUpfPfcpIP` input for binding its PFCP server somewhere
+        // reachable by a remote SMF), there is no `localSgwuPfcpIP` input at
+        // all, so this NF's own PFCP server can only ever be the loopback.
+        // `localSgwuOnly` below is about which OTHER SGW-Us this SGW-C talks
+        // to, not about moving this one's own bind address.
+        raw.sgwu.pfcp.server = [{ address: '127.0.0.6' }];
         const localSgwuOnly = input.localSgwuOnly ?? true;
-        raw.sgwu.pfcp.server = [{ address: localSgwuOnly ? '127.0.0.6' : '127.0.0.6' }];
         // SGW-U also needs to know the SGW-C address if remote
         if (!localSgwuOnly && input.sgwcPfcpIP) {
           raw.sgwu.pfcp.client = { sgwc: [{ address: input.sgwcPfcpIP }] };
@@ -544,11 +645,9 @@ export class AutoConfigUseCase {
             tac: plmn.tac ?? 1,
           }));
 
-          // Update plmn_support with multiple PLMNs
-          raw.amf.plmn_support = input.plmn5g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            s_nssai: [{ sst: 1 }],
-          }));
+          // Update plmn_support PLMN ids, PRESERVING each PLMN's configured
+          // s_nssai -- see buildPlmnSupport. Never hardcode the slice list.
+          raw.amf.plmn_support = this.buildPlmnSupport(raw.amf.plmn_support, input.plmn5g);
         }
 
         configs.amf.rawYaml = raw;
@@ -564,8 +663,13 @@ export class AutoConfigUseCase {
         if (!raw.upf) raw.upf = {};
 
         if (applyInterfaces) {
-          if (!raw.upf.gtpu) raw.upf.gtpu = {};
-          raw.upf.gtpu.server = [{ address: input.upfGtpIP }];
+          // Emptiness-guarded — see the matching comment in preview().
+          if (input.upfGtpIP) {
+            if (!raw.upf.gtpu) raw.upf.gtpu = {};
+            raw.upf.gtpu.server = [{ address: input.upfGtpIP }];
+          } else {
+            this.logger.warn('upfGtpIP is empty — leaving upf.yaml gtpu.server unchanged');
+          }
         }
 
         if (applyPfcp) {
@@ -671,46 +775,93 @@ export class AutoConfigUseCase {
       // (e.g. sgwu.yaml from both the Interfaces and PFCP sections).
       const dedupedFiles = [...new Set(updatedFiles)];
 
-      // Step 4: Configure NAT if requested
+      // Step 4a: UE data-plane prerequisites — ALWAYS applied, deliberately NOT
+      // gated on input.configureNAT.
+      //
+      // Real reproducibility defect found in the 2026-10-10 readiness audit:
+      // both of these used to live inside the `if (input.configureNAT)` branch
+      // below, so a deployment that doesn't use NAT never got them, and a
+      // fresh install was left with a dead data plane in two separate ways:
+      //
+      //  * `net.ipv4.ip_forward` — the only persistence on the live host turned
+      //    out to be a line appended to /etc/sysctl.conf by
+      //    frr-source-build.ts:262, i.e. a side effect of an OPTIONAL feature.
+      //    The documented drop-in (/etc/sysctl.d/99-open5gs-nat.conf) did not
+      //    exist at all. Without it, forwarding reverts to 0 on the next reboot
+      //    and every UE loses data.
+      //  * The FORWARD chain's policy is DROP (Docker sets it), so without a
+      //    per-tun ACCEPT every UE packet is silently dropped no matter how
+      //    correct routing, NAT and tun addressing are. This block's own
+      //    comment below already conceded that ogstun's rules came from "some
+      //    now-untraceable manual one-off" — that was exactly the symptom.
+      //
+      // Neither is NAT-specific: forwarding and FORWARD-accept are required for
+      // ANY UE data path, including a routed deployment that advertises its UE
+      // pools over FRR/EIGRP instead of masquerading (which is what this very
+      // deployment does). Only the MASQUERADE rules below are genuinely
+      // optional, so only they stay behind the toggle.
+      //
+      // Each rule is added idempotently (-C check before -A/-I) so re-running
+      // Apply Config never piles up duplicates.
+      const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string) => {
+        const check = await this.hostExecutor.executeCommand(bin, checkArgs);
+        if (check.exitCode !== 0) {
+          await this.hostExecutor.executeCommand(bin, addArgs);
+          this.logger.info({ label }, 'Added firewall rule');
+        }
+      };
+
+      try {
+        const sysctlContent = [
+          '# Open5GS UE data plane — written by NMS auto-config.',
+          '# Required for ANY UE forwarding, with or without NAT.',
+          'net.ipv4.ip_forward=1',
+          'net.ipv6.conf.all.forwarding=1',
+          'net.ipv6.conf.default.forwarding=1',
+        ].join('\n') + '\n';
+
+        // /etc/sysctl.d/ isn't bind-mounted into this container (unlike
+        // /etc/open5gs) — writeFile needs the /proc/1/root host-path prefix.
+        // executeCommand doesn't (nsenter already puts it in the host's own
+        // mount namespace, where the plain path is correct).
+        await this.hostExecutor.writeFile('/proc/1/root/etc/sysctl.d/99-open5gs-nat.conf', sysctlContent);
+        await this.hostExecutor.executeCommand('sysctl', ['-p', '/etc/sysctl.d/99-open5gs-nat.conf']);
+        this.logger.info('Enabled IP forwarding (persistent via /etc/sysctl.d/99-open5gs-nat.conf)');
+
+        // FORWARD accept for every session pool's own TUN device, plus the
+        // primary interface. Interface-scoped, so a dev that doesn't exist on
+        // this host is harmless.
+        const fwDevs = [...new Set(
+          (input.sessionPools ?? []).map(p => p.dev).filter((d): d is string => Boolean(d)),
+        )];
+        const primaryDev = input.natInterface || 'ogstun';
+        if (!fwDevs.includes(primaryDev)) fwDevs.push(primaryDev);
+        for (const dev of fwDevs) {
+          await ensureRule('iptables', ['-C', 'FORWARD', '-i', dev, '-j', 'ACCEPT'], ['-A', 'FORWARD', '-i', dev, '-j', 'ACCEPT'], `FORWARD accept in ${dev}`);
+          await ensureRule('iptables', ['-C', 'FORWARD', '-o', dev, '-j', 'ACCEPT'], ['-A', 'FORWARD', '-o', dev, '-j', 'ACCEPT'], `FORWARD accept out ${dev}`);
+        }
+
+        // Requires iptables-persistent / netfilter-persistent (installed as a
+        // prerequisite). Idempotent, so the NAT block saving again is fine.
+        await this.hostExecutor.executeCommand('netfilter-persistent', ['save']);
+        this.logger.info({ fwDevs }, 'Applied UE data-plane prerequisites (ip_forward + FORWARD accepts, persistent)');
+      } catch (err) {
+        this.logger.error({ error: String(err) }, 'Failed to apply UE data-plane prerequisites');
+        // Don't fail the whole operation.
+      }
+
+      // Step 4b: Configure NAT if requested
       if (input.configureNAT) {
         this.logger.info('Configuring NAT with iptables (persistent)');
         const natInterface = input.natInterface || 'ogstun';
 
         try {
-          // ── IP forwarding ─────────────────────────────────────────────────
-          // Write to sysctl.d so it persists across reboots
-          const sysctlContent = [
-            '# Open5GS UE internet access — written by NMS auto-config',
-            'net.ipv4.ip_forward=1',
-            'net.ipv6.conf.all.forwarding=1',
-            'net.ipv6.conf.default.forwarding=1',
-          ].join('\n') + '\n';
-
-          // /etc/sysctl.d/ isn't bind-mounted into this container (unlike
-          // /etc/open5gs) — writeFile needs the /proc/1/root host-path
-          // prefix. executeCommand doesn't (nsenter already puts it in the
-          // host's own mount namespace, where the plain path is correct).
-          await this.hostExecutor.writeFile('/proc/1/root/etc/sysctl.d/99-open5gs-nat.conf', sysctlContent);
-          await this.hostExecutor.executeCommand('sysctl', ['-p', '/etc/sysctl.d/99-open5gs-nat.conf']);
-          this.logger.info('Enabled IP forwarding (persistent via /etc/sysctl.d/99-open5gs-nat.conf)');
-
-          // ── iptables rules ─────────────────────────────────────────────────
+          // ── iptables NAT rules ─────────────────────────────────────────────
           // Sourced from the same session pool subnets shown in the "UE IP
           // Address Pool" card above, so NAT always matches whatever pool is
           // actually configured rather than a separate, possibly-stale value.
           const ipv4Subnet = input.sessionPools?.[0]?.subnet || input.sessionPoolIPv4Subnet || '10.45.0.0/16';
           const ipv6Subnet = input.sessionPools?.[1]?.subnet || input.sessionPoolIPv6Subnet || '2001:db8:cafe::/48';
-
-          // Each rule is added idempotently (-C check before -A/-I add) so
-          // re-running Apply Config with NAT enabled doesn't pile up
-          // duplicate MASQUERADE/ACCEPT rules every time.
-          const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string) => {
-            const check = await this.hostExecutor.executeCommand(bin, checkArgs);
-            if (check.exitCode !== 0) {
-              await this.hostExecutor.executeCommand(bin, addArgs);
-              this.logger.info({ label }, 'Added firewall rule');
-            }
-          };
 
           // IPv4 MASQUERADE
           await ensureRule(
@@ -743,6 +894,8 @@ export class AutoConfigUseCase {
           );
 
           this.logger.info({ ipv4Subnet, ipv6Subnet, natInterface }, 'Configured NAT (IPv4 + IPv6)');
+
+          await writeUpfSessionPoolAddressFix(this.hostExecutor, input.sessionPools ?? [], this.logger);
 
           // ── Persist iptables rules across reboots ─────────────────────────
           // Requires iptables-persistent / netfilter-persistent (installed as prerequisite)

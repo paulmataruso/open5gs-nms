@@ -43,6 +43,15 @@ export class SubscriberIpAccounting {
   private timer: NodeJS.Timeout | null = null;
   // ip -> imsi for whichever rules are currently installed
   private installedIps: Map<string, string> = new Map();
+  // Real, 2026-09-24 finding: no re-entrancy guard existed — if one
+  // reconcile() cycle ever ran longer than the tick interval (plausible
+  // under host load right after a restore, with several other modules' own
+  // reconcile loops potentially starting/contending at once), two
+  // overlapping cycles could both decide an IP is missing and both add a
+  // pair, producing true duplicates that never self-correct (see the
+  // half-installed-pair fix below — a duplicate pair, unlike a half pair,
+  // has both directions present, so it wouldn't even trip that check).
+  private isReconciling = false;
 
   constructor(
     private readonly hostExecutor: IHostExecutor,
@@ -125,41 +134,61 @@ export class SubscriberIpAccounting {
   }
 
   private async reconcile(): Promise<void> {
-    await this.ensureBaseline();
-    const installedRules = await this.listRules();
-    const desired = await this.getDesiredIps();
-
-    // Group installed rules by ip so we can detect IMSI mismatches (IP reassignment).
-    const installedByIp = new Map<string, InstalledRule[]>();
-    for (const r of installedRules) {
-      const list = installedByIp.get(r.ip) ?? [];
-      list.push(r);
-      installedByIp.set(r.ip, list);
+    if (this.isReconciling) {
+      this.logger.debug('nftables accounting: reconcile already in progress, skipping this tick');
+      return;
     }
+    this.isReconciling = true;
+    try {
+      await this.ensureBaseline();
+      const installedRules = await this.listRules();
+      const desired = await this.getDesiredIps();
 
-    for (const [ip, rules] of installedByIp) {
-      const desiredImsi = desired.get(ip);
-      const currentImsi = rules[0]?.imsi;
-      if (!desiredImsi || desiredImsi !== currentImsi) {
-        // Subscriber removed, IP cleared, or IP reassigned to a different
-        // subscriber — delete so a reassigned IP's counter resets to zero
-        // rather than inheriting the previous owner's byte count.
-        for (const r of rules) {
-          await this.deleteRule(r.handle).catch(err =>
-            this.logger.warn({ err: String(err), ip, handle: r.handle }, 'Failed to delete stale nftables rule'));
+      // Group installed rules by ip so we can detect IMSI mismatches (IP reassignment).
+      const installedByIp = new Map<string, InstalledRule[]>();
+      for (const r of installedRules) {
+        const list = installedByIp.get(r.ip) ?? [];
+        list.push(r);
+        installedByIp.set(r.ip, list);
+      }
+
+      for (const [ip, rules] of installedByIp) {
+        const desiredImsi = desired.get(ip);
+        const currentImsi = rules[0]?.imsi;
+        // Real, 2026-09-24 finding: addRulePair() makes two SEQUENTIAL
+        // awaited nft calls (up, then down) — if the process died between
+        // them (a normal `docker compose restart`/`up -d` landing mid-call
+        // counts, not just a crash), this check used to only test "does AT
+        // LEAST ONE rule exist for this IP" and treat that as "already
+        // handled," permanently leaving the other direction (and half this
+        // subscriber's traffic) uncounted forever.
+        const hasUp = rules.some(r => r.direction === 'up');
+        const hasDown = rules.some(r => r.direction === 'down');
+        if (!desiredImsi || desiredImsi !== currentImsi || !hasUp || !hasDown) {
+          // Subscriber removed, IP cleared, IP reassigned to a different
+          // subscriber, or a half-installed pair — delete whatever's there
+          // so the loop below adds a fresh, complete pair, rather than
+          // relabeling (which would let a reassigned IP inherit the
+          // previous owner's byte count, or leave a half pair half-fixed).
+          for (const r of rules) {
+            await this.deleteRule(r.handle).catch(err =>
+              this.logger.warn({ err: String(err), ip, handle: r.handle }, 'Failed to delete stale nftables rule'));
+          }
+          installedByIp.delete(ip);
         }
-        installedByIp.delete(ip);
       }
-    }
 
-    for (const [ip, imsi] of desired) {
-      if (!installedByIp.has(ip)) {
-        await this.addRulePair(ip, imsi).catch(err =>
-          this.logger.warn({ err: String(err), ip, imsi }, 'Failed to add nftables rule pair'));
+      for (const [ip, imsi] of desired) {
+        if (!installedByIp.has(ip)) {
+          await this.addRulePair(ip, imsi).catch(err =>
+            this.logger.warn({ err: String(err), ip, imsi }, 'Failed to add nftables rule pair'));
+        }
       }
-    }
 
-    this.installedIps = desired;
+      this.installedIps = desired;
+    } finally {
+      this.isReconciling = false;
+    }
   }
 
   /** Raw cumulative counters per subscriber IMSI since rule installation (not a rate). */

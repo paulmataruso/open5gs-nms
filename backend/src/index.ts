@@ -19,6 +19,9 @@ import { ServiceMonitorUseCase } from './application/use-cases/service-monitor';
 import { SubscriberManagementUseCase } from './application/use-cases/subscriber-management';
 import { TopologyUseCase } from './application/use-cases/topology';
 import { BackupRestoreUseCase } from './application/use-cases/backup-restore';
+import { FreshHostBootstrapUseCase } from './application/use-cases/fresh-host-bootstrap-usecase';
+import { BackupRestartUseCase } from './application/use-cases/backup-restart-usecase';
+import { FullRestoreOrchestratorUseCase } from './application/use-cases/full-restore-orchestrator-usecase';
 import { DnsMigrationUseCase } from './application/use-cases/dns-migration-usecase';
 import { PlmnMigrationUseCase } from './application/use-cases/plmn-migration-usecase';
 import { PcapUseCase } from './application/use-cases/pcap';
@@ -58,13 +61,29 @@ import { createSubscriberRouter } from './interfaces/rest/subscriber-controller'
 import { createAuditRouter } from './interfaces/rest/audit-controller';
 import { createTunRouter } from './interfaces/rest/tun-controller';
 import { TunManagementUseCase } from './application/use-cases/tun-management';
+import { FramedRoutingReconcileService } from './application/use-cases/framed-routing-reconcile-service';
 import { createInterfaceRouter } from './interfaces/rest/interface-controller';
 import { GetInterfaceStatus } from './application/use-cases/interface-status/get-interface-status';
 import { GtpBandwidthMonitor } from './application/use-cases/interface-status/gtp-bandwidth';
 import { ImsCallStatsMonitor } from './application/use-cases/ims/call-stats-monitor';
+import { createImsSmsMetricsRegistry } from './application/use-cases/ims/ims-sms-metrics';
+import { SgsSmsMetricsMonitor } from './application/use-cases/sms/sgs-sms-metrics-monitor';
+import { createSgsSmsMetricsRegistry } from './application/use-cases/sms/sgs-sms-metrics';
+import { KamailioStatsMonitor } from './application/use-cases/ims/kamailio-stats-monitor';
+import { createImsKamailioMetricsRegistry } from './application/use-cases/ims/ims-kamailio-metrics';
+import { RtpengineStatsMonitor } from './application/use-cases/ims/rtpengine-stats-monitor';
+import { createImsRtpengineMetricsRegistry } from './application/use-cases/ims/ims-rtpengine-metrics';
 import { IpsecSaCleanup } from './application/use-cases/ims/ipsec-sa-cleanup';
+import { PyhssDiameterGuard } from './application/use-cases/ims/pyhss-diameter-guard';
 import { CdrSyncMonitor } from './application/use-cases/cdr/cdr-sync-monitor';
 import { OcsReservationGuard } from './application/use-cases/ocs/ocs-reservation-guard';
+import { createOcsReservationGuardMetricsRegistry } from './application/use-cases/ocs/ocs-reservation-guard-metrics';
+import { OcsStatsMonitor } from './application/use-cases/ocs/ocs-stats-monitor';
+import { createOcsMetricsRegistry } from './application/use-cases/ocs/ocs-metrics';
+import { AsteriskStatsMonitor } from './application/use-cases/asterisk/asterisk-stats-monitor';
+import { createAsteriskMetricsRegistry } from './application/use-cases/asterisk/asterisk-metrics';
+import { CdrMetricsMonitor } from './application/use-cases/cdr/cdr-metrics-monitor';
+import { createCdrMetricsRegistry } from './application/use-cases/cdr/cdr-metrics';
 import { ensureCdrIndexes } from './application/use-cases/cdr/cdr-store';
 import { createCdrRouter, readCdrSettings } from './interfaces/rest/cdr-controller';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
@@ -100,11 +119,13 @@ import { createIpPlanRouter } from './interfaces/rest/ip-plan-controller';
 import { IpPlanApplyUseCase } from './application/use-cases/ip-plan-apply-usecase';
 import { createFrrRouter } from './interfaces/rest/frr-controller';
 import { createFrrSourceBuildRouter } from './interfaces/rest/frr-source-build-controller';
+import { createKamailioSourceBuildRouter } from './interfaces/rest/kamailio-source-build-controller';
+import { createRtpengineSourceBuildRouter } from './interfaces/rest/rtpengine-source-build-controller';
 import { createSmsRouter } from './interfaces/rest/sms-controller';
 import { createGsmRouter } from './interfaces/rest/gsm-controller';
 import { createMmsRouter, MmsMsisdnMapRefresher } from './interfaces/rest/mms-controller';
 import { createVectorcoreSmscRouter } from './interfaces/rest/vectorcore-smsc-controller';
-import { createImsRouter } from './interfaces/rest/ims-controller';
+import { createImsRouter, readCurrentImsConfig, getSmsDeliveryMode } from './interfaces/rest/ims-controller';
 import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
 import { createSecgwRouter } from './interfaces/rest/secgw-controller';
 import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controller';
@@ -131,6 +152,10 @@ import { createTrafficHistoryRouter } from './interfaces/rest/traffic-history-co
 import * as promClient from 'prom-client';
 import { TwampMonitor } from './application/use-cases/twamp/twamp-monitor';
 import { createTwampMetricsRegistry } from './application/use-cases/twamp/twamp-metrics';
+import { createGsmMetricsRegistry } from './application/use-cases/gsm/gsm-metrics';
+import { createGsm2gTrafficMetricsRegistry } from './application/use-cases/gsm/gsm2g-traffic-metrics';
+import { RadioSessionCache } from './application/use-cases/traffic-history/radio-session-cache';
+import { createRadioInfoMetricsRegistry } from './application/use-cases/traffic-history/radio-info-metrics';
 import { createTwampRouter } from './interfaces/rest/twamp-controller';
 import { createModulesRouter } from './interfaces/rest/modules-controller';
 import { ModuleFixAllUseCase } from './application/use-cases/module-fixall-usecase';
@@ -199,7 +224,11 @@ async function main() {
   // background poller caches the latest result per target; both the
   // Prometheus exporter and GET /api/twamp/targets read from it.
   const twampMonitor = new TwampMonitor(subscriberRepo.getDb(), hostExecutor, logger);
-  const twampMetricsRegistry = createTwampMetricsRegistry(twampMonitor, hostExecutor);
+  const { registry: twampMetricsRegistry, removeTargetSeries: removeTwampTargetMetrics } = createTwampMetricsRegistry(twampMonitor, hostExecutor);
+
+  // 2G UE signal — no monitor/executor dependency, reads gsm-controller.ts's
+  // own module-scoped cache (getCachedGsmSignalSamples) directly.
+  const gsmMetricsRegistry = createGsmMetricsRegistry();
 
   // ── IMS call stats ──
   // Background sampler for the Dashboard's IMS Status card — live active-call
@@ -207,7 +236,21 @@ async function main() {
   // dialog_ng:processed stat resets on every kamailio-scscf restart, which
   // happens often; see call-stats-monitor.ts header for the accumulation scheme).
   const imsCallStatsMonitor = new ImsCallStatsMonitor(hostExecutor, logger);
+  const imsSmsMetricsRegistry = createImsSmsMetricsRegistry(imsCallStatsMonitor, getSmsDeliveryMode);
+  const sgsSmsMetricsMonitor = new SgsSmsMetricsMonitor(logger);
+  sgsSmsMetricsMonitor.start();
+  const sgsSmsMetricsRegistry = createSgsSmsMetricsRegistry(sgsSmsMetricsMonitor);
   imsCallStatsMonitor.start();
+
+  // Kamailio (all 4 instances) + rtpengine Prometheus exporters — same
+  // background-poller-feeds-a-registry shape as every other sibling above.
+  const kamailioStatsMonitor = new KamailioStatsMonitor(hostExecutor, logger);
+  kamailioStatsMonitor.start();
+  const imsKamailioMetricsRegistry = createImsKamailioMetricsRegistry(kamailioStatsMonitor);
+
+  const rtpengineStatsMonitor = new RtpengineStatsMonitor(() => readCurrentImsConfig()?.rtpEngineIp ?? null, logger);
+  rtpengineStatsMonitor.start();
+  const imsRtpengineMetricsRegistry = createImsRtpengineMetricsRegistry(rtpengineStatsMonitor);
 
   // Workaround for a real bug in ims_ipsec_pcscf (kamailio-ims-modules,
   // third-party, not part of this repo): its own stale-SA cleanup
@@ -218,6 +261,21 @@ async function main() {
   // it's a safe no-op on any host where IMS isn't configured.
   const ipsecSaCleanup = new IpsecSaCleanup(hostExecutor, logger);
   ipsecSaCleanup.start();
+
+  // Mitigates a real, recurring pyhss-diameter hang (found live 2026-10-01)
+  // where PyHSS's Diameter Cx peer stays I_Open while silently dropping all
+  // processing — see pyhss-diameter-guard.ts header for the full
+  // investigation and why its detection signal (Kamailio's own cdp:timeout
+  // counter) was chosen over journal-silence/py-spy, both of which turned
+  // out not to reliably distinguish "healthy idle" from "stuck" for this
+  // service. Source-level hardening also now lives in diameterService.py/
+  // messagingAsync.py themselves (ims-controller.ts's POST /api/ims/install),
+  // but that fix is defense-in-depth, not guaranteed — this guard is the
+  // actual stability backstop, same "detect the symptom, mitigate
+  // operationally" shape as ocsReservationGuard above. On by default, like
+  // that guard — a safe no-op on any host where IMS isn't configured.
+  const pyhssDiameterGuard = new PyhssDiameterGuard(logger, auditLogger);
+  pyhssDiameterGuard.start();
 
   // ── CDR sync ──
   // Background poller tailing Asterisk's own CDR CSVs (PSTN Gateway today;
@@ -238,6 +296,40 @@ async function main() {
   // hasn't configured OCS.
   const ocsReservationGuard = new OcsReservationGuard(logger, auditLogger);
   ocsReservationGuard.start();
+  const ocsReservationGuardMetricsRegistry = createOcsReservationGuardMetricsRegistry(ocsReservationGuard);
+
+  // SigScale OCS Prometheus exporter — same background-poller-feeds-a-
+  // registry shape as kamailioStatsMonitor/rtpengineStatsMonitor above, but
+  // reached over Erlang RPC (runOcsEval) rather than a control socket, since
+  // that's the only real data path OCS exposes (its REST API is 401-gated
+  // with no stored credential anywhere in this codebase). See ocs-stats-
+  // monitor.ts header for the 30s-interval rationale and the real,
+  // reproduced-live orphaned-process bug in runOcsEval's own nsenter helper
+  // that had to be fixed before this monitor could safely poll that often.
+  const ocsStatsMonitor = new OcsStatsMonitor(logger);
+  ocsStatsMonitor.start();
+  const ocsMetricsRegistry = createOcsMetricsRegistry(ocsStatsMonitor);
+
+  // Asterisk (PSTN Gateway + Asterisk-2G) Prometheus exporter — same
+  // background-poller-feeds-a-registry shape as the others above, reached
+  // via each instance's own read-only CLI (asterisk -rx / -C ... -rx) —
+  // see asterisk-stats-monitor.ts header for why AMI isn't used (a real,
+  // unfixed port collision leaves Asterisk-2G's AMI permanently unable to
+  // bind) and for the same nsenter-orphaned-process risk class OCS's own
+  // monitor above had to be hardened against.
+  const asteriskStatsMonitor = new AsteriskStatsMonitor(logger);
+  asteriskStatsMonitor.start();
+  const asteriskMetricsRegistry = createAsteriskMetricsRegistry(asteriskStatsMonitor);
+
+  // CDR-derived call-volume Prometheus exporter — reads the EXISTING
+  // nms_cdr collection (see cdr-sync-monitor.ts above), a genuinely new
+  // pattern for this codebase (every other registry reads a live host/RPC
+  // cache, this one reads a periodic Mongo aggregation). See cdr-metrics-
+  // monitor.ts header for the disposition/sourceSystem filtering this data
+  // needs to avoid two real, confirmed-live wrong-data traps.
+  const cdrMetricsMonitor = new CdrMetricsMonitor(subscriberRepo.getDb(), logger);
+  cdrMetricsMonitor.start();
+  const cdrMetricsRegistry = createCdrMetricsRegistry(cdrMetricsMonitor);
 
   // ── SAS service ──
   // Create a child logger tagged with module:'sas' so the log stream can filter SAS-only messages
@@ -358,6 +450,10 @@ async function main() {
     subscriberRepo.getDb(),
   );
   const topologyUseCase = new TopologyUseCase(configRepo, logger);
+  const framedRoutingReconcileService = new FramedRoutingReconcileService(
+    subscriberRepo, tunUseCase, configRepo, logger,
+  );
+  framedRoutingReconcileService.start();
   const backupRestoreUseCase = new BackupRestoreUseCase(
     hostExecutor,
     configRepo,
@@ -392,6 +488,21 @@ async function main() {
     logger,
     auditLogger,
   );
+  const freshHostBootstrapUseCase = new FreshHostBootstrapUseCase(logger, auditLogger);
+  const backupRestartUseCase = new BackupRestartUseCase(
+    hostExecutor,
+    subscriberRepo,
+    config.mongodbUri,
+    logger,
+    auditLogger,
+    subscriberRepo.getDb(),
+  );
+  const fullRestoreOrchestratorUseCase = new FullRestoreOrchestratorUseCase(
+    freshHostBootstrapUseCase,
+    backupRestoreUseCase,
+    backupRestartUseCase,
+    logger,
+  );
   const pcapUseCase = new PcapUseCase(hostExecutor, configRepo, logger);
   const esimGeneratorUseCase = new EsimGeneratorUseCase(
     config.simlesslyAccessKey,
@@ -423,6 +534,16 @@ async function main() {
     subscriberRepo,
     logger,
   );
+  // Traffic History unification (2G+4G+5G, radio + RAN-type filters) —
+  // radioSessionCache wraps activeSessionsUseCase's own existing 4G/5G
+  // radio-attribution logic on a dedicated poll loop (collect() must never
+  // call it directly, same reasoning as every other cache-backed registry
+  // here). radio-info's own registry also reads gsm-controller.ts's 2G GPRS
+  // traffic cache directly (module-level, no extra instance needed).
+  const radioSessionCache = new RadioSessionCache(activeSessionsUseCase, logger);
+  radioSessionCache.start();
+  const gsm2gTrafficMetricsRegistry = createGsm2gTrafficMetricsRegistry();
+  const radioInfoMetricsRegistry = createRadioInfoMetricsRegistry(radioSessionCache, ip => radioTagRepo.getAll()[ip]);
   const baicellsUeCounts = new BaicellsUeCountsUseCase(
     config.genieacsNbiUrl,
     hostExecutor,
@@ -486,9 +607,21 @@ async function main() {
   // directly by the host-networked Prometheus container, same trust model as
   // each NF's own :9090/metrics endpoint). Deliberately outside /api so it's
   // never caught by the auth middleware below.
+  // Registry.merge() throws synchronously on a metric-NAME collision across
+  // registries (confirmed against prom-client's own registry.js) — caught
+  // below into a bare 500, which means a future name collision in any one
+  // of these would take the other two's metrics down too, not just its
+  // own. Each registry's own file uses a distinct name prefix
+  // (open5gs_gtp_/open5gs_subscriber_, open5gs_twamp_, open5gs_gsm2g_,
+  // open5gs_ims_kamailio_/open5gs_ims_rtpengine_, open5gs_ocs_,
+  // open5gs_asterisk_, open5gs_cdr_, open5gs_radio_info) — keep it that way
+  // when adding a new gauge anywhere. open5gs_radio_info's own label names
+  // deliberately avoid `generation`/`instance`/`nf`/`job` — those collide
+  // with labels Prometheus itself attaches at scrape time to every metric
+  // on this job (see radio-info-metrics.ts's own header comment).
   app.get('/metrics', async (_req, res) => {
     try {
-      const merged = promClient.Registry.merge([trafficMetricsRegistry, twampMetricsRegistry]);
+      const merged = promClient.Registry.merge([trafficMetricsRegistry, twampMetricsRegistry, gsmMetricsRegistry, imsKamailioMetricsRegistry, imsRtpengineMetricsRegistry, ocsMetricsRegistry, ocsReservationGuardMetricsRegistry, asteriskMetricsRegistry, cdrMetricsRegistry, gsm2gTrafficMetricsRegistry, radioInfoMetricsRegistry, imsSmsMetricsRegistry, sgsSmsMetricsRegistry]);
       res.set('Content-Type', merged.contentType);
       res.send(await merged.metrics());
     } catch (err) {
@@ -511,7 +644,7 @@ async function main() {
   app.use('/api/services', createServiceRouter(serviceMonitorUseCase, logger));
   app.use('/api/subscribers', createSubscriberRouter(subscriberManagementUseCase, autoAssignIPsUseCase, logger));
   app.use('/api/audit', createAuditRouter(auditLogger, logger));
-  app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger));
+  app.use('/api/backup', createBackupRouter(backupRestoreUseCase, restoreDefaultsUseCase, logger, fullRestoreOrchestratorUseCase, backupRestartUseCase));
   app.use('/api/dns-migration', createDnsMigrationRouter(dnsMigrationUseCase));
   app.use('/api/plmn-migration', createPlmnMigrationRouter(plmnMigrationUseCase));
   app.use('/api/pcap', createPcapRouter(pcapUseCase, auditLogger, logger));
@@ -547,6 +680,8 @@ async function main() {
   app.use('/api/speedtest', createSpeedtestRouter(logger, auditLogger));
   app.use('/api/ip-plan',  createIpPlanRouter(logger, auditLogger, configRepo, ipPlanApplyUseCase));
   app.use('/api/frr/source-build', createFrrSourceBuildRouter(logger, auditLogger));
+  app.use('/api/kamailio/source-build', createKamailioSourceBuildRouter(logger, auditLogger));
+  app.use('/api/rtpengine/source-build', createRtpengineSourceBuildRouter(logger, auditLogger));
   app.use('/api/frr',      createFrrRouter(logger, auditLogger));
   app.use('/api/sms',        createSmsRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/gsm',        createGsmRouter(subscriberRepo, logger, auditLogger));
@@ -573,7 +708,7 @@ async function main() {
   app.use('/api/validation', createValidationRouter(subscriberRepo, logger));
   app.use('/api/subscriber-groups', createSubscriberGroupsRouter(subscriberRepo.getDb(), logger));
   app.use('/api/traffic-history', createTrafficHistoryRouter(config.prometheusUrl, subscriberRepo, logger));
-  app.use('/api/twamp', createTwampRouter(subscriberRepo.getDb(), hostExecutor, twampMonitor, logger, auditLogger));
+  app.use('/api/twamp', createTwampRouter(subscriberRepo.getDb(), hostExecutor, twampMonitor, logger, auditLogger, removeTwampTargetMetrics));
   app.use('/api/modules', createModulesRouter(moduleFixAllUseCase, logger));
   app.use('/api/radio-signal', createRadioSignalRouter(authRepo.getDb(), subscriberRepo, activeSessionsUseCase, logger));
   app.use('/api/snmp', createSnmpRouter(activeSessionsUseCase, hostExecutor, configRepo, auditLogger, logger));
@@ -711,9 +846,13 @@ async function main() {
     gnbBlockService.stop();
     hnbBlockService.stop();
     ueBlockService.stop();
+    framedRoutingReconcileService.stop();
     mmsMsisdnMapRefresher.stop();
     cdrSyncMonitor.stop();
     ocsReservationGuard.stop();
+    ocsStatsMonitor.stop();
+    asteriskStatsMonitor.stop();
+    cdrMetricsMonitor.stop();
     await imsTestNumberManager.stopAll();
     await subscriberRepo.disconnect();
     await rfPlanningProjectRepo.disconnect();

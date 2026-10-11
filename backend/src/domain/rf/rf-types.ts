@@ -251,6 +251,26 @@ export interface CoverageGridCell {
   insideTargetPolygon?: boolean;
   losClassification: LosClassification | undefined;
   fresnelClearancePercent: number | null | undefined;
+  // Real, 2026-09-24 finding: computeSiteSignalAtPoint() always computed
+  // this (see SiteSignalAtPoint's own field), but it was discarded before
+  // reaching this cell type — only surviving as an AGGREGATE count
+  // (terrainAppliedCount/terrainUnavailableCount) for the request-level
+  // warning text. When useTerrainData is true but a specific cell's terrain
+  // profile can't be resolved (cold tile cache, right after a restore —
+  // every project's geography goes cold simultaneously — or a genuinely
+  // unreachable tile source), diffractionLossDb silently stays 0 (flat-
+  // earth) and the resulting totalReceivedPowerDbm is numerically and
+  // visually indistinguishable from a cell that genuinely confirmed clear
+  // line-of-sight — a silent degraded-correctness failure, not a loud one.
+  // Per-cell now, so the frontend can actually show WHICH cells this
+  // happened to, not just a request-wide count buried in a warnings list.
+  // undefined when useTerrainData wasn't requested at all (not applicable);
+  // true = real terrain profile resolved; false = fell back to flat-earth.
+  // Declared as `T | undefined` (not `?:`) to match SiteSignalAtPoint's own
+  // declaration exactly — BestCell (coverage-grid.ts) extends both interfaces,
+  // and TS requires identical optionality, not just a compatible type, for
+  // a property shared across an interface-extends merge.
+  terrainDataResolved: boolean | undefined;
 }
 
 export interface CoverageRequirement {
@@ -345,6 +365,11 @@ export interface InterferenceCell {
   sinrDb: number | null;
   losClassification?: LosClassification;
   fresnelClearancePercent?: number | null;
+  // Same silent-degraded-correctness gap as CoverageGridCell.terrainDataResolved
+  // (see that field's comment) — the serving site's own terrain resolution,
+  // since sinrDb is derived from serving.dbm. undefined when useTerrainData
+  // wasn't requested, or when no site had signal at this cell at all.
+  terrainDataResolved?: boolean;
 }
 
 export interface InterferenceGridResult {

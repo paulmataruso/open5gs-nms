@@ -1,6 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { exec, execFile } from 'child_process';
-import { promisify } from 'util';
+import { exec } from 'child_process';
 import * as fs from 'fs';
 import pino from 'pino';
 import { Db } from 'mongodb';
@@ -8,6 +7,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
+import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 
 // ── SigScale OCS (Online Charging System, 4G/EPC Gy real-time charging) ────
 //
@@ -58,13 +58,15 @@ import { getAppVersion } from '../../infrastructure/system/app-version';
 //      real PLMN and the existing `pcrf.epc...`/`aaa.epc...` peer-naming
 //      convention already used on this exact freeDiameter instance.
 
-const execFileAsync = promisify(execFile);
-const nsenter = async (cmd: string, args: string[] = [], timeoutMs = 20000): Promise<{ stdout: string; stderr: string }> =>
-  execFileAsync('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', cmd, ...args], {
-    timeout: timeoutMs,
-    encoding: 'utf-8',
-    env: { ...process.env, DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket' },
-  });
+// Real, reproduced-live bug (2026-09-25, found reviewing the SigScale OCS
+// dashboard's polling design, confirmed broader while building the
+// Asterisk dashboard right after): `nsenter -p` forks internally before
+// exec'ing the wrapped command, unconditionally — a bare `execFile`/spawn
+// `timeout` only kills the top-level nsenter PID, orphaning the real
+// wrapped process. Extracted into a shared, reusable hardened wrapper —
+// see `safe-nsenter.ts`'s own header comment for the full mechanism and
+// why this fix belongs there now, not duplicated per-caller.
+const nsenter = safeNsenter;
 
 export const HOST_ROOT = '/proc/1/root';
 const HOST_OTP_HOME   = `${HOST_ROOT}/home/otp`;
@@ -100,6 +102,30 @@ export async function runOcsEval(evalScript: string, timeoutMs = 15000): Promise
     try { fs.unlinkSync(scriptHostPath); } catch { /* best-effort cleanup */ }
   }
 }
+
+// Real, confirmed-live bug (2026-09-23): every RPC into the running OCS
+// node hardcoded 'ocs@open5gs-core' — correct on production (whose real
+// hostname genuinely is open5gs-core), but OCS's own systemd unit starts
+// Erlang with just `-sname ocs`, so distributed Erlang always appends the
+// HOST's own actual hostname, not this project's own naming convention.
+// On any other host (confirmed live on a fresh VM, real hostname
+// open5gs0-test) every one of these calls failed with {badrpc,nodedown} —
+// not a startup-timing race, the target node name was simply wrong and no
+// amount of retrying would ever fix it. Cached for the process lifetime
+// (a host's own hostname never changes while this process runs) — matches
+// frr-controller.ts's own detectHostname() fallback-on-failure shape.
+let cachedOcsNodeName: string | undefined;
+export async function getOcsNodeName(): Promise<string> {
+  if (cachedOcsNodeName) return cachedOcsNodeName;
+  try {
+    const { stdout } = await nsenter('hostname');
+    cachedOcsNodeName = `ocs@${stdout.trim() || 'open5gs-core'}`;
+  } catch {
+    cachedOcsNodeName = 'ocs@open5gs-core';
+  }
+  return cachedOcsNodeName;
+}
+
 const HOST_SMF_CONF   = `${HOST_ROOT}/etc/freeDiameter/smf.conf`;
 // Own, module-scoped backup filename — VoWiFi's own upsertSmfAaaPeer() also
 // backs up smf.conf (for its own S6b peer), under its own
@@ -338,33 +364,54 @@ function ocsSysConfig(bindIp: string, httpPort: number, originHost: string, orig
 // string (bash cannot escape a single quote inside a single-quoted string),
 // and double-quote-based alternatives silently mis-tokenize the atom.
 async function addSmfAsOcsClient(smfIp: string): Promise<{ ok: boolean; error?: string }> {
-  const nodeName = 'ocs@open5gs-core';
+  const nodeName = await getOcsNodeName();
   const evalScript = [
     `Result = rpc:call('${nodeName}', ocs, add_client, [{${smfIp.split('.').join(',')}}, undefined, diameter, undefined, false, true]),`,
     `io:fwrite("~p~n", [Result]),`,
     `init:stop().`,
   ].join('\n');
-  const scriptHostPath = `${HOST_ROOT}/tmp/.ocs-add-client-${Date.now()}.erl`;
-  try {
-    fs.writeFileSync(scriptHostPath, evalScript, 'utf-8');
-    await nsenter('chown', ['otp:otp', scriptHostPath.replace(HOST_ROOT, '')]).catch(() => {});
-    const nodeSuffix = Date.now() % 100000;
-    const { stdout } = await nsenter('runuser', [
-      '-u', 'otp', '--',
-      'bash', '-c',
-      `export HOME=/home/otp; cd /home/otp; ` +
-      `erl -noshell -sname ocsctl${nodeSuffix} -setcookie $(cat .erlang.cookie) ` +
-      `-eval "$(cat ${scriptHostPath.replace(HOST_ROOT, '')})"`,
-    ], 15000);
-    if (!stdout.includes('{ok,{client,')) {
-      return { ok: false, error: `Unexpected add_client result: ${stdout.trim()}` };
+  // Retry on 'nodedown' specifically — confirmed live 2026-09-23:
+  // configureOcs()'s own restart->3s-sleep->isCodecOrServiceActive() check
+  // above only proves systemd sees the run_erl daemon process as started,
+  // NOT that the Erlang node has finished OTP boot / registered its short
+  // name with epmd / finished loading Mnesia — a real, reproduced race
+  // where this RPC fires before any of that is ready, returning
+  // {badrpc,nodedown} even though the node comes up fine moments later.
+  // Any OTHER error (bad args, a real Mnesia failure, etc.) is not a
+  // readiness problem and fails immediately, unchanged from before.
+  const maxAttempts = 6;
+  let lastError = 'unknown';
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const scriptHostPath = `${HOST_ROOT}/tmp/.ocs-add-client-${Date.now()}.erl`;
+    try {
+      fs.writeFileSync(scriptHostPath, evalScript, 'utf-8');
+      await nsenter('chown', ['otp:otp', scriptHostPath.replace(HOST_ROOT, '')]).catch(() => {});
+      const nodeSuffix = Date.now() % 100000;
+      const { stdout } = await nsenter('runuser', [
+        '-u', 'otp', '--',
+        'bash', '-c',
+        `export HOME=/home/otp; cd /home/otp; ` +
+        `erl -noshell -sname ocsctl${nodeSuffix} -setcookie $(cat .erlang.cookie) ` +
+        `-eval "$(cat ${scriptHostPath.replace(HOST_ROOT, '')})"`,
+      ], 15000);
+      if (stdout.includes('{ok,{client,')) {
+        return { ok: true };
+      }
+      lastError = `Unexpected add_client result: ${stdout.trim()}`;
+      if (!stdout.includes('nodedown')) {
+        return { ok: false, error: lastError };
+      }
+    } catch (err) {
+      lastError = String(err);
+      if (!lastError.includes('nodedown')) {
+        return { ok: false, error: lastError };
+      }
+    } finally {
+      try { fs.unlinkSync(scriptHostPath); } catch { /* best-effort cleanup */ }
     }
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  } finally {
-    try { fs.unlinkSync(scriptHostPath); } catch { /* best-effort cleanup */ }
+    if (attempt < maxAttempts) await new Promise(r => setTimeout(r, 3000));
   }
+  return { ok: false, error: `${lastError} (gave up after ${maxAttempts} attempts waiting for the OCS Erlang node to come up)` };
 }
 
 // Generic version of the same add_client call above, reusable by any OTHER
@@ -376,7 +423,7 @@ async function addSmfAsOcsClient(smfIp: string): Promise<{ ok: boolean; error?: 
 // runOcsEval() dance instead of duplicating addSmfAsOcsClient's own inline
 // version a second time.
 export async function addOcsDiameterClient(ip: string): Promise<{ ok: boolean; error?: string }> {
-  const nodeName = 'ocs@open5gs-core';
+  const nodeName = await getOcsNodeName();
   const evalScript = [
     `Result = rpc:call('${nodeName}', ocs, add_client, [{${ip.split('.').join(',')}}, undefined, diameter, undefined, false, true]),`,
     `io:fwrite("~p~n", [Result]),`,
@@ -425,7 +472,7 @@ export function escapeErlString(s: string): string {
 }
 
 async function setOcsUser(username: string, password: string, locale = 'en'): Promise<{ ok: boolean; created: boolean; error?: string }> {
-  const nodeName = 'ocs@open5gs-core';
+  const nodeName = await getOcsNodeName();
   const u = escapeErlString(username);
   const p = escapeErlString(password);
   const l = escapeErlString(locale);
@@ -529,7 +576,7 @@ export function erlBinLit(s: string): string {
   return `<<"${escapeErlString(s)}"/utf8>>`;
 }
 
-async function syncOcsSubscribers(
+export async function syncOcsSubscribers(
   offerId: string,
   subs: Array<{ imsi: string; msisdn?: string }>,
 ): Promise<{ ok: boolean; synced: number; failed: number; removed: number; error?: string }> {
@@ -558,28 +605,67 @@ async function syncOcsSubscribers(
   //     walked straight into. `Ocs(F, A)` below is the wrapper — every
   //     single call site uses it, no exceptions.
   const evalScript = [
-    `Node = 'ocs@open5gs-core',`,
+    `Node = '${await getOcsNodeName()}',`,
     `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
     `Subs = [${subsLit}],`,
     `OfferId = "${offer}",`,
-    `EnsureLinked = fun(undefined) -> ok;`,
-    `   (Id) ->`,
-    `     case Ocs(find_service, [Id]) of`,
-    `       {ok, Svc} ->`,
-    `         case element(8, Svc) of`,
-    `           undefined -> case Ocs(add_product, [OfferId, [Id]]) of {ok, _} -> ok; {error, _} -> error end;`,
-    `           _ -> ok`,
-    `         end;`,
-    `       {error, not_found} ->`,
-    `         case Ocs(add_service, [Id, undefined]) of`,
-    `           {ok, _} -> case Ocs(add_product, [OfferId, [Id]]) of {ok, _} -> ok; {error, _} -> error end;`,
-    `           {error, _} -> error`,
-    `         end`,
-    `     end`,
+    // Real, 2026-09-24 finding: this used to call EnsureLinked separately
+    // per identity (fun(Id) -> ...), so a subscriber whose IMSI AND MSISDN
+    // both had no product yet got TWO independent Ocs(add_product,...)
+    // calls — the exact same "split identity" bug already found and fixed
+    // once in charging-plans-controller.ts's EnsurePlan (2026-09-17, see its
+    // own header comment), just never ported to this sibling function.
+    // Confirmed live on production: a real subscriber ended up with IMSI on
+    // a real Charging Plan's product and MSISDN separately auto-linked to
+    // the (at the time, stale) defaultOfferId — Gy (IMSI-keyed) and Ro
+    // (MSISDN-keyed) usage silently drew from disconnected pools. Fixed
+    // below to gather BOTH identities first and issue at most ONE
+    // Ocs(add_product,...) covering whichever of them have no product yet —
+    // deliberately NOT reusing EnsurePlan's "always move to target offer"
+    // semantics: unlike Charging Plans' explicit reassignment, this sync's
+    // job is only to provision identities that have NO product at all yet.
+    // An identity already linked to ANY product (a real Charging Plan, or a
+    // subscriber manually managed via OCS's own web GUI) is left alone,
+    // matching this function's own pre-existing "already linked, leave it"
+    // behavior for the single-identity case — never reassigned here.
+    `EnsureLinkedPair = fun(Ids) ->`,
+    `  ExistingIds = [Id || Id <- Ids, Id =/= undefined],`,
+    `  case ExistingIds of`,
+    `    [] -> ok;`,
+    `    _ ->`,
+    `      Svcs = [ case Ocs(find_service, [Id]) of`,
+    `        {ok, S} -> S;`,
+    `        {error, not_found} ->`,
+    `          case Ocs(add_service, [Id, undefined]) of`,
+    `            {ok, NewSvc} -> NewSvc;`,
+    `            {error, _} -> error`,
+    `          end`,
+    `      end || Id <- ExistingIds ],`,
+    `      case lists:member(error, Svcs) of`,
+    `        true -> error;`,
+    `        false ->`,
+    `          ProductRefs = lists:usort([ element(8, Svc) || Svc <- Svcs ]),`,
+    `          case ProductRefs of`,
+    `            [undefined] ->`,
+    `              case Ocs(add_product, [OfferId, ExistingIds]) of`,
+    `                {ok, _} -> ok;`,
+    `                {error, _} -> error`,
+    `              end;`,
+    `            _ -> ok`,
+    `          end`,
+    `      end`,
+    `  end`,
     `end,`,
-    `SyncOne = fun({Imsi, Msisdn}) -> {EnsureLinked(Imsi), EnsureLinked(Msisdn)} end,`,
+    `SyncOne = fun({Imsi, Msisdn}) -> EnsureLinkedPair([Imsi, Msisdn]) end,`,
     `Results = [ SyncOne(S) || S <- Subs ],`,
-    `SyncedOk = length([ ok || {R1, _} <- Results, R1 =:= ok ]),`,
+    // Real, 2026-09-24 finding (independent of the split-identity bug
+    // above): the old {R1,_} pattern only ever inspected the IMSI half of
+    // each pair's result, silently ignoring whether the MSISDN half
+    // actually succeeded. SyncOne now returns one atom per subscriber
+    // (matching EnsureLinkedPair's own single ok/error result for both
+    // identities together), so this counts the real, whole-subscriber
+    // outcome.
+    `SyncedOk = length([ ok || R <- Results, R =:= ok ]),`,
     `SyncedFail = length(Subs) - SyncedOk,`,
     `AllServices = Ocs(get_services, []),`,
     `KeepIds = sets:from_list(lists:flatten([ case M of undefined -> [I]; _ -> [I, M] end || {I, M} <- Subs ])),`,
@@ -788,6 +874,52 @@ export async function configureOcs(
   }
 }
 
+// Every Open5GS subscriber is eligible (unlike SMS's own sync-subscribers,
+// which only syncs MSISDN-having or gsmEnabled subscribers) — Gy
+// CCR-Initial fires for ANY 4G attach regardless of MSISDN presence.
+// Moved out of createOcsRouter()'s own closure (where it started as a
+// route-local helper shared by /configure's auto-sync and the manual
+// /sync-subscribers button) to module level so it's callable without a
+// live HTTP request — see syncOcsSubscribersIfConfigured()'s own comment.
+export async function collectSyncSubs(subscriberRepo: ISubscriberRepository): Promise<Array<{ imsi: string; msisdn?: string }>> {
+  const allSubs = await subscriberRepo.findAllFull();
+  return allSubs
+    .filter(s => /^\d+$/.test(s.imsi))
+    .map(s => ({ imsi: s.imsi, msisdn: s.msisdn?.[0] && /^\d+$/.test(s.msisdn[0]) ? s.msisdn[0] : undefined }));
+}
+
+// Real, 2026-09-24 finding: unlike IMS/SMS/MMS's own sync-subscribers (each
+// ONLY ever reachable via a manual button, never called from any automated
+// path at all), OCS's subscriber sync already had *some* automation — but
+// it lived entirely in the POST /configure ROUTE HANDLER, written after
+// its own call to the bare configureOcs() function returns, not inside
+// configureOcs() itself. backup-restart-usecase.ts's OCS reapply calls the
+// bare function directly (same as every other module) — meaning a restore
+// hit this exact same gap regardless, just via a different mechanism than
+// the other three (a route-only side effect vs. no automation of any
+// kind). This wraps the route handler's own post-configure logic
+// (collectSyncSubs → syncOcsSubscribers → persist lastSyncedAt/Counts) so
+// BOTH the route and backup-restart-usecase.ts can share it — a no-op,
+// clearly-flagged skip (not a silent no-sync) when defaultOfferId isn't
+// set yet, matching the route's own existing subscriberSyncWarning wording.
+export async function syncOcsSubscribersIfConfigured(
+  subscriberRepo: ISubscriberRepository,
+  defaultOfferId: string | undefined,
+): Promise<{ subscriberSync?: { synced: number; failed: number; removed: number }; subscriberSyncWarning?: string }> {
+  if (!defaultOfferId) {
+    return { subscriberSyncWarning: 'No default Product Offering ID set — Gy is live but NO subscribers are provisioned in OCS yet. Every attach will be rejected as USER_UNKNOWN until you set an Offer ID and Sync Subscribers.' };
+  }
+  const subs = await collectSyncSubs(subscriberRepo);
+  const syncResult = await syncOcsSubscribers(defaultOfferId, subs);
+  if (!syncResult.ok) {
+    return { subscriberSyncWarning: `Gy peer is live but subscriber sync failed: ${syncResult.error}. Every attach will be rejected as USER_UNKNOWN until you retry Sync Subscribers.` };
+  }
+  const subscriberSync = { synced: syncResult.synced, failed: syncResult.failed, removed: syncResult.removed };
+  const s = readState();
+  if (s) writeState({ ...s, lastSyncedAt: new Date().toISOString(), lastSyncCounts: subscriberSync });
+  return { subscriberSync };
+}
+
 // Mirrors vowifi-controller.ts's own readFreeDiameterIdentity()/
 // readFreeDiameterListenOn() shape — regex-extract straight out of the raw
 // conf text, never a freeDiameter-aware parser (matches this project's
@@ -868,18 +1000,6 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     res.end();
   });
 
-  // Shared by /configure's auto-sync and the manual /sync-subscribers
-  // button — every Open5GS subscriber is eligible (unlike SMS's own
-  // sync-subscribers, which only syncs MSISDN-having or gsmEnabled
-  // subscribers, Gy CCR-Initial fires for ANY 4G attach regardless of
-  // MSISDN presence).
-  const collectSyncSubs = async (): Promise<Array<{ imsi: string; msisdn?: string }>> => {
-    const allSubs = await subscriberRepo.findAllFull();
-    return allSubs
-      .filter(s => /^\d+$/.test(s.imsi))
-      .map(s => ({ imsi: s.imsi, msisdn: s.msisdn?.[0] && /^\d+$/.test(s.msisdn[0]) ? s.msisdn[0] : undefined }));
-  };
-
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     const { bindIp, httpPort, originHost, originRealm, defaultOfferId } = req.body as { bindIp?: string; httpPort?: number; originHost?: string; originRealm?: string; defaultOfferId?: string };
@@ -907,26 +1027,10 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     // Auto-seed on every Configure when an Offer is already known — this is
     // the direct fix for the 2026-09-16 incident (Gy went live with zero
     // subscribers provisioned in OCS, hard-rejecting every attach on every
-    // radio). Without a defaultOfferId yet (e.g. first-ever Configure,
-    // before the operator has created a Product Offering in OCS's own GUI),
-    // Gy still gets wired — same as every prior Configure — but the
-    // frontend MUST surface subscriberSyncWarning prominently, not just a
-    // quiet gyPeerOpen:true that looks fine while every session fails.
-    let subscriberSync: { synced: number; failed: number; removed: number } | undefined;
-    let subscriberSyncWarning: string | undefined;
-    if (result.defaultOfferId) {
-      const subs = await collectSyncSubs();
-      const syncResult = await syncOcsSubscribers(result.defaultOfferId, subs);
-      if (syncResult.ok) {
-        subscriberSync = { synced: syncResult.synced, failed: syncResult.failed, removed: syncResult.removed };
-        const s = readState();
-        if (s) writeState({ ...s, lastSyncedAt: new Date().toISOString(), lastSyncCounts: subscriberSync });
-      } else {
-        subscriberSyncWarning = `Gy peer is live but subscriber sync failed: ${syncResult.error}. Every attach will be rejected as USER_UNKNOWN until you retry Sync Subscribers.`;
-      }
-    } else {
-      subscriberSyncWarning = 'No default Product Offering ID set — Gy is live but NO subscribers are provisioned in OCS yet. Every attach will be rejected as USER_UNKNOWN until you set an Offer ID and Sync Subscribers.';
-    }
+    // radio). See syncOcsSubscribersIfConfigured()'s own comment — this is
+    // now shared with backup-restart-usecase.ts's own OCS reapply, not just
+    // this route.
+    const { subscriberSync, subscriberSyncWarning } = await syncOcsSubscribersIfConfigured(subscriberRepo, result.defaultOfferId);
 
     await auditLogger.log({
       action: 'ocs_configure', user,
@@ -946,7 +1050,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     if (!state?.defaultOfferId) {
       return res.status(400).json({ success: false, error: 'Set a default Product Offering ID first (Setup tab) — create the Offer in OCS\'s own web GUI, then paste its ID here.' });
     }
-    const subs = await collectSyncSubs();
+    const subs = await collectSyncSubs(subscriberRepo);
     const result = await syncOcsSubscribers(state.defaultOfferId, subs);
     if (!result.ok) {
       await auditLogger.log({ action: 'ocs_sync_subscribers', user, details: result.error ?? 'failed', success: false });
@@ -1034,14 +1138,27 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
       const state = readState();
       if (state && fs.existsSync(HOST_SMF_CONF)) {
         write('=== Removing Gy peer from smf.conf ===');
+        // Always strip only THIS module's own Gy ConnectPeer line; never
+        // restore the whole file from the pre-install backup.
+        //
+        // Real defect found in the 2026-10-10 readiness audit. smf.conf has
+        // three independently-owned ConnectPeer lines (Gx `pcrf.*` owned by the
+        // core, S6b `aaa.*` by VoWiFi, Gy `ocs.*` by this module -- CLAUDE.md
+        // pattern #17), and each module snapshots the file into its OWN .bak on
+        // its first Configure. So whether this restore clobbered a sibling
+        // depended entirely on configure ORDERING: a backup taken before VoWiFi
+        // was configured contains no `aaa.*` line, so restoring it here would
+        // silently delete VoWiFi's S6b peer. The backups also predate the PLMN
+        // migration, so a restore would revert Identity/Realm too.
+        //
+        // The targeted, prefix-scoped strip was already here in the else branch
+        // and is correct in every case, so it is now the only path. The .bak is
+        // kept purely as a "this module has written here" marker and removed.
+        const raw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
+        fs.writeFileSync(HOST_SMF_CONF, removeSmfGyPeer(raw, state.originHost), 'utf-8');
+        write('Stripped this module\'s own Gy ConnectPeer line (targeted strip — sibling modules\' peers left intact).');
         if (fs.existsSync(HOST_SMF_CONF_BAK)) {
-          fs.copyFileSync(HOST_SMF_CONF_BAK, HOST_SMF_CONF);
-          fs.unlinkSync(HOST_SMF_CONF_BAK);
-          write('Restored smf.conf from this module\'s own pre-install backup.');
-        } else {
-          const raw = fs.readFileSync(HOST_SMF_CONF, 'utf-8');
-          fs.writeFileSync(HOST_SMF_CONF, removeSmfGyPeer(raw, state.originHost), 'utf-8');
-          write('Stripped this module\'s own Gy ConnectPeer line (no backup existed).');
+          try { fs.unlinkSync(HOST_SMF_CONF_BAK); } catch { /* marker only */ }
         }
         await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
         await new Promise(r => setTimeout(r, 2000));

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import pino from 'pino';
 import * as fs from 'fs';
 import { SasService } from '../../domain/sas/sas-service';
+import { getSasPkiStatus, regenerateSasLeaf, regenerateSasRoot } from '../../application/use-cases/sas-pki';
 import { requireAdmin } from './middleware/auth-middleware';
 import {
   RegistrationRequest, SpectrumInquiryRequest,
@@ -483,6 +484,77 @@ export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genie
     }
   });
 
+  // ── GET /api/sas/admin/pki/download/:format ───────────────────────────────
+  // Real bug found live 2026-09-27: the Certificates tab originally linked
+  // straight at the public /sas-cert/ path nginx serves for RADIOS to self-
+  // fetch (no login needed) -- that path only exists on the port-8443 TLS
+  // vhost, but the link was relative, so from the NMS's own (different
+  // port) origin it silently resolved to the SPA's own catch-all routing
+  // instead of downloading anything. Same fix shape as /admin/cert/download
+  // above (same-origin, authenticated, real Content-Disposition so a plain
+  // <a href> triggers a real download) -- just parameterized over crt/pem
+  // and pointed at sas.crt specifically (the root CA a radio should trust,
+  // not the leaf nginx itself presents).
+  router.get('/admin/pki/download/:format', requireAdmin, async (req: Request, res: Response) => {
+    const format = req.params.format;
+    if (format !== 'crt' && format !== 'pem') return res.status(400).json({ error: 'format must be crt or pem' });
+    const certPath = `/etc/nginx/certs/sas.${format}`;
+    try {
+      if (!fs.existsSync(certPath)) return res.status(404).json({ error: 'Root CA certificate not found.' });
+      res.setHeader('Content-Type', 'application/x-pem-file');
+      res.setHeader('Content-Disposition', `attachment; filename="sas.${format}"`);
+      res.sendFile(certPath);
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── GET /api/sas/admin/pki ────────────────────────────────────────────────
+  // Root CA + leaf server cert detail (subject/issuer/validity/SAN) for the
+  // SAS page's own Certificates tab -- /admin/cert above stays as-is (just
+  // existence/size/mtime, used by older callers) rather than being
+  // repurposed, since its shape is already a public contract.
+  router.get('/admin/pki', async (_req: Request, res: Response) => {
+    try {
+      res.json({ success: true, ...(await getSasPkiStatus()) });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // ── POST /api/sas/admin/pki/leaf ──────────────────────────────────────────
+  // Regenerates only the server cert (signed by the existing root) -- safe,
+  // doesn't affect any radio's already-installed trust anchor. Unspecified
+  // fields default to the current leaf's own values, so a bare POST just
+  // refreshes validity unchanged.
+  router.post('/admin/pki/leaf', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { cn, san, days } = req.body ?? {};
+      const status = await regenerateSasLeaf({ cn, san, days });
+      res.json({ success: true, ...status });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // ── POST /api/sas/admin/pki/root ──────────────────────────────────────────
+  // Regenerates the root CA (and cascades into the leaf, since a leaf
+  // signed by a deleted root is a broken chain) -- real blast radius: any
+  // radio that already installed the CURRENT root as its trust anchor
+  // needs to re-install the new one afterward. Requires confirm:true in
+  // the body; regenerateSasRoot() itself throws without it, this is just
+  // the HTTP-layer mirror of that same guard.
+  router.post('/admin/pki/root', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const { cn, days, confirm, leafCn, leafSan } = req.body ?? {};
+      if (!confirm) return res.status(400).json({ success: false, error: 'confirm:true is required to regenerate the root CA' });
+      const status = await regenerateSasRoot({ cn, days, confirm, leafCn, leafSan });
+      res.json({ success: true, ...status });
+    } catch (err) {
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
   // ── Manual group assignments ──────────────────────────────────────────────
   router.get('/admin/manual-groups', async (_req, res) => {
     try { res.json({ success: true, groups: await sas.listManualGroups() }); }
@@ -508,9 +580,9 @@ export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genie
   });
   router.put('/admin/policies/groups/:groupId', requireAdmin, async (req, res) => {
     try {
-      const { bandId, notes, customSlots } = req.body;
+      const { bandId, notes, customSlots, combineChannels } = req.body;
       if (!bandId) return res.status(400).json({ success: false, error: 'bandId required' });
-      const p = await sas.setGroupPolicy(req.params.groupId, bandId, notes, customSlots);
+      const p = await sas.setGroupPolicy(req.params.groupId, bandId, notes, customSlots, combineChannels);
       res.json({ success: true, policy: p });
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });

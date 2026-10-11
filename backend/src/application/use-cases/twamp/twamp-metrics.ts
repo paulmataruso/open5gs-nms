@@ -15,10 +15,25 @@ import { IHostExecutor } from '../../../domain/interfaces/host-executor';
 import { TwampCachedResult, TwampMonitor } from './twamp-monitor';
 import { isTwampServerInstalled, readTwampState, getFullConnections, getLightPeers } from './twamp-runner';
 
-export function createTwampMetricsRegistry(twampMonitor: TwampMonitor, hostExecutor: IHostExecutor): client.Registry {
-  const registry = new client.Registry();
+export interface TwampMetrics {
+  registry: client.Registry;
+  // Clears every per-target series across all target-labeled gauges below —
+  // called from the DELETE /targets/:id handler. A deleted target never
+  // appears in TwampMonitor.getLatestResults() again (see
+  // TwampMonitor.forgetTarget()'s own comment), so collect()'s own
+  // success/failure-driven .remove() calls below would never visit it
+  // either — without this explicit call, a deleted target's last-known
+  // values (e.g. a healthy RTT reading from right before deletion) would
+  // stay frozen in Grafana forever, same root cause as the collect()-time
+  // staleness bug these gauges also had (see delayGauge's comment).
+  removeTargetSeries: (target: string) => void;
+}
 
-  new client.Gauge({
+export function createTwampMetricsRegistry(twampMonitor: TwampMonitor, hostExecutor: IHostExecutor): TwampMetrics {
+  const registry = new client.Registry();
+  const targetGauges: client.Gauge<string>[] = [];
+
+  const successGauge = new client.Gauge({
     name: 'open5gs_twamp_test_success',
     help: '1 if the most recent TWAMP test against this target succeeded, 0 otherwise',
     labelNames: ['target'],
@@ -28,8 +43,9 @@ export function createTwampMetricsRegistry(twampMonitor: TwampMonitor, hostExecu
       for (const r of results) this.set({ target: r.name }, r.success ? 1 : 0);
     },
   });
+  targetGauges.push(successGauge);
 
-  new client.Gauge({
+  const lossGauge = new client.Gauge({
     name: 'open5gs_twamp_packet_loss_ratio',
     help: 'Fraction of TWAMP test packets lost on the most recent successful test against this target (0-1)',
     labelNames: ['target'],
@@ -37,28 +53,39 @@ export function createTwampMetricsRegistry(twampMonitor: TwampMonitor, hostExecu
     async collect() {
       const results = await twampMonitor.getLatestResults();
       for (const r of results) {
-        if (!r.success || !r.packetsSent) continue;
+        // Real bug, found 2026-09-25 building this dashboard: prom-client
+        // Gauges only ever mutate additively via .set() — a label
+        // combination skipped on a scrape (the previous code's plain
+        // `continue`) keeps its LAST value forever, not a gap. A target
+        // whose latest test failed (or reported no packets sent at all)
+        // has no meaningful loss ratio, so remove any previously-set value
+        // instead of leaving a stale flatline once it starts failing.
+        if (!r.success || !r.packetsSent) { this.remove({ target: r.name }); continue; }
         this.set({ target: r.name }, (r.packetsLost ?? 0) / r.packetsSent);
       }
     },
   });
+  targetGauges.push(lossGauge);
 
   // The remaining series only mean anything for a test that actually
   // succeeded — a stale/missing series in Grafana for a target whose last
   // test failed is the correct representation, not a 0 value that would
-  // look like a real (excellent) measurement.
+  // look like a real (excellent) measurement — and not a frozen old value
+  // either, same staleness bug/fix as lossGauge above.
   const delayGauge = (name: string, help: string, pick: (r: TwampCachedResult) => number | undefined) => {
-    new client.Gauge({
+    const gauge = new client.Gauge({
       name, help, labelNames: ['target'], registers: [registry],
       async collect() {
         const results = await twampMonitor.getLatestResults();
         for (const r of results) {
-          if (!r.success) continue;
+          if (!r.success) { this.remove({ target: r.name }); continue; }
           const v = pick(r);
           if (v !== undefined) this.set({ target: r.name }, v);
+          else this.remove({ target: r.name });
         }
       },
     });
+    targetGauges.push(gauge);
   };
 
   delayGauge('open5gs_twamp_rtt_avg_ms', 'Average TWAMP round-trip time in milliseconds', r => r.avgRttMs);
@@ -89,6 +116,12 @@ export function createTwampMetricsRegistry(twampMonitor: TwampMonitor, hostExecu
     labelNames: ['protocol'],
     registers: [registry],
     async collect() {
+      // Real, confirmed-live 2026-09-30 finding (adversarial critic review): a
+      // 6th file with the same Gauge-staleness bug already fixed elsewhere this
+      // session (ocs/ims-kamailio/ims-rtpengine/asterisk/cdr-metrics.ts) — without
+      // this reset(), going from installed-with-active-peers to uninstalled/
+      // unconfigured left this frozen at its last values forever instead of a gap.
+      this.reset();
       if (!isTwampServerInstalled()) return;
       const state = readTwampState()?.server;
       if (!state?.listenPort) return;
@@ -101,5 +134,9 @@ export function createTwampMetricsRegistry(twampMonitor: TwampMonitor, hostExecu
     },
   });
 
-  return registry;
+  const removeTargetSeries = (target: string) => {
+    for (const gauge of targetGauges) gauge.remove({ target });
+  };
+
+  return { registry, removeTargetSeries };
 }

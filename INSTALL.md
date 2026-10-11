@@ -53,6 +53,12 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ## Prerequisites
 
+> **Automating all of this**: `backup-restore/bootstrap-fresh-host.sh` runs every step in
+> this Prerequisites section plus Open5GS install end-to-end on a fresh Ubuntu 24.04 host —
+> `sudo ./backup-restore/bootstrap-fresh-host.sh`. Idempotent, safe to re-run. See the
+> script's own header comment for environment overrides. Read on if you'd rather do it by
+> hand, or want to understand what the script is actually doing.
+
 ### 1. Install Required System Packages
 
 ```bash
@@ -150,7 +156,7 @@ sudo systemctl enable open5gs-nrfd
 sudo systemctl enable open5gs-amfd
 sudo systemctl enable open5gs-smfd
 sudo systemctl enable open5gs-upfd
-# ... (repeat for all 17 services, or use the service_control.sh script below)
+# ... (repeat for all 17 services, or use the backup-restore/service_control.sh script below)
 
 # Start services
 sudo systemctl start open5gs-nrfd
@@ -162,8 +168,8 @@ sudo systemctl start open5gs-amfd
 >
 > A helper script is included in the project folder:
 > ```bash
-> chmod +x service_control.sh
-> ./service_control.sh start|stop|restart
+> chmod +x backup-restore/service_control.sh
+> ./backup-restore/service_control.sh start|stop|restart
 > ```
 
 #### Building Open5GS from Source
@@ -196,9 +202,9 @@ ls /usr/bin/open5gs-*
 ls /etc/open5gs/*
 
 # Create systemd service files for open5gs and start the services.
-chmod +x ./generate_open5gs_systemd.sh
-./generate_open5gs_systemd.sh
-./service_control.sh start
+chmod +x ./backup-restore/generate_open5gs_systemd.sh
+./backup-restore/generate_open5gs_systemd.sh
+./backup-restore/service_control.sh start
 ```
 
 ### 5. Configure DNS Resolution

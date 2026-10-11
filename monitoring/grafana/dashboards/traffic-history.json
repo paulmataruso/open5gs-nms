@@ -1,0 +1,266 @@
+{
+  "title": "Traffic History Dashboard",
+  "uid": "traffic-history",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "traffic", "gtp", "subscriber", "bandwidth"],
+  "templating": {
+    "list": [
+      {
+        "name": "imsi",
+        "type": "query",
+        "label": "IMSI",
+        "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" },
+        "query": "label_values({__name__=~\"open5gs_subscriber_up_bytes_total|open5gs_gsm2g_subscriber_up_bytes_total\"}, imsi)",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      },
+      {
+        "name": "radio",
+        "type": "query",
+        "label": "Radio",
+        "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" },
+        "query": "label_values(open5gs_radio_info, radio_name)",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      },
+      {
+        "name": "ran_type",
+        "type": "custom",
+        "label": "RAN Type",
+        "query": "2g,4g,5g",
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "📊 Network Traffic Overview", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "Total Uplink Throughput",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "Bps" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(rate(open5gs_gtp_rx_bytes_total[5m])) or on() vector(0)", "legendFormat": "Uplink", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Total Downlink Throughput",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "Bps" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(rate(open5gs_gtp_tx_bytes_total[5m])) or on() vector(0)", "legendFormat": "Downlink", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "DNNs Reporting Traffic",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "count(count by (dnn) (open5gs_gtp_rx_bytes_total)) or on() vector(0)", "legendFormat": "DNNs", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Subscribers With Active IP Accounting",
+      "description": "Subscribers currently holding a live session IP — a different count than \"Registered Subscribers\" on the Open5GS dashboard.",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "count(open5gs_subscriber_up_bytes_total) or on() vector(0)", "legendFormat": "Subscribers", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Cumulative Uplink, All DNNs",
+      "description": "Resets when the UPF restarts — won't match the per-subscriber totals below (separate counters, separate reset points).",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "bytes" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_gtp_rx_bytes_total) or on() vector(0)", "legendFormat": "Uplink", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Cumulative Downlink, All DNNs",
+      "description": "Same as Cumulative Uplink, downlink direction.",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "bytes" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_gtp_tx_bytes_total) or on() vector(0)", "legendFormat": "Downlink", "refId": "A" }]
+    },
+
+    { "id": 10, "type": "row", "title": "🚦 GTP U-Plane Throughput by DNN", "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 11, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "UPF tun-device byte counts per DNN (post-decapsulation UE payload, not raw N3 wire traffic). Radio/RAN-type filters don't apply here — no per-radio breakdown exists at this level (see Known Limitations)." }
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Uplink / Downlink Throughput by DNN",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gtp_rx_bytes_total[5m])", "legendFormat": "{{dnn}} Uplink", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gtp_tx_bytes_total[5m])", "legendFormat": "{{dnn}} Downlink", "refId": "B" }
+      ]
+    },
+
+    { "id": 20, "type": "row", "title": "👤 Per-Subscriber Traffic — Top Consumers & Rates", "gridPos": { "x": 0, "y": 16, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 21, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 17, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "Per-subscriber byte counts (nftables-based, 4G/5G only) — a separate measurement from the DNN totals above, won't sum to the same total. Use the IMSI/Radio/RAN Type filters above to narrow every panel below." }
+    },
+    {
+      "id": 22, "type": "table", "title": "Top 10 Subscribers — Cumulative Uplink",
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Uplink Bytes", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } }, "overrides": [{ "matcher": { "id": "byName", "options": "Uplink Bytes" }, "properties": [{ "id": "unit", "value": "bytes" }] }] },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "topk(10, open5gs_subscriber_up_bytes_total{imsi=~\"$imsi\"} and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"})", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true }, "renameByName": { "Value": "Uplink Bytes", "imsi": "IMSI" } } }]
+    },
+    {
+      "id": 23, "type": "table", "title": "Top 10 Subscribers — Cumulative Downlink",
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Downlink Bytes", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } }, "overrides": [{ "matcher": { "id": "byName", "options": "Downlink Bytes" }, "properties": [{ "id": "unit", "value": "bytes" }] }] },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "topk(10, open5gs_subscriber_down_bytes_total{imsi=~\"$imsi\"} and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"})", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true }, "renameByName": { "Value": "Downlink Bytes", "imsi": "IMSI" } } }]
+    },
+    {
+      "id": 24, "type": "timeseries", "title": "Per-Subscriber Uplink Rate",
+      "description": "One line per subscriber matching the IMSI/Radio/RAN Type filters above.",
+      "gridPos": { "x": 0, "y": 27, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_subscriber_up_bytes_total{imsi=~\"$imsi\"}[5m]) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "{{imsi}}", "refId": "A" }]
+    },
+    {
+      "id": 25, "type": "timeseries", "title": "Per-Subscriber Downlink Rate",
+      "description": "One line per subscriber matching the IMSI/Radio/RAN Type filters above.",
+      "gridPos": { "x": 12, "y": 27, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_subscriber_down_bytes_total{imsi=~\"$imsi\"}[5m]) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "{{imsi}}", "refId": "A" }]
+    },
+
+    { "id": 30, "type": "row", "title": "📅 Data Volume Over Time — Per-Subscriber Interval Breakdown", "gridPos": { "x": 0, "y": 35, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 31, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 36, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "Bucket width follows the current zoom level — zoom out for period-level (day/week) bars." }
+    },
+    {
+      "id": 32, "type": "timeseries", "title": "Uplink Volume per Interval, by Subscriber",
+      "gridPos": { "x": 0, "y": 38, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 5, "drawStyle": "bars" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "increase(open5gs_subscriber_up_bytes_total{imsi=~\"$imsi\"}[$__interval]) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "{{imsi}}", "refId": "A" }]
+    },
+    {
+      "id": 33, "type": "timeseries", "title": "Downlink Volume per Interval, by Subscriber",
+      "gridPos": { "x": 12, "y": 38, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 5, "drawStyle": "bars" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "increase(open5gs_subscriber_down_bytes_total{imsi=~\"$imsi\"}[$__interval]) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "{{imsi}}", "refId": "A" }]
+    },
+
+    { "id": 40, "type": "row", "title": "🔍 Traffic Accounting Health & Anomalies", "gridPos": { "x": 0, "y": 46, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 41, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 47, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "\"Active IP Accounting\" and \"Registered Subscribers\" (Open5GS dashboard) are different counts by design — this one only includes a subscriber with a live session IP." }
+    },
+    {
+      "id": 42, "type": "stat", "title": "Subscribers With Zero Traffic So Far",
+      "gridPos": { "x": 0, "y": 49, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "count((open5gs_subscriber_up_bytes_total{imsi=~\"$imsi\"} == 0 and open5gs_subscriber_down_bytes_total{imsi=~\"$imsi\"} == 0) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}) or on() vector(0)", "legendFormat": "Zero Traffic", "refId": "A" }]
+    },
+    {
+      "id": 43, "type": "stat", "title": "Highest Up/Down Ratio",
+      "description": "No data shown when no subscribers match the filter, rather than a misleading 0%.",
+      "gridPos": { "x": 6, "y": 49, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "max((open5gs_subscriber_up_bytes_total{imsi=~\"$imsi\"} / clamp_min(open5gs_subscriber_down_bytes_total{imsi=~\"$imsi\"}, 1)) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"})", "legendFormat": "Max Ratio", "refId": "A" }]
+    },
+    {
+      "id": 44, "type": "table", "title": "Up/Down Ratio by Subscriber",
+      "gridPos": { "x": 12, "y": 49, "w": 12, "h": 4 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Up/Down Ratio", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "(open5gs_subscriber_up_bytes_total{imsi=~\"$imsi\"} / clamp_min(open5gs_subscriber_down_bytes_total{imsi=~\"$imsi\"}, 1)) and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true }, "renameByName": { "Value": "Up/Down Ratio", "imsi": "IMSI" } } }]
+    },
+
+    { "id": 60, "type": "row", "title": "📶 2G GPRS/EDGE Traffic", "gridPos": { "x": 0, "y": 53, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 61, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 54, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "2G data traffic — a separate path from 4G/5G (osmo-sgsn/osmo-ggsn, not Open5GS's own UPF). RAN Type filter applies below; Radio filter does too (2G radios appear in the same Radio list)." }
+    },
+    {
+      "id": 62, "type": "timeseries", "title": "2G Uplink / Downlink Throughput",
+      "gridPos": { "x": 0, "y": 56, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gsm2g_gtp_rx_bytes_total[5m])", "legendFormat": "{{apn}} Uplink", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gsm2g_gtp_tx_bytes_total[5m])", "legendFormat": "{{apn}} Downlink", "refId": "B" }
+      ]
+    },
+    {
+      "id": 63, "type": "table", "title": "Top 2G Subscribers — Cumulative Uplink",
+      "gridPos": { "x": 0, "y": 64, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Uplink Bytes", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } }, "overrides": [{ "matcher": { "id": "byName", "options": "Uplink Bytes" }, "properties": [{ "id": "unit", "value": "bytes" }] }] },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "topk(10, open5gs_gsm2g_subscriber_up_bytes_total{imsi=~\"$imsi\"} and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"})", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true, "bts": true }, "renameByName": { "Value": "Uplink Bytes", "imsi": "IMSI" } } }]
+    },
+    {
+      "id": 64, "type": "table", "title": "Top 2G Subscribers — Cumulative Downlink",
+      "gridPos": { "x": 12, "y": 64, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Downlink Bytes", "desc": true }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } }, "overrides": [{ "matcher": { "id": "byName", "options": "Downlink Bytes" }, "properties": [{ "id": "unit", "value": "bytes" }] }] },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "topk(10, open5gs_gsm2g_subscriber_down_bytes_total{imsi=~\"$imsi\"} and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"})", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true, "bts": true }, "renameByName": { "Value": "Downlink Bytes", "imsi": "IMSI" } } }]
+    },
+    {
+      "id": 65, "type": "table", "title": "2G Traffic by Cell/BTS",
+      "description": "bts is the array-index BTS numbering osmo-bsc's own show lchan output uses (matches the 2G Signal dashboard's own bts label) — not the raw SGSN Cell ID.",
+      "gridPos": { "x": 0, "y": 72, "w": 24, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "bts", "desc": false }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_subscriber_up_bytes_total{imsi=~\"$imsi\"} and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "", "refId": "A", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_subscriber_down_bytes_total{imsi=~\"$imsi\"} and on(imsi) open5gs_radio_info{radio_name=~\"$radio\", ran_generation=~\"$ran_type\"}", "legendFormat": "", "refId": "B", "instant": true, "format": "table" }
+      ],
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "imsi", "mode": "outer" } },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Time 1": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true, "bts 1": true }, "renameByName": { "Value #A": "Uplink Bytes", "Value #B": "Downlink Bytes", "imsi": "IMSI" } } }
+      ]
+    },
+
+    { "id": 50, "type": "row", "title": "🩺 Known Limitations", "gridPos": { "x": 0, "y": 80, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 51, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 81, "w": 24, "h": 4 },
+      "options": { "mode": "markdown", "content": "- DNN and per-subscriber traffic use separate counters with separate reset points — totals won't match between them.\n- IMSI only, no subscriber nicknames.\n- Radio and RAN-type filters apply to per-subscriber panels only, not network-wide DNN/APN totals (no per-radio breakdown exists at that level).\n- Up to ~60s delay between real subscriber activity and it appearing here." }
+    }
+
+  ]
+}

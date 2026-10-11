@@ -10,6 +10,10 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { convertRepeatedMapKeysToArray } from '../../infrastructure/yaml/yaml-config-repository';
 import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
 
+// Module-scope, for the config generators below, which run outside any one
+// request handler's own logger scope (same idiom as gsm-controller's cfgLogger).
+const cfgLogger = pino({ name: 'sms-osmocom-config' });
+
 const execFileAsync = promisify(execFile);
 
 const nsenter = async (cmd: string, args: string[] = [], timeoutMs = 15000): Promise<{ stdout: string; stderr: string }> =>
@@ -165,8 +169,20 @@ line vty
 `;
 }
 
+// Fresh-install fallback ONLY — configureSms() merges into the real on-disk
+// osmo-hlr.cfg via upsertVtyDirectives() and never overwrites it wholesale.
+//
+// This function used to have zero callers anywhere in the codebase: nothing
+// wrote osmo-hlr.cfg at all, even though POST /api/sms/configure accepts
+// `hlrBindIp` and writes it into osmo-msc.cfg's `hlr remote-ip`. So changing
+// hlrBindIp pointed MSC at an address OsmoHLR never bound, silently breaking
+// SGs SMS — it only ever worked because nobody changed it off the 127.0.0.1
+// default. It is wired up now, which also means the content below has to be
+// genuinely complete rather than a sketch: the `ctrl` bind and the `ussd route`
+// lines are both present in the real stock file this deployment runs and were
+// both missing here.
+// Note: osmo-hlr v1.5.0 only supports 'bind ip' under gsup — port is fixed at 4222
 function osmohlrCfg(hlrBindIp: string): string {
-  // Note: osmo-hlr v1.5.0 only supports 'bind ip' under gsup — port is fixed at 4222
   return `log stderr
  logging filter all 1
  logging print extended-timestamp 1
@@ -176,6 +192,10 @@ hlr
  database /var/lib/osmocom/hlr.db
  gsup
   bind ip ${hlrBindIp}
+ ussd route prefix *#100# internal own-msisdn
+ ussd route prefix *#101# internal own-imsi
+ctrl
+ bind ${hlrBindIp}
 line vty
  bind ${hlrBindIp}
  no login
@@ -496,6 +516,97 @@ export function readCurrentSmsConfig(): SmsConfigureInput | null {
 // preserve unknown directives, i.e. a real merge instead of blind
 // regeneration) is real, separate work — flagging clearly rather than
 // papering over it, and specifically *not* attempting that merge here.
+// Real, 2026-09-24 finding: like IMS's own sync-subscribers, this was only
+// ever reachable via the manual button — backup-restart-usecase.ts's SMS
+// reapply calls configureSms() alone, which never touches OsmoHLR's own
+// sqlite at all. Every restore therefore brought back a fully-configured
+// osmo-hlr/msc/stp stack with zero subscribers able to authenticate over
+// 2G/3G/SGs — confirmed live the same session this was found for IMS.
+// GSM (gsm-controller.ts) shares this exact same database and has no
+// seeding of its own, so this one function covers both. Extracted
+// unchanged from the route handler so backup-restart-usecase.ts can call
+// it directly.
+export async function syncHlrSubscribers(
+  subscriberRepo: ISubscriberRepository,
+  logger: pino.Logger,
+): Promise<{ synced: number; failed: string[]; removed: number }> {
+  const allSubs = await subscriberRepo.findAllFull();
+  const toSync = allSubs.filter(s => (s.msisdn && s.msisdn.length > 0) || s.gsmEnabled === true);
+
+  if (toSync.length === 0) {
+    return { synced: 0, failed: [], removed: 0 };
+  }
+
+  await nsenter('systemctl', ['stop', 'osmo-hlr']).catch(() => {});
+
+  let synced = 0;
+  const failed: string[] = [];
+
+  try {
+    for (const sub of toSync) {
+      const imsi   = sub.imsi;
+      const msisdn = sub.msisdn?.[0];
+      if (!/^\d+$/.test(imsi) || (msisdn && !/^\d+$/.test(msisdn))) {
+        failed.push(imsi);
+        continue;
+      }
+      try {
+        let sql = `INSERT OR IGNORE INTO subscriber (imsi) VALUES ('${imsi}');`;
+        if (msisdn) {
+          sql +=
+            ` UPDATE subscriber SET msisdn=NULL WHERE msisdn='${msisdn}' AND imsi!='${imsi}'; ` +
+            `UPDATE subscriber SET msisdn='${msisdn}' WHERE imsi='${imsi}';`;
+        }
+
+        const k = sub.security?.k;
+        const opc = sub.security?.opc;
+        if (sub.gsmEnabled === true && k && opc && /^[0-9a-fA-F]{32}$/.test(k) && /^[0-9a-fA-F]{32}$/.test(opc)) {
+          sql +=
+            ` INSERT INTO auc_3g (subscriber_id, algo_id_3g, k, opc, sqn, ind_bitlen) ` +
+            `SELECT id, 5, '${k.toLowerCase()}', '${opc.toLowerCase()}', 0, 5 FROM subscriber WHERE imsi='${imsi}' ` +
+            `ON CONFLICT(subscriber_id) DO UPDATE SET algo_id_3g=excluded.algo_id_3g, k=excluded.k, opc=excluded.opc;`;
+        }
+
+        await nsenter('sqlite3', [HOST_HLR_DB, sql]);
+        synced++;
+      } catch (e) {
+        failed.push(imsi);
+        logger.warn({ imsi, err: String(e) }, 'HLR sync failed for subscriber');
+      }
+    }
+
+    let removed = 0;
+    try {
+      const syncImsiSet = new Set(toSync.map(s => s.imsi));
+      const { stdout } = await nsenter('sqlite3', [HOST_HLR_DB, 'SELECT imsi FROM subscriber;']);
+      const hlrImsis = stdout.split('\n').map(l => l.trim()).filter(Boolean);
+      const staleImsis = hlrImsis.filter(imsi => !syncImsiSet.has(imsi));
+
+      for (const staleImsi of staleImsis) {
+        try {
+          await nsenter('sqlite3', [HOST_HLR_DB, `DELETE FROM subscriber WHERE imsi='${staleImsi}';`]);
+          removed++;
+        } catch (e) {
+          logger.warn({ imsi: staleImsi, err: String(e) }, 'OsmoHLR stale subscriber cleanup failed');
+        }
+      }
+    } catch (e) {
+      logger.warn({ err: String(e) }, 'Could not query OsmoHLR subscriber list for cleanup — skipping');
+    }
+
+    try {
+      await nsenter('sqlite3', [HOST_HLR_DB, 'DELETE FROM auc_3g WHERE subscriber_id NOT IN (SELECT id FROM subscriber);']);
+    } catch (e) {
+      logger.warn({ err: String(e) }, 'OsmoHLR auc_3g orphan cleanup failed');
+    }
+
+    return { synced, failed, removed };
+  } finally {
+    // Ensure OsmoHLR is restarted even if something above throws.
+    await nsenter('systemctl', ['start', 'osmo-hlr']).catch(() => {});
+  }
+}
+
 export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: string; mnc: string; tac: number }> {
   const { mscBindIp, hlrBindIp, mmeLocalIp, previousMcc, previousMnc } = input;
 
@@ -563,6 +674,39 @@ export async function configureSms(input: SmsConfigureInput): Promise<{ mcc: str
   ];
   const currentMsc = fs.existsSync(mscPath) ? fs.readFileSync(mscPath, 'utf-8') : '';
   fs.writeFileSync(mscPath, upsertVtyDirectives(currentMsc, mscOwned, osmomscCfg(mcc, mnc, mscBindIp, hlrBindIp, mgwBindIp)), 'utf-8');
+
+  // osmo-hlr.cfg — the counterpart to the `hlr remote-ip` line just written
+  // into osmo-msc.cfg. Nothing wrote this file before, so an operator changing
+  // hlrBindIp moved MSC's target without moving what OsmoHLR actually binds.
+  //
+  // Ownership-merge, never a template overwrite: the real stock file carries
+  // `ussd route` entries and a full logging block that a wholesale write would
+  // destroy — the same class of incident as configureSms()'s own osmo-msc.cfg
+  // wipe (see vty-config-ownership.ts's header).
+  //
+  // `bind ip` lives in a `gsup` sub-block nested inside `hlr`.
+  // upsertVtyDirectives is deliberately one level deep, which is fine here —
+  // it keeps `hlr`'s body as raw lines, so the nested `bind ip` is matched and
+  // replaced in place. But that also means it would APPEND `bind ip` to the
+  // end of `hlr` if no gsup block existed, landing it outside gsup where
+  // osmo-hlr would reject it. So that one directive is only merged when a
+  // gsup block is actually present.
+  const hlrPath = `${HOST_OSMOCOM_DIR}/osmo-hlr.cfg`;
+  const currentHlr = fs.existsSync(hlrPath) ? fs.readFileSync(hlrPath, 'utf-8') : '';
+  const hlrHasGsup = /^\s*gsup\s*$/m.test(currentHlr);
+  const hlrOwned: OwnedDirective[] = [
+    ...(hlrHasGsup || !currentHlr.trim()
+      ? [{ node: 'hlr', prefix: /^\s*bind ip\s+/, line: `  bind ip ${hlrBindIp}` }]
+      : []),
+    { node: 'ctrl', prefix: /^\s*bind\s+/, line: ` bind ${hlrBindIp}` },
+    { node: 'line vty', prefix: /^\s*bind\s+/, line: ` bind ${hlrBindIp}` },
+  ];
+  if (currentHlr.trim() && !hlrHasGsup) {
+    cfgLogger.warn({ hlrPath },
+      'osmo-hlr.cfg has no gsup block — leaving its GSUP bind address alone rather than ' +
+      'appending bind ip outside gsup, which osmo-hlr would reject. Set it by hand.');
+  }
+  fs.writeFileSync(hlrPath, upsertVtyDirectives(currentHlr, hlrOwned, osmohlrCfg(hlrBindIp)), 'utf-8');
 
   // Update MME sgsap section — preserve any other PLMN's existing map
   // entry (e.g. a roaming PLMN configured separately) rather than
@@ -675,13 +819,27 @@ export async function upsertSmppEsme(
   }
   const vtyHost = getMscVtyHost();
 
-  const { stdout, stderr } = await nsenter(
-    'python3',
-    ['-c', VTY_UPSERT_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name, password, opts.defaultRoute ? '1' : '0'],
-    10000,
-  );
-  const output = (stdout + stderr).trim();
-  const success = !/% ?Unknown command|%Command incomplete|Connection refused|Traceback/i.test(output);
+  // Real, 2026-09-22 fresh-host finding: a caller re-configuring right after
+  // osmo-msc itself was just restarted (e.g. MMS's own Configure, which
+  // runs immediately after SMS-over-SGs's own reapply in the restore-
+  // restart sequence) can hit this before osmo-msc's VTY listener has
+  // finished binding — a real, reproduced `ConnectionRefusedError`, not a
+  // config problem. Retry only that specific case (a genuine config error
+  // like "Unknown command" retrying wouldn't fix, and shouldn't be masked
+  // by one) — a few seconds of grace covers a normal VTY startup delay
+  // without meaningfully slowing down the common case where it's already up.
+  let stdout = '', stderr = '', output = '', success = false;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    ({ stdout, stderr } = await nsenter(
+      'python3',
+      ['-c', VTY_UPSERT_ESME_SCRIPT, vtyHost, String(MSC_VTY_PORT), name, password, opts.defaultRoute ? '1' : '0'],
+      10000,
+    ));
+    output = (stdout + stderr).trim();
+    success = !/% ?Unknown command|%Command incomplete|Connection refused|Traceback/i.test(output);
+    if (success || !/Connection refused/i.test(output) || attempt === 5) break;
+    await new Promise(r => setTimeout(r, 2000));
+  }
 
   // Stale-comment correction (2026-09-13): this WAS believed to be live-VTY-
   // only and lost on restart, but VTY_UPSERT_ESME_SCRIPT's own last command is
@@ -922,121 +1080,10 @@ export function createSmsRouter(
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const allSubs = await subscriberRepo.findAllFull();
-      // Eligible if it has an MSISDN (original purpose — SMS-over-SGs
-      // routing needs one; unchanged) OR the subscriber has explicitly
-      // opted in via the "2G/GSM" checkbox on the Subscribers page
-      // (gsmEnabled) — an additional, not replacement, inclusion path so a
-      // subscriber can get real 2G/3G auth keys synced without needing an
-      // MSISDN at all, but only when the operator actually asked for it.
-      const toSync = allSubs.filter(s => (s.msisdn && s.msisdn.length > 0) || s.gsmEnabled === true);
-
-      if (toSync.length === 0) {
-        return res.json({ success: true, synced: 0, message: 'No eligible subscribers found.' });
-      }
-
-      // Stop OsmoHLR before direct DB writes to avoid lock conflicts
-      await nsenter('systemctl', ['stop', 'osmo-hlr']).catch(() => {});
-
-      let synced = 0;
-      const failed: string[] = [];
-
-      for (const sub of toSync) {
-        const imsi   = sub.imsi;
-        const msisdn = sub.msisdn?.[0];
-        // Basic sanitisation: IMSI and (if present) MSISDN must be numeric only
-        if (!/^\d+$/.test(imsi) || (msisdn && !/^\d+$/.test(msisdn))) {
-          failed.push(imsi);
-          continue;
-        }
-        try {
-          let sql = `INSERT OR IGNORE INTO subscriber (imsi) VALUES ('${imsi}');`;
-          if (msisdn) {
-            // Clear the MSISDN from any other subscriber first to avoid the UNIQUE constraint,
-            // then upsert this subscriber's MSISDN.
-            sql +=
-              ` UPDATE subscriber SET msisdn=NULL WHERE msisdn='${msisdn}' AND imsi!='${imsi}'; ` +
-              `UPDATE subscriber SET msisdn='${msisdn}' WHERE imsi='${imsi}';`;
-          }
-
-          // Real 2G/3G authentication (osmo-bsc's A-interface, not just the
-          // SGs peering this loop originally existed for) needs actual key
-          // material in OsmoHLR, not just the imsi/msisdn mapping above.
-          // Open5GS subscribers are already Milenage (K + OPc) — the same
-          // algorithm OsmoHLR's auc_3g table supports (algo_id_3g=5) — and
-          // OsmoHLR derives 2G vectors from a Milenage auc_3g row via the
-          // standard 3G->2G conversion functions when no separate auc_2g
-          // row exists, so this one upsert is enough to authenticate the
-          // same real SIM over 2G *and* 3G/4G-style AKA. sqn/ind_bitlen are
-          // deliberately left untouched on conflict — OsmoHLR tracks its
-          // own independent SQN state for this subscriber (same as any
-          // second, independent core authenticating the same SIM would),
-          // and resetting it on every re-sync would risk a spurious
-          // SQN-resync each time an operator just re-runs this sync.
-          // Gated on gsmEnabled specifically, NOT just "has an MSISDN" —
-          // every Open5GS subscriber always has valid k/opc, so without
-          // this check every MSISDN-only (SMS-over-SGs) subscriber would
-          // silently get real 2G/3G auth capability pushed too, regardless
-          // of whether its "Enable 2G/GSM" checkbox was ever checked. Real
-          // bug, caught live 2026-09-10: a batch of MSISDN-only subscribers
-          // ended up with real auc_3g keys after nothing but an ordinary
-          // SMS-page re-sync.
-          const k = sub.security?.k;
-          const opc = sub.security?.opc;
-          if (sub.gsmEnabled === true && k && opc && /^[0-9a-fA-F]{32}$/.test(k) && /^[0-9a-fA-F]{32}$/.test(opc)) {
-            sql +=
-              ` INSERT INTO auc_3g (subscriber_id, algo_id_3g, k, opc, sqn, ind_bitlen) ` +
-              `SELECT id, 5, '${k.toLowerCase()}', '${opc.toLowerCase()}', 0, 5 FROM subscriber WHERE imsi='${imsi}' ` +
-              `ON CONFLICT(subscriber_id) DO UPDATE SET algo_id_3g=excluded.algo_id_3g, k=excluded.k, opc=excluded.opc;`;
-          }
-
-          await nsenter('sqlite3', [HOST_HLR_DB, sql]);
-          synced++;
-        } catch (e) {
-          failed.push(imsi);
-          logger.warn({ imsi, err: String(e) }, 'HLR sync failed for subscriber');
-        }
-      }
-
-      // Reconciliation: remove OsmoHLR rows whose IMSI is no longer in Open5GS (deleted
-      // subscriber, or MSISDN cleared) — the loop above only ever inserts/updates
-      // currently-eligible IMSIs, so anything synced once and later removed/demoted
-      // stays behind in OsmoHLR forever otherwise.
-      let removed = 0;
-      try {
-        const syncImsiSet = new Set(toSync.map(s => s.imsi));
-        const { stdout } = await nsenter('sqlite3', [HOST_HLR_DB, 'SELECT imsi FROM subscriber;']);
-        const hlrImsis = stdout.split('\n').map(l => l.trim()).filter(Boolean);
-        const staleImsis = hlrImsis.filter(imsi => !syncImsiSet.has(imsi));
-
-        for (const staleImsi of staleImsis) {
-          try {
-            await nsenter('sqlite3', [HOST_HLR_DB, `DELETE FROM subscriber WHERE imsi='${staleImsi}';`]);
-            removed++;
-          } catch (e) {
-            logger.warn({ imsi: staleImsi, err: String(e) }, 'OsmoHLR stale subscriber cleanup failed');
-          }
-        }
-      } catch (e) {
-        logger.warn({ err: String(e) }, 'Could not query OsmoHLR subscriber list for cleanup — skipping');
-      }
-
-      // auc_3g.subscriber_id has no FK/cascade in OsmoHLR's own schema, so a
-      // subscriber row deleted above would otherwise leave its key material
-      // behind forever — clean up any orphaned auc_3g rows too.
-      try {
-        await nsenter('sqlite3', [HOST_HLR_DB, 'DELETE FROM auc_3g WHERE subscriber_id NOT IN (SELECT id FROM subscriber);']);
-      } catch (e) {
-        logger.warn({ err: String(e) }, 'OsmoHLR auc_3g orphan cleanup failed');
-      }
-
-      await nsenter('systemctl', ['start', 'osmo-hlr']).catch(() => {});
-
-      await auditLogger.log({ action: 'sms_sync_subscribers', user, details: `synced=${synced} failed=${failed.length} removed=${removed}`, success: true });
-      res.json({ success: true, synced, failed, removed });
+      const result = await syncHlrSubscribers(subscriberRepo, logger);
+      await auditLogger.log({ action: 'sms_sync_subscribers', user, details: `synced=${result.synced} failed=${result.failed.length} removed=${result.removed}`, success: true });
+      res.json({ success: true, ...result });
     } catch (err) {
-      // Ensure OsmoHLR is restarted even if we error
-      await nsenter('systemctl', ['start', 'osmo-hlr']).catch(() => {});
       logger.error({ err: String(err) }, 'sms sync-subscribers error');
       res.status(500).json({ success: false, error: String(err) });
     }
@@ -1098,10 +1145,16 @@ export function createSmsRouter(
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
+      // `enable --now`, not plain `start` — same boot-persistence gap found in
+      // the 2G module (see gsm-controller.ts's /start comment). These three
+      // currently survive a reboot only by accident, pulled in as dependencies
+      // of osmo-hnbgw and osmo-sip-connector, both of which belong to other
+      // optional modules. Uninstall either one and SGs SMS would silently stop
+      // coming back after a reboot.
       for (const svc of ['osmo-stp', 'osmo-hlr', 'osmo-msc']) {
-        await nsenter('systemctl', ['start', svc]);
+        await nsenter('systemctl', ['enable', '--now', svc]);
       }
-      await auditLogger.log({ action: 'sms_start', user, details: 'osmocom services started', success: true });
+      await auditLogger.log({ action: 'sms_start', user, details: 'osmocom services started + enabled at boot', success: true });
       res.json({ success: true, message: 'Osmocom services started.' });
     } catch (err) {
       res.status(500).json({ success: false, error: String(err) });
@@ -1112,10 +1165,12 @@ export function createSmsRouter(
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
+      // Counterpart to /start's `enable --now`: a plain stop on an enabled unit
+      // would silently come back at the next reboot.
       for (const svc of ['osmo-msc', 'osmo-hlr', 'osmo-stp']) {
-        await nsenter('systemctl', ['stop', svc]);
+        await nsenter('systemctl', ['disable', '--now', svc]);
       }
-      await auditLogger.log({ action: 'sms_stop', user, details: 'osmocom services stopped', success: true });
+      await auditLogger.log({ action: 'sms_stop', user, details: 'osmocom services stopped + disabled at boot', success: true });
       res.json({ success: true, message: 'Osmocom services stopped.' });
     } catch (err) {
       res.status(500).json({ success: false, error: String(err) });
@@ -1135,9 +1190,9 @@ export function createSmsRouter(
       }
       await nsenter('systemctl', ['restart', 'open5gs-mmed']);
       for (const svc of ['osmo-msc', 'osmo-hlr', 'osmo-stp']) {
-        await nsenter('systemctl', ['stop', svc]).catch(() => {});
+        await nsenter('systemctl', ['disable', '--now', svc]).catch(() => {});
       }
-      await auditLogger.log({ action: 'sms_disable', user, details: 'sgsap removed, osmocom stopped', success: true });
+      await auditLogger.log({ action: 'sms_disable', user, details: 'sgsap removed, osmocom stopped + disabled at boot', success: true });
       res.json({ success: true });
     } catch (err) {
       await auditLogger.log({ action: 'sms_disable', user, details: String(err), success: false });
@@ -1160,7 +1215,7 @@ export function createSmsRouter(
       fs.unlinkSync(HOST_SGSAP_BAK);
       await nsenter('systemctl', ['restart', 'open5gs-mmed']);
       for (const svc of ['osmo-stp', 'osmo-hlr', 'osmo-msc']) {
-        await nsenter('systemctl', ['start', svc]).catch(() => {});
+        await nsenter('systemctl', ['enable', '--now', svc]).catch(() => {});
       }
       await auditLogger.log({ action: 'sms_enable', user, details: 'sgsap restored, osmocom started', success: true });
       res.json({ success: true });
@@ -1204,30 +1259,64 @@ export function createSmsRouter(
         write('Removed saved sgsap backup (.sgsap.bak).');
       }
 
-      write('\n=== Removing Osmocom config files ===');
-      for (const f of SMS_CONFIG_MANIFEST) {
-        if (fs.existsSync(f.path)) {
-          fs.unlinkSync(f.path);
-          write(`Removed: ${f.label}`);
+      // Everything below this point is SHARED with the 2G GSM and 3G UMTS
+      // modules -- osmo-stp, osmo-hlr and osmo-msc are the same three daemons
+      // for all three, and hlr.db holds the auc_3g MILENAGE rows UMTS AKA
+      // depends on. Real defect found in the 2026-10-10 readiness audit: this
+      // handler had no sibling check at all, so uninstalling SMS-over-SGs
+      // deleted all three configs, removed hlr.db, and apt-purged the packages
+      // out from under a live 2G and/or 3G deployment. This file's own comment
+      // further up already noted "GSM shares this exact same database".
+      //
+      // Lazy `await import()` rather than a static one: gsm-controller.ts
+      // statically imports THIS file, so importing it back statically would be
+      // a real load-time circular dependency (CLAUDE.md pattern #16).
+      const { isGsmInstalled } = await import('./gsm-controller');
+      const { isHnbgwInstalled } = await import('./hnbgw-controller');
+      const gsmPresent = isGsmInstalled();
+      const hnbgwPresent = isHnbgwInstalled();
+      const sharedOwners = [gsmPresent ? '2G GSM' : null, hnbgwPresent ? '3G UMTS' : null]
+        .filter(Boolean).join(' and ');
+
+      if (sharedOwners) {
+        write(`\n=== Keeping shared Osmocom stack — ${sharedOwners} still installed ===`);
+        write('osmo-stp.cfg / osmo-hlr.cfg / osmo-msc.cfg, hlr.db and the');
+        write('osmo-stp/osmo-hlr/osmo-msc packages are shared with that module,');
+        write('so they are deliberately left in place. The SGs-specific parts');
+        write('(mme.yaml sgsap block, SGs config state) have been removed above,');
+        write('which is all that is actually SMS-over-SGs-owned.');
+        await auditLogger.log({
+          action: 'sms_uninstall', user,
+          details: `sgsap unconfigured; shared Osmocom stack retained (${sharedOwners} still installed)`,
+          success: true,
+        });
+        write('\n✅ SMS-over-SGs removed (shared Osmocom stack retained).');
+      } else {
+        write('\n=== Removing Osmocom config files ===');
+        for (const f of SMS_CONFIG_MANIFEST) {
+          if (fs.existsSync(f.path)) {
+            fs.unlinkSync(f.path);
+            write(`Removed: ${f.label}`);
+          }
         }
+
+        write('\n=== Removing OsmoHLR database ===');
+        await nsenter('bash', ['-c', `rm -f ${HOST_HLR_DB} ${HOST_HLR_DB}-shm ${HOST_HLR_DB}-wal`]).catch(() => {});
+        write('Removed hlr.db (and -shm/-wal if present).');
+
+        write('\n=== Purging osmo-stp, osmo-hlr, osmo-msc ===');
+        const purge = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--',
+          'bash', '-c', 'DEBIAN_FRONTEND=noninteractive apt-get purge -y osmo-stp osmo-hlr osmo-msc 2>&1 && apt-get autoremove -y 2>&1'],
+          { stdio: ['ignore', 'pipe', 'pipe'] });
+        await new Promise<void>(resolve => {
+          purge.stdout.on('data', (d: Buffer) => write(d.toString()));
+          purge.stderr.on('data', (d: Buffer) => write(d.toString()));
+          purge.on('close', () => resolve());
+        });
+
+        await auditLogger.log({ action: 'sms_uninstall', user, details: 'osmo-stp/hlr/msc removed, sgsap unconfigured', success: true });
+        write('\n✅ SMS-over-SGs fully removed.');
       }
-
-      write('\n=== Removing OsmoHLR database ===');
-      await nsenter('bash', ['-c', `rm -f ${HOST_HLR_DB} ${HOST_HLR_DB}-shm ${HOST_HLR_DB}-wal`]).catch(() => {});
-      write('Removed hlr.db (and -shm/-wal if present).');
-
-      write('\n=== Purging osmo-stp, osmo-hlr, osmo-msc ===');
-      const purge = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--',
-        'bash', '-c', 'DEBIAN_FRONTEND=noninteractive apt-get purge -y osmo-stp osmo-hlr osmo-msc 2>&1 && apt-get autoremove -y 2>&1'],
-        { stdio: ['ignore', 'pipe', 'pipe'] });
-      await new Promise<void>(resolve => {
-        purge.stdout.on('data', (d: Buffer) => write(d.toString()));
-        purge.stderr.on('data', (d: Buffer) => write(d.toString()));
-        purge.on('close', () => resolve());
-      });
-
-      await auditLogger.log({ action: 'sms_uninstall', user, details: 'osmo-stp/hlr/msc removed, sgsap unconfigured', success: true });
-      write('\n✅ SMS-over-SGs fully removed.');
       res.end();
     } catch (err) {
       await auditLogger.log({ action: 'sms_uninstall', user, details: String(err), success: false });

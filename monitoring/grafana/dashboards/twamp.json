@@ -1,0 +1,155 @@
+{
+  "title": "TWAMP / Backhaul Link Quality Dashboard",
+  "uid": "twamp-backhaul",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "twamp", "latency", "jitter", "ran"],
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "📡 TWAMP Overview", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "Targets Configured",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "count(open5gs_twamp_test_success)", "legendFormat": "Configured", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Targets Up",
+      "description": "Count of targets whose most recent test succeeded — see the Test Success panel below for which ones.",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_twamp_test_success)", "legendFormat": "Up", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Avg RTT, All Targets",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "ms" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "avg(open5gs_twamp_rtt_avg_ms)", "legendFormat": "Avg RTT", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Avg Packet Loss, All Targets",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "percentunit" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "avg(open5gs_twamp_packet_loss_ratio)", "legendFormat": "Avg Loss", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Reflector Installed",
+      "description": "This host's OWN TWAMP reflector (twamp-server) — the reverse direction from the client targets tested elsewhere on this dashboard. See the Reflector row below.",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NOT INSTALLED" }, "1": { "text": "INSTALLED" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_reflector_installed", "legendFormat": "Reflector", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Reflector Active Peers",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_twamp_reflector_active_peers)", "legendFormat": "Peers", "refId": "A" }]
+    },
+
+    { "id": 10, "type": "row", "title": "📶 Client RTT & Jitter", "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 11, "type": "timeseries", "title": "RTT (avg / min / max) by Target",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_rtt_avg_ms", "legendFormat": "{{target}} avg", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_rtt_min_ms", "legendFormat": "{{target}} min", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_rtt_max_ms", "legendFormat": "{{target}} max", "refId": "C" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Jitter (RTT Std. Deviation) by Target",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_jitter_ms", "legendFormat": "{{target}}", "refId": "A" }]
+    },
+
+    { "id": 20, "type": "row", "title": "⏱️ Client One-Way Delay", "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 21, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "One-way delay and asymmetry need synchronized clocks on both ends — treat as approximate until clock sync is confirmed." }
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "Forward vs Reverse One-Way Delay by Target",
+      "gridPos": { "x": 0, "y": 17, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_forward_delay_avg_ms", "legendFormat": "{{target}} fwd", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_reverse_delay_avg_ms", "legendFormat": "{{target}} rev", "refId": "B" }
+      ]
+    },
+    {
+      "id": 23, "type": "timeseries", "title": "Delay Asymmetry by Target",
+      "gridPos": { "x": 12, "y": 17, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "ms", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_delay_asymmetry_ms", "legendFormat": "{{target}}", "refId": "A" }]
+    },
+
+    { "id": 30, "type": "row", "title": "📉 Client Packet Loss & Test Success", "gridPos": { "x": 0, "y": 25, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 31, "type": "timeseries", "title": "Packet Loss Ratio by Target",
+      "gridPos": { "x": 0, "y": 26, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "percentunit", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_packet_loss_ratio", "legendFormat": "{{target}}", "refId": "A" }]
+    },
+    {
+      "id": 32, "type": "timeseries", "title": "Test Success (1=up, 0=down) by Target",
+      "description": "Unlike every other per-target panel on this dashboard, this one keeps reporting 0 on a failed test rather than showing a gap — it's the one series specifically meant to represent \"down\", not just go stale.",
+      "gridPos": { "x": 12, "y": 26, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 }, "min": 0, "max": 1 } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_test_success", "legendFormat": "{{target}}", "refId": "A" }]
+    },
+    {
+      "id": 33, "type": "table", "title": "Current Target Status",
+      "gridPos": { "x": 0, "y": 34, "w": 24, "h": 6 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "target", "desc": false }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_test_success", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true }, "renameByName": { "Value": "Up (1) / Down (0)" } } }]
+    },
+
+    { "id": 40, "type": "row", "title": "🪞 Reflector (Server) Side", "gridPos": { "x": 0, "y": 40, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 41, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 41, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "Reverse direction — other devices testing inbound against this host's own reflector. Independent of the client tests above." }
+    },
+    {
+      "id": 42, "type": "timeseries", "title": "Reflector Active Peers by Protocol",
+      "gridPos": { "x": 0, "y": 43, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_twamp_reflector_active_peers", "legendFormat": "{{protocol}}", "refId": "A" }]
+    },
+
+    { "id": 50, "type": "row", "title": "🩺 Known Limitations", "gridPos": { "x": 0, "y": 51, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 51, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 52, "w": 24, "h": 4 },
+      "options": { "mode": "markdown", "content": "- Up to ~60s delay between a target's real status changing and this dashboard reflecting it.\n- One-way delay/asymmetry needs synchronized clocks (see the One-Way Delay row).\n- Full-protocol (TWAMP-Control) targets are untested — all configured targets use TWAMP-Light." }
+    }
+
+  ]
+}

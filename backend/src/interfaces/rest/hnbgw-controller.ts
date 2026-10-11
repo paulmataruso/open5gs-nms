@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
-import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
+import { upsertVtyDirectives, OwnedDirective, parseVtyChunks, serializeVtyChunks } from '../../domain/services/vty-config-ownership';
 import {
   buildOsmoHnbgwScript, verifyOsmoHnbgwBuild, osmoHnbgwSystemdUnit,
   UNIT_PATH as HNBGW_UNIT_PATH, CFG_PATH as HNBGW_CFG_PATH,
@@ -141,6 +141,14 @@ export interface HnbgwState {
   sgsnIuPsPointCode: string;
   mgwBindIp: string;
   mgwRtpBindIp: string;
+}
+
+// Lets sms-controller.ts defer to this module before deleting the Osmocom
+// configs, hlr.db, or apt-purging osmo-stp/hlr/msc -- 3G UMTS reuses the exact
+// same osmo-stp/osmo-hlr/osmo-msc trio, and hlr.db holds the auc_3g MILENAGE
+// rows UMTS AKA depends on. Same shape as isGsmInstalled()/isPstnInstalled().
+export function isHnbgwInstalled(): boolean {
+  return fs.existsSync(HOST_STATE);
 }
 
 const HNBGW_STATE_DEFAULTS: HnbgwState = {
@@ -321,6 +329,86 @@ async function regenerateHnbgwConfigs(state: HnbgwState): Promise<{ ok: boolean;
   return sgsnResult;
 }
 
+function hnbgwSpawnStream(bashScript: string, write: (s: string) => void): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout?.on('data', (d: Buffer) => write(d.toString()));
+    child.stderr?.on('data', (d: Buffer) => write(d.toString()));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+}
+
+// Builds osmo-hnbgw from source (see osmo-hnbgw-build.ts's HNBGW_TAG comment
+// for why 1.3.0, not the 1.9.0 every other daemon here uses), plus a
+// defensive `apt-get install osmo-mgw` (harmless no-op if the 2G module
+// already installed it — this module's own dedicated MGW instance reuses
+// that same binary). Extracted from the /install route so a bootstrap/
+// restore orchestrator can call this in-process too, same reasoning as every
+// other module's installX(write).
+export async function installHnbgw(write: (s: string) => void, force = false): Promise<{ success: boolean; error?: string }> {
+  const mgwExitCode = await hnbgwSpawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y osmo-mgw 2>&1', write);
+  write(mgwExitCode === 0 ? '✅ osmo-mgw present.' : `❌ osmo-mgw install failed (exit ${mgwExitCode}).`);
+
+  write('\n=== Building osmo-hnbgw from source (tag 1.3.0) ===');
+  const hnbgwExitCode = await hnbgwSpawnStream(buildOsmoHnbgwScript(force), write);
+  write(hnbgwExitCode === 0 ? '✅ osmo-hnbgw built.' : `❌ osmo-hnbgw build FAILED (see errors above).`);
+
+  const success = mgwExitCode === 0 && hnbgwExitCode === 0;
+  return success ? { success } : { success, error: `mgw exit ${mgwExitCode}, hnbgw exit ${hnbgwExitCode}` };
+}
+
+export interface ConfigureHnbgwInput {
+  rncId?: number; iuhLocalIp?: string; iuhLocalPort?: number; hnbgwPointCode?: string;
+  mscPointCode?: string; sgsnIuPsPointCode?: string; mgwBindIp?: string; mgwRtpBindIp?: string;
+}
+
+// Writes osmo-hnbgw.cfg/osmo-mgw-hnbgw.cfg + the IuPS cs7 block it merges
+// into the 2G module's osmo-sgsn.cfg, then (re)starts both this module's own
+// services. Every field optional and falls back to the already-saved state —
+// same "empty input reapplies current config" convention as configureGsm().
+// Extracted from the /configure route for the same reason as installHnbgw().
+export async function configureHnbgw(input: ConfigureHnbgwInput): Promise<{ success: boolean; error?: string }> {
+  const state = loadHnbgwState();
+  if (input.rncId != null) state.rncId = input.rncId;
+  state.iuhLocalIp = input.iuhLocalIp || state.iuhLocalIp;
+  if (input.iuhLocalPort != null) state.iuhLocalPort = input.iuhLocalPort;
+  state.hnbgwPointCode = input.hnbgwPointCode || state.hnbgwPointCode;
+  state.mscPointCode = input.mscPointCode || state.mscPointCode;
+  state.sgsnIuPsPointCode = input.sgsnIuPsPointCode || state.sgsnIuPsPointCode;
+  state.mgwBindIp = input.mgwBindIp || state.mgwBindIp;
+  state.mgwRtpBindIp = input.mgwRtpBindIp || state.mgwRtpBindIp;
+  saveHnbgwState(state);
+
+  const result = await regenerateHnbgwConfigs(state);
+  if (!result.ok) return { success: false, error: result.error };
+
+  // Write both systemd units fresh every Configure (cheap, idempotent —
+  // matches this project's established pattern elsewhere for per-instance
+  // units, e.g. Asterisk-2G's own).
+  writeHostCfg(HNBGW_UNIT_PATH.replace('/etc/systemd/system', '/proc/1/root/etc/systemd/system'), osmoHnbgwSystemdUnit());
+  writeHostCfg(HNBGW_MGW_UNIT_PATH, hnbgwMgwSystemdUnit());
+  await nsenter('systemctl', ['daemon-reload']);
+  await nsenter('systemctl', ['enable', '--now', HNBGW_MGW_UNIT]).catch(() => {});
+  await nsenter('systemctl', ['restart', HNBGW_MGW_UNIT]).catch(() => {});
+  await nsenter('systemctl', ['enable', '--now', 'osmo-hnbgw']).catch(() => {});
+  await nsenter('systemctl', ['restart', 'osmo-hnbgw']).catch(() => {});
+  // Real, 2026-09-24 finding: regenerateHnbgwConfigs() above (via
+  // writeSgsnIuPsCs7Block()) writes a new IuPS point-code block into the
+  // SHARED, 2G-GSM-owned osmo-sgsn.cfg — but nothing here ever restarted
+  // osmo-sgsn to pick it up. This isn't restore-specific: it was broken on
+  // every single interactive Configure click too, confirmed live on both
+  // hosts (osmo-sgsn.cfg on disk correct, the running process 5-41+ hours
+  // stale) — real 3G packet-switched (data) sessions through HNBGW cannot
+  // route to SGSN with the wrong/missing point-code, even though IuCS/voice
+  // (via MSC, never touched by this function) and the Iuh/HNBAP signaling
+  // layer both work fine, which is what made this easy to miss. GSM's own
+  // configureGsm() restarts osmo-sgsn too, but only conditionally (when
+  // GPRS/EDGE has a pool CIDR) and, per its own step ordering, always BEFORE
+  // this function's write — so it can never cover this either.
+  await nsenter('systemctl', ['restart', 'osmo-sgsn']).catch(() => {});
+  return { success: true };
+}
+
 export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger): Router {
   const router = Router();
 
@@ -355,6 +443,8 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // every other daemon here uses), plus a defensive `apt-get install
   // osmo-mgw` (harmless no-op if the 2G module already installed it — this
   // module's own dedicated MGW instance reuses that same binary).
+  // Thin wrapper — see installHnbgw() above for the actual logic, extracted
+  // so a bootstrap/restore orchestrator can call it in-process too.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -363,58 +453,32 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     res.setHeader('Cache-Control', 'no-cache');
     res.flushHeaders();
     const write = (s: string) => { res.write(s.endsWith('\n') ? s : s + '\n'); };
-    const spawnStream = (bashScript: string): Promise<number> => new Promise((resolve) => {
-      const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', bashScript], { stdio: ['ignore', 'pipe', 'pipe'] });
-      child.stdout?.on('data', (d: Buffer) => write(d.toString()));
-      child.stderr?.on('data', (d: Buffer) => write(d.toString()));
-      child.on('close', (code) => resolve(code ?? 1));
-    });
-
-    const mgwExitCode = await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y osmo-mgw 2>&1');
-    write(mgwExitCode === 0 ? '✅ osmo-mgw present.' : `❌ osmo-mgw install failed (exit ${mgwExitCode}).`);
-
-    write('\n=== Building osmo-hnbgw from source (tag 1.3.0) ===');
-    const hnbgwExitCode = await spawnStream(buildOsmoHnbgwScript(req.query.force === '1'));
-    write(hnbgwExitCode === 0 ? '✅ osmo-hnbgw built.' : `❌ osmo-hnbgw build FAILED (see errors above).`);
-
-    const ok = mgwExitCode === 0 && hnbgwExitCode === 0;
-    await auditLogger.log({ action: 'hnbgw_install', user, details: `mgw exit ${mgwExitCode}, hnbgw exit ${hnbgwExitCode}`, success: ok });
+    const result = await installHnbgw(write, req.query.force === '1');
+    await auditLogger.log({ action: 'hnbgw_install', user, details: result.error ?? 'ok', success: result.success });
     res.end();
   });
 
+  // Thin wrapper — see configureHnbgw() above for the actual logic.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const state = loadHnbgwState();
-      if (req.body.rncId != null) state.rncId = Number(req.body.rncId);
-      state.iuhLocalIp = (req.body.iuhLocalIp as string) || state.iuhLocalIp;
-      if (req.body.iuhLocalPort != null) state.iuhLocalPort = Number(req.body.iuhLocalPort);
-      state.hnbgwPointCode = (req.body.hnbgwPointCode as string) || state.hnbgwPointCode;
-      state.mscPointCode = (req.body.mscPointCode as string) || state.mscPointCode;
-      state.sgsnIuPsPointCode = (req.body.sgsnIuPsPointCode as string) || state.sgsnIuPsPointCode;
-      state.mgwBindIp = (req.body.mgwBindIp as string) || state.mgwBindIp;
-      state.mgwRtpBindIp = (req.body.mgwRtpBindIp as string) || state.mgwRtpBindIp;
-      saveHnbgwState(state);
-
-      const result = await regenerateHnbgwConfigs(state);
-      if (!result.ok) {
+      const body = req.body as Record<string, unknown>;
+      const result = await configureHnbgw({
+        rncId: body.rncId != null ? Number(body.rncId) : undefined,
+        iuhLocalIp: body.iuhLocalIp as string | undefined,
+        iuhLocalPort: body.iuhLocalPort != null ? Number(body.iuhLocalPort) : undefined,
+        hnbgwPointCode: body.hnbgwPointCode as string | undefined,
+        mscPointCode: body.mscPointCode as string | undefined,
+        sgsnIuPsPointCode: body.sgsnIuPsPointCode as string | undefined,
+        mgwBindIp: body.mgwBindIp as string | undefined,
+        mgwRtpBindIp: body.mgwRtpBindIp as string | undefined,
+      });
+      if (!result.success) {
         await auditLogger.log({ action: 'hnbgw_configure', user, details: result.error || 'unknown error', success: false });
         res.status(400).json({ success: false, error: result.error });
         return;
       }
-
-      // Write both systemd units fresh every Configure (cheap, idempotent —
-      // matches this project's established pattern elsewhere for per-
-      // instance units, e.g. Asterisk-2G's own).
-      writeHostCfg(HNBGW_UNIT_PATH.replace('/etc/systemd/system', '/proc/1/root/etc/systemd/system'), osmoHnbgwSystemdUnit());
-      writeHostCfg(HNBGW_MGW_UNIT_PATH, hnbgwMgwSystemdUnit());
-      await nsenter('systemctl', ['daemon-reload']);
-      await nsenter('systemctl', ['enable', '--now', HNBGW_MGW_UNIT]).catch(() => {});
-      await nsenter('systemctl', ['restart', HNBGW_MGW_UNIT]).catch(() => {});
-      await nsenter('systemctl', ['enable', '--now', 'osmo-hnbgw']).catch(() => {});
-      await nsenter('systemctl', ['restart', 'osmo-hnbgw']).catch(() => {});
-
-      await auditLogger.log({ action: 'hnbgw_configure', user, details: `rnc-id ${state.rncId}`, success: true });
+      await auditLogger.log({ action: 'hnbgw_configure', user, details: `rnc-id ${loadHnbgwState().rncId}`, success: true });
       res.json({ success: true });
     } catch (err) {
       await auditLogger.log({ action: 'hnbgw_configure', user, details: String(err), success: false });
@@ -494,11 +558,34 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     try {
       const state = loadHnbgwState();
       const { mcc, mnc } = readMccMnc();
-      const cfg = osmoHnodebCfg(mcc, mnc, '127.0.0.1', state.iuhLocalPort, HNODEB_GTP_LOCAL_IP);
+      // The virtual HNB is a CLIENT dialing OUT to the real HNBGW, so its
+      // target must be wherever the HNBGW is actually listening
+      // (state.iuhLocalIp — named from the HNBGW's own point of view) —
+      // this was hardcoded to '127.0.0.1' instead, which only ever worked
+      // by coincidence when iuhLocalIp was still its default wildcard
+      // 0.0.0.0 (any socket bound to 0.0.0.0 does accept connections
+      // addressed to 127.0.0.1). The moment an operator configures a
+      // specific, non-wildcard loopback for iuhLocalIp (this project's own
+      // per-daemon-loopback convention — confirmed live on this instance,
+      // 127.0.10.1), a connection to the hardcoded 127.0.0.1 was never
+      // accepted at all. A wildcard bind can't itself be dialed as a
+      // destination, so that one case still needs the 127.0.0.1 fallback.
+      const hnbgwTargetIp = state.iuhLocalIp === '0.0.0.0' ? '127.0.0.1' : state.iuhLocalIp;
+      const cfg = osmoHnodebCfg(mcc, mnc, hnbgwTargetIp, state.iuhLocalPort, HNODEB_GTP_LOCAL_IP);
       writeHostCfg(HNODEB_CFG_HOST_PATH, cfg);
       writeHostCfg(HNODEB_UNIT_PATH.replace('/etc/systemd/system', '/proc/1/root/etc/systemd/system'), osmoHnodebSystemdUnit());
       await nsenter('systemctl', ['daemon-reload']);
-      await nsenter('systemctl', ['enable', '--now', 'osmo-hnodeb']);
+      // `enable --now` is a no-op on an already-running service — it does
+      // NOT reload the config, so a redeploy after the config actually
+      // changed (e.g. iuhLocalIp was reconfigured since the last deploy)
+      // silently kept running against the OLD config instead of the one
+      // just written. Confirmed live 2026-10-02 via the API regression
+      // suite's own remove -> deploy cycle: the service came back "active"
+      // but never re-registered with the HNBGW at all. `restart` is always
+      // correct here, whether the service was just freshly enabled or was
+      // already running.
+      await nsenter('systemctl', ['enable', 'osmo-hnodeb']);
+      await nsenter('systemctl', ['restart', 'osmo-hnodeb']);
       write('✅ Virtual HNB deployed and started — check the RAN page or `show hnb all` shortly to confirm it registered.');
       await auditLogger.log({ action: 'hnbgw_virtual_hnb_deploy', user, details: 'deployed', success: true });
     } catch (err) {
@@ -542,13 +629,20 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
       try { fs.unlinkSync(HNBGW_MGW_CFG_PATH); } catch { /* may not exist */ }
       try { fs.unlinkSync(HNODEB_CFG_HOST_PATH); } catch { /* may not exist */ }
       if (fs.existsSync(HOST_SGSN_CFG)) {
+        // Remove the WHOLE `cs7 instance 1` node, not just its point-code.
+        //
+        // This used to null out the point-code directive alone, which left a
+        // bare `cs7 instance 1` header behind in osmo-sgsn.cfg — a file owned by
+        // the 2G module, which never emits that node itself (gsm-controller
+        // only lists `cs7 instance` as an unmodelled directive to warn about
+        // losing). So an uninstall left orphaned SS7 config in another module's
+        // file that nothing owned and nothing would ever clean up, and
+        // osmo-sgsn would then come back on its next restart with an SS7
+        // instance declared and no point-code for it. Confirmed live: this host
+        // has exactly that node, created solely by this module.
         const current = fs.readFileSync(HOST_SGSN_CFG, 'utf-8');
-        const withoutIups = upsertVtyDirectives(
-          current,
-          [{ node: 'cs7 instance 1', prefix: /^\s*point-code\s+/, line: null }],
-          current,
-        );
-        fs.writeFileSync(HOST_SGSN_CFG, withoutIups, 'utf-8');
+        const kept = parseVtyChunks(current).filter(c => c.header.trim() !== 'cs7 instance 1');
+        fs.writeFileSync(HOST_SGSN_CFG, serializeVtyChunks(kept), 'utf-8');
       }
       await auditLogger.log({ action: 'hnbgw_uninstall', user, details: 'osmo-hnbgw + dedicated mgw removed', success: true });
       res.json({ success: true });

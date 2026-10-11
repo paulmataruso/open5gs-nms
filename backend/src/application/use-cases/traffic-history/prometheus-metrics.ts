@@ -32,6 +32,17 @@ export function createTrafficMetricsRegistry(
     labelNames: ['dnn'],
     registers: [registry],
     async collect() {
+      // Real bug, found 2026-09-26 building the Traffic History dashboard
+      // (critic review): prom-client Gauges only ever mutate additively via
+      // .set() — a DNN/IMSI this collect() doesn't see on a given scrape
+      // (a removed UPF tun device, or a subscriber whose session IP was
+      // reassigned — CLAUDE.md architectural pattern #11 documents IP
+      // reassignment as routine, designed-for behavior in this exact
+      // system) keeps its LAST value frozen here forever, not a gap, since
+      // nothing ever calls .remove()/.reset(). Same bug class as TWAMP's
+      // own pre-fix Gauge staleness — reset() before repopulating is what
+      // turns "no longer present" into the series actually disappearing.
+      this.reset();
       const counters = await gtpBandwidthMonitor.getRawCounters();
       for (const c of counters) this.set({ dnn: c.dnn }, c.rxBytes);
     },
@@ -43,8 +54,33 @@ export function createTrafficMetricsRegistry(
     labelNames: ['dnn'],
     registers: [registry],
     async collect() {
+      this.reset();
       const counters = await gtpBandwidthMonitor.getRawCounters();
       for (const c of counters) this.set({ dnn: c.dnn }, c.txBytes);
+    },
+  });
+
+  new client.Gauge({
+    name: 'open5gs_gtp_rx_packets_total',
+    help: 'Cumulative uplink (UE upload) packet count per DNN, from the UPF tun device rx counter — real proxy for Open5GS\'s own fivegs_ep_n3_gtp_indatapktn3upf, which is never populated by this build (see open5gs/open5gs#3100)',
+    labelNames: ['dnn'],
+    registers: [registry],
+    async collect() {
+      this.reset();
+      const counters = await gtpBandwidthMonitor.getRawPacketCounters();
+      for (const c of counters) this.set({ dnn: c.dnn }, c.rxPackets);
+    },
+  });
+
+  new client.Gauge({
+    name: 'open5gs_gtp_tx_packets_total',
+    help: 'Cumulative downlink (UE download) packet count per DNN, from the UPF tun device tx counter — real proxy for Open5GS\'s own fivegs_ep_n3_gtp_outdatapktn3upf, which is never populated by this build (see open5gs/open5gs#3100)',
+    labelNames: ['dnn'],
+    registers: [registry],
+    async collect() {
+      this.reset();
+      const counters = await gtpBandwidthMonitor.getRawPacketCounters();
+      for (const c of counters) this.set({ dnn: c.dnn }, c.txPackets);
     },
   });
 
@@ -54,6 +90,7 @@ export function createTrafficMetricsRegistry(
     labelNames: ['imsi'],
     registers: [registry],
     async collect() {
+      this.reset();
       const counters = await subscriberIpAccounting.readCounters();
       for (const c of counters) this.set({ imsi: c.imsi }, c.upBytes);
     },
@@ -65,6 +102,7 @@ export function createTrafficMetricsRegistry(
     labelNames: ['imsi'],
     registers: [registry],
     async collect() {
+      this.reset();
       const counters = await subscriberIpAccounting.readCounters();
       for (const c of counters) this.set({ imsi: c.imsi }, c.downBytes);
     },

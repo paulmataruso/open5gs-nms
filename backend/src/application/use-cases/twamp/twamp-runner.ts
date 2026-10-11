@@ -176,6 +176,45 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+// Real, reproduced-live bug (2026-09-25, found building the TWAMP Grafana
+// dashboard — both a planning and a critic agent independently confirmed
+// this end-to-end, the critic down to the millisecond against a real
+// target): TWAMP-Light (runLight() in twamp-client.go, the protocol every
+// real target on this deployment uses) blocks PER PACKET on the binary's
+// own `-timeout-ms` flag (previously never passed here, so it fell back to
+// the binary's own hardcoded default of 5000ms) plus an unconditional
+// `-interval-ms` sleep (previously also never passed, default 1000ms) —
+// so one LOST packet costs up to timeout+interval (6000ms under the old
+// defaults), not the ~1200ms/packet the old `timeoutMs` formula below
+// assumed. As few as 3 lost packets out of the default 10-packet count
+// already exceeded that old 20s external budget — ordinary packet loss,
+// not just a total outage, which is exactly the condition TWAMP exists to
+// measure. When the external timeout fired, the wrapped process was
+// correctly killed (see safe-nsenter.ts) but had written nothing to
+// stdout yet — and the parse step used to fall back to the literal string
+// `'{}'` on empty stdout, which `JSON.parse`s successfully into an object
+// with every field `undefined`, silently skipping the catch block that
+// would have preserved the real "timed out" error. Confirmed live in
+// Mongo: every recent sample for all 3 real targets had every field
+// `null`, not a real `success:false` + a real error message.
+//
+// Fixed two ways, not just one: (1) explicitly pass `-timeout-ms`/
+// `-interval-ms` to the binary below instead of relying on its own
+// hardcoded defaults, and derive the external `timeoutMs` from these SAME
+// constants, so the two can never independently drift apart again — the
+// old bug was exactly this kind of implicit, unstated cross-file coupling
+// (same class of gotcha as CLAUDE.md patterns #17/#18); (2) a genuinely
+// empty stdout is now treated as a real failure, never silently parsed as
+// an empty-but-"successful" object. PER_PACKET_TIMEOUT_MS is also
+// deliberately lower than the binary's old 5000ms default — these are
+// real, directly-attached-subnet RAN radios (LAN-local, not
+// internet-routed), so 5s per lost packet was needless margin; 3s still
+// leaves generous headroom while roughly halving a fully-down target's
+// worst-case test duration.
+const PER_PACKET_TIMEOUT_MS = 3000;
+const INTERVAL_MS = 1000; // matches twamp-client's own previous default
+const FIXED_OVERHEAD_MS = 5000; // process spawn / nsenter / handshake margin
+
 // Runs one TWAMP test session against `target` and returns its parsed
 // result. Never throws — a connect/timeout/protocol failure comes back as
 // `{ success: false, error }`, same as the binary's own stdout contract (see
@@ -189,14 +228,18 @@ export async function runTwampTest(hostExecutor: IHostExecutor, target: TwampTar
     '-protocol', shellQuote(target.protocol || 'full'),
     '-mode', shellQuote(target.mode),
     '-count', String(packetCount),
+    '-timeout-ms', String(PER_PACKET_TIMEOUT_MS),
+    '-interval-ms', String(INTERVAL_MS),
   ];
   if (target.sharedSecret) args.push('-secret', shellQuote(target.sharedSecret));
   if (target.keyId) args.push('-keyid', shellQuote(target.keyId));
   if (target.bindIp) args.push('-bind-ip', shellQuote(target.bindIp));
 
-  // 1s per packet (twamp-client's own default -interval-ms) plus control-
-  // handshake/teardown overhead, plus margin.
-  const timeoutMs = packetCount * 1200 + 8000;
+  // Worst case: every packet lost, each costing timeout+interval, plus
+  // fixed overhead — derived from the exact same constants passed to the
+  // binary above, so this can never silently drift out of sync with them
+  // again the way the old hardcoded "~1200ms/packet" guess did.
+  const timeoutMs = packetCount * (PER_PACKET_TIMEOUT_MS + INTERVAL_MS) + FIXED_OVERHEAD_MS;
   // A reflector being unreachable (no reply within timeout) is a normal,
   // common outcome here — twamp-client exits nonzero for it, but it's not
   // an unexpected/actionable backend error, just a target that's currently
@@ -204,13 +247,16 @@ export async function runTwampTest(hostExecutor: IHostExecutor, target: TwampTar
   // already is.
   const result = await hostExecutor.executeCommand('bash', ['-c', args.join(' ')], timeoutMs, { expectedFailure: true });
 
-  try {
-    const line = result.stdout.trim().split('\n').filter(Boolean).pop() ?? '{}';
-    return JSON.parse(line) as TwampTestResult;
-  } catch {
-    return {
-      success: false,
-      error: result.stderr || result.stdout || `twamp-client exited ${result.exitCode} with no parseable output`,
-    };
+  const line = result.stdout.trim().split('\n').filter(Boolean).pop();
+  if (line) {
+    try {
+      return JSON.parse(line) as TwampTestResult;
+    } catch {
+      // fall through to the same real-error construction below
+    }
   }
+  return {
+    success: false,
+    error: result.stderr || result.stdout || `twamp-client exited ${result.exitCode} with no parseable output`,
+  };
 }

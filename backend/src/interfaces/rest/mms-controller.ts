@@ -621,7 +621,26 @@ export async function installMms(write: (s: string) => void): Promise<{ success:
       }
 
       write('\n=== Cloning VectorCore MMSC ===');
-      await spawnStream(`[ -d ${VC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-mmsc.git ${VC_DIR}`);
+      // Real, 2026-09-23 finding: VC_DIR (/opt/vectorcore) is a shared
+      // runtime root across the whole VectorCore family — VoWiFi's own
+      // install puts its ePDG/AAA config directly at
+      // ${VC_DIR}/{epdg,aaa} — so a fresh-host bootstrap that installs
+      // VoWiFi before MMS (their fixed order in
+      // fresh-host-bootstrap-usecase.ts's MODULE_INSTALL_ORDER) leaves
+      // VC_DIR non-empty by the time MMS's own install runs. A plain `git
+      // clone` into a non-empty, non-git directory always fails outright
+      // ("destination path already exists and is not an empty directory")
+      // — this is NOT the same as the already-handled "already cloned by
+      // an earlier MMS install" case just above it, which only checks for
+      // .git. Clone into a scratch directory first (always empty, always
+      // succeeds) and merge its content — including .git — into VC_DIR,
+      // which safely coexists with VoWiFi's own subdirectories since
+      // nothing in this repo's own tree is named epdg/aaa.
+      await spawnStream(
+        `if [ -d ${VC_DIR}/.git ]; then echo "Already cloned — skipping."; else ` +
+        `TMPCLONE=$(mktemp -d) && git clone https://github.com/vectorcore-mobile/vectorcore-mmsc.git "$TMPCLONE" && ` +
+        `mkdir -p ${VC_DIR} && cp -a "$TMPCLONE"/. ${VC_DIR}/ && rm -rf "$TMPCLONE"; fi`
+      );
 
       // Real bug, confirmed live (2026-08-01): VectorCore's own well-known
       // content-type token table (internal/mmspdu/content_type.go) has
@@ -706,7 +725,17 @@ export async function installMms(write: (s: string) => void): Promise<{ success:
       }
 
       write('\n=== Installing systemd unit (content as shipped, renamed to avoid colliding with the real vectorcore-smsc project) ===');
-      await spawnStream(`cp ${VC_DIR}/systemd/${UPSTREAM_SYSTEMD_UNIT_FILENAME}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
+      // Real, 2026-09-22 fresh-host finding: this call's exit code was never
+      // checked (unlike buildExit right above), so a failed cp/daemon-reload
+      // here silently left installMms() reporting success with no unit file
+      // ever installed — Configure then failed much later with a confusing
+      // "Unit file vectorcore-mmsc.service does not exist" instead of a
+      // clear failure right here, at the actual point of failure.
+      const unitExit = await spawnStream(`cp ${VC_DIR}/systemd/${UPSTREAM_SYSTEMD_UNIT_FILENAME}.service ${SYSTEMD_UNIT_PATH} && systemctl daemon-reload`);
+      if (unitExit !== 0) {
+        write(`\n❌ systemd unit install failed (exit ${unitExit}).`);
+        return { success: false, error: `systemd unit install exit ${unitExit}` };
+      }
 
       // Record installedWithVersion (preserving any existing config state —
       // Install can run standalone before Configure on a fresh deploy, or
@@ -729,6 +758,67 @@ export async function installMms(write: (s: string) => void): Promise<{ success:
 // invoke the same configure logic in-process, always passing the last-saved
 // mm1PublicIp explicitly rather than an empty body — re-running Configure with
 // defaults would silently reset a real per-deployment value.
+// Real, 2026-09-24 finding: same shape as IMS/SMS's own sync-subscribers —
+// only ever reachable via the manual button, backup-restart-usecase.ts's
+// MMS reapply calls configureMms() alone. Extracted unchanged so it can be
+// called directly during a restore too.
+export async function syncMmsSubscribers(
+  subscriberRepo: ISubscriberRepository,
+  logger: pino.Logger,
+): Promise<{ synced: number; failed: string[]; removed: number }> {
+  const allSubs = await subscriberRepo.findAllFull();
+  const msisdns = [...new Set(
+    allSubs.map(s => s.msisdn?.[0]).filter((m): m is string => !!m && /^\d+$/.test(m))
+  )];
+
+  if (msisdns.length === 0) {
+    return { synced: 0, failed: [], removed: 0 };
+  }
+
+  const wasActive = (await nsenter('systemctl', ['is-active', SYSTEMD_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+  const proxyWasActive = (await nsenter('systemctl', ['is-active', MM1_PROXY_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
+  if (wasActive) await nsenter('systemctl', ['stop', SYSTEMD_UNIT]).catch(() => {});
+
+  let synced = 0;
+  let removed = 0;
+  const failed: string[] = [];
+  try {
+    for (const msisdn of msisdns) {
+      try {
+        await nsenter('sqlite3', [VC_DB, `INSERT OR IGNORE INTO subscribers (msisdn) VALUES ('${msisdn}');`]);
+        synced++;
+      } catch (e) {
+        failed.push(msisdn);
+        logger.warn({ msisdn, err: String(e) }, 'MMS subscriber sync failed for one MSISDN');
+      }
+    }
+
+    try {
+      const eligible = new Set(msisdns);
+      const { stdout } = await nsenter('sqlite3', [VC_DB, 'SELECT msisdn FROM subscribers;']);
+      const dbMsisdns = stdout.split('\n').map(l => l.trim()).filter(Boolean);
+      const stale = dbMsisdns.filter(m => !eligible.has(m));
+      for (const staleMsisdn of stale) {
+        try {
+          await nsenter('sqlite3', [VC_DB, `DELETE FROM subscribers WHERE msisdn='${staleMsisdn}';`]);
+          removed++;
+        } catch (e) {
+          logger.warn({ msisdn: staleMsisdn, err: String(e) }, 'MMS stale subscriber cleanup failed');
+        }
+      }
+    } catch (e) {
+      logger.warn({ err: String(e) }, 'Could not query VectorCore subscriber list for cleanup — skipping');
+    }
+
+    await writeMmsIpMsisdnMap(subscriberRepo).catch(err => logger.warn({ err: String(err) }, 'mms: ip-msisdn map refresh after sync failed'));
+
+    return { synced, failed, removed };
+  } finally {
+    if (wasActive) await nsenter('systemctl', ['start', SYSTEMD_UNIT]).catch(() => {});
+    if (proxyWasActive) await nsenter('systemctl', ['start', MM1_PROXY_UNIT]).catch(() => {});
+  }
+}
+
 export async function configureMms(
   input: { mm1PublicIp: string },
   subscriberRepo: ISubscriberRepository,
@@ -980,78 +1070,9 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      const allSubs = await subscriberRepo.findAllFull();
-      const msisdns = [...new Set(
-        allSubs.map(s => s.msisdn?.[0]).filter((m): m is string => !!m && /^\d+$/.test(m))
-      )];
-
-      if (msisdns.length === 0) {
-        return res.json({ success: true, synced: 0, removed: 0, message: 'No subscribers with MSISDN found.' });
-      }
-
-      // VectorCore's sqlite driver isn't known to run in WAL mode (checked
-      // its own source — no PRAGMA journal_mode anywhere), so a concurrent
-      // external sqlite3 CLI write risks "database is locked" the same way
-      // OsmoHLR's did — stop the service around the bulk write, same as SMS.
-      //
-      // vectorcore-mm1-proxy.service has PartOf=vectorcore-mmsc.service (so a
-      // real Configure-triggered restart of VectorCore also bounces the
-      // proxy) — but PartOf= only propagates stop/restart, never start.
-      // Stopping SYSTEMD_UNIT here takes the proxy down as a side effect;
-      // starting SYSTEMD_UNIT back up again does NOT bring the proxy back,
-      // since that's a bare start, not a restart. Confirmed live 2026-08-02:
-      // this silently killed MMS sending (the proxy is what injects the
-      // X-MSISDN header VectorCore needs) until manually restarted. Track
-      // and restore the proxy's own state explicitly rather than relying on
-      // the PartOf= propagation to do it.
-      const wasActive = (await nsenter('systemctl', ['is-active', SYSTEMD_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
-      const proxyWasActive = (await nsenter('systemctl', ['is-active', MM1_PROXY_UNIT]).catch(() => ({ stdout: '', stderr: '' }))).stdout.trim() === 'active';
-      if (wasActive) await nsenter('systemctl', ['stop', SYSTEMD_UNIT]).catch(() => {});
-
-      let synced = 0;
-      let removed = 0;
-      const failed: string[] = [];
-      try {
-        for (const msisdn of msisdns) {
-          try {
-            await nsenter('sqlite3', [VC_DB, `INSERT OR IGNORE INTO subscribers (msisdn) VALUES ('${msisdn}');`]);
-            synced++;
-          } catch (e) {
-            failed.push(msisdn);
-            logger.warn({ msisdn, err: String(e) }, 'MMS subscriber sync failed for one MSISDN');
-          }
-        }
-
-        // Reconciliation: remove rows whose MSISDN is no longer eligible —
-        // the loop above only ever inserts, so a subscriber later deleted or
-        // MSISDN-cleared would otherwise orphan in VectorCore's table forever.
-        try {
-          const eligible = new Set(msisdns);
-          const { stdout } = await nsenter('sqlite3', [VC_DB, 'SELECT msisdn FROM subscribers;']);
-          const dbMsisdns = stdout.split('\n').map(l => l.trim()).filter(Boolean);
-          const stale = dbMsisdns.filter(m => !eligible.has(m));
-          for (const staleMsisdn of stale) {
-            try {
-              await nsenter('sqlite3', [VC_DB, `DELETE FROM subscribers WHERE msisdn='${staleMsisdn}';`]);
-              removed++;
-            } catch (e) {
-              logger.warn({ msisdn: staleMsisdn, err: String(e) }, 'MMS stale subscriber cleanup failed');
-            }
-          }
-        } catch (e) {
-          logger.warn({ err: String(e) }, 'Could not query VectorCore subscriber list for cleanup — skipping');
-        }
-
-        await writeMmsIpMsisdnMap(subscriberRepo).catch(err => logger.warn({ err: String(err) }, 'mms: ip-msisdn map refresh after sync failed'));
-
-        await auditLogger.log({ action: 'mms_sync_subscribers', user, details: `synced=${synced} failed=${failed.length} removed=${removed}`, success: true });
-        res.json({ success: true, synced, failed, removed });
-      } finally {
-        if (wasActive) await nsenter('systemctl', ['start', SYSTEMD_UNIT]).catch(() => {});
-        // See comment above wasActive/proxyWasActive: PartOf= stopped the proxy
-        // as a side effect but won't start it back up on its own.
-        if (proxyWasActive) await nsenter('systemctl', ['start', MM1_PROXY_UNIT]).catch(() => {});
-      }
+      const result = await syncMmsSubscribers(subscriberRepo, logger);
+      await auditLogger.log({ action: 'mms_sync_subscribers', user, details: `synced=${result.synced} failed=${result.failed.length} removed=${result.removed}`, success: true });
+      res.json({ success: true, ...result });
     } catch (err) {
       await auditLogger.log({ action: 'mms_sync_subscribers', user, details: String(err), success: false });
       logger.error({ err: String(err) }, 'mms sync-subscribers error');

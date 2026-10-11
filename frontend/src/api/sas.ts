@@ -2,6 +2,15 @@ import axios from 'axios';
 
 const api = axios.create({ baseURL: '/api/sas', withCredentials: true });
 
+export interface SasCertInfo {
+  subject: string;
+  issuer: string;
+  notBefore: string;
+  notAfter: string;
+  daysRemaining: number;
+  san: string[];
+}
+
 export const sasApi = {
   getStats: async () => {
     const { data } = await api.get('/admin/stats');
@@ -55,14 +64,28 @@ export const sasApi = {
   setVerbose: async (verbose: boolean) => { const { data } = await api.post('/admin/verbose', { verbose }); return data as { verbose: boolean }; },
   getLastRequests: async () => { const { data } = await api.get('/admin/last-requests'); return data.requests as Array<{ cbsdId: string; serial: string; fccId: string; ip: string; lowFrequency: number; highFrequency: number; type: string; ts: string }>; },
 
+  // ── PKI (root CA + server leaf cert) ────────────────────────────────────────
+  getPki: async () => {
+    const { data } = await api.get('/admin/pki');
+    return data as { success: boolean; root: SasCertInfo | null; leaf: SasCertInfo | null; hostIps: string[]; error?: string };
+  },
+  regenerateLeaf: async (opts: { cn?: string; san?: string[]; days?: number } = {}) => {
+    const { data } = await api.post('/admin/pki/leaf', opts);
+    return data as { success: boolean; root: SasCertInfo | null; leaf: SasCertInfo | null; hostIps: string[]; error?: string };
+  },
+  regenerateRoot: async (opts: { cn?: string; days?: number; confirm: boolean; leafCn?: string; leafSan?: string[] }) => {
+    const { data } = await api.post('/admin/pki/root', opts);
+    return data as { success: boolean; root: SasCertInfo | null; leaf: SasCertInfo | null; hostIps: string[]; error?: string };
+  },
+
   // ── Band Policy ──────────────────────────────────────────────────────────────
   getRfStatus: async () => {
     const { data } = await api.get('/admin/rf-status');
     return data.status as Array<{ cbsdId: string; serial: string; fccId: string; rfOn: boolean | null; operationState?: string; lastHeartbeat?: string }>;
   },
 
-  listGroupPolicies:  async () => { const { data } = await api.get('/admin/policies/groups');  return data.policies as Array<{ _id: string; bandId: string; notes?: string; customSlots?: Array<{low:number;high:number;label?:string}>; updatedAt: string }>; },
-  setGroupPolicy:     async (groupId: string, bandId: string, notes?: string, customSlots?: Array<{low:number;high:number;label?:string}>) => { const { data } = await api.put(`/admin/policies/groups/${encodeURIComponent(groupId)}`, { bandId, notes, customSlots }); return data.policy; },
+  listGroupPolicies:  async () => { const { data } = await api.get('/admin/policies/groups');  return data.policies as Array<{ _id: string; bandId: string; notes?: string; customSlots?: Array<{low:number;high:number;label?:string}>; combineChannels?: boolean; updatedAt: string }>; },
+  setGroupPolicy:     async (groupId: string, bandId: string, notes?: string, customSlots?: Array<{low:number;high:number;label?:string}>, combineChannels?: boolean) => { const { data } = await api.put(`/admin/policies/groups/${encodeURIComponent(groupId)}`, { bandId, notes, customSlots, combineChannels }); return data.policy; },
   deleteGroupPolicy:  async (groupId: string) => { const { data } = await api.delete(`/admin/policies/groups/${encodeURIComponent(groupId)}`); return data; },
   listCbsdPolicies:   async () => { const { data } = await api.get('/admin/policies/cbsds');   return data.policies as Array<{ _id: string; fccId: string; serial: string; bandId: string; notes?: string; updatedAt: string }>; },
   setCbsdPolicy:      async (fccId: string, serial: string, bandId: string, notes?: string) => { const { data } = await api.put(`/admin/policies/cbsds/${encodeURIComponent(fccId)}/${encodeURIComponent(serial)}`, { bandId, notes }); return data.policy; },

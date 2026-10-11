@@ -7,7 +7,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import {
   nsenter, DEFAULT_FRR_TAG, FRR_BUILD_STEPS, FrrBuildStep, isValidFrrTag,
-  buildFrrSourceScript, restoreFrrFromSnapshot, verifyFrr,
+  buildFrrSourceScript, restoreFrrFromSnapshot, verifyFrr, CRASH_GUARD_PATCH_TAG,
 } from '../../application/use-cases/frr-source-build';
 
 // ─── Host paths ─────────────────────────────────────────────────────────────
@@ -19,6 +19,14 @@ const HOST_VTYSH_CONF    = '/proc/1/root/etc/frr/vtysh.conf';
 const LOG_FILE           = '/var/log/open5gs-nms/frr-source-build.log'; // already bind-mounted, host-visible
 const RUN_SCRIPT_PATH    = '/proc/1/root/opt/frr-build/run.sh';         // written from container, executed on host
 const BUILD_WORKDIR      = '/opt/frr-build';                            // real host path, used by the script
+// Repo-shipped patch source (COPY'd into the image by Dockerfile), and the real host path
+// it gets copied to before every build so the host-side script (which runs via nsenter,
+// outside this container entirely) can read it — same "ship a template in the image, write
+// it out to a host path before the nsentered script needs it" idiom already used for the
+// TWAMP/QCI-HW-test/UE-detach tools.
+const CRASH_GUARD_PATCH_TEMPLATE = `${__dirname}/../../config/frr-patches/frr-eigrpd-crash-guard.patch`;
+const CRASH_GUARD_PATCH_HOST_PATH = `${BUILD_WORKDIR}/frr-eigrpd-crash-guard.patch`; // real host path, passed to the script as-is
+const CRASH_GUARD_PATCH_PROC_PATH = `/proc/1/root${CRASH_GUARD_PATCH_HOST_PATH}`;    // same file, /proc/1/root-prefixed for this container's own fs.copyFileSync
 
 // ─── State ──────────────────────────────────────────────────────────────────
 export type BuildStatus = 'idle' | FrrBuildStep | 'complete' | 'failed' | 'rolled_back';
@@ -119,8 +127,23 @@ async function verifyAndFinish(): Promise<void> {
 function startBuild(targetTag: string, restoreConfigFrom: string | undefined, snapshotDir: string, logger: pino.Logger): void {
   const scriptDir = path.dirname(RUN_SCRIPT_PATH);
   fs.mkdirSync(scriptDir, { recursive: true });
+
+  // Copy the crash-guard patch out to a real host path before the build script (which runs
+  // entirely outside this container, via nsenter) needs it. Only meaningful for the one tag
+  // it's verified against — buildFrrSourceScript() itself re-checks targetTag and no-ops the
+  // patch step otherwise, this copy is harmless either way.
+  let crashGuardPatchPath: string | undefined;
+  if (targetTag === CRASH_GUARD_PATCH_TAG) {
+    try {
+      fs.copyFileSync(CRASH_GUARD_PATCH_TEMPLATE, CRASH_GUARD_PATCH_PROC_PATH);
+      crashGuardPatchPath = CRASH_GUARD_PATCH_HOST_PATH;
+    } catch (err) {
+      logger.warn({ err: String(err) }, 'Failed to stage eigrpd crash-guard patch — build will proceed unpatched');
+    }
+  }
+
   const script = buildFrrSourceScript({
-    targetTag, restoreConfigFrom, snapshotDir,
+    targetTag, restoreConfigFrom, snapshotDir, crashGuardPatchPath,
     // Restoring a previous config already carries forward whatever protocol daemon was
     // enabled — only need to guarantee these two, which mgmtd (mandatory as of FRR 9.0+)
     // and zebra (always required) predate on older, pre-restore daemons files.

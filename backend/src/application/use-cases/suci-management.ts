@@ -85,6 +85,22 @@ export class SuciManagementUseCase {
     const { id, scheme } = input;
     this.logger.info({ id, scheme }, 'Generating new SUCI key via suci-keytool.py');
 
+    // Real, confirmed-live 2026-09-30 finding (a full-session live-API verification
+    // pass): this never checked whether `id` was already in use before generating and
+    // writing a new key — addKeyToUdmYaml() below does a blind replace-or-append keyed
+    // on id, so calling this with an already-used id silently overwrote a real,
+    // in-use key's scheme/file-path entry in udm.yaml with a brand new key having
+    // nothing to do with the original. A real test call reproduced this exact live
+    // corruption against a real production key. `PUT /api/suci/keys/:id`
+    // (suci-controller.ts) is the real, already-existing "replace this id's key on
+    // purpose" mechanism — it deletes the old entry first, then calls generateKey()
+    // with the same id, so this check correctly stays out of that legitimate path's
+    // way (the id is already gone by the time generateKey() runs there).
+    const existing = this.parseHnet(await this.getRawUdm());
+    if (existing.some(e => e.id === id)) {
+      throw new Error(`Key ID ${id} is already in use — use rotate instead of generate to replace an existing key`);
+    }
+
     await this.hostExecutor.createDirectory(this.hnetDir);
 
     const curve    = scheme === 1 ? 'curve25519' : 'secp256r1';
@@ -319,25 +335,112 @@ export class SuciManagementUseCase {
     await this.saveHnet(raw, entries);
   }
 
+  // Rewrites ONLY the udm.hnet block, in place, in the real file's own text.
+  //
+  // This used to `yaml.dump()` the whole parsed document back over udm.yaml,
+  // which is exactly what CLAUDE.md architectural pattern #2 exists to prevent:
+  // udm is one of the 17 core NFs, and a full dump discards every comment,
+  // rewrites quoting and key order, and collapses the structure of a file an
+  // operator may well have hand-annotated. Nothing in the SUCI feature needs to
+  // touch anything but hnet, so nothing else is touched.
   private async saveHnet(
-    raw: Record<string, unknown>,
+    _raw: Record<string, unknown>,
     entries: Array<{ id: number; scheme: number; key: string }>,
   ): Promise<void> {
-    const yaml = await import('js-yaml');
-
-    const updatedRaw = { ...raw };
-    const udm = { ...(updatedRaw.udm as Record<string, unknown> || {}) };
-    udm.hnet = entries;
-    updatedRaw.udm = udm;
-
-    const content = yaml.dump(updatedRaw, {
-      indent: 2,
-      lineWidth: 120,
-      noRefs: true,
-      sortKeys: false,
-    });
-
-    await this.hostExecutor.writeFile('/etc/open5gs/udm.yaml', content);
-    this.logger.info({ entryCount: entries.length }, 'udm.yaml hnet block updated');
+    const original = await this.hostExecutor.readFile('/etc/open5gs/udm.yaml');
+    const updated = upsertUdmHnetBlock(original, entries);
+    if (updated === original) {
+      this.logger.info({ entryCount: entries.length }, 'udm.yaml hnet block already matches — not rewritten');
+      return;
+    }
+    await this.hostExecutor.writeFile('/etc/open5gs/udm.yaml', updated);
+    this.logger.info({ entryCount: entries.length }, 'udm.yaml hnet block updated in place');
   }
+}
+
+/** Indentation width of a line, or null for a blank/comment-only line. */
+function indentOf(line: string): number | null {
+  if (/^\s*$/.test(line) || /^\s*#/.test(line)) return null;
+  return line.length - line.replace(/^\s*/, '').length;
+}
+
+/**
+ * Replace (or insert) the `hnet:` block nested under top-level `udm:` in a
+ * udm.yaml, leaving every other byte of the file untouched.
+ *
+ * Exported for unit testing — the whole point of this function is that it
+ * preserves things a round-trip through js-yaml would silently destroy, which
+ * is only meaningfully verifiable by asserting on real file text.
+ */
+export function upsertUdmHnetBlock(
+  yamlText: string,
+  entries: Array<{ id: number; scheme: number; key: string }>,
+): string {
+  const lines = yamlText.split('\n');
+
+  const render = (keyIndent: number): string[] => {
+    const k = ' '.repeat(keyIndent);
+    // An empty list must be explicit: a bare `hnet:` parses as null, which is
+    // not the same as "no home network keys configured".
+    if (entries.length === 0) return [`${k}hnet: []`];
+    const out = [`${k}hnet:`];
+    for (const e of entries) {
+      out.push(`${k}  - id: ${e.id}`);
+      out.push(`${k}    scheme: ${e.scheme}`);
+      out.push(`${k}    key: ${e.key}`);
+    }
+    return out;
+  };
+
+  const udmIdx = lines.findIndex(l => /^udm:\s*$/.test(l));
+  if (udmIdx === -1) {
+    // No udm section at all — append one rather than failing. Keeps a single
+    // trailing newline.
+    const body = yamlText.replace(/\n+$/, '');
+    return `${body}\nudm:\n${render(2).join('\n')}\n`;
+  }
+
+  // Walk udm's body: every line until the next line at indent 0.
+  let end = lines.length;
+  for (let i = udmIdx + 1; i < lines.length; i++) {
+    const ind = indentOf(lines[i]);
+    if (ind === null) continue;
+    if (ind === 0) { end = i; break; }
+  }
+
+  let hnetIdx = -1;
+  let hnetIndent = 2;
+  for (let i = udmIdx + 1; i < end; i++) {
+    const m = lines[i].match(/^(\s+)hnet:/);
+    if (m) { hnetIdx = i; hnetIndent = m[1].length; break; }
+  }
+
+  if (hnetIdx === -1) {
+    // Insert as udm's first child, matching the indentation its existing
+    // children already use so the file keeps one consistent style.
+    let childIndent = 2;
+    for (let i = udmIdx + 1; i < end; i++) {
+      const ind = indentOf(lines[i]);
+      if (ind !== null && ind > 0) { childIndent = ind; break; }
+    }
+    const out = [...lines.slice(0, udmIdx + 1), ...render(childIndent), ...lines.slice(udmIdx + 1)];
+    return out.join('\n');
+  }
+
+  // Replace the existing block: the key line plus every following line indented
+  // deeper than it (blank lines inside the block are carried along, but a blank
+  // line that trails the block is left where it is).
+  let blockEnd = hnetIdx + 1;
+  let lastContent = hnetIdx;
+  for (let i = hnetIdx + 1; i < end; i++) {
+    const ind = indentOf(lines[i]);
+    if (ind === null) { blockEnd = i + 1; continue; }
+    if (ind <= hnetIndent) break;
+    blockEnd = i + 1;
+    lastContent = i;
+  }
+  // Don't swallow blank lines that sit after the block's last real entry.
+  blockEnd = lastContent + 1;
+
+  return [...lines.slice(0, hnetIdx), ...render(hnetIndent), ...lines.slice(blockEnd)].join('\n');
 }

@@ -241,7 +241,7 @@ export const chargingPlansApi = {
   delete: (id: string) =>
     api.delete<{ success: boolean; error?: string }>(`/charging-plans/${id}`).then(r => r.data),
   assign: (id: string, imsis: string[]) =>
-    api.post<{ success: boolean; assigned?: number; failed?: number; error?: string }>(`/charging-plans/${id}/assign`, { imsis }).then(r => r.data),
+    api.post<{ success: boolean; assigned?: number; failed?: number; conflicted?: number; conflictedImsis?: string[]; error?: string }>(`/charging-plans/${id}/assign`, { imsis }).then(r => r.data),
   usage: (id: string) =>
     api.get<{ success: boolean; data: Record<string, SubscriberUsage | null> }>(`/charging-plans/${id}/usage`).then(r => r.data.data),
 };
@@ -591,6 +591,8 @@ export const trafficHistoryApi = {
     resolution: '5m' | '15m' | '1h';
     imsi?: string;
     dnn?: string;
+    radio?: string;
+    generation?: '2g' | '4g' | '5g';
     from?: string;
     to?: string;
   }): Promise<{ points: TrafficHistoryPoint[] }> =>
@@ -599,7 +601,10 @@ export const trafficHistoryApi = {
   listSubscribersWithHistory: (): Promise<{ subscribers: TrafficHistorySubscriber[] }> =>
     api.get('/traffic-history/subscribers').then(r => r.data),
 
-  periodSummary: (params: { imsi: string; period: 'day' | 'week' | 'month'; count?: number }):
+  listRadiosWithHistory: (): Promise<{ radios: string[] }> =>
+    api.get('/traffic-history/radios').then(r => r.data),
+
+  periodSummary: (params: { imsi: string; period: 'day' | 'week' | 'month'; count?: number; generation?: '2g' }):
     Promise<{ period: string; points: { periodStart: string; bytes: number }[] }> =>
     api.get('/traffic-history/period-summary', { params }).then(r => r.data),
 };

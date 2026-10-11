@@ -1,0 +1,246 @@
+{
+  "title": "SigScale OCS / Charging Dashboard",
+  "uid": "ocs-charging",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "ocs", "charging", "sigscale", "diameter"],
+  "templating": {
+    "list": [
+      {
+        "name": "imsi",
+        "type": "query",
+        "label": "IMSI",
+        "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" },
+        "query": "label_values(open5gs_ocs_subscriber_balance_remaining, imsi)",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "🧾 OCS Overview", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "OCS Up",
+      "description": "1 if the last scheduled RPC poll (every 30s) against the OCS Erlang node succeeded and parsed cleanly.",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_up", "legendFormat": "OCS", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "OCS Configured",
+      "description": "ENABLE_OCS_MODULE defaults disabled — 0 here is expected on any deployment that hasn't set up SigScale OCS.",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NO" }, "1": { "text": "YES" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_configured", "legendFormat": "Configured", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Diameter Peers Connected",
+      "description": "sum() across both the acct and auth service listeners — auth is expected to stay 0 on this deployment (nothing registers a ConnectPeer against it).",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_ocs_diameter_peer_connected)", "legendFormat": "Connected Peers", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Buckets w/ Open Reservations",
+      "description": "Non-zero here is a real, expected side effect of the still-unresolved ocs_rating:charge2 crash — see the Reservation Leak Guard row below, not necessarily an active problem right now.",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_buckets_with_reservations", "legendFormat": "Buckets", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Erlang Process Count",
+      "description": "erlang:system_info(process_count) for the OCS node — a slow upward trend is a real leak signal (see the Erlang VM Health row below).",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_erlang_process_count", "legendFormat": "Processes", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Last Sweep: Cleared",
+      "description": "Stuck reservations cleared by the reservation-leak guard's most recent 30-minute sweep.",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_reservation_guard_last_sweep_cleared", "legendFormat": "Cleared", "refId": "A" }]
+    },
+
+    { "id": 10, "type": "row", "title": "📦 Subscribers, Products & Buckets", "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 11, "type": "timeseries", "title": "OCS Entity Counts",
+      "description": "Mnesia table row counts (client/service/product/bucket/offer). Slow-changing by nature — mostly flat lines with occasional step changes as subscribers/plans are added or removed.",
+      "gridPos": { "x": 0, "y": 6, "w": 14, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_mnesia_table_size", "legendFormat": "{{table}}", "refId": "A" }]
+    },
+    {
+      "id": 12, "type": "stat", "title": "Total Data Remaining",
+      "description": "Sum of remain_amount across every octets-unit bucket — dominated by the \"Unlimited\" Charging Plan's deliberately huge (1,000,000 GB) finite cap on any deployment using it, not a meaningful capacity-planning number by itself.",
+      "gridPos": { "x": 14, "y": 6, "w": 10, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "bytes" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_balance_remaining_total{units=\"octets\"}", "legendFormat": "Data Remaining", "refId": "A" }]
+    },
+    {
+      "id": 13, "type": "stat", "title": "Total Voice Remaining",
+      "description": "Sum of remain_amount across every seconds-unit bucket — same \"Unlimited\" plan caveat as Total Data Remaining.",
+      "gridPos": { "x": 14, "y": 10, "w": 10, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "s" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_balance_remaining_total{units=\"seconds\"}", "legendFormat": "Voice Remaining", "refId": "A" }]
+    },
+
+    { "id": 20, "type": "row", "title": "👤 Per-Subscriber Balance (OCS side)", "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 21, "type": "table", "title": "Subscriber Balances",
+      "description": "Current remaining balance per subscriber, read directly from OCS's own bucket data. A subscriber whose OCS product carries no IMSI-shaped linked identity (e.g. manually created via OCS's own GUI with only an MSISDN) is skipped here rather than mislabeled — confirmed live: 1 of 11 real products on this deployment has that shape.",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "imsi", "desc": false }] },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Data Remaining" }, "properties": [{ "id": "unit", "value": "bytes" }] },
+          { "matcher": { "id": "byName", "options": "Voice Remaining" }, "properties": [{ "id": "unit", "value": "s" }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_subscriber_balance_remaining{units=\"octets\", imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "A", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_subscriber_balance_remaining{units=\"seconds\", imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "B", "instant": true, "format": "table" }
+      ],
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "imsi", "mode": "outer" } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "__name__": true, "job": true, "instance": true, "units": true, "units 1": true, "units 2": true, "nf": true, "generation": true },
+            "renameByName": { "Value #A": "Data Remaining", "Value #B": "Voice Remaining" }
+          }
+        }
+      ]
+    },
+
+    { "id": 30, "type": "row", "title": "💳 Diameter (Gy/Ro) — OCS's Own View", "gridPos": { "x": 0, "y": 23, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 31, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "OCS's own view of Gy/Ro transactions. `result_code` 2001 = success. Resets on a peer reconnect, not just an OCS restart." }
+    },
+    {
+      "id": 32, "type": "timeseries", "title": "Diameter Answers by Result Code",
+      "description": "OCS's own count of answers sent, by result code. A rising count of a non-2001 code (5031 = RATING_FAILED, 5001 = unsupported AVP, 5005 = missing AVP, 5030 = user unknown, 5009 = duplicate AVP) indicates a real charging failure worth investigating.",
+      "gridPos": { "x": 0, "y": 26, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_diameter_answers_total", "legendFormat": "{{peer_origin_host}} cmd={{command_code}} rc={{result_code}}", "refId": "A" }]
+    },
+    {
+      "id": 33, "type": "stat", "title": "Acct Peers Connected",
+      "gridPos": { "x": 0, "y": 34, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_diameter_peer_count{service=\"acct\"}", "legendFormat": "Acct Peers", "refId": "A" }]
+    },
+    {
+      "id": 34, "type": "stat", "title": "Auth Peers Connected",
+      "description": "Expected 0 on this deployment — nothing registers a ConnectPeer against the auth/3869 listener.",
+      "gridPos": { "x": 6, "y": 34, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_diameter_peer_count{service=\"auth\"}", "legendFormat": "Auth Peers", "refId": "A" }]
+    },
+    {
+      "id": 35, "type": "table", "title": "Connected Peers",
+      "gridPos": { "x": 12, "y": 34, "w": 12, "h": 4 },
+      "options": { "showHeader": true },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_diameter_peer_connected", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "nf": true, "generation": true }, "renameByName": { "Value": "Connected" } } }]
+    },
+
+    { "id": 40, "type": "row", "title": "🧹 Reservation Leak Guard (ocs_rating:charge2 mitigation)", "gridPos": { "x": 0, "y": 38, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 41, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "A background sweep clears stuck reservations left by a known OCS-side rating bug — a mitigation, not a fix." }
+    },
+    {
+      "id": 42, "type": "stat", "title": "Reservations Open Right Now",
+      "gridPos": { "x": 0, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_reservations_active_total", "legendFormat": "Open Reservations", "refId": "A" }]
+    },
+    {
+      "id": 43, "type": "stat", "title": "Last Sweep: Cleared",
+      "gridPos": { "x": 6, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_reservation_guard_last_sweep_cleared", "legendFormat": "Cleared", "refId": "A" }]
+    },
+    {
+      "id": 44, "type": "stat", "title": "Last Sweep: Buckets Affected",
+      "gridPos": { "x": 12, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_reservation_guard_last_sweep_buckets_affected", "legendFormat": "Buckets Affected", "refId": "A" }]
+    },
+    {
+      "id": 45, "type": "stat", "title": "Time Since Last Sweep",
+      "description": "Should never exceed ~35 minutes (30-minute sweep interval + margin) — a much larger value means the guard's own timer has stopped, not that reservations are fine.",
+      "gridPos": { "x": 18, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 2100 }] }, "unit": "s" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "time() - open5gs_ocs_reservation_guard_last_sweep_timestamp_seconds", "legendFormat": "Time Since Last Sweep", "refId": "A" }]
+    },
+    {
+      "id": 46, "type": "timeseries", "title": "Cumulative Reservations Cleared",
+      "description": "Resets on an NMS backend restart (in-process counter, not persisted) — use increase() over a window for pre-restart-safe rate analysis.",
+      "gridPos": { "x": 0, "y": 45, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_reservation_guard_cleared_total", "legendFormat": "Cumulative Cleared", "refId": "A" }]
+    },
+    {
+      "id": 47, "type": "timeseries", "title": "Sweep Success/Failure Over Time",
+      "gridPos": { "x": 12, "y": 45, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "max": 1, "min": 0 } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_reservation_guard_last_sweep_success", "legendFormat": "Last Sweep Success", "refId": "A" }]
+    },
+
+    { "id": 50, "type": "row", "title": "🩺 Erlang VM / OCS Node Health", "gridPos": { "x": 0, "y": 53, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 51, "type": "timeseries", "title": "Erlang Memory by Type",
+      "gridPos": { "x": 0, "y": 54, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_erlang_memory_bytes", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+    {
+      "id": 52, "type": "timeseries", "title": "Erlang Process Count",
+      "description": "A slow, steady upward trend (not a stable plateau) is a real leak signal, worth watching given the still-open ocs_rating:charge2 crash history.",
+      "gridPos": { "x": 12, "y": 54, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_ocs_erlang_process_count", "legendFormat": "Process Count", "refId": "A" }]
+    }
+
+  ]
+}

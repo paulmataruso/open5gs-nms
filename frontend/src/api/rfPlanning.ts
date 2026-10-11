@@ -220,6 +220,11 @@ export interface CoverageGridCell {
   insideTargetPolygon?: boolean;
   losClassification?: LosClassification;
   fresnelClearancePercent?: number | null;
+  // undefined = useTerrainData wasn't requested; true = real terrain profile
+  // resolved; false = fell back to flat-earth (diffractionLossDb stayed 0) —
+  // numerically indistinguishable from a confirmed clear line-of-sight cell
+  // unless the UI treats this flag specially. See rf-types.ts's backend comment.
+  terrainDataResolved?: boolean;
 }
 
 export interface CoverageRequirement {
@@ -338,6 +343,7 @@ export interface InterferenceCell {
   sinrDb: number | null;
   losClassification?: LosClassification;
   fresnelClearancePercent?: number | null;
+  terrainDataResolved?: boolean;
 }
 
 export interface InterferenceGridResult {

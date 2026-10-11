@@ -4,7 +4,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
-import { runOcsEval, escapeErlString, erlBinLit } from './ocs-controller';
+import { runOcsEval, escapeErlString, erlBinLit, getOcsNodeName, readState } from './ocs-controller';
 
 // ── Charging Plans — simple data + voice caps on top of SigScale OCS ───────
 //
@@ -98,7 +98,7 @@ async function provisionPlanOffers(
   const dataBytes = Math.round(dataCapGB * GB_TO_BYTES);
   const voiceSeconds = Math.round(voiceCapMinutes * MIN_TO_SECONDS);
   const script = [
-    `Node = 'ocs@open5gs-core',`,
+    `Node = '${await getOcsNodeName()}',`,
     `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
     `DataAlt = {alteration, "data-grant", undefined, undefined, undefined, one_time, undefined, octets, ${dataBytes}, 0, undefined},`,
     `DataPrice = {price, "data-usage", undefined, undefined, undefined, usage, undefined, octets, 1000000, 0, "USD", [], DataAlt},`,
@@ -127,7 +127,7 @@ async function provisionPlanOffers(
 // case; only called when a plan is confirmed empty (imsis.length === 0).
 async function deprovisionPlanOffers(ids: { bundle: string; data: string; voice: string }): Promise<void> {
   const script = [
-    `Node = 'ocs@open5gs-core',`,
+    `Node = '${await getOcsNodeName()}',`,
     `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
     `Ocs(delete_offer, ["${escapeErlString(ids.bundle)}"]),`,
     `Ocs(delete_offer, ["${escapeErlString(ids.data)}"]),`,
@@ -182,28 +182,77 @@ function ensurePlanErlHelper(): string {
     `      case AlreadyLinked of`,
     `        true -> ok;`,
     `        false ->`,
-    `          lists:foreach(fun(Id) ->`,
-    `            {ok, SvcNow} = Ocs(find_service, [Id]),`,
-    `            case element(8, SvcNow) of`,
-    `              undefined -> ok;`,
-    `              OldProductRef ->`,
-    `                case Ocs(find_product, [OldProductRef]) of`,
-    `                  {ok, OldProd} ->`,
-    `                    OldServices = lists:delete(Id, element(11, OldProd)),`,
-    `                    Ocs(update_product, [setelement(11, OldProd, OldServices)]),`,
-    `                    {ok, SvcNow2} = Ocs(find_service, [Id]),`,
-    `                    Ocs(update_service, [setelement(8, SvcNow2, undefined)]),`,
-    `                    case OldServices of`,
-    `                      [] -> Ocs(delete_product, [OldProductRef]);`,
-    `                      _ -> ok`,
-    `                    end;`,
-    `                  _ -> ok`,
-    `                end`,
+    // Real, 2026-09-24 finding: this used to unconditionally delete_product
+    // a "losing" old product once its last linked identity was removed —
+    // a real mnesia:delete, no undo, no distinction between old-bug drift
+    // (safe, empty) and a subscriber genuinely double-managed (one identity
+    // on this Charging Plan, the other manually linked to a product via
+    // OCS's own web GUI — an explicitly-supported workflow per this
+    // project's own docs). Now checks each old product's real balance
+    // FIRST, before touching anything — if ANY has a bucket with real
+    // remain_amount, the WHOLE reassignment for this subscriber is skipped
+    // (never partially applied), returned as a THIRD, distinguishable
+    // outcome rather than silently folded into ok/error. element(10,
+    // Product) = balance (bucket-ref list), element(7, Bucket) =
+    // remain_amount — same field offsets this file's own getUsageForImsis()
+    // already uses.
+    // Real, 2026-09-24 finding (adversarial critic pass): the original
+    // version of this check treated EVERY non-{ok,_} result — including a
+    // transient {badrpc,_} from a real, documented failure mode this exact
+    // codebase has hit before (see getOcsNodeName()'s own incident) — the
+    // SAME as "confirmed no balance," fail-OPEN. A mock-tested attack
+    // scenario proved this exploitable: an RPC hiccup landing only during
+    // THIS check (returns false/"safe") that clears by the time the
+    // mutation phase's own INDEPENDENT lookup runs moments later silently
+    // destroys a product with real balance — exactly the harm this whole
+    // check exists to prevent. Now distinguishes genuine {error,not_found}
+    // (truly nothing to protect — safe to proceed) from anything else,
+    // including {badrpc,_} and any unexpected shape (fails CLOSED — treated
+    // as "has real balance," blocking the whole reassignment as a
+    // precaution, since a destructive operation that can't confirm safety
+    // must not proceed).
+    `          HasRealBalance = fun(ProdRef) ->`,
+    `            case Ocs(find_product, [ProdRef]) of`,
+    `              {ok, OldProd} ->`,
+    `                BucketIds = element(10, OldProd),`,
+    `                lists:any(fun(BId) ->`,
+    `                  case Ocs(find_bucket, [BId]) of`,
+    `                    {ok, B} -> element(7, B) > 0;`,
+    `                    {error, not_found} -> false;`,
+    `                    _ -> true`,
+    `                  end`,
+    `                end, BucketIds);`,
+    `              {error, not_found} -> false;`,
+    `              _ -> true`,
     `            end`,
-    `          end, Ids),`,
-    `          case Ocs(add_product, [BundleOfferId, Ids]) of`,
-    `            {ok, _} -> ok;`,
-    `            {error, _} -> error`,
+    `          end,`,
+    `          OldRefs = lists:usort([ element(8, Svc) || Svc <- Svcs, element(8, Svc) =/= undefined ]),`,
+    `          case lists:any(HasRealBalance, OldRefs) of`,
+    `            true -> skipped_conflict;`,
+    `            false ->`,
+    `              lists:foreach(fun(Id) ->`,
+    `                {ok, SvcNow} = Ocs(find_service, [Id]),`,
+    `                case element(8, SvcNow) of`,
+    `                  undefined -> ok;`,
+    `                  OldProductRef ->`,
+    `                    case Ocs(find_product, [OldProductRef]) of`,
+    `                      {ok, OldProd} ->`,
+    `                        OldServices = lists:delete(Id, element(11, OldProd)),`,
+    `                        Ocs(update_product, [setelement(11, OldProd, OldServices)]),`,
+    `                        {ok, SvcNow2} = Ocs(find_service, [Id]),`,
+    `                        Ocs(update_service, [setelement(8, SvcNow2, undefined)]),`,
+    `                        case OldServices of`,
+    `                          [] -> Ocs(delete_product, [OldProductRef]);`,
+    `                          _ -> ok`,
+    `                        end;`,
+    `                      _ -> ok`,
+    `                    end`,
+    `                end`,
+    `              end, Ids),`,
+    `              case Ocs(add_product, [BundleOfferId, Ids]) of`,
+    `                {ok, _} -> ok;`,
+    `                {error, _} -> error`,
+    `              end`,
     `          end`,
     `      end`,
     `  end`,
@@ -215,30 +264,118 @@ function ensurePlanErlHelper(): string {
 // offer, moving them off whatever plan they were on before if any. Returns
 // per-identity ok/fail counts, not per-subscriber (matches the counting
 // convention already established in ocs-controller.ts's syncOcsSubscribers).
-async function assignSubscribersToPlan(
+export async function assignSubscribersToPlan(
   bundleOfferId: string,
   subs: Array<{ imsi: string; msisdn?: string }>,
-): Promise<{ ok: boolean; assigned: number; failed: number; error?: string }> {
-  if (subs.length === 0) return { ok: true, assigned: 0, failed: 0 };
+): Promise<{ ok: boolean; assigned: number; failed: number; conflicted: number; assignedImsis: string[]; conflictedImsis: string[]; error?: string }> {
+  if (subs.length === 0) return { ok: true, assigned: 0, failed: 0, conflicted: 0, assignedImsis: [], conflictedImsis: [] };
   const subsLit = subs
     .map(s => `{${erlBinLit(s.imsi)}, ${s.msisdn ? erlBinLit(s.msisdn) : 'undefined'}}`)
     .join(', ');
   const script = [
-    `Node = 'ocs@open5gs-core',`,
+    `Node = '${await getOcsNodeName()}',`,
     `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
     ensurePlanErlHelper(),
     `BundleOfferId = "${escapeErlString(bundleOfferId)}",`,
     `Subs = [${subsLit}],`,
-    `Results = [ EnsurePlan(case Msisdn of undefined -> [Imsi]; _ -> [Imsi, Msisdn] end, BundleOfferId) || {Imsi, Msisdn} <- Subs ],`,
-    `OkCount = length([ ok || R <- Results, R =:= ok ]),`,
-    `FailCount = length(Subs) - OkCount,`,
-    `io:format("ASSIGN_RESULT ~p~n", [{ok, OkCount, FailCount}]),`,
+    `Results = [ {Imsi, EnsurePlan(case Msisdn of undefined -> [Imsi]; _ -> [Imsi, Msisdn] end, BundleOfferId)} || {Imsi, Msisdn} <- Subs ],`,
+    // Real, 2026-09-24 finding (adversarial critic pass): the caller used
+    // to derive "which imsis actually got assigned" by subtracting ONLY
+    // conflictedImsis from the full requested set — silently missing a
+    // THIRD real outcome (a plain `error`, e.g. add_product itself
+    // failing), so a subscriber whose OCS-side mutation genuinely failed
+    // still got written into Mongo's own bookkeeping as "on this plan,"
+    // reproducing the exact class of Mongo-vs-OCS drift this whole
+    // mechanism exists to prevent. Now emits an explicit OK <imsi> marker
+    // for every confirmed success (symmetric with CONFLICT below), so the
+    // caller can derive the assigned set exactly, not by exclusion.
+    `lists:foreach(fun(Imsi) -> io:format("OK ~s~n", [Imsi]) end, [ Imsi || {Imsi, R} <- Results, R =:= ok ]),`,
+    `OkCount = length([ ok || {_, R} <- Results, R =:= ok ]),`,
+    // skipped_conflict (EnsurePlan's third outcome — see its own comment)
+    // is reported separately, never folded into failed, so the caller can
+    // distinguish "a real OCS error" from "deliberately left untouched
+    // because a real balance was at risk." Emitted as individual CONFLICT
+    // lines rather than a nested Erlang term in ASSIGN_RESULT itself —
+    // much simpler/more robust to parse back in TypeScript than a
+    // variable-length list of binaries.
+    `lists:foreach(fun(Imsi) -> io:format("CONFLICT ~s~n", [Imsi]) end, [ Imsi || {Imsi, R} <- Results, R =:= skipped_conflict ]),`,
+    `ConflictCount = length([ ok || {_, R} <- Results, R =:= skipped_conflict ]),`,
+    `FailCount = length(Subs) - OkCount - ConflictCount,`,
+    `io:format("ASSIGN_RESULT ~p~n", [{ok, OkCount, FailCount, ConflictCount}]),`,
     `init:stop()`,
   ].join('\n');
   const stdout = await runOcsEval(script, 30000);
-  const m = stdout.match(/ASSIGN_RESULT \{ok,(\d+),(\d+)\}/);
-  if (!m) return { ok: false, assigned: 0, failed: subs.length, error: `Unexpected assign result: ${stdout.trim().slice(-600)}` };
-  return { ok: true, assigned: Number(m[1]), failed: Number(m[2]) };
+  const assignedImsis = [...stdout.matchAll(/^OK (.+)$/gm)].map(m => m[1].trim());
+  const conflictedImsis = [...stdout.matchAll(/^CONFLICT (.+)$/gm)].map(m => m[1].trim());
+  const m = stdout.match(/ASSIGN_RESULT \{ok,(\d+),(\d+),(\d+)\}/);
+  if (!m) return { ok: false, assigned: 0, failed: subs.length, conflicted: 0, assignedImsis: [], conflictedImsis: [], error: `Unexpected assign result: ${stdout.trim().slice(-600)}` };
+  return { ok: true, assigned: Number(m[1]), failed: Number(m[2]), conflicted: Number(m[3]), assignedImsis, conflictedImsis };
+}
+
+// Tears down an identity's OCS service + (if it was the product's last
+// linked identity) the product itself, with no replacement bundle — unlike
+// EnsurePlan above, there is nothing to reassign to. Called from subscriber
+// deletion (subscriber-management.ts, via a lazy import — same cross-
+// sibling-module convention as pstn-controller.ts/asterisk-2g-controller.ts
+// use for exactly this kind of "don't statically import the REST layer
+// from a use-case" reason): confirmed live (2026-10-02, via the API
+// regression suite's charging-plans module) that without this, a deleted
+// subscriber's OCS service+product+buckets persist forever in OCS's own
+// Mnesia — a permanent resource leak, and a real landmine if the same IMSI
+// is ever reused (a legitimate scenario, e.g. a SIM reassigned to a new
+// subscriber record): the orphaned product's real remaining balance trips
+// EnsurePlan's own HasRealBalance conflict-protection above, silently
+// blocking the brand-new subscriber from ever being assigned to any plan.
+// Deliberately best-effort: a subscriber delete must not be blocked by OCS
+// being unreachable, so every failure here is caught and reported, never
+// thrown — same "fail open on the delete itself, but tell the caller"
+// shape callers can choose to log/warn on without it becoming a hard error.
+export async function removeSubscriberFromOcs(
+  identities: string[], // IMSI and/or MSISDN — whichever identities actually exist, caller's choice
+): Promise<{ ok: boolean; removed: number; error?: string }> {
+  const real = identities.filter(Boolean);
+  if (real.length === 0) return { ok: true, removed: 0 };
+  if (!readState()) return { ok: true, removed: 0 }; // OCS not configured — nothing to clean up
+  const idsLit = real.map(i => erlBinLit(i)).join(', ');
+  const script = [
+    `Node = '${await getOcsNodeName()}',`,
+    `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
+    `Ids = [${idsLit}],`,
+    `RemoveOne = fun(Id) ->`,
+    `  case Ocs(find_service, [Id]) of`,
+    `    {ok, Svc} ->`,
+    `      case element(8, Svc) of`,
+    `        undefined -> Ocs(delete_service, [Id]), removed;`,
+    `        ProductRef ->`,
+    `          Ocs(delete_service, [Id]),`,
+    `          case Ocs(find_product, [ProductRef]) of`,
+    `            {ok, Prod} ->`,
+    `              RemainingServices = lists:delete(Id, element(11, Prod)),`,
+    `              case RemainingServices of`,
+    `                [] -> Ocs(delete_product, [ProductRef]);`,
+    `                _ -> Ocs(update_product, [setelement(11, Prod, RemainingServices)])`,
+    `              end,`,
+    `              removed;`,
+    `            _ -> removed`,
+    `          end`,
+    `      end;`,
+    `    {error, not_found} -> none;`,
+    `    _ -> error`,
+    `  end`,
+    `end,`,
+    `Results = [ RemoveOne(Id) || Id <- Ids ],`,
+    `RemovedCount = length([ ok || ok <- Results, ok =:= removed ]),`,
+    `io:format("REMOVE_RESULT ~p~n", [RemovedCount]),`,
+    `init:stop()`,
+  ].join('\n');
+  try {
+    const stdout = await runOcsEval(script, 20000);
+    const m = stdout.match(/REMOVE_RESULT (\d+)/);
+    if (!m) return { ok: false, removed: 0, error: `Unexpected result: ${stdout.trim().slice(-400)}` };
+    return { ok: true, removed: Number(m[1]) };
+  } catch (err) {
+    return { ok: false, removed: 0, error: String(err) };
+  }
 }
 
 // One bulk lookup for every currently-assigned identity — never N per-row
@@ -265,9 +402,17 @@ async function getUsageForImsis(
   const voiceTotalSeconds = Math.round(voiceCapMinutes * MIN_TO_SECONDS);
   const imsisLit = imsis.map(i => erlBinLit(i)).join(', ');
   const script = [
-    `Node = 'ocs@open5gs-core',`,
+    `Node = '${await getOcsNodeName()}',`,
     `Ocs = fun(F, A) -> rpc:call(Node, ocs, F, A) end,`,
     `Imsis = [${imsisLit}],`,
+    // `none` means "this subscriber genuinely has no usable bucket" and is
+    // rendered as a real, empty reading. A transport/node failure means
+    // "unknown", which is a completely different thing and must NOT render as
+    // an empty reading — it would show a subscriber with real consumption as
+    // having used nothing. So {error,not_found} and an unset product ref map
+    // to `none`, while {badrpc,_} and any unexpected shape map to `unknown`
+    // and fail the whole request below. Same fail-closed reasoning as
+    // EnsurePlan's own HasRealBalance guard, which had this exact bug.
     `GetUsage = fun(Id) ->`,
     `  case Ocs(find_service, [Id]) of`,
     `    {ok, Svc} ->`,
@@ -281,10 +426,12 @@ async function getUsageForImsis(
     `              DataRemain = lists:sum([ element(7, B) || B <- Buckets, element(9, B) =:= octets ]),`,
     `              VoiceRemain = lists:sum([ element(7, B) || B <- Buckets, element(9, B) =:= seconds ]),`,
     `              {Id, {DataRemain, VoiceRemain}};`,
-    `            _ -> {Id, none}`,
+    `            {error, not_found} -> {Id, none};`,
+    `            _ -> {Id, unknown}`,
     `          end`,
     `      end;`,
-    `    _ -> {Id, none}`,
+    `    {error, not_found} -> {Id, none};`,
+    `    _ -> {Id, unknown}`,
     `  end`,
     `end,`,
     `Results = [ GetUsage(I) || I <- Imsis ],`,
@@ -292,11 +439,18 @@ async function getUsageForImsis(
     `init:stop()`,
   ].join('\n');
   const stdout = await runOcsEval(script, 20000);
-  // Parse lines like: {<<"001...">>,{4900000,29000}} or {<<"001...">>,none}
-  const re = /\{<<"(\d+)">>,\s*(none|\{(\d+),(\d+)\})\}/g;
+  // Parse lines like: {<<"001...">>,{4900000,29000}}, {<<"001...">>,none} or
+  // {<<"001...">>,unknown}. `~p` pretty-printing wraps at ~80 columns, so allow
+  // whitespace/newlines anywhere a break can land inside a tuple.
+  const re = /\{\s*<<"(\d+)">>\s*,\s*(none|unknown|\{\s*(\d+)\s*,\s*(\d+)\s*\})\s*\}/g;
+  const unknown: string[] = [];
   let match: RegExpExecArray | null;
   while ((match = re.exec(stdout)) !== null) {
     const imsi = match[1];
+    if (match[2] === 'unknown') {
+      unknown.push(imsi);
+      continue;
+    }
     if (match[2] === 'none') {
       result[imsi] = null;
       continue;
@@ -309,6 +463,32 @@ async function getUsageForImsis(
       voiceUsedSeconds: Math.max(voiceTotalSeconds - voiceRemain, 0),
       voiceTotalSeconds,
     };
+  }
+  // Fail the request rather than returning a reading we know is wrong. Found
+  // 2026-10-10: the regression suite's charging-plans lifecycle test failed
+  // once, unreproducibly, on "usage response does not include the
+  // just-assigned test subscriber" with a `null` entry — and because every
+  // failure mode collapsed into that same `null`, there was no way to tell
+  // whether OCS had genuinely lost the subscriber's product or an RPC had
+  // simply failed. Separating them means a recurrence names its own cause.
+  if (unknown.length > 0) {
+    throw new Error(
+      `OCS usage lookup failed for ${unknown.length} identit${unknown.length === 1 ? 'y' : 'ies'} ` +
+      `(${unknown.slice(0, 5).join(', ')}${unknown.length > 5 ? ', …' : ''}) — the node answered but ` +
+      `the service/product lookup returned an unexpected result, so their real usage is unknown. ` +
+      `Not reported as zero usage.`,
+    );
+  }
+  // A requested identity missing from the output entirely means its line never
+  // matched — i.e. the script produced something this parser doesn't
+  // understand, which is also "unknown", not "no usage".
+  const unparsed = imsis.filter(i => !(i in result));
+  if (unparsed.length > 0) {
+    throw new Error(
+      `OCS usage lookup returned no parseable entry for ${unparsed.length} of ${imsis.length} ` +
+      `identities (${unparsed.slice(0, 5).join(', ')}${unparsed.length > 5 ? ', …' : ''}). ` +
+      `Raw tail: ${stdout.trim().slice(-300)}`,
+    );
   }
   return result;
 }
@@ -355,6 +535,74 @@ export async function ensureDefaultUnlimitedPlan(db: Db): Promise<{ created: boo
   return { created: true };
 }
 
+// Moved out of createChargingPlansRouter()'s own closure (same treatment as
+// every other module's own subscriber-seeding helper this pass) so it's
+// callable without a live HTTP request — see resyncChargingPlanAssignments().
+export async function resolveSubs(subscriberRepo: ISubscriberRepository, imsis: string[]): Promise<Array<{ imsi: string; msisdn?: string }>> {
+  const all = await subscriberRepo.findAllFull();
+  const byImsi = new Map(all.map(s => [s.imsi, s]));
+  return imsis
+    .map(imsi => byImsi.get(imsi))
+    .filter((s): s is NonNullable<typeof s> => !!s)
+    .map(s => ({ imsi: s.imsi, msisdn: s.msisdn?.[0] }));
+}
+
+// Real, confirmed-live gap (2026-09-23), two layers deep:
+// (1) A plan's subscriber list (nms_charging_plans.imsis) is this NMS's own
+//     Mongo bookkeeping — it says nothing about whether OCS's own
+//     #service{}.product is actually linked. (2) A restored Mongo doc means
+//     ensureDefaultUnlimitedPlan()'s own same-name idempotency check
+//     (`if (existing) return`) skips provisioning ENTIRELY — it was only
+//     ever meant to stop a second accidental provision on the SAME host,
+//     not to recognize "this doc just arrived via restore and its OCS-side
+//     offer was never created on THIS host at all". Confirmed live: a
+//     restored VM had real "Test Plan"/"Unlimited" nms_charging_plans docs
+//     (carried over from production's backup) with every subscriber listed
+//     as assigned, while this VM's own from-scratch OCS Mnesia had never
+//     seen either offer — ocs:find_offer("plan-...-bundle") on the live
+//     node returned {error,not_found}, and every add_product against it
+//     failed as a result, silently, since nothing here ever surfaced that
+//     specific error text back to an operator. Re-provisioning is safe to
+//     call unconditionally for every plan on every reapply — same Mnesia
+//     upsert-by-key idempotency provisionPlanOffers() already documents for
+//     its own plan-edit case — so this always repairs a missing offer AND
+//     re-links every plan's already-recorded IMSI list; a plan already
+//     fully correct just costs a few no-op round trips.
+export async function resyncChargingPlanAssignments(
+  db: Db,
+  subscriberRepo: ISubscriberRepository,
+): Promise<{ plans: number; provisioned: number; provisionFailed: number; assigned: number; failed: number; conflicted: number; conflictedImsis: string[] }> {
+  const col = db.collection<ChargingPlanDoc>('nms_charging_plans');
+  const plans = await col.find({}).toArray();
+  let provisioned = 0;
+  let provisionFailed = 0;
+  let assigned = 0;
+  let failed = 0;
+  let conflicted = 0;
+  const conflictedImsis: string[] = [];
+  for (const plan of plans) {
+    const provision = await provisionPlanOffers(
+      { bundle: plan.ocsBundleOfferId, data: plan.ocsDataOfferId, voice: plan.ocsVoiceOfferId },
+      plan.dataCapGB, plan.voiceCapMinutes,
+    );
+    if (!provision.ok) { provisionFailed++; continue; }
+    provisioned++;
+    if (plan.imsis.length === 0) continue;
+    const subs = await resolveSubs(subscriberRepo, plan.imsis);
+    if (subs.length === 0) continue;
+    const result = await assignSubscribersToPlan(plan.ocsBundleOfferId, subs);
+    if (result.ok) {
+      assigned += result.assigned;
+      failed += result.failed;
+      conflicted += result.conflicted;
+      conflictedImsis.push(...result.conflictedImsis);
+    } else {
+      failed += subs.length;
+    }
+  }
+  return { plans: plans.length, provisioned, provisionFailed, assigned, failed, conflicted, conflictedImsis };
+}
+
 export function createChargingPlansRouter(
   subscriberRepo: ISubscriberRepository,
   db: Db,
@@ -364,14 +612,6 @@ export function createChargingPlansRouter(
   const router = Router();
   const col = () => db.collection<ChargingPlanDoc>('nms_charging_plans');
 
-  const resolveSubs = async (imsis: string[]): Promise<Array<{ imsi: string; msisdn?: string }>> => {
-    const all = await subscriberRepo.findAllFull();
-    const byImsi = new Map(all.map(s => [s.imsi, s]));
-    return imsis
-      .map(imsi => byImsi.get(imsi))
-      .filter((s): s is NonNullable<typeof s> => !!s)
-      .map(s => ({ imsi: s.imsi, msisdn: s.msisdn?.[0] }));
-  };
 
   router.get('/', async (_req: Request, res: Response) => {
     try {
@@ -462,7 +702,7 @@ export function createChargingPlansRouter(
     if (!Array.isArray(imsis) || imsis.length === 0) {
       return res.status(400).json({ success: false, error: 'imsis (non-empty array) required' });
     }
-    const subs = await resolveSubs(imsis);
+    const subs = await resolveSubs(subscriberRepo, imsis);
     if (subs.length === 0) {
       return res.status(400).json({ success: false, error: 'None of the given imsis match a real subscriber' });
     }
@@ -471,11 +711,32 @@ export function createChargingPlansRouter(
       await auditLogger.log({ action: 'charging_plan_assign', user, details: result.error ?? 'failed', success: false });
       return res.status(500).json({ success: false, error: result.error });
     }
-    const assignedImsis = subs.map(s => s.imsi);
-    await col().updateMany({ _id: { $ne: id }, imsis: { $in: assignedImsis } }, { $pull: { imsis: { $in: assignedImsis } as any } });
-    await col().updateOne({ _id: id }, { $addToSet: { imsis: { $each: assignedImsis } } });
-    await auditLogger.log({ action: 'charging_plan_assign', user, details: `plan=${plan.name} assigned=${result.assigned} failed=${result.failed}`, success: true });
-    res.json({ success: true, assigned: result.assigned, failed: result.failed });
+    // Real, 2026-09-24 finding: this used to unconditionally treat every
+    // REQUESTED imsi as assigned in Mongo's own bookkeeping, regardless of
+    // whether assignSubscribersToPlan() actually succeeded for each one —
+    // meaning a subscriber EnsurePlan deliberately left untouched
+    // (skipped_conflict, a real non-empty balance at risk) would still get
+    // silently recorded here as "on this plan," directly recreating the
+    // exact Mongo-vs-OCS drift resyncChargingPlanAssignments()'s own
+    // comment describes ("Mongo saying a subscriber is on a plan is
+    // bookkeeping only, not proof OCS's own Mnesia actually has that
+    // link"). A follow-up adversarial review found an even narrower gap in
+    // the FIRST fix here: excluding only conflictedImsis still missed a
+    // THIRD real outcome (a plain error, e.g. add_product itself failing)
+    // — that imsi would still land in Mongo's bookkeeping despite the OCS
+    // mutation genuinely failing. Now uses result.assignedImsis directly
+    // (an explicit, positive list of confirmed successes from
+    // assignSubscribersToPlan() itself), not a derived exclusion — so
+    // Mongo's imsis[] only ever reflects identities OCS actually linked,
+    // regardless of which of the three possible outcomes any other imsi hit.
+    const assignedImsis = result.assignedImsis;
+    if (assignedImsis.length > 0) {
+      await col().updateMany({ _id: { $ne: id }, imsis: { $in: assignedImsis } }, { $pull: { imsis: { $in: assignedImsis } as any } });
+      await col().updateOne({ _id: id }, { $addToSet: { imsis: { $each: assignedImsis } } });
+    }
+    const conflictNote = result.conflicted > 0 ? ` conflicted=${result.conflicted} (${result.conflictedImsis.join(',')})` : '';
+    await auditLogger.log({ action: 'charging_plan_assign', user, details: `plan=${plan.name} assigned=${result.assigned} failed=${result.failed}${conflictNote}`, success: true });
+    res.json({ success: true, assigned: result.assigned, failed: result.failed, conflicted: result.conflicted, conflictedImsis: result.conflictedImsis });
   });
 
   // One bulk usage call for every subscriber on this plan.

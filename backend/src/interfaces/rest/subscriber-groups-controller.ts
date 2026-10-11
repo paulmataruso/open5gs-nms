@@ -1,6 +1,15 @@
 import { Router, Request, Response } from 'express';
 import { Db, ObjectId } from 'mongodb';
 import pino from 'pino';
+import { requireAdmin } from './middleware/auth-middleware';
+
+// Real, confirmed-live 2026-09-30 finding (a full-session live-API verification pass):
+// none of the 3 mutating routes below had requireAdmin, unlike every sibling module
+// (subscribers, users, SUCI, APN profiles all correctly gate) — confirmed live with a
+// real viewer-role account, which was correctly blocked (403) from mutating subscribers/
+// APN profiles but could fully create/update/delete subscriber groups (200 on all
+// three). A read-only "viewer" role should never be able to manage groups that
+// influence real subscriber-facing config.
 
 export function createSubscriberGroupsRouter(db: Db, logger: pino.Logger): Router {
   const router = Router();
@@ -16,7 +25,7 @@ export function createSubscriberGroupsRouter(db: Db, logger: pino.Logger): Route
     }
   });
 
-  router.post('/', async (req: Request, res: Response) => {
+  router.post('/', requireAdmin, async (req: Request, res: Response) => {
     const { name, imsis, color } = req.body;
     if (!name || typeof name !== 'string' || !Array.isArray(imsis)) {
       return res.status(400).json({ error: 'name (string) and imsis (array) required' });
@@ -31,7 +40,7 @@ export function createSubscriberGroupsRouter(db: Db, logger: pino.Logger): Route
     }
   });
 
-  router.put('/:id', async (req: Request, res: Response) => {
+  router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
     const { name, imsis, color } = req.body;
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ error: 'Invalid id' }); }
@@ -48,7 +57,7 @@ export function createSubscriberGroupsRouter(db: Db, logger: pino.Logger): Route
     }
   });
 
-  router.delete('/:id', async (req: Request, res: Response) => {
+  router.delete('/:id', requireAdmin, async (req: Request, res: Response) => {
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ error: 'Invalid id' }); }
     try {

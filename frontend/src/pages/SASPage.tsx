@@ -4,7 +4,7 @@ import {
   AlertCircle, CheckCircle, Activity, ScrollText, Trash2, Plus, BookOpen, X, Download, Lock, Users,
   ChevronDown, ChevronUp,
 } from 'lucide-react';
-import { sasApi } from '../api/sas';
+import { sasApi, SasCertInfo } from '../api/sas';
 import { interfaceApi } from '../api';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -1111,6 +1111,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   const [cbsdPolicies,  setCbsdPolicies]  = useState<Record<string, string>>({}); // "fccId:serial" -> bandId
   const [cbsdNotes,     setCbsdNotes]     = useState<Record<string, string>>({});
   const [groupNotes,    setGroupNotes]    = useState<Record<string, string>>({});
+  const [groupCombineChannels, setGroupCombineChannels] = useState<Record<string, boolean>>({});
   const [groupCustomSlots, setGroupCustomSlots] = useState<Record<string, Array<{low:number;high:number;label?:string}> | undefined>>({});
   // Snapshot of groupCustomSlots as of the last successful load()/save — only ever
   // written there, never by editing. Used to detect whether the live editing state
@@ -1135,6 +1136,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
       const [gp, cp, mg] = await Promise.all([sasApi.listGroupPolicies(), sasApi.listCbsdPolicies(), sasApi.listManualGroups()]);
       setGroupPolicies(Object.fromEntries(gp.map((p: any) => [p._id, p.bandId])));
       setGroupNotes(Object.fromEntries(gp.map((p: any) => [p._id, p.notes ?? ''])));
+      setGroupCombineChannels(Object.fromEntries(gp.map((p: any) => [p._id, !!p.combineChannels])));
       setGroupCustomSlots(Object.fromEntries(gp.map((p: any) => [p._id, p.customSlots])));
       setSavedGroupCustomSlots(Object.fromEntries(gp.map((p: any) => [p._id, p.customSlots])));
       setCbsdPolicies(Object.fromEntries(cp.map((p: any) => [p._id, p.bandId])));
@@ -1187,7 +1189,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
     setSaving(s => ({ ...s, [groupId]: true }));
     try {
       if (mg) await sasApi.setManualGroup(mg._id, mg.cbsdIds);
-      if (bandId) await sasApi.setGroupPolicy(groupId, bandId, groupNotes[groupId], groupCustomSlots[groupId]);
+      if (bandId) await sasApi.setGroupPolicy(groupId, bandId, groupNotes[groupId], groupCustomSlots[groupId], groupCombineChannels[groupId]);
       else        await sasApi.deleteGroupPolicy(groupId).catch(() => {});
       await load();
       toast.success(`Group "${groupId}" saved`);
@@ -1291,7 +1293,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
           const showMembers = expandedMembers.has(groupId);
           const rowKey = manualEntry?._key ?? groupId;
           return (
-            <div key={rowKey} className={clsx('nms-card space-y-3', isManual && 'border-amber-500/40 bg-amber-950/10')}>
+            <div key={rowKey} className="nms-card space-y-3">
               <div className="flex items-start justify-between gap-4">
                 <div className="flex-1 min-w-0 space-y-2">
 
@@ -1371,6 +1373,14 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                       <input className="nms-input text-xs" placeholder="Notes (optional)" value={groupNotes[groupId] ?? ''}
                         onChange={e => setGroupNotes(n => ({ ...n, [groupId]: e.target.value }))} />
                     </div>
+                    <label className="flex items-start gap-2 cursor-pointer group mt-2">
+                      <input type="checkbox" checked={!!groupCombineChannels[groupId]}
+                        onChange={e => setGroupCombineChannels(c => ({ ...c, [groupId]: e.target.checked }))}
+                        className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent mt-0.5" />
+                      <span className="text-xs text-nms-text-dim group-hover:text-nms-text transition-colors">
+                        Combine adjacent channels into one wide block — for radios whose SAS client tiles a full-band scan into many narrow entries and needs one entry already spanning its full channel width, rather than several adjacent narrow ones it would have to combine itself.
+                      </span>
+                    </label>
                   </div>
                 </div>
 
@@ -1701,7 +1711,7 @@ export function SASPage() {
   const [rfStatus, setRfStatus] = useState<Map<string, boolean | null>>(new Map());
   const [ueCount, setUeCount]   = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab]         = useState<'dashboard' | 'config' | 'policy' | 'api'>('dashboard');
+  const [tab, setTab]         = useState<'dashboard' | 'config' | 'policy' | 'api' | 'certs'>('dashboard');
   const [verbose, setVerboseState] = useState(false);
 
   const toggleVerbose = async () => {
@@ -1720,6 +1730,77 @@ export function SASPage() {
   const [showRefModal, setShowRefModal] = useState(false);
   const [paused, setPaused]   = useState(false);
   const [cert, setCert]       = useState<{ exists: boolean; size?: number; modified?: string; message?: string } | null>(null);
+  const [pki, setPki]         = useState<{ root: SasCertInfo | null; leaf: SasCertInfo | null } | null>(null);
+  const [hostIps, setHostIps] = useState<string[]>([]);
+  const [pkiLoading, setPkiLoading]     = useState(false);
+  const [leafForm, setLeafForm] = useState({ cn: '', san: '', days: 3650 });
+  const [rootForm, setRootForm] = useState({ cn: '', days: 3650, leafCn: '', leafSan: '' });
+  const [leafSaving, setLeafSaving] = useState(false);
+  const [rootSaving, setRootSaving] = useState(false);
+  const [showRootConfirm, setShowRootConfirm] = useState(false);
+
+  const loadPki = useCallback(async () => {
+    setPkiLoading(true);
+    try {
+      const r = await sasApi.getPki();
+      setPki({ root: r.root, leaf: r.leaf });
+      setHostIps(r.hostIps ?? []);
+      setLeafForm({
+        cn: /CN=([^,]+)/.exec(r.leaf?.subject ?? '')?.[1] ?? 'sas.local',
+        san: (r.leaf?.san ?? []).join(', '),
+        days: 3650,
+      });
+      setRootForm(f => ({
+        ...f,
+        cn: /CN=([^,]+)/.exec(r.root?.subject ?? '')?.[1] ?? 'Open5GS NMS SAS Root CA',
+        leafCn: /CN=([^,]+)/.exec(r.leaf?.subject ?? '')?.[1] ?? 'sas.local',
+        leafSan: (r.leaf?.san ?? []).join(', '),
+      }));
+    } catch { toast.error('Failed to load certificate status'); }
+    finally { setPkiLoading(false); }
+  }, []);
+
+  useEffect(() => { if (tab === 'certs' && !pki) loadPki(); }, [tab, pki, loadPki]);
+
+  // Toggles "IP:<ip>" in a comma-separated SAN string -- backs the host-IP
+  // picker buttons on both the leaf form and the root form's cascaded-leaf
+  // fields, so selecting one of the detected host addresses doesn't require
+  // hand-typing "IP:x.x.x.x" into the raw SAN text field.
+  const toggleIpInSan = (san: string, ip: string): string => {
+    const entries = san.split(',').map(s => s.trim()).filter(Boolean);
+    const token = `IP:${ip}`;
+    return (entries.includes(token) ? entries.filter(e => e !== token) : [...entries, token]).join(', ');
+  };
+
+  const regenerateLeaf = async () => {
+    setLeafSaving(true);
+    try {
+      const san = leafForm.san.split(',').map(s => s.trim()).filter(Boolean);
+      const r = await sasApi.regenerateLeaf({ cn: leafForm.cn, san, days: leafForm.days });
+      setPki({ root: r.root, leaf: r.leaf });
+      setHostIps(r.hostIps ?? []);
+      toast.success('Server certificate regenerated — nginx reloaded');
+    } catch (err: any) { toast.error(err?.response?.data?.error ?? 'Failed to regenerate server certificate'); }
+    finally { setLeafSaving(false); }
+  };
+
+  const regenerateRoot = async () => {
+    setRootSaving(true);
+    try {
+      const leafSan = rootForm.leafSan.split(',').map(s => s.trim()).filter(Boolean);
+      const r = await sasApi.regenerateRoot({
+        cn: rootForm.cn, days: rootForm.days, confirm: true,
+        leafCn: rootForm.leafCn, leafSan,
+      });
+      setPki({ root: r.root, leaf: r.leaf });
+      setHostIps(r.hostIps ?? []);
+      setShowRootConfirm(false);
+      toast.success('Root CA regenerated — re-install the vendor chain on every radio that trusted the old one');
+    } catch (err: any) { toast.error(err?.response?.data?.error ?? 'Failed to regenerate root CA'); }
+    finally { setRootSaving(false); }
+  };
+
+  const daysColor = (d: number) => d < 30 ? 'text-red-400' : d < 90 ? 'text-amber-400' : 'text-emerald-400';
   useEffect(() => {
     sasApi.getStatus().then(s => setPaused(s.paused)).catch(() => {});
     sasApi.getCert().then(c => setCert(c)).catch(() => {});
@@ -1818,6 +1899,7 @@ export function SASPage() {
     config:    'Configuration',
     policy:    'Band Assignment',
     api:       'API Reference',
+    certs:     'Certificates',
   };
 
   return (
@@ -1995,6 +2077,7 @@ export function SASPage() {
             { id: 'config',    Icon: Settings    },
             { id: 'policy',    Icon: Radio       },
             { id: 'api',       Icon: ScrollText  },
+            { id: 'certs',     Icon: Shield      },
           ] as const).map(({ id, Icon }) => (
             <button key={id} onClick={() => setTab(id)}
               className={clsx(
@@ -2505,6 +2588,186 @@ export function SASPage() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── Certificates ── */}
+      {tab === 'certs' && (
+        <div className="space-y-5">
+          {pkiLoading && !pki && <div className="text-sm text-nms-text-dim">Loading certificate status…</div>}
+
+          {pki && (
+            <>
+              {/* Root CA */}
+              <div className="nms-card space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-nms-accent" />
+                    Root CA
+                  </h2>
+                  {pki.root && (
+                    <span className={clsx('text-xs font-mono', daysColor(pki.root.daysRemaining))}>
+                      {pki.root.daysRemaining}d remaining
+                    </span>
+                  )}
+                </div>
+
+                {!pki.root ? (
+                  <p className="text-sm text-nms-text-dim">No root CA on disk yet — run <code className="font-mono">nginx/setup-sas-cert.sh</code> once, then reload this tab.</p>
+                ) : (
+                  <>
+                    <div className="text-xs text-nms-text-dim space-y-1 font-mono">
+                      <div>{pki.root.subject}</div>
+                      <div>Valid until {pki.root.notAfter}</div>
+                    </div>
+                    <p className="text-xs text-nms-text-dim">
+                      This is what a radio's own "install CBRS vendor chain" (or equivalent trust-anchor upload) should be pointed at — download as{' '}
+                      <a href="/api/sas/admin/pki/download/crt" className="text-nms-accent hover:underline">sas.crt</a>{' '}
+                      or{' '}
+                      <a href="/api/sas/admin/pki/download/pem" className="text-nms-accent hover:underline">sas.pem</a>{' '}
+                      (identical content, two extensions since some radios' upload UIs validate on extension).
+                    </p>
+                  </>
+                )}
+
+                {!showRootConfirm ? (
+                  <button onClick={() => setShowRootConfirm(true)} className="nms-btn-danger text-xs flex items-center gap-1.5 px-2.5 py-1.5">
+                    <RefreshCw className="w-3 h-3" /> Regenerate Root CA
+                  </button>
+                ) : (
+                  <div className="space-y-3 p-3 rounded-lg bg-red-500/5 border border-red-500/30">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 text-red-400 mt-0.5 shrink-0" />
+                      <p className="text-xs text-red-300">
+                        Any radio that already installed the <span className="font-semibold">current</span> root CA as its trust anchor will reject the new one until it's re-installed there too — this will affect already-connected radios, not just new ones. The server certificate is regenerated and re-signed automatically as part of this.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="nms-label">Root CN</label>
+                        <input className="nms-input font-mono text-xs" value={rootForm.cn}
+                          onChange={e => setRootForm(f => ({ ...f, cn: e.target.value }))} />
+                      </div>
+                      <div>
+                        <label className="nms-label">Validity (days)</label>
+                        <input className="nms-input font-mono text-xs" type="number" value={rootForm.days}
+                          onChange={e => setRootForm(f => ({ ...f, days: Number(e.target.value) }))} />
+                      </div>
+                      <div>
+                        <label className="nms-label">New server cert CN</label>
+                        <input className="nms-input font-mono text-xs" value={rootForm.leafCn}
+                          onChange={e => setRootForm(f => ({ ...f, leafCn: e.target.value }))} />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="nms-label">New server cert SAN (comma-separated — IP:x.x.x.x, DNS:name)</label>
+                        <input className="nms-input font-mono text-xs" value={rootForm.leafSan}
+                          onChange={e => setRootForm(f => ({ ...f, leafSan: e.target.value }))} />
+                        {hostIps.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                            <span className="text-xs text-nms-text-dim">Detected host IPs:</span>
+                            {hostIps.map(ip => {
+                              const active = rootForm.leafSan.split(',').map(s => s.trim()).includes(`IP:${ip}`);
+                              return (
+                                <button key={ip} type="button"
+                                  onClick={() => setRootForm(f => ({ ...f, leafSan: toggleIpInSan(f.leafSan, ip) }))}
+                                  className={clsx(
+                                    'text-xs font-mono px-2 py-0.5 rounded border transition-colors',
+                                    active
+                                      ? 'bg-nms-accent text-white border-nms-accent'
+                                      : 'text-nms-text-dim border-nms-border hover:text-nms-text hover:border-nms-accent',
+                                  )}>
+                                  {ip}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={regenerateRoot} disabled={rootSaving}
+                        className="nms-btn-danger text-xs px-2.5 py-1.5 disabled:opacity-50">
+                        {rootSaving ? 'Regenerating…' : 'Confirm — Regenerate Root CA'}
+                      </button>
+                      <button onClick={() => setShowRootConfirm(false)} disabled={rootSaving}
+                        className="nms-btn-ghost text-xs px-2.5 py-1.5">Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Leaf / server cert */}
+              <div className="nms-card space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-nms-accent" />
+                    Server Certificate
+                  </h2>
+                  {pki.leaf && (
+                    <span className={clsx('text-xs font-mono', daysColor(pki.leaf.daysRemaining))}>
+                      {pki.leaf.daysRemaining}d remaining
+                    </span>
+                  )}
+                </div>
+
+                {!pki.leaf ? (
+                  <p className="text-sm text-nms-text-dim">No server certificate yet — regenerate the root CA above first.</p>
+                ) : (
+                  <div className="text-xs text-nms-text-dim space-y-1 font-mono">
+                    <div>{pki.leaf.subject}</div>
+                    <div>Issuer: {pki.leaf.issuer}</div>
+                    <div>SAN: {pki.leaf.san.join(', ') || '(none)'}</div>
+                    <div>Valid until {pki.leaf.notAfter}</div>
+                  </div>
+                )}
+                <p className="text-xs text-nms-text-dim">
+                  This is what nginx actually presents during the TLS handshake on port 8443 — signed by the root above, not self-signed. Safe to regenerate on its own (e.g. after the server's IP changes) — doesn't affect any radio's already-installed trust anchor.
+                </p>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="nms-label">Server CN</label>
+                    <input className="nms-input font-mono text-xs" value={leafForm.cn}
+                      onChange={e => setLeafForm(f => ({ ...f, cn: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="nms-label">Validity (days)</label>
+                    <input className="nms-input font-mono text-xs" type="number" value={leafForm.days}
+                      onChange={e => setLeafForm(f => ({ ...f, days: Number(e.target.value) }))} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="nms-label">Subject Alternative Names (comma-separated — IP:x.x.x.x, DNS:name)</label>
+                    <input className="nms-input font-mono text-xs" value={leafForm.san}
+                      onChange={e => setLeafForm(f => ({ ...f, san: e.target.value }))} />
+                    {hostIps.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        <span className="text-xs text-nms-text-dim">Detected host IPs:</span>
+                        {hostIps.map(ip => {
+                          const active = leafForm.san.split(',').map(s => s.trim()).includes(`IP:${ip}`);
+                          return (
+                            <button key={ip} type="button"
+                              onClick={() => setLeafForm(f => ({ ...f, san: toggleIpInSan(f.san, ip) }))}
+                              className={clsx(
+                                'text-xs font-mono px-2 py-0.5 rounded border transition-colors',
+                                active
+                                  ? 'bg-nms-accent text-white border-nms-accent'
+                                  : 'text-nms-text-dim border-nms-border hover:text-nms-text hover:border-nms-accent',
+                              )}>
+                              {ip}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button onClick={regenerateLeaf} disabled={leafSaving}
+                  className="nms-btn-primary text-xs flex items-center gap-1.5 px-2.5 py-1.5 disabled:opacity-50">
+                  <RefreshCw className="w-3 h-3" /> {leafSaving ? 'Regenerating…' : 'Regenerate Server Certificate'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

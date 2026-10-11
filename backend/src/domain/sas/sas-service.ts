@@ -43,6 +43,47 @@ function cbsdArfcn(centerHz: number, radioTech?: string): { label: string; value
 const CBRS_LOW  = 3_550_000_000;  // EARFCN 55240
 const CBRS_HIGH = 3_700_000_000;  // EARFCN 56740
 
+// Real, confirmed-live 2026-09-30 finding (a full-session live-API verification
+// pass, then root-caused in detail per explicit user follow-up): this ONE specific
+// Sercomm model self-registers to SAS with its raw internal GPS-lock reading
+// (the same integer its own TR-069 `Device.FAP.GPS.LockedLatitude`/
+// `LockedLongitude` reports, confirmed byte-identical against GenieACS's own copy
+// of that exact parameter) instead of first converting it to decimal degrees —
+// e.g. a real latitude of 43.375246° arrives here as the bare integer 43375246.
+// The sibling 5G model on this same deployment (P27-SCE5164-B48) reports
+// correctly already; this is confirmed to be a firmware quirk specific to this
+// one 4G model, not something every Sercomm radio does. Per explicit user
+// direction ("every radio does things different, gate your changes to each radio
+// type/model" — same instinct already established by CATEGORY_B_TEST_EXEMPT_*
+// below, just for a different radio/bug): this correction is scoped strictly to
+// this one fccId, not applied as a blanket "any Sercomm" or "any out-of-range
+// value" rule. The /1e6 divisor itself was independently confirmed, not guessed:
+// dividing this exact raw value by 1e6 lands within 0.001° of a real, nearby,
+// already-correctly-reporting radio's own decimal-degree location — not derived
+// from a TR-069 spec assumption alone (this codebase's own existing, unrelated
+// `Device.DeviceInfo.cpiLatitude` conversion a few hundred lines away in
+// genieacs-controller.ts uses /1e7 for a DIFFERENT parameter on a DIFFERENT
+// radio family (Baicells) — do not assume these two conversions must match; they
+// were verified completely independently, and Device.DeviceInfo.cpiLatitude
+// itself is never actually populated on any real device on this deployment,
+// confirmed via GenieACS's own raw NBI response, so that other conversion has no
+// live real-world data to cross-check against at all).
+//
+// Defensive range check (not just the fccId match alone) so a registration that's
+// ALREADY correct — e.g. if this model's firmware is ever fixed upstream, or a
+// unit is swapped for a different model reusing this constant by coincidence —
+// is never touched: a real decimal-degree latitude/longitude is always within
+// [-90,90]/[-180,180], so only a value clearly outside that range (i.e. clearly
+// still raw/unconverted) ever gets corrected.
+const SERCOMM_RAW_GPS_FCC_ID = 'P27-SCE4255W';
+function normalizeSercommRawGps<T extends Record<string, any> | undefined>(installationParam: T): T {
+  if (!installationParam) return installationParam;
+  const { latitude, longitude } = installationParam;
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') return installationParam;
+  if (Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180) return installationParam;
+  return { ...installationParam, latitude: latitude / 1e6, longitude: longitude / 1e6 };
+}
+
 export class SasService {
   private cbsds!:        Collection<SasCbsd>;
   private grants!:        Collection<SasGrant>;
@@ -103,6 +144,7 @@ export class SasService {
         grantExpireHours:         24,
         defaultGrantBandwidthMhz: 20,
         autoApprove:              true,
+        grantKeeperMaxStaleHours: 168,
         frequencyBands: [
           {
             // Full CBRS band: EARFCN 55240 (3550 MHz) to 56739 (3699.9 MHz)
@@ -416,10 +458,10 @@ export class SasService {
   }
 
   async listGroupPolicies(): Promise<GroupBandPolicy[]> { return this.groupPolicies.find({}).toArray(); }
-  async setGroupPolicy(groupId: string, bandId: string, notes?: string, customSlots?: import('./sas-types').GroupBandSlot[]): Promise<GroupBandPolicy> {
-    const p: GroupBandPolicy = { _id: groupId, bandId, notes, customSlots, updatedAt: new Date() };
+  async setGroupPolicy(groupId: string, bandId: string, notes?: string, customSlots?: import('./sas-types').GroupBandSlot[], combineChannels?: boolean): Promise<GroupBandPolicy> {
+    const p: GroupBandPolicy = { _id: groupId, bandId, notes, customSlots, combineChannels, updatedAt: new Date() };
     await this.groupPolicies.replaceOne({ _id: groupId }, p, { upsert: true });
-    this.logger.info({ groupId, bandId, customSlots: customSlots?.length ?? 'auto' }, 'Group band policy set'); return p;
+    this.logger.info({ groupId, bandId, customSlots: customSlots?.length ?? 'auto', combineChannels: !!combineChannels }, 'Group band policy set'); return p;
   }
   async deleteGroupPolicy(groupId: string): Promise<boolean> {
     return (await this.groupPolicies.deleteOne({ _id: groupId })).deletedCount > 0;
@@ -485,6 +527,58 @@ export class SasService {
         const missing = ['userId', 'fccId', 'cbsdSerialNumber'].filter(k => !(req as any)[k]);
         responses.push({ response: makeResponse(RC.MISSING_PARAM, missing) });
         continue;
+      }
+
+      if (req.fccId === SERCOMM_RAW_GPS_FCC_ID && req.installationParam) {
+        const corrected = normalizeSercommRawGps(req.installationParam);
+        if (corrected !== req.installationParam) {
+          this.logger.warn(
+            { fccId: req.fccId, serial: req.cbsdSerialNumber, raw: req.installationParam, corrected },
+            'Sercomm P27-SCE4255W sent raw (unconverted) GPS units — corrected before storing',
+          );
+          req.installationParam = corrected;
+        }
+      }
+
+      // WINNF-TS-0016 technically requires a Category B CBSD to submit
+      // complete installationParam (outdoor, professionally-installed
+      // high-power devices — FCC Part 96 requires verified location/height
+      // for these, unlike Category A). Confirmed live 2026-09-28 this is
+      // why a real Nokia AirScale BBU (WINNF v1.2) never got past
+      // registration once that was enforced — its SCF has GNSS antenna
+      // lat/long/altitude for timing sync, but nothing that maps to a CBRS
+      // installationParam (no height/heightType field anywhere in its
+      // config at all). Per explicit user direction (2026-09-28): this is
+      // a test SAS harness and the priority is getting THIS SPECIFIC radio
+      // through to a grant — so the check is bypassed (logged, not
+      // blocked) ONLY for this exact CBSD identity. Every other Category B
+      // registration still gets the real, spec-compliant hard rejection —
+      // do not widen this exemption without the same explicit direction.
+      const CATEGORY_B_TEST_EXEMPT_FCC_ID = '#2345CBSDTEST01';
+      const CATEGORY_B_TEST_EXEMPT_SERIAL = 'AH193701274.NR';
+      const isCategoryBTestExempt =
+        req.fccId === CATEGORY_B_TEST_EXEMPT_FCC_ID && req.cbsdSerialNumber === CATEGORY_B_TEST_EXEMPT_SERIAL;
+      if (req.cbsdCategory === 'B') {
+        const ip = req.installationParam;
+        const missing = ['latitude', 'longitude', 'height', 'heightType']
+          .filter(k => ip == null || (ip as any)[k] === undefined || (ip as any)[k] === null);
+        if (missing.length > 0) {
+          if (isCategoryBTestExempt) {
+            this.logger.warn({ fccId: req.fccId, serial: req.cbsdSerialNumber, missing }, 'Category B registration missing installationParam fields — allowing anyway (test-harness exemption for this CBSD only)');
+          } else {
+            this.logger.warn({ fccId: req.fccId, serial: req.cbsdSerialNumber, missing }, 'Category B registration missing required installationParam fields — rejecting per WINNF-TS-0016');
+            responses.push({ response: makeResponse(RC.MISSING_PARAM, missing.map(k => `installationParam.${k}`)) });
+            continue;
+          }
+        } else if (ip!.indoorDeployment === true) {
+          if (isCategoryBTestExempt) {
+            this.logger.warn({ fccId: req.fccId, serial: req.cbsdSerialNumber }, 'Category B registration claims indoor deployment — allowing anyway (test-harness exemption for this CBSD only)');
+          } else {
+            this.logger.warn({ fccId: req.fccId, serial: req.cbsdSerialNumber }, 'Category B registration claims indoor deployment — invalid, Category B is outdoor-only per FCC Part 96');
+            responses.push({ response: makeResponse(RC.INVALID_VALUE, ['installationParam.indoorDeployment']) });
+            continue;
+          }
+        }
       }
 
       const existing = await this.cbsds.findOne({
@@ -600,6 +694,13 @@ export class SasService {
       // land a few hundred kHz off the slot boundary (see the comment below),
       // which strict allow-list matching would incorrectly reject.
       let strictAllowedSlots: Array<{ low: number; high: number; label?: string }> | undefined;
+      // Operator-selectable, per-group (Band Assignment tab) — see
+      // GroupBandPolicy.combineChannels' own doc comment for what this does
+      // and why it's scoped to manual groups only, same as strictAllowedSlots
+      // just above: an explicit, deliberate operator action, never inferred
+      // from a radio's own self-reported native group (e.g. Sercomm's
+      // SC_Group/SERCOMM_5G), which must never get this behavior implicitly.
+      let combineChannels = false;
       const effectiveGroup = await this.resolveGroupId(cbsd);
       if (effectiveGroup) {
         const manualGroup = await this.manualGroups.findOne({ _id: effectiveGroup });
@@ -608,6 +709,7 @@ export class SasService {
           if (Array.isArray(groupPolicy?.customSlots) && groupPolicy.customSlots.length > 0) {
             strictAllowedSlots = groupPolicy.customSlots;
           }
+          combineChannels = !!groupPolicy?.combineChannels;
         }
       }
 
@@ -668,8 +770,13 @@ export class SasService {
               maxEirp:     band.maxEirp ?? cfg.maxEirpGAA,
             });
           } else if (cbsd.fccId?.startsWith('NOKIAPICOBTS')) {
-            // Nokia only: skip out-of-band entries entirely instead of the
-            // generic index-based redirect below. Confirmed live (2026-07-20):
+            // Nokia Pico BTS ONLY (4G small cell product — NOT the AirScale
+            // n48 5G unit handled separately below, deliberately kept as an
+            // independent condition even though the underlying symptom and
+            // fix are the same for both — different product, different
+            // radio, no shared behavior coupling): skip out-of-band entries
+            // entirely instead of the generic index-based redirect below.
+            // Confirmed live (2026-07-20):
             // Nokia's SAS client tiles a full-band scan into 15 separate 10MHz
             // inquiredSpectrum entries (not a real CA request) — the redirect
             // math (`band.lowFrequency + entryIndex*slotWidthHz`) assumes a
@@ -681,9 +788,21 @@ export class SasService {
             // a grant request afterward. Nokia's own in-band entries (the ones
             // that DO overlap its assigned band) already carry everything it
             // needs to pick a valid frequency, so out-of-band ones are simply
-            // omitted rather than redirected. Strictly scoped to Nokia's FCC ID
-            // prefix — every other vendor keeps the exact original redirect
-            // behavior below, unchanged.
+            // omitted rather than redirected. Strictly scoped to the Pico's own
+            // FCC ID prefix — every other vendor keeps the exact original
+            // redirect behavior below, unchanged.
+          } else if (combineChannels) {
+            // Generalized 2026-09-28 (per explicit operator request) from a
+            // one-off fix hardcoded to one Nokia AirScale unit's exact
+            // identity into an opt-in, per-manual-group toggle (Band
+            // Assignment tab) — see GroupBandPolicy.combineChannels' own doc
+            // comment. Originally added because that unit's own SAS client
+            // tiles a full-band scan into 15 separate 10MHz inquiredSpectrum
+            // entries, hitting the identical broken-redirect-math failure
+            // mode documented above for the Pico BTS (the radio never sent a
+            // single /grant request the whole time this was misfiring) —
+            // same fix (skip out-of-band entries rather than redirect), now
+            // opt-in per group instead of hardcoded to one radio.
           } else {
             // Inquiry is entirely outside this band — redirect to the correct slot
             // within the assigned band, offset by entry index so CA gets two
@@ -736,6 +855,36 @@ export class SasService {
             ? bands.map(b => ({ frequencyRange: { lowFrequency: b.lowFrequency, highFrequency: b.highFrequency }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: b.maxEirp ?? cfg.maxEirpGAA }))
             : [{ frequencyRange: { lowFrequency: cfg.allowedBandLow, highFrequency: cfg.allowedBandHigh }, channelType: 'GAA' as const, ruleApplied: 'FCC_PART_96', maxEirp: cfg.maxEirpGAA }];
         availableChannels.push(...fallback);
+      }
+
+      // Opt-in per-group (Band Assignment tab), same combineChannels flag as
+      // the out-of-band skip case above — generalized 2026-09-28 from a fix
+      // originally hardcoded to one Nokia AirScale unit's exact identity.
+      // Real bug that motivated this, confirmed live: even after the skip
+      // fix above produced a clean response of exactly the 2 legitimately
+      // in-band 10MHz channels (3570-3580MHz, 3580-3590MHz, responseCode
+      // SUCCESS, confirmed via the actual logged response), that radio still
+      // never sent a single /grant request — its own logic evidently needed
+      // to see ONE availableChannel entry already spanning its full desired
+      // 20MHz width, not two adjacent 10MHz entries it would have to combine
+      // itself. Collapsing multiple channels into one combined span is not a
+      // new technique in this file (see the disabled isSercommSingleStep
+      // block below, which does the same min/max collapse for a different
+      // reason) -- same idea, now a real opt-in toggle instead of a one-off
+      // hardcoded identity check. Deliberately unconditional on
+      // availableChannels.length > 1 (a no-op if there's already exactly one
+      // channel, e.g. an inquiry that only asks for the full band directly).
+      if (combineChannels && availableChannels.length > 1) {
+        const low  = Math.min(...availableChannels.map(c => c.frequencyRange.lowFrequency));
+        const high = Math.max(...availableChannels.map(c => c.frequencyRange.highFrequency));
+        this.logger.info({ cbsdId: req.cbsdId, from: availableChannels.map(c => c.frequencyRange), low, high }, 'Nokia AirScale — combining adjacent channels into one span');
+        availableChannels.length = 0;
+        availableChannels.push({
+          frequencyRange: { lowFrequency: low, highFrequency: high },
+          channelType: 'GAA' as const,
+          ruleApplied: 'FCC_PART_96',
+          maxEirp: cfg.maxEirpGAA,
+        });
       }
 
       // Sercomm Single-Step mode (CPIInstallParamSuppliedEnable=False + Method=0):
@@ -1501,9 +1650,57 @@ export class SasService {
 
       this.logger.trace({ count: grants.length }, 'Grant keeper: renewing stale grants');
 
+      // Real, 2026-09-24 finding: this loop used to renew EVERY stale-
+      // looking grant unconditionally, forever, for any vendor — the
+      // Baicells-specific "keeps heartbeating forever after GPS lock" quirk
+      // this keeper was written for (see the class comment above) has no
+      // staleness ceiling, and no vendor scoping. Confirmed live: two real
+      // Nokia CBSDs sat "AUTHORIZED" for 15-28 days with zero actual
+      // protocol contact — lastOperationState (written ONLY by the real
+      // heartbeat() handler, never by this keeper) was frozen from weeks
+      // ago while lastHeartbeat/transmitExpireTime looked perfectly fresh,
+      // 100% keeper-manufactured. Confirmed safe to terminate rather than
+      // renew past a ceiling: this function only ever does Mongo
+      // updateOne() calls — no network/TR-069/GenieACS call, no push
+      // channel to the radio anywhere in this codebase's SAS
+      // implementation. A real CBSD's own onboard, FCC-certified firmware
+      // autonomously enforces its own locally-tracked transmitExpireTime
+      // against its own real heartbeat history, entirely independent of
+      // what this server's Mongo document claims — so a CBSD that's had
+      // zero real contact for weeks has already autonomously halted
+      // transmission per its own certification requirements regardless of
+      // this bug. cbsds.lastSeen (touched exclusively by the 5 real
+      // protocol handlers — registration/spectrumInquiry/grant/heartbeat/
+      // relinquishment — never by this keeper) is the correct staleness
+      // signal, already used the same way by the frontend's own
+      // GROUP_STALE_MS heuristic (SASPage.tsx).
+      const maxStaleMs = (cfg.grantKeeperMaxStaleHours ?? 168) * 3_600_000;
+      const cbsdIds = [...new Set(grants.map(g => g.cbsdId))];
+      const cbsdDocs = await this.cbsds.find({ cbsdId: { $in: cbsdIds } }).toArray();
+      const lastSeenByCbsd = new Map(cbsdDocs.map(c => [c.cbsdId, c.lastSeen]));
+
       const transmitExpireTime = new Date(now.getTime() + cfg.heartbeatInterval * 3 * 1_000);
 
       for (const grant of grants) {
+        const lastSeen = lastSeenByCbsd.get(grant.cbsdId);
+        const staleMs = lastSeen ? now.getTime() - lastSeen.getTime() : Infinity;
+
+        if (staleMs > maxStaleMs) {
+          // Genuinely gone — stop lying that it's AUTHORIZED. TERMINATED is
+          // already a real GrantState heartbeat() itself uses and handles
+          // correctly (RC.TERMINATED_GRANT, prompting a clean relinquish-
+          // and-re-request) — no new state-machine surface, and this grant
+          // is naturally excluded from this same query on future ticks
+          // (state no longer in [GRANTED, AUTHORIZED]), so there's no
+          // flip-flop risk.
+          await this.grants.updateOne({ grantId: grant.grantId }, { $set: { state: 'TERMINATED' } });
+          this.logger.warn(
+            { grantId: grant.grantId, cbsdId: grant.cbsdId, lastSeen, staleDays: (staleMs / 86_400_000).toFixed(1) },
+            'Grant keeper: CBSD past staleness ceiling — terminating instead of renewing',
+          );
+          continue;
+        }
+
         const newGrantExpireTime = new Date(now.getTime() + cfg.grantExpireHours * 3_600_000);
         await this.grants.updateOne(
           { grantId: grant.grantId },
@@ -1512,7 +1709,8 @@ export class SasService {
             lastHeartbeat:     now,
             transmitExpireTime,
             // Always renew grantExpireTime — keeper is the fallback when the radio
-            // stops heartbeating, so we must keep the grant alive indefinitely.
+            // stops heartbeating, so we must keep the grant alive indefinitely
+            // (up to the staleness ceiling above).
             grantExpireTime:   newGrantExpireTime,
           }},
         );

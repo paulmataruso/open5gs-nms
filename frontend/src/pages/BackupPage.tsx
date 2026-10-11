@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Database, HardDrive, Settings as SettingsIcon, RotateCw, Check, AlertTriangle, Download, Upload, Archive, Radio } from 'lucide-react';
-import { backupApi as legacyBackupApi, BackupListItem, BackupSettings, BackupCategory, BackupCategoryInfo } from '../api/backup';
+import { backupApi as legacyBackupApi, BackupListItem, BackupSettings, BackupCategoryInfo } from '../api/backup';
 import { backupApi, genieacsApi, sercommNRApi } from '../api';
 import toast from 'react-hot-toast';
 import { ConfigRestoreModal } from '../components/backup/ConfigRestoreModal';
@@ -19,7 +19,7 @@ export const BackupPage: React.FC = () => {
   const [showRestoreModal, setShowRestoreModal] = useState(false);
   const [fullBackupLoading, setFullBackupLoading] = useState(false);
   const [fullRestoreLoading, setFullRestoreLoading] = useState(false);
-  const [pendingRestore, setPendingRestore] = useState<{ uploadId: string; categories: BackupCategoryInfo[]; createdAt?: string } | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{ uploadId: string; categories: BackupCategoryInfo[]; createdAt?: string; presentModules: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Radio backups
@@ -75,32 +75,15 @@ export const BackupPage: React.FC = () => {
         throw new Error(result.error || 'Upload failed');
       }
       toast.dismiss('full-restore');
-      setPendingRestore({ uploadId: result.uploadId, categories: result.categories, createdAt: result.createdAt });
+      setPendingRestore({
+        uploadId: result.uploadId, categories: result.categories, createdAt: result.createdAt,
+        presentModules: result.presentModules || [],
+      });
     } catch (err: any) {
       toast.error(err.message || 'Full restore upload failed', { id: 'full-restore' });
     } finally {
       setFullRestoreLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  const handleFullRestoreConfirm = async (uploadId: string, categories: BackupCategory[]) => {
-    toast.loading('Restoring selected categories...', { id: 'full-restore-confirm' });
-    try {
-      const response = await fetch('/api/backup/full/restore', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uploadId, categories }),
-      });
-      const result = await response.json();
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Restore failed');
-      }
-      toast.success(`Restored: ${(result.restored || categories).join(', ')}`, { id: 'full-restore-confirm' });
-      await loadBackups();
-    } catch (err: any) {
-      toast.error(err.message || 'Full restore failed', { id: 'full-restore-confirm' });
     }
   };
 
@@ -325,8 +308,9 @@ export const BackupPage: React.FC = () => {
           uploadId={pendingRestore.uploadId}
           categories={pendingRestore.categories}
           createdAt={pendingRestore.createdAt}
+          presentModules={pendingRestore.presentModules}
           onClose={() => setPendingRestore(null)}
-          onConfirm={handleFullRestoreConfirm}
+          onRestored={loadBackups}
         />
       )}
 
@@ -505,10 +489,9 @@ export const BackupPage: React.FC = () => {
         </div>
         <p className="text-xs text-nms-text-dim mb-4">
           Download a single <code className="text-nms-accent">.tar.gz</code> archive containing subscribers &amp; SAS data,
-          all Open5GS core NF configs, SUCI keys, optional module configs, L3/FRR routing, and DNS/BIND — everything needed
-          to fully restore the system from scratch, even if the project folder and backups directory are gone. (IMS and
-          the Voice Gateway are intentionally excluded — reinstall those modules and resync subscribers instead.) Restoring
-          lets you pick exactly which of these to bring back.
+          all Open5GS core NF configs, SUCI keys, optional module configs (including IMS and the Voice Gateway), L3/FRR
+          routing, and DNS/BIND — everything needed to fully restore the system from scratch, even if the project folder
+          and backups directory are gone. Restoring lets you pick exactly which of these to bring back.
         </p>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

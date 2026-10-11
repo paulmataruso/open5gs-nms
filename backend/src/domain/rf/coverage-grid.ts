@@ -43,6 +43,22 @@ import { getLandCoverClass, environmentFromWorldCoverClass, WorldCoverClass } fr
 export const MAX_GRID_CELLS = 10_000;
 const MAX_RESOLUTION = Math.floor(Math.sqrt(MAX_GRID_CELLS));
 const MIN_RESOLUTION = 2;
+// Real, 2026-09-24 finding: MAX_GRID_CELLS bounds cell COUNT, not the AREA
+// each cell covers — a huge radiusM still only computes MAX_GRID_CELLS
+// points, but (a) each point's own terrain profile trace (see
+// DEFAULT_TERRAIN_SAMPLE_COUNT below) spans a much longer path, crossing
+// more distinct elevation/land-cover tiles, and (b) the grid as a whole
+// spans far more distinct degree-tiles, multiplying genuinely-uncached (not
+// just negatively-cached — see elevation-provider.ts/landcover-provider.ts)
+// tile fetches on a cold cache. This has no physics basis — ITM itself has
+// no fixed max distance (see itm-model.ts's own comment) — it's a request-
+// level guard so one calculation can't realistically blow past nginx's
+// default 120s proxy_read_timeout (no dedicated rf-planning nginx location
+// exists, unlike the streaming-install endpoints — see CLAUDE.md gotcha #5).
+// 100km comfortably covers any real single-site LTE/CBRS analysis this
+// project's actual hardware would ever need (this deployment's real radios
+// top out around a few km) with wide margin to spare.
+export const MAX_RADIUS_M = 100_000;
 const DEFAULT_RECEIVER_HEIGHT_M = 1.5;
 const DEFAULT_TERRAIN_SAMPLE_COUNT = 8;
 
@@ -63,6 +79,13 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
 
   if (!(input.radiusM > 0)) {
     return errResult({ reason: 'radiusM must be a positive number', missingInputs: ['radiusM'] });
+  }
+  if (input.radiusM > MAX_RADIUS_M) {
+    return errResult({
+      reason: `radiusM exceeds the ${MAX_RADIUS_M / 1000}km cap for a single calculation`,
+      missingInputs: [],
+      availableInputs: { radiusM: input.radiusM, maxRadiusM: MAX_RADIUS_M },
+    });
   }
 
   let frequencyMhz = input.frequencyMhz;
@@ -333,6 +356,7 @@ export async function calculateCoverageGrid(input: CoverageGridInput, logger?: p
       const cell: CoverageGridCell = {
         lat: cellLat, lon: cellLon, row, col, distanceM: signal.distanceM, totalReceivedPowerDbm: signal.totalReceivedPowerDbm,
         losClassification: signal.losClassification, fresnelClearancePercent: signal.fresnelClearancePercent,
+        terrainDataResolved: signal.terrainDataResolved,
         ...(insideTargetPolygon !== undefined ? { insideTargetPolygon } : {}),
       };
       cells.push(cell);

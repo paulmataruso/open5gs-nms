@@ -1,0 +1,207 @@
+{
+  "title": "Asterisk / Voice Gateway Dashboard",
+  "uid": "asterisk-voice",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "asterisk", "pstn", "2g", "voice", "sip"],
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "📞 Asterisk Overview", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "PSTN Up",
+      "description": "1 if the last CLI poll (every 15s) against PSTN Gateway's own Asterisk instance succeeded.",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_up{asterisk_instance=\"pstn\"}", "legendFormat": "PSTN", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "2G Up",
+      "description": "1 if the last CLI poll against Asterisk-2G's own instance succeeded.",
+      "gridPos": { "x": 4, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_up{asterisk_instance=\"2g\"}", "legendFormat": "2G", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Active Calls (PSTN)",
+      "gridPos": { "x": 8, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_calls_active{asterisk_instance=\"pstn\"}", "legendFormat": "PSTN", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Active Calls (2G)",
+      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_calls_active{asterisk_instance=\"2g\"}", "legendFormat": "2G", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Cross-RAN Calling Wired",
+      "description": "min() across both instances' own open5gs_asterisk_cross_ran_trunk_configured — 1 only when BOTH sides are genuinely wired (pattern #16's fail-closed design means a half-wired state is real and detectable, not silently 'on').",
+      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NOT WIRED" }, "1": { "text": "WIRED" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "min(open5gs_asterisk_cross_ran_trunk_configured)", "legendFormat": "Cross-RAN", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "External SIP Trunk Wired",
+      "gridPos": { "x": 20, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NOT WIRED" }, "1": { "text": "WIRED" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_external_trunk_configured{asterisk_instance=\"pstn\"}", "legendFormat": "External Trunk", "refId": "A" }]
+    },
+
+    { "id": 10, "type": "row", "title": "📟 Live Channels & Calls", "gridPos": { "x": 0, "y": 5, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 11, "type": "timeseries", "title": "Active Channels / Calls by Instance",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_channels_active", "legendFormat": "{{asterisk_instance}} channels", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_calls_active", "legendFormat": "{{asterisk_instance}} calls", "refId": "B" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Cumulative Calls Processed by Instance",
+      "description": "Resets to 0 on a service restart (each instance's own process-lifetime counter) — accurate, not a bug, same reasoning as every other process-lifetime Gauge in this dashboard family.",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_calls_processed_total", "legendFormat": "{{asterisk_instance}}", "refId": "A" }]
+    },
+
+    { "id": 20, "type": "row", "title": "🔌 PJSIP Endpoints & Transports", "gridPos": { "x": 0, "y": 14, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 21, "type": "table", "title": "PJSIP Endpoints",
+      "description": "Endpoint list reflects live toggle state (Cross-RAN Calling, External SIP Trunk) — never a hardcoded set.",
+      "gridPos": { "x": 0, "y": 15, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "asterisk_instance", "desc": false }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_pjsip_endpoint_channels_active", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true }, "renameByName": { "Value": "Channels Active" } } }]
+    },
+    {
+      "id": 22, "type": "table", "title": "PJSIP Transports (Bound)",
+      "description": "Confirms the transport actually bound, not just that it exists in the config file — see the Known Limitations row for a real historical example of this project's stock-default-silently-wins failure class (the same class the Asterisk-2G AMI bind collision belongs to).",
+      "gridPos": { "x": 12, "y": 15, "w": 12, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "asterisk_instance", "desc": false }] },
+      "fieldConfig": { "defaults": { "custom": { "align": "auto", "displayMode": "auto" } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_pjsip_transport_bound", "legendFormat": "", "refId": "A", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true }, "renameByName": { "Value": "Bound" } } }]
+    },
+    {
+      "id": 23, "type": "timeseries", "title": "Per-Endpoint Active Channels",
+      "gridPos": { "x": 0, "y": 23, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_pjsip_endpoint_channels_active", "legendFormat": "{{asterisk_instance}} {{endpoint}}", "refId": "A" }]
+    },
+
+    { "id": 30, "type": "row", "title": "🔀 Cross-RAN Calling & External Trunk", "gridPos": { "x": 0, "y": 31, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 31, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 32, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "\"Wired\" means the endpoint exists in the running config, not that reachability is actively confirmed (no qualify checks configured)." }
+    },
+    {
+      "id": 32, "type": "stat", "title": "Cross-RAN Trunk Wired (PSTN side)",
+      "gridPos": { "x": 0, "y": 34, "w": 8, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NOT WIRED" }, "1": { "text": "WIRED" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_cross_ran_trunk_configured{asterisk_instance=\"pstn\"}", "legendFormat": "PSTN side", "refId": "A" }]
+    },
+    {
+      "id": 33, "type": "stat", "title": "Cross-RAN Trunk Wired (2G side)",
+      "gridPos": { "x": 8, "y": 34, "w": 8, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NOT WIRED" }, "1": { "text": "WIRED" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_cross_ran_trunk_configured{asterisk_instance=\"2g\"}", "legendFormat": "2G side", "refId": "A" }]
+    },
+    {
+      "id": 34, "type": "stat", "title": "External Trunk Wired",
+      "gridPos": { "x": 16, "y": 34, "w": 8, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "grey", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short", "mappings": [{ "type": "value", "options": { "0": { "text": "NOT WIRED" }, "1": { "text": "WIRED" } } }] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_asterisk_external_trunk_configured{asterisk_instance=\"pstn\"}", "legendFormat": "External Trunk", "refId": "A" }]
+    },
+
+    { "id": 40, "type": "row", "title": "📊 Call Volume & History (from CDR)", "gridPos": { "x": 0, "y": 38, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 41, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 2 },
+      "options": { "mode": "markdown", "content": "From the Call History module — shows trend since this dashboard started scraping, not full history. For older records, use the Call History page." }
+    },
+    {
+      "id": 42, "type": "stat", "title": "Calls Last Hour (PSTN)",
+      "gridPos": { "x": 0, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_cdr_calls_total{cdr_instance=\"pstn\",window=\"1h\"}) or on() vector(0)", "legendFormat": "PSTN", "refId": "A" }]
+    },
+    {
+      "id": 43, "type": "stat", "title": "Calls Last Hour (2G)",
+      "gridPos": { "x": 6, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_cdr_calls_total{cdr_instance=\"2g\",window=\"1h\"}) or on() vector(0)", "legendFormat": "2G", "refId": "A" }]
+    },
+    {
+      "id": 44, "type": "stat", "title": "Answer Rate, Last 24h",
+      "description": "Shows No Data (not a misleading 0%) when there were no calls at all in the window.",
+      "gridPos": { "x": 12, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "percentunit" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "(sum(open5gs_cdr_calls_total{disposition=\"answered\",window=\"24h\"}) or on() vector(0)) / clamp_min(sum(open5gs_cdr_calls_total{window=\"24h\"}),1)", "legendFormat": "Answer Rate", "refId": "A" }]
+    },
+    {
+      "id": 45, "type": "stat", "title": "Total Talk Time, Last 24h",
+      "description": "Sum across both instances. Answered calls only (see open5gs_cdr_talk_seconds_sum's own help text — unanswered calls store a real 0, not null, which would otherwise understate this).",
+      "gridPos": { "x": 18, "y": 41, "w": 6, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "s" } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "sum(open5gs_cdr_talk_seconds_sum{window=\"24h\"}) or on() vector(0)", "legendFormat": "Talk Time", "refId": "A" }]
+    },
+    {
+      "id": 46, "type": "timeseries", "title": "Call Volume by Instance & Disposition (1h window)",
+      "gridPos": { "x": 0, "y": 45, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_cdr_calls_total{window=\"1h\"}", "legendFormat": "{{cdr_instance}} {{disposition}}", "refId": "A" }]
+    },
+    {
+      "id": 47, "type": "timeseries", "title": "Call Volume by Instance & Disposition (24h window)",
+      "gridPos": { "x": 12, "y": 45, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_cdr_calls_total{window=\"24h\"}", "legendFormat": "{{cdr_instance}} {{disposition}}", "refId": "A" }]
+    },
+    {
+      "id": 48, "type": "timeseries", "title": "PSTN: Internal vs External-DID Call Split",
+      "description": "internal = short-code/MSISDN dialing within this deployment; external-did = a real inbound/outbound call over the External SIP Trunk.",
+      "gridPos": { "x": 0, "y": 53, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_cdr_pstn_trunk_type_calls_total{window=\"24h\"}", "legendFormat": "{{trunk_type}}", "refId": "A" }]
+    },
+
+    { "id": 50, "type": "row", "title": "🩺 Known Limitations", "gridPos": { "x": 0, "y": 61, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 51, "type": "text", "title": "",
+      "gridPos": { "x": 0, "y": 62, "w": 24, "h": 4 },
+      "options": { "mode": "markdown", "content": "- AMI is not functional on Asterisk-2G (port bind conflict with PSTN Gateway) — this dashboard uses each instance's CLI instead.\n- No live trunk/peer reachability monitoring (no qualify checks configured).\n- Pure 2G-to-2G calls (no IMS leg) have no audio-quality visibility anywhere in this project." }
+    }
+
+  ]
+}

@@ -66,7 +66,11 @@ export type BackupCategory =
   | 'optional-modules'
   | 'l3-network'
   | 'dns'
-  | 'genieacs';
+  | 'genieacs'
+  | 'auth'
+  | 'ui-modules'
+  | 'ocs-data'
+  | 'radio-backups';
 
 export interface BackupCategoryInfo {
   id: BackupCategory;
@@ -81,6 +85,7 @@ export interface FullBackupUploadResponse {
   uploadId?: string;
   categories?: BackupCategoryInfo[];
   createdAt?: string;
+  presentModules?: string[];
   error?: string;
 }
 
@@ -88,6 +93,50 @@ export interface FullBackupRestoreResponse {
   success: boolean;
   restored?: BackupCategory[];
   error?: string;
+}
+
+export interface BootstrapModuleResult {
+  moduleId: string;
+  label: string;
+  installed: boolean;
+  skipped: boolean;
+  error?: string;
+  log: string[];
+}
+
+export interface FreshHostBootstrapRunState {
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  startedAt?: string;
+  completedAt?: string;
+  currentModule?: string;
+  results: BootstrapModuleResult[];
+}
+
+export interface RestartStepResult {
+  step: string;
+  label: string;
+  success: boolean;
+  skipped: boolean;
+  error?: string;
+}
+
+export interface BackupRestartRunState {
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  startedAt?: string;
+  completedAt?: string;
+  currentStep?: string;
+  results: RestartStepResult[];
+}
+
+export interface FullRestoreOrchestratorState {
+  status: 'idle' | 'running' | 'complete' | 'failed';
+  phase?: 'bootstrap' | 'restoring' | 'restart';
+  startedAt?: string;
+  completedAt?: string;
+  bootstrap?: FreshHostBootstrapRunState;
+  restoredCategories?: BackupCategory[];
+  restoreError?: string;
+  restart?: BackupRestartRunState;
 }
 
 export const backupApi = {
@@ -154,6 +203,22 @@ export const backupApi = {
       backupName,
       services,
     });
+    return data;
+  },
+
+  // Starts the bootstrap(optional)->restore->restart pipeline — returns
+  // immediately, poll getFullRestoreStatus() for progress.
+  startFullRestore: async (
+    uploadId: string, categories: BackupCategory[], freshHostBootstrap: boolean, presentModules: string[],
+  ): Promise<{ success: boolean; error?: string }> => {
+    const { data } = await api.post<{ success: boolean; error?: string }>('/backup/full/restore', {
+      uploadId, categories, freshHostBootstrap, presentModules,
+    });
+    return data;
+  },
+
+  getFullRestoreStatus: async (): Promise<{ success: boolean; run: FullRestoreOrchestratorState }> => {
+    const { data } = await api.get<{ success: boolean; run: FullRestoreOrchestratorState }>('/backup/full/restore/status');
     return data;
   },
 };

@@ -23,6 +23,20 @@ pcf:
     server:
       - address: 127.0.0.13
         port: 9090
+  # Required for N5 (Npcf_PolicyAuthorization) dedicated-bearer requests to
+  # succeed at all — confirmed live 2026-09-29 against real Open5GS PCF
+  # source (src/pcf/npcf-handler.c/context.c): without a matching entry
+  # here, PCF rejects every N5 AppSession create with
+  # "403: Unknown qosReference - check PCF qos_profiles config", which is
+  # exactly what blocked 4G<->5G/5G<->5G cross-RAT calling (P-CSCF's Rx->N5
+  # fallback, see kamailio_pcscf's mo.cfg/mt.cfg) until this was found.
+  # qos_index 1 = 5QI=1, the 5G-native equivalent of 4G's QCI=1
+  # (conversational voice, GBR) — matches "qosVoNR", the reference value
+  # this project's N5 request body sends (docker_open5gs VoNR reference
+  # compose, adapted in mo.cfg/mt.cfg's route[MO/MT_N5_CALL_PCF_POLICY_AUTH]).
+  qos_profiles:
+    - reference: qosVoNR
+      qos_index: "1"
 
 ################################################################################
 # PCF Policy Configuration: UE Home PLMN and SUPI Range Based Policies

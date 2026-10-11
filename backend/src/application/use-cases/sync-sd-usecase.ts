@@ -60,22 +60,40 @@ export class SyncSDUseCase {
     const rawYaml = (smfConfig as any).rawYaml;
     const smf = rawYaml?.smf;
 
-    if (!smf?.s_nssai || !Array.isArray(smf.s_nssai)) {
-      this.logger.warn({ smf, hasSNssai: !!smf?.s_nssai }, 'No s_nssai array found in SMF config');
+    // Real defect found in the 2026-10-10 readiness audit: this read
+    // `smf.s_nssai`, which does not exist in Open5GS's schema at all. The
+    // slices live one level down, at `smf.info[].s_nssai` (confirmed against
+    // the live smf.yaml, where `info:` is the only such key). So the one tool
+    // named "Sync SD" always took the warn-and-return-0 path, reported
+    // success, and changed nothing -- while subscribers WERE updated by
+    // updateSubscribers() below, leaving the core split-brain: subscribers on
+    // the new SD, SMF still on the old one.
+    const infos: any[] = Array.isArray(smf?.info) ? smf.info : [];
+    const sliceArrays: any[][] = infos
+      .map(i => i?.s_nssai)
+      .filter((a): a is any[] => Array.isArray(a));
+
+    if (sliceArrays.length === 0) {
+      this.logger.warn(
+        { hasInfo: Array.isArray(smf?.info), infoCount: infos.length },
+        'No smf.info[].s_nssai array found in SMF config — nothing to update',
+      );
       return 0;
     }
 
     // Count how many slices we'll update
     let updateCount = 0;
 
-    // Update all matching s_nssai entries
-    smf.s_nssai.forEach((slice: any) => {
-      // If SST filter is provided, only update matching SST
-      if (!sst || slice.sst === sst) {
-        slice.sd = sd;
-        updateCount++;
-      }
-    });
+    // Update every matching s_nssai entry across every info[] block
+    for (const slices of sliceArrays) {
+      slices.forEach((slice: any) => {
+        // If SST filter is provided, only update matching SST
+        if (!sst || slice.sst === sst) {
+          slice.sd = sd;
+          updateCount++;
+        }
+      });
+    }
 
     // Save updated SMF configuration
     if (updateCount > 0) {

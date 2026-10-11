@@ -654,7 +654,8 @@ way to capture everything needed to restore this deployment onto a brand new hos
 
 One `.tar.gz` archive, one click, covering every optional module this project ships —
 audited 2026-08-25 specifically to make sure nothing was missing for a genuine
-new-host restore. Eight independently selectable categories:
+new-host restore, and extended twice since (2026-09-24, 2026-09-29) as real gaps were
+found. Twelve independently selectable categories:
 
 | Category | Contents |
 |---|---|
@@ -663,9 +664,13 @@ new-host restore. Eight independently selectable categories:
 | SUCI Keys | 5G-AKA home-network private/public keys (`/etc/open5gs/hnet`) — irreplaceable, not regenerable |
 | SecGW Certificates | Security Gateway's own CA and every issued per-radio IPsec certificate/key — irreplaceable, not regenerable by re-running Configure |
 | Optional Module Configs | IMS/VoLTE, SMS (SGs + VectorCore), MMS, PSTN Gateway, VoWiFi, TWAMP, FRR source-build state, chrony, syslog forwarding — each module's own NMS-side settings file |
-| L3 / IP Network Config | FRR (EIGRP) config and host interface addressing (netplan) |
+| L3 / IP Network Config | FRR (EIGRP) config and host interface addressing (netplan) and the dummy-interface set |
 | DNS / BIND | `named.conf` + every FQDN zone file |
 | GenieACS (Radio Provisioning) | GenieACS's own separate MongoDB database — device inventory, presets, provisioning scripts, TR-069 session history |
+| NMS Login (Users) | This NMS's own admin/viewer accounts (Lucia + SQLite) — isolated from the `open5gs` database, so a restore without it comes back up with no real user accounts. Also carries UE Signal Monitoring's AES-256-GCM-encrypted radio credentials + decryption key, and the RAN Kill Switches' active block list |
+| UI Module Toggles | The repo `.env`'s `ENABLE_*` flags controlling which optional module pages appear in the frontend nav (needs a frontend rebuild to take visible effect), plus a small allowlist of outbound-API credentials (eSIM's Simlessly keys, GenieACS UI's JWT secret/port) |
+| SigScale OCS Data | OCS's own Mnesia database — every rating plan/offer, registered Diameter client, and subscriber's real prepaid balance/bucket |
+| Radio Config Backups | Per-radio point-in-time config snapshots saved after every successful GenieACS provisioning change — history only, not the radio's current config (already covered by the GenieACS category) |
 
 Deliberately excluded: PyHSS's own MariaDB (IMS reinstall + Sync Subscribers rebuilds
 it from the restored `open5gs` database instead of restoring a second database engine)
@@ -685,6 +690,14 @@ backup was taken on, and silently overwriting `frr.conf`/netplan/BIND could brea
 connectivity to the box entirely; GenieACS because it's a full separate-database
 overwrite of live radio provisioning state. Everything else, including SecGW
 certificates, defaults ON.
+
+Restoring onto a genuinely new machine is a two-step process: `backup-restore/
+bootstrap-fresh-host.sh` first (base packages — Docker, MongoDB, Open5GS itself),
+then a Full Restore with "This is a fresh host" checked, which installs real
+packages/binaries for every optional module the backup used before writing any of
+its config, then restarts everything so the restored config actually takes effect
+end-to-end — not just files copied into place. Restoring back onto the same host the
+backup came from doesn't need either step.
 
 ### Legacy Backup Types
 
@@ -1010,9 +1023,12 @@ before this existed.
 - **`osmo-sip-connector`'s `MNCC_SETUP_COMPL_IND` had a hardcoded 5s
   timeout** that a real over-the-air CONNECT↔CONNECT-ACK round trip could
   legitimately exceed under normal GSM scheduling, tearing down a call both
-  legs had just marked connected. Widened to 15s for just that call site;
-  every other `start_cmd_timer()` caller stays at the original 5s. Baked
-  into the module's own build pipeline so a reinstall picks it up too.
+  legs had just marked connected. Widened to 15s for just that call site,
+  then to 30s (2026-09-26) after a real mixed-RAN test session reproduced
+  the same failure 3 times even at 15s — still a stopgap, not a confirmed
+  root cause. Every other `start_cmd_timer()` caller stays at the original
+  5s. Baked into the module's own build pipeline so a reinstall picks it up
+  too.
 - **Asterisk-2G's dialplan had no real route to the external PSTN
   trunk** — a 2G subscriber dialing a genuine external number fell into a
   catch-all built only for "dial another known subscriber's raw MSISDN,"
@@ -1542,9 +1558,7 @@ nothing.
 
 ### Current Status
 
-Beta — built and code-reviewed, matches its own design exactly (independently
-audited against the approved plan with no deviations found), but not yet
-independently confirmed with a live Propose → Apply click-through end-to-end.
+Beta — confirmed working end-to-end, including a real live Propose → Apply run.
 Known edge case: an MME/AMF interface currently bound by interface name
 (`dev:`) rather than a static address reads as "not configured" and applying
 a plan there converts it to address-binding — a real behavior change beyond
@@ -1873,11 +1887,12 @@ documented behavior in the UI's own info banner, not a bug.
 ### What It Does
 
 Shows aggregate and per-subscriber network traffic history (throughput
-over time). Deliberately **does not maintain its own time-series
-store** — this project already runs a Prometheus + Grafana monitoring
-stack for every core network function's own metrics, so Traffic History
-is built as a consumer of that existing time-series database rather than
-a second one.
+over time) across 2G, 4G, and 5G together — a radio filter and a RAN-type
+filter narrow either view to one specific cell or one generation.
+Deliberately **does not maintain its own time-series store** — this
+project already runs a Prometheus + Grafana monitoring stack for every
+core network function's own metrics, so Traffic History is built as a
+consumer of that existing time-series database rather than a second one.
 
 An earlier version of this feature *did* build its own MongoDB-backed
 time-series store for this data. It was replaced once it became clear
@@ -1886,26 +1901,37 @@ real design correction, not a bug fix, and a useful precedent for any
 future feature that might be tempted to stand up its own metrics
 storage.
 
-Per-subscriber byte counters are collected by a dedicated nftables
-accounting table (`subscriber-ip-accounting.ts`) — one counter rule pair
-(upload/download) per subscriber UE IP, in its own `inet
+Per-subscriber byte counters for 4G/5G are collected by a dedicated
+nftables accounting table (`subscriber-ip-accounting.ts`) — one counter
+rule pair (upload/download) per subscriber UE IP, in its own `inet
 open5gs_nms_acct` table so it never collides with any other nftables-based
-feature in this project. Those counters, plus each core NF's own GTP
-counters, are exposed via a `/metrics` endpoint
-(`prometheus-metrics.ts`) that the existing Prometheus instance scrapes
-like any other target. The frontend's filter parameters are translated
-directly into a PromQL `query_range` call, and Prometheus's own `rate()`
-computes throughput (Mbps) — no rate/delta math is duplicated on this
-project's own side.
+feature in this project. 2G data traffic (GPRS/EDGE) doesn't go through
+Open5GS's own UPF at all — a completely separate GGSN implementation
+(osmo-ggsn) handles it, so its own counters come from osmo-sgsn's VTY
+instead and are exposed under a separate metric family. Both families,
+plus each core NF's own GTP counters, are exposed via a `/metrics`
+endpoint (`prometheus-metrics.ts`) that the existing Prometheus instance
+scrapes like any other target. The frontend's filter parameters are
+translated directly into a PromQL `query_range` call, and Prometheus's own
+`rate()` computes throughput (Mbps) — no rate/delta math is duplicated on
+this project's own side. Aggregate (network-wide) throughput can't be
+sliced by radio — a real 3GPP architectural fact, not a gap: 4G/5G share
+one GTP tunnel endpoint per APN/DNN with no per-cell dimension, and this
+is reflected honestly (the combination is rejected, not silently ignored)
+rather than pretending to support it.
 
 ### Components
 
-- **Backend**: `subscriber-ip-accounting.ts` (nftables byte counters),
-  `prometheus-metrics.ts` (the `/metrics` endpoint Prometheus scrapes),
-  `traffic-history-controller.ts` (thin PromQL `query_range` proxy).
+- **Backend**: `subscriber-ip-accounting.ts` (4G/5G nftables byte
+  counters), `radio-info-metrics.ts` (shared per-subscriber
+  radio/generation lookup used by the filters), `prometheus-metrics.ts`
+  (the `/metrics` endpoint Prometheus scrapes), `traffic-history-
+  controller.ts` (thin PromQL `query_range` proxy).
 - **Frontend**: `TrafficHistoryPage.tsx`.
 - **Prometheus** (already-deployed monitoring stack, shared with every
   core NF's own metrics) is the actual time-series store — not a new one.
+- **Grafana**: `traffic-history.json`, auto-provisioned alongside the
+  other dashboards.
 
 ### Design Notes
 
@@ -1920,6 +1946,42 @@ the previous owner's byte count.
 ### Current Status
 
 Stable.
+
+---
+
+## TWAMP (Backhaul Link Quality)
+
+### What It Does
+
+Monitors backhaul link quality — round-trip time, jitter, packet loss,
+and one-way delay — to CBRS radios and any other TWAMP-capable device,
+using the real RFC 5357 Two-Way Active Measurement Protocol rather than a
+plain ping. Client and reflector run independently: the client side polls
+operator-added targets on their own schedule, while the reflector side is
+an always-on service answering inbound tests from other TWAMP-capable
+devices, unrelated to the client's own polling.
+
+One-way delay figures depend on both endpoints' clocks being synchronized
+(TWAMP itself has no clock-sync mechanism) — without it, forward/reverse
+delay numbers can show artifacts like a negative delay on an otherwise
+healthy, low-latency link. Round-trip time and loss are unaffected by
+clock skew and remain reliable regardless.
+
+### Components
+
+- **Backend**: `twamp-runner.ts`/`twamp-client.go` (test execution, a thin
+  Go wrapper around a vendored, patched TWAMP library), `twamp-monitor.ts`
+  (per-target polling and in-memory cache), `twamp-history.ts` (retention-
+  configurable history), `twamp-metrics.ts` (the Prometheus exporter),
+  `twamp-controller.ts`. The reflector runs as its own always-on systemd
+  service (`twamp-server.service`), independent of the client.
+- **Frontend**: `TwampPage.tsx`.
+- **Grafana**: `twamp.json`, auto-provisioned alongside the other
+  dashboards.
+
+### Current Status
+
+Stable. Opt-in (`ENABLE_TWAMP_MODULE`, defaults disabled).
 
 ---
 

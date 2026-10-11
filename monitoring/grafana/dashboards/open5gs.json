@@ -114,7 +114,7 @@
 
     {
       "id": 13, "type": "stat", "title": "Registered Subscribers (AMF)",
-      "gridPos": { "x": 0, "y": 22, "w": 4, "h": 4 },
+      "gridPos": { "x": 0, "y": 22, "w": 8, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_amffunction_rm_registeredsubnbr", "legendFormat": "Registered Subscribers", "refId": "A" }]
@@ -122,7 +122,7 @@
 
     {
       "id": 14, "type": "stat", "title": "5G Paging Requests",
-      "gridPos": { "x": 4, "y": 22, "w": 4, "h": 4 },
+      "gridPos": { "x": 8, "y": 22, "w": 8, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_amffunction_mm_paging5greq", "legendFormat": "Paging Requests", "refId": "A" }]
@@ -130,7 +130,7 @@
 
     {
       "id": 15, "type": "stat", "title": "5G Paging Success",
-      "gridPos": { "x": 8, "y": 22, "w": 4, "h": 4 },
+      "gridPos": { "x": 16, "y": 22, "w": 8, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_amffunction_mm_paging5gsucc", "legendFormat": "Paging Success", "refId": "A" }]
@@ -165,7 +165,7 @@
 
     {
       "id": 19, "type": "stat", "title": "Active Bearers",
-      "gridPos": { "x": 0, "y": 35, "w": 4, "h": 4 },
+      "gridPos": { "x": 0, "y": 35, "w": 5, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "bearers_active", "legendFormat": "Active Bearers", "refId": "A" }]
@@ -173,7 +173,7 @@
 
     {
       "id": 20, "type": "stat", "title": "Active QoS Flows",
-      "gridPos": { "x": 4, "y": 35, "w": 4, "h": 4 },
+      "gridPos": { "x": 5, "y": 35, "w": 5, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_smffunction_sm_qos_flow_nbr", "legendFormat": "QoS Flows", "refId": "A" }]
@@ -181,7 +181,7 @@
 
     {
       "id": 21, "type": "stat", "title": "Active GTPv1 PDP Contexts",
-      "gridPos": { "x": 8, "y": 35, "w": 4, "h": 4 },
+      "gridPos": { "x": 10, "y": 35, "w": 5, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "gtp1_pdpctxs_active", "legendFormat": "GTPv1 PDP Contexts", "refId": "A" }]
@@ -189,7 +189,7 @@
 
     {
       "id": 22, "type": "stat", "title": "Active GTPv2 Sessions",
-      "gridPos": { "x": 12, "y": 35, "w": 4, "h": 4 },
+      "gridPos": { "x": 15, "y": 35, "w": 5, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "gtp2_sessions_active", "legendFormat": "GTPv2 Sessions", "refId": "A" }]
@@ -197,7 +197,7 @@
 
     {
       "id": 23, "type": "stat", "title": "Active GTP Peers",
-      "gridPos": { "x": 16, "y": 35, "w": 4, "h": 4 },
+      "gridPos": { "x": 20, "y": 35, "w": 4, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "gtp_peers_active", "legendFormat": "GTP Peers", "refId": "A" }]
@@ -207,29 +207,31 @@
 
     {
       "id": 25, "type": "timeseries", "title": "UPF N3 Packet Rate (packets/s)",
+      "description": "Open5GS's own fivegs_ep_n3_gtp_{in,out}datapktn3upf is never populated by this build (same dead code path as the neighboring throughput panel). Reads the UPF tun device's own packet counters instead — real, always-live proxy.",
       "gridPos": { "x": 0, "y": 40, "w": 12, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull", "mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "pps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(fivegs_ep_n3_gtp_indatapktn3upf[1m])", "legendFormat": "N3 Inbound pps", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(fivegs_ep_n3_gtp_outdatapktn3upf[1m])", "legendFormat": "N3 Outbound pps", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gtp_rx_packets_total[1m])", "legendFormat": "{{dnn}} Inbound pps", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gtp_tx_packets_total[1m])", "legendFormat": "{{dnn}} Outbound pps", "refId": "B" }
       ]
     },
 
     {
-      "id": 26, "type": "timeseries", "title": "UPF N3 Throughput (bytes/s)",
+      "id": 26, "type": "timeseries", "title": "UPF Data Throughput (UE payload, per DNN)",
+      "description": "UPF tun-device byte counts per DNN — a proxy for N3 throughput, not the literal wire measurement (Open5GS doesn't populate that metric).",
       "gridPos": { "x": 12, "y": 40, "w": 12, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull", "mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(fivegs_ep_n3_gtp_indatavolumeqosleveln3upf[1m])", "legendFormat": "N3 Inbound Bps", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(fivegs_ep_n3_gtp_outdatavolumeqosleveln3upf[1m])", "legendFormat": "N3 Outbound Bps", "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gtp_rx_bytes_total[1m])", "legendFormat": "{{dnn}} Uplink Bps", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "rate(open5gs_gtp_tx_bytes_total[1m])", "legendFormat": "{{dnn}} Downlink Bps", "refId": "B" }
       ]
     },
 
     {
       "id": 27, "type": "stat", "title": "UPF Active Sessions",
-      "gridPos": { "x": 0, "y": 48, "w": 4, "h": 4 },
+      "gridPos": { "x": 0, "y": 48, "w": 8, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_upffunction_upf_sessionnbr", "legendFormat": "UPF Sessions", "refId": "A" }]
@@ -237,7 +239,7 @@
 
     {
       "id": 28, "type": "stat", "title": "UPF QoS Flows",
-      "gridPos": { "x": 4, "y": 48, "w": 4, "h": 4 },
+      "gridPos": { "x": 8, "y": 48, "w": 8, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_upffunction_upf_qosflows", "legendFormat": "QoS Flows", "refId": "A" }]
@@ -245,7 +247,7 @@
 
     {
       "id": 29, "type": "stat", "title": "UPF PFCP Peers",
-      "gridPos": { "x": 8, "y": 48, "w": 4, "h": 4 },
+      "gridPos": { "x": 16, "y": 48, "w": 8, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "pfcp_peers_active{job=\"open5gs-upf\"}", "legendFormat": "PFCP Peers", "refId": "A" }]
@@ -254,32 +256,17 @@
     { "id": 30, "type": "row", "title": "🏠 HSS — Home Subscriber Server", "gridPos": { "x": 0, "y": 52, "w": 24, "h": 1 }, "collapsed": false },
 
     {
-      "id": 31, "type": "stat", "title": "IMSIs",
-      "gridPos": { "x": 0, "y": 53, "w": 4, "h": 4 },
+      "id": 31, "type": "stat", "title": "IMS Subscribers",
+      "description": "Reads PyHSS's own subscriber count — real IMS Cx traffic in this deployment goes there, not to Open5GS's hssd.",
+      "gridPos": { "x": 0, "y": 53, "w": 4, "h": 8 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "hss_imsi", "legendFormat": "IMSIs", "refId": "A" }]
-    },
-
-    {
-      "id": 32, "type": "stat", "title": "IMPIs",
-      "gridPos": { "x": 4, "y": 53, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "hss_impi", "legendFormat": "IMPIs", "refId": "A" }]
-    },
-
-    {
-      "id": 33, "type": "stat", "title": "IMPUs",
-      "gridPos": { "x": 8, "y": 53, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "none" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
-      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "hss_impu", "legendFormat": "IMPUs", "refId": "A" }]
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_ims_subs", "legendFormat": "IMS Subscribers", "refId": "A" }]
     },
 
     {
       "id": 34, "type": "timeseries", "title": "HSS S6a Diameter Messages",
-      "gridPos": { "x": 0, "y": 57, "w": 12, "h": 8 },
+      "gridPos": { "x": 4, "y": 53, "w": 10, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
       "targets": [
@@ -293,23 +280,24 @@
 
     {
       "id": 35, "type": "timeseries", "title": "HSS Cx Diameter Messages",
-      "gridPos": { "x": 12, "y": 57, "w": 12, "h": 8 },
+      "description": "Cx messages, read from PyHSS's own Diameter counters (real Cx traffic goes there, not Open5GS's hssd).",
+      "gridPos": { "x": 14, "y": 53, "w": 10, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "cx_rx_mar", "legendFormat": "MAR (Multimedia Auth)", "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "cx_tx_maa", "legendFormat": "MAA (Multimedia Auth Answer)", "refId": "B" },
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "cx_rx_sar", "legendFormat": "SAR (Server Assignment)", "refId": "C" },
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "cx_rx_uar", "legendFormat": "UAR (User Auth)", "refId": "D" },
-        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "cx_rx_uar_error", "legendFormat": "UAR Errors", "refId": "E" }
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_request_count_application_id_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"303\"}", "legendFormat": "MAR (Multimedia Auth)", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_response_count_application_id_successful_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"303\"}", "legendFormat": "MAA (Multimedia Auth Answer)", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_request_count_application_id_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"301\"}", "legendFormat": "SAR (Server Assignment)", "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_request_count_application_id_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"300\"}", "legendFormat": "UAR (User Auth)", "refId": "D" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "prom_diam_response_count_application_id_fail_total{diameter_application_id=\"16777216\",diameter_cmd_code=\"300\"}", "legendFormat": "UAR Errors", "refId": "E" }
       ]
     },
 
-    { "id": 36, "type": "row", "title": "📋 PCF / PCRF — Policy", "gridPos": { "x": 0, "y": 65, "w": 24, "h": 1 }, "collapsed": false },
+    { "id": 36, "type": "row", "title": "📋 PCF / PCRF — Policy", "gridPos": { "x": 0, "y": 61, "w": 24, "h": 1 }, "collapsed": false },
 
     {
       "id": 37, "type": "stat", "title": "PCF Active Sessions",
-      "gridPos": { "x": 0, "y": 66, "w": 4, "h": 4 },
+      "gridPos": { "x": 0, "y": 62, "w": 4, "h": 4 },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" } },
       "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "fivegs_pcffunction_pa_sessionnbr", "legendFormat": "PCF Sessions", "refId": "A" }]
@@ -317,7 +305,7 @@
 
     {
       "id": 38, "type": "timeseries", "title": "PCF Policy Associations",
-      "gridPos": { "x": 4, "y": 66, "w": 10, "h": 8 },
+      "gridPos": { "x": 4, "y": 62, "w": 10, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
       "targets": [
@@ -330,7 +318,7 @@
 
     {
       "id": 39, "type": "timeseries", "title": "PCRF Gx Messages",
-      "gridPos": { "x": 14, "y": 66, "w": 10, "h": 8 },
+      "gridPos": { "x": 14, "y": 62, "w": 10, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
       "targets": [
@@ -341,11 +329,11 @@
       ]
     },
 
-    { "id": 40, "type": "row", "title": "🖥️ Process Health", "gridPos": { "x": 0, "y": 74, "w": 24, "h": 1 }, "collapsed": false },
+    { "id": 40, "type": "row", "title": "🖥️ Process Health", "gridPos": { "x": 0, "y": 70, "w": 24, "h": 1 }, "collapsed": false },
 
     {
       "id": 41, "type": "timeseries", "title": "Memory Usage (Resident)",
-      "gridPos": { "x": 0, "y": 75, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 71, "w": 12, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
       "targets": [
@@ -361,7 +349,7 @@
 
     {
       "id": 42, "type": "timeseries", "title": "CPU Usage (seconds/s)",
-      "gridPos": { "x": 12, "y": 75, "w": 12, "h": 8 },
+      "gridPos": { "x": 12, "y": 71, "w": 12, "h": 8 },
       "options": { "legend": { "calcs": ["lastNotNull", "mean"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
       "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
       "targets": [
@@ -377,7 +365,7 @@
 
     {
       "id": 43, "type": "table", "title": "Process Uptime & File Descriptors",
-      "gridPos": { "x": 0, "y": 83, "w": 24, "h": 6 },
+      "gridPos": { "x": 0, "y": 79, "w": 24, "h": 6 },
       "options": { "sortBy": [{ "displayName": "NF", "desc": false }] },
       "fieldConfig": {
         "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },

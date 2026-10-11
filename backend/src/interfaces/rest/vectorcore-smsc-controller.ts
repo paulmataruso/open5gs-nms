@@ -74,6 +74,11 @@ function readImsState(): ImsState | null {
 
 // Host-real paths (as used by nsenter'd commands, not /proc/1/root-prefixed).
 const SRC_DIR = '/opt/vectorcore-build/vectorcore-smsc';
+
+// Upstream has no release tags this project can track, so the pin is a commit
+// — the exact tree this deployment has built and run, with this module's own
+// 2G<->4G bridge source patches confirmed applying against it.
+const VECTORCORE_SMSC_COMMIT = '790790ae190d613a272f0bae11b736e9450d577d';
 const VC_DIR  = '/opt/vectorcore/sms';
 const VC_BIN  = `${VC_DIR}/bin/smsc`;
 const VC_ETC  = `${VC_DIR}/etc`;
@@ -406,10 +411,43 @@ export async function installVectorcoreSmsc(write: (s: string) => void): Promise
 
       write('\n=== Cloning VectorCore SMSC ===');
       const SRC_PARENT_DIR = SRC_DIR.slice(0, SRC_DIR.lastIndexOf('/'));
-      await spawnStream(`mkdir -p ${SRC_PARENT_DIR} 2>/dev/null; [ -d ${SRC_DIR}/.git ] && echo "Already cloned — skipping." || git clone https://github.com/vectorcore-mobile/vectorcore-smsc.git ${SRC_DIR}`);
+      // Pinned, and the exit code is checked. Both used to be missing: the
+      // clone took upstream's default branch (so two installs weeks apart
+      // built different SMSC versions, and the source patches below are
+      // located by matching specific text that can move), and its exit code
+      // was discarded, so a clone failure surfaced only as a confusing build
+      // error several steps later. Same idiom as vowifi-build.ts's
+      // VECTORCORE_EPDG_COMMIT/VECTORCORE_AAA_COMMIT.
+      const cloneExit = await spawnStream(
+        `set -e\n` +
+        `mkdir -p ${SRC_PARENT_DIR}\n` +
+        `if [ -d ${SRC_DIR}/.git ]; then\n` +
+        `  echo "Already cloned — skipping (at $(git -C ${SRC_DIR} rev-parse --short HEAD))."\n` +
+        `else\n` +
+        `  git clone https://github.com/vectorcore-mobile/vectorcore-smsc.git ${SRC_DIR}\n` +
+        `  git -C ${SRC_DIR} checkout ${VECTORCORE_SMSC_COMMIT}\n` +
+        `  echo "Checked out ${VECTORCORE_SMSC_COMMIT}"\n` +
+        `fi`
+      );
+      if (cloneExit !== 0) {
+        write(`\n❌ Could not fetch the VectorCore SMSC source (exit ${cloneExit}).`);
+        return { success: false, error: `clone exit ${cloneExit}` };
+      }
 
       write('\n=== Applying NMS 2G↔4G SMS bridge patches ===');
-      await spawnStream(`python3 - ${SRC_DIR} <<'PYEOF'\n${BRIDGE_SOURCE_PATCH_PY}\nPYEOF`);
+      // Exit code checked: this script applies this project's own 2G↔4G bridge
+      // patches to upstream source. Discarding its result meant a failed or
+      // partially-applied patch silently produced a STOCK binary that builds,
+      // installs and starts cleanly while missing the entire reason this
+      // module patches the source at all — the same "patch silently lost"
+      // failure mode CLAUDE.md documents for the Kamailio modules.
+      const patchExit = await spawnStream(`python3 - ${SRC_DIR} <<'PYEOF'\n${BRIDGE_SOURCE_PATCH_PY}\nPYEOF`);
+      if (patchExit !== 0) {
+        write(`\n❌ The 2G↔4G SMS bridge source patches did not apply (exit ${patchExit}). ` +
+              `Refusing to build — an unpatched binary would start cleanly but silently ` +
+              `lack 2G↔4G SMS bridging entirely.`);
+        return { success: false, error: `bridge source patch exit ${patchExit}` };
+      }
 
       write('\n=== Building (web UI + Go binary) ===');
       const buildExit = await spawnStream(
@@ -441,11 +479,38 @@ export async function installVectorcoreSmsc(write: (s: string) => void): Promise
       }
 
       write('\n=== Installing binary and systemd unit (content as shipped) ===');
-      await spawnStream(
+      // Real, 2026-09-22 fresh-host finding: this script correctly uses
+      // `set -e` internally (aborts on the first failing line), but its
+      // returned exit code was never actually checked by the caller — so an
+      // aborted mkdir/cp/chmod/sed/daemon-reload sequence still left
+      // installVectorcoreSmsc() reporting success with no real binary/unit
+      // in place, only surfacing later as configureVectorcoreSmsc()'s own
+      // "not installed yet" — a confusing error far from the real failure.
+      //
+      // Real, confirmed-live bug (2026-10-01, via a real Fix-All run against
+      // the live, already-running vectorcore-smsc service): a plain `cp`
+      // straight onto ${VC_BIN} opens the EXISTING file for in-place write —
+      // the kernel refuses that with ETXTBSY ("Text file busy") while that
+      // exact file is the backing image of a currently-executing process
+      // (systemd's own `ExecStart=${VC_BIN} ...`), which it always is on a
+      // re-install of an already-installed, already-running deployment, not
+      // just a rare edge case. Fixed via the standard safe swap: copy to a
+      // sibling temp path on the same filesystem, chmod it there, then `mv`
+      // (an atomic rename — same filesystem, so no copy-then-delete) over
+      // the final name. The running process keeps its own already-open
+      // inode until it next restarts; nothing here stops/restarts the
+      // service itself — that still only happens via a later, explicit
+      // Configure/restart step, unchanged from before. Confirmed this
+      // failure mode is non-destructive on its own (the live binary was
+      // never actually touched, the service kept running on the old one)
+      // but it did leave the module's installedWithVersion un-bumped, so a
+      // subsequent Fix-All/Install retry picks it up again automatically.
+      const unitExit = await spawnStream(
         `set -e\n` +
         `mkdir -p ${VC_DIR}/bin ${VC_ETC} ${VC_DATA} ${VC_LOG}\n` +
-        `cp ${SRC_DIR}/bin/smsc ${VC_BIN}\n` +
-        `chmod +x ${VC_BIN}\n` +
+        `cp ${SRC_DIR}/bin/smsc ${VC_BIN}.new\n` +
+        `chmod +x ${VC_BIN}.new\n` +
+        `mv ${VC_BIN}.new ${VC_BIN}\n` +
         `cp ${SRC_DIR}/systemd/${SYSTEMD_UNIT}.service ${SYSTEMD_UNIT_PATH}\n` +
         // The shipped unit's ExecStart points at /opt/vectorcore/bin/smsc — this
         // deployment installs under /opt/vectorcore/sms/bin/smsc instead (own
@@ -455,6 +520,10 @@ export async function installVectorcoreSmsc(write: (s: string) => void): Promise
         `sed -i "s|ExecStart=.*|ExecStart=${VC_BIN} -c ${VC_CFG}|" ${SYSTEMD_UNIT_PATH}\n` +
         `systemctl daemon-reload`
       );
+      if (unitExit !== 0) {
+        write(`\n❌ Binary/systemd unit install failed (exit ${unitExit}).`);
+        return { success: false, error: `install exit ${unitExit}` };
+      }
 
       const existingState = readState();
       writeState({ ...(existingState ?? {} as VectorcoreSmscState), imsDomain: existingState?.imsDomain ?? '', installedWithVersion: getAppVersion() });

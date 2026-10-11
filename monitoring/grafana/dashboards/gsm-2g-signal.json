@@ -1,0 +1,149 @@
+{
+  "title": "2G UE Signal Dashboard",
+  "uid": "gsm-2g-signal",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "tags": ["open5gs", "2g", "gsm"],
+  "templating": {
+    "list": [
+      {
+        "name": "imsi",
+        "type": "query",
+        "label": "IMSI",
+        "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" },
+        "query": "label_values(open5gs_gsm2g_ul_rxlev_dbm, imsi)",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "📶 2G UE Signal (osmo-bsc meas-feed)", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
+
+    {
+      "id": 2, "type": "stat", "title": "Active 2G UEs",
+      "description": "IMSIs with a real signal measurement in the last 40 minutes, matching the IMSI filter above. Idle UEs report on a periodic timer (~30 min on this deployment), not continuously.",
+      "gridPos": { "x": 0, "y": 1, "w": 4, "h": 4 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short", "mappings": [] } },
+      "targets": [{ "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "count(open5gs_gsm2g_ul_rxlev_dbm{imsi=~\"$imsi\"})", "legendFormat": "Active 2G UEs", "refId": "A" }]
+    },
+
+    {
+      "id": 3, "type": "table", "title": "Per-UE Current 2G Signal",
+      "description": "Latest reading per active IMSI matching the filter above. BTS index is best-effort and may show 0 even for a genuinely fresh reading.",
+      "gridPos": { "x": 4, "y": 1, "w": 20, "h": 8 },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "imsi", "desc": false }] },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto", "displayMode": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "UL RxLev (dBm)" }, "properties": [{ "id": "unit", "value": "dBm" }] },
+          { "matcher": { "id": "byName", "options": "DL RxLev (dBm)" }, "properties": [{ "id": "unit", "value": "dBm" }] },
+          { "matcher": { "id": "byName", "options": "MS Power (dBm)" }, "properties": [{ "id": "unit", "value": "dBm" }] },
+          { "matcher": { "id": "byName", "options": "BS Power (dBm)" }, "properties": [{ "id": "unit", "value": "dBm" }] },
+          { "matcher": { "id": "byName", "options": "UL Path Loss (dB)" }, "properties": [{ "id": "unit", "value": "dB" }] },
+          { "matcher": { "id": "byName", "options": "DL Path Loss (dB)" }, "properties": [{ "id": "unit", "value": "dB" }] }
+        ]
+      },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ul_rxlev_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "A", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_dl_rxlev_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "B", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ul_rxqual{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "C", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_dl_rxqual{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "D", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ms_power_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "E", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_bs_power_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "F", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_timing_advance{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "G", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ul_path_loss_db{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "H", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_dl_path_loss_db{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "I", "instant": true, "format": "table" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_subscriber_info{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}}", "refId": "J", "instant": true, "format": "table" }
+      ],
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": { "byField": "imsi", "mode": "outer" }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "Time 7": true, "Time 8": true, "Time 9": true,
+              "__name__": true, "Value #J": true, "job": true, "instance": true
+            },
+            "renameByName": {
+              "Value #A": "UL RxLev (dBm)", "Value #B": "DL RxLev (dBm)",
+              "Value #C": "UL RxQual", "Value #D": "DL RxQual",
+              "Value #E": "MS Power (dBm)", "Value #F": "BS Power (dBm)",
+              "Value #G": "Timing Advance", "Value #H": "UL Path Loss (dB)", "Value #I": "DL Path Loss (dB)"
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "id": 4, "type": "timeseries", "title": "2G RxLev Over Time (UL/DL)",
+      "description": "3GPP TS 05.08 thresholds this project's own 2G UE Signal page uses: >= -80 dBm good, >= -95 dBm marginal, below that poor.",
+      "gridPos": { "x": 0, "y": 9, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean", "min"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "dBm", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ul_rxlev_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · UL", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_dl_rxlev_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · DL", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 5, "type": "timeseries", "title": "2G RxQual Over Time (UL/DL)",
+      "description": "0 (best) to 7 (worst). This project's own 2G UE Signal page treats <= 2 as good, <= 4 as marginal, above that poor.",
+      "gridPos": { "x": 12, "y": 9, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "max": 7, "min": 0 } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ul_rxqual{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · UL", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_dl_rxqual{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · DL", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 6, "type": "timeseries", "title": "2G Path Loss Over Time (UL/DL)",
+      "description": "UL = MS transmit power minus BTS RxLev. DL = BTS transmit power minus MS RxLev. DL path loss is computed and available but not currently shown on the 2G UE Signal page itself.",
+      "gridPos": { "x": 0, "y": 17, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "dB", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ul_path_loss_db{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · UL", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_dl_path_loss_db{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · DL", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 7, "type": "timeseries", "title": "2G TX Power (MS/BS) Over Time",
+      "gridPos": { "x": 12, "y": 17, "w": 12, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "dBm", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_ms_power_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · MS", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_bs_power_dbm{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}} · BS", "refId": "B" }
+      ]
+    },
+
+    {
+      "id": 8, "type": "timeseries", "title": "2G Timing Advance Over Time",
+      "description": "~550m per step.",
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 8 },
+      "options": { "legend": { "calcs": ["lastNotNull", "mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "open5gs-prometheus" }, "expr": "open5gs_gsm2g_timing_advance{imsi=~\"$imsi\"}", "legendFormat": "{{imsi}} · BTS {{bts}}", "refId": "A" }
+      ]
+    }
+
+  ]
+}

@@ -40,7 +40,7 @@ export const MNCC_SOCKET_PATH = '/tmp/osmo-msc-mncc.sock';
 export const SIPCONN_TAG = '1.6.1';
 
 // Bump whenever the build steps below change in a way that needs a rebuild.
-export const BUILD_REV = 2;
+export const BUILD_REV = 3;
 
 export const BUILD_STEPS = [
   'preparing', 'installing_apt_deps', 'cloning', 'patching', 'building', 'verifying', 'deploying',
@@ -70,9 +70,22 @@ export type SipConnBuildStep = typeof BUILD_STEPS[number];
 // (`command(0x106) never arrived for leg(...)`) moments after both legs had
 // already been marked connected, tearing down a call that was otherwise
 // completely healthy. SIPCONN_SETUP_COMPL_TIMEOUT_PATCH below widens ONLY
-// that one call site to 15s via a new start_cmd_timer_t() helper — every
-// other start_cmd_timer() caller (RTP_CREATE, REL_CNF, REL_IND) keeps the
-// original 5s, deliberately not touched since they weren't implicated.
+// that one call site via a new start_cmd_timer_t() helper — every other
+// start_cmd_timer() caller (RTP_CREATE, REL_CNF, REL_IND) keeps the original
+// 5s, deliberately not touched since they weren't implicated.
+//
+// BUILD_REV 3 (2026-09-26): widened again, 15s -> 30s. A real 19-call mixed
+// 2G/4G/5G/PSTN test session the same day reproduced this exact timer firing
+// on 3 separate calls even at 15s (`command(0x106) never arrived for
+// leg(...)`, same signature as the original 2026-09-21 find) — 15s was a
+// real improvement over the stock 5s but still evidently insufficient under
+// this deployment's real over-the-air conditions. This is explicitly a
+// stopgap, not a resolved root cause: whether the underlying MNCC_SETUP_
+// COMPL_IND message is genuinely just slow, or is being lost/delayed by
+// something else entirely (worth checking against a fresh capture with
+// Asterisk verbose logging enabled — see gsm-controller.ts/pstn-controller.ts
+// logger.conf notes), is still an open question. If 30s still isn't enough,
+// don't just widen a third time without checking that first.
 const SIPCONN_SETUP_COMPL_TIMEOUT_PATCH = `import re, sys
 path = 'src/mncc.c'
 src = open(path).read()
@@ -114,9 +127,11 @@ new_call = '''	/* Real over-the-air CONNECT -> CONNECT ACKNOWLEDGE round trip
 	 * sometimes succeeding and sometimes not, every failure showing this
 	 * timer expiring on the originating leg moments after the callee had
 	 * already answered (both legs briefly marked connected, then torn down
-	 * from underneath). Widened to 15s; other start_cmd_timer() call sites
-	 * (RTP_CREATE, REL_CNF, REL_IND) are untouched at the original 5s. */
-	start_cmd_timer_t(leg, MNCC_SETUP_COMPL_IND, 15);
+	 * from underneath). Widened to 15s, then to 30s on 2026-09-26 after a
+	 * real mixed-RAN test session reproduced the same failure 3 times even
+	 * at 15s. Other start_cmd_timer() call sites (RTP_CREATE, REL_CNF,
+	 * REL_IND) are untouched at the original 5s. */
+	start_cmd_timer_t(leg, MNCC_SETUP_COMPL_IND, 30);
 	mncc_send(leg->conn, MNCC_SETUP_RSP, leg->callref);'''
 if old_call not in src:
     print('PATCH FAILED: MNCC_SETUP_COMPL_IND call site not found verbatim -- upstream source shape changed', file=sys.stderr)
@@ -124,7 +139,7 @@ if old_call not in src:
 src = src.replace(old_call, new_call, 1)
 
 open(path, 'w').write(src)
-print('mncc.c: MNCC_SETUP_COMPL_IND timer widened 5s -> 15s')
+print('mncc.c: MNCC_SETUP_COMPL_IND timer widened 5s -> 30s')
 `;
 export function buildOsmoSipConnectorScript(force = false): string {
   return `#!/bin/bash

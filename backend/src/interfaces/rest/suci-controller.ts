@@ -32,6 +32,15 @@ export function createSuciRouter(
   });
 
   // POST /api/suci/keys - Generate new SUCI key
+  //
+  // This and the 3 other mutating routes below (PUT/PATCH/DELETE) all map a thrown
+  // use-case error to 400 + error.message, not 500 + String(error) — real, confirmed-live
+  // 2026-09-30 finding (a full-session live-API verification pass): the old 500 + String()
+  // form produced doubled, ugly text (e.g. "Error: Key ID 2 is already in use") and the
+  // wrong status code for what's genuinely a validation/business-logic rejection, not a
+  // server fault. Matches the convention every sibling mutating route in this codebase
+  // already uses (see apn-profile-controller.ts). GET routes above keep their existing
+  // generic-500 handling — a read failure is a more plausible genuine server error.
   router.post('/keys', requireAdmin, async (req: Request, res: Response) => {
     try {
       const { id, scheme } = req.body;
@@ -47,8 +56,9 @@ export function createSuciRouter(
       const key = await suciUseCase.generateKey({ id: Number(id), scheme });
       res.json(key);
     } catch (error) {
-      logger.error({ error }, 'Failed to generate SUCI key');
-      res.status(500).json({ error: String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ err: message }, 'Failed to generate SUCI key');
+      res.status(400).json({ error: message });
     }
   });
 
@@ -73,8 +83,9 @@ export function createSuciRouter(
       const key = await suciUseCase.generateKey({ id, scheme });
       res.json(key);
     } catch (error) {
-      logger.error({ error }, 'Failed to regenerate SUCI key');
-      res.status(500).json({ error: String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ err: message }, 'Failed to regenerate SUCI key');
+      res.status(400).json({ error: message });
     }
   });
 
@@ -96,8 +107,9 @@ export function createSuciRouter(
       const key = await suciUseCase.renameKey(currentId, newIdNum);
       res.json(key);
     } catch (error) {
-      logger.error({ error }, 'Failed to rename SUCI key');
-      res.status(500).json({ error: String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ err: message }, 'Failed to rename SUCI key');
+      res.status(400).json({ error: message });
     }
   });
 
@@ -110,8 +122,9 @@ export function createSuciRouter(
       await suciUseCase.deleteKey(id, deleteFile);
       res.json({ success: true, id, deletedFile: deleteFile });
     } catch (error) {
-      logger.error({ error }, 'Failed to delete SUCI key');
-      res.status(500).json({ error: String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ err: message }, 'Failed to delete SUCI key');
+      res.status(400).json({ error: message });
     }
   });
 

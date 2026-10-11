@@ -57,11 +57,48 @@ export const EXTRA_BACKUP_FILES = [
   '/etc/open5gs/.asterisk2g-config.json',
   '/etc/open5gs/.vectorcore-smsc-config.json',
   '/etc/open5gs/.twamp-config.json',
+  '/etc/open5gs/.ocs-config.json',
+  // Real, 2026-09-24 finding: ensureCdrIndexes() (cdr-store.ts) runs
+  // unconditionally on every backend boot and actively collMods the CDR TTL
+  // index's expireAfterSeconds to whatever readCdrSettings() returns here —
+  // on a fresh VM missing this file, that silently falls back to the
+  // 180-day default and RE-TIGHTENS the index, which can actively delete
+  // real historical CDRs within about a minute of first boot if the
+  // operator had configured a longer retention.
+  '/etc/open5gs/.cdr-settings.json',
   '/etc/open5gs-nms/.vowifi-state.json',
   '/etc/open5gs-nms/.swu-emulator-state.json',
   '/etc/open5gs-nms/frr-source-build-state.json',
+  // Real, 2026-09-24 finding: the IP Plan Tool's own "planned" registry.
+  // For sepp-sbi/sepp-n32c/sepp-n32f/bind-dns specifically, this file IS the
+  // only record of an operator's intended address — those 4 rows are
+  // deliberately registry-only (never live-applied, since SEPP's only
+  // live-apply path is a full 17-NF core restart). Confirmed live on
+  // production: a real pending sepp-sbi value with no other record anywhere
+  // in the system (SEPP itself is still at factory defaults) would be
+  // silently dropped by a restore with zero warning.
+  '/etc/open5gs-nms/ip-plan-state.json',
+  // 2G GSM's own BTS entries (band, ARFCN, cell_identity, LAC, BSIC, TRX
+  // count, GPRS mode, NSVC IPs, etc.) — real, 2026-09-22 audit finding: this
+  // was missing entirely despite the module predating the original
+  // 2026-08-25 audit. osmo-bsc.cfg/osmo-mgw.cfg/osmo-pcu.cfg/osmo-sgsn.cfg/
+  // osmo-ggsn.cfg/osmo-sip-connector.cfg are all fully regenerated FROM this
+  // one file by gsm-controller.ts's own Configure flow, so backing up just
+  // this JSON (not all 6 generated .cfg files) is sufficient, matching the
+  // same "source of truth" pattern already used for IMS/PSTN/Asterisk-2G
+  // above — as long as Configure is re-run after restore.
+  '/etc/osmocom/.nms-gsm-bts-state.json',
   '/etc/chrony/chrony.conf',
   '/etc/rsyslog.d/71-open5gs-nms-forward.conf',
+  // SEPP's own N32 TLS material — real, 2026-09-22 audit finding: this was
+  // never captured anywhere. Losing it and re-running "Generate Certs"
+  // produces a DIFFERENT self-signed keypair, breaking N32 trust with any
+  // visited-network peer that pinned the original public cert — same
+  // severity as the SUCI-key/SecGW-PKI categories, which already treat
+  // their own key material as genuinely irreplaceable.
+  '/etc/open5gs/tls/sepp.crt',
+  '/etc/open5gs/tls/sepp.key',
+  '/etc/open5gs/tls/sepp-peer-ca.crt',
 ];
 
 // ── mme.yaml sgsap map: round-trip helpers ────────────────────────────────────
@@ -314,7 +351,65 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async saveAmf(config: AmfConfig): Promise<void> {
     const raw = config.rawYaml as any;
+    this.normalizeAmfPlmnSupport(raw);
     await this.saveRaw('amf', raw);
+  }
+
+  // Real bug, confirmed live 2026-09-28: ConfigPage.tsx's "Add PLMN" button
+  // (amf.plmn_support: [...amf.plmn_support, {plmn_id, s_nssai:[{sst:1}]}])
+  // appends a brand-new top-level plmn_support entry regardless of whether
+  // that plmn_id already exists — there's a separate, correct "add slice"
+  // button that pushes into an EXISTING entry's own s_nssai array, but
+  // nothing stops two entries sharing the same plmn_id from coexisting.
+  // Both forms parse without error (confirmed against Open5GS's real
+  // src/amf/context.c plmn_support parser), but they are NOT equivalent on
+  // the wire: ngap-build.c's ngap_build_plmn_support_list() emits one
+  // NGAP PLMNSupportItem PER top-level plmn_support[] entry, so a
+  // duplicate-plmn_id split produces two separate PLMNSupportItems
+  // advertising the same PLMN in the NGSetupResponse's broadcast list
+  // instead of one PLMNSupportItem correctly listing both slices — not
+  // the proper 3GPP structure. Normalizing here (the single funnel every
+  // AMF write goes through, regardless of whether it came from this
+  // editor, auto-config's bulk apply, or a raw YAML paste) fixes it at
+  // the source regardless of which caller produced the duplicate.
+  private normalizeAmfPlmnSupport(raw: any): void {
+    const list = raw?.amf?.plmn_support;
+    if (!Array.isArray(list) || list.length < 2) return;
+
+    const merged: any[] = [];
+    const indexByPlmn = new Map<string, number>();
+
+    for (const entry of list) {
+      const mcc = entry?.plmn_id?.mcc;
+      const mnc = entry?.plmn_id?.mnc;
+      if (mcc === undefined || mnc === undefined) {
+        merged.push(entry);
+        continue;
+      }
+      const key = `${mcc}/${mnc}`;
+      const existingIdx = indexByPlmn.get(key);
+      if (existingIdx === undefined) {
+        indexByPlmn.set(key, merged.length);
+        merged.push({ ...entry, s_nssai: [...(entry.s_nssai || [])] });
+        continue;
+      }
+
+      // Same PLMN already seen — fold this entry's slices into it instead
+      // of keeping a second PLMNSupportItem. Dedupe by sst+sd so replaying
+      // an already-normalized save (or a double-click) doesn't accumulate
+      // identical slice entries.
+      const target = merged[existingIdx];
+      for (const slice of entry.s_nssai || []) {
+        const dup = target.s_nssai.some((s: any) => s.sst === slice.sst && s.sd === slice.sd);
+        if (!dup) target.s_nssai.push(slice);
+      }
+      this.logger.info(
+        { mcc, mnc, droppedFrom: existingIdx },
+        'Merged duplicate amf.plmn_support entry (same PLMN) into one — see normalizeAmfPlmnSupport',
+      );
+    }
+
+    raw.amf.plmn_support = merged;
   }
 
   async saveSmf(config: SmfConfig): Promise<void> {

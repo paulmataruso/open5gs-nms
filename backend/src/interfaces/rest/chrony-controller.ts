@@ -150,13 +150,32 @@ function serializeConfig(cfg: ChronyConfig): string {
 function parseSources(raw: string): ChronySource[] {
   const sources: ChronySource[] = [];
   for (const line of raw.split('\n')) {
-    // e.g.: MS 162.159.200.123  2   6  377    23  +1234us[+5678us] +/-  890us
-    const m = line.match(/^([MS\^])\s+([*+\-?x!])\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/);
+    // Real chronyc -n sources output, confirmed live 2026-09-30 (found during a
+    // full live-API verification pass): the mode and state characters are packed
+    // adjacent with NO whitespace between them (e.g. "^+", "^*"), not
+    // space-separated as this regex previously assumed — that mismatch meant this
+    // never matched a single real line, so `sources` was always empty even with
+    // healthy, actively-syncing upstream servers (confirmed via `tracking`, a
+    // separate parser, showing real data while this returned []).
+    // e.g.: ^+ 185.125.190.57    2  10  377   212  +2478us[+2478us] +/-   45ms
+    // Also fixed two more real bugs found alongside the mode/state one, both
+    // confirmed against real chronyc output (8 live upstream sources):
+    // (1) "Last sample" is really 3 whitespace-separated tokens (offset, the
+    // literal "+/-", and the actual magnitude) — the previous (\S+) for the
+    // final group only ever captured the bare "+/-" and silently dropped the
+    // magnitude after it, which frontend/src/pages/TimeServerPage.tsx renders
+    // directly as its own column. (2) chronyc right-pads the SECOND bracketed
+    // offset value with extra internal spaces for column alignment when it has
+    // fewer digits than the first (e.g. "+57us[  +57us]") — a bare (\S+) for
+    // the offset group splits this into two garbage tokens instead of one
+    // value; (\S+\[\s*\S+\]) matches the whole bracketed pair as one field
+    // regardless of internal padding.
+    const m = line.match(/^([MS\^])([*+\-?x!])\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+\[\s*\S+\])\s+(.+)$/);
     if (!m) continue;
     sources.push({
       mode: m[1], state: m[2], name: m[3],
       stratum: m[4], poll: m[5], reach: m[6],
-      lastRx: m[7], offset: m[8], error: m[9],
+      lastRx: m[7], offset: m[8], error: m[9].trim(),
     });
   }
   return sources;

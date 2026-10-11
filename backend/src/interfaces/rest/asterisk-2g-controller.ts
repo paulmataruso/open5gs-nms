@@ -12,6 +12,22 @@ import {
   verifyOsmoSipConnectorBuild, osmoSipConnectorCfg, osmoSipConnectorSystemdUnit,
   CFG_PATH as SIPCONN_CFG_PATH, UNIT_PATH as SIPCONN_UNIT_PATH, MNCC_SOCKET_PATH,
 } from '../../application/use-cases/osmo-sip-connector-build';
+import { listHlrSubscriberStatus } from './sms-controller';
+
+// Real, confirmed-live 2026-09-30 finding (adversarial critic review): both call
+// sites below filter subscriberMsisdns by `gsmEnabled` alone — the Mongo toggle,
+// not actual presence in osmo-hlr's own hlr.db. gsm-controller.ts's own
+// GET /api/gsm/subscribers already established the stricter, correct pattern
+// ("opted in AND actually synced" — a subscriber can have gsmEnabled=true
+// without having gone through "Sync Subscribers" yet, see CLAUDE.md pattern #10).
+// A subscriber in that gap still got an exact-match sipconn dialplan entry here
+// and reproduced the identical "far end did not ring" MSISDN-shadowing bug this
+// file's own gsmEnabled filter was built to fix, for that narrower window.
+async function filterToSyncedGsmSubscribers<T extends { gsmEnabled?: boolean; imsi: string }>(subs: T[]): Promise<T[]> {
+  const hlrRows = await listHlrSubscriberStatus().catch(() => []);
+  const hlrImsis = new Set(hlrRows.map(r => r.imsi));
+  return subs.filter(s => s.gsmEnabled === true && hlrImsis.has(s.imsi));
+}
 
 // ── Asterisk-2G (2G<->2G internal voice) ─────────────────────────────────────
 //
@@ -61,8 +77,16 @@ const A2G_VARLIB  = '/var/lib/asterisk-2g';
 const A2G_SPOOL   = '/var/spool/asterisk-2g';
 const A2G_LOG     = '/var/log/asterisk-2g';
 const A2G_CACHE   = '/var/cache/asterisk-2g';
-const A2G_RUN     = '/run/asterisk-2g';
-const A2G_CONF    = `${A2G_ETC}/asterisk.conf`;
+// Exported so the Asterisk stats poller (asterisk-stats-monitor.ts) can
+// check this instance's real control socket exists BEFORE ever invoking
+// `asterisk -C <path> -rx ...` — a real, confirmed-live landmine: a bad/
+// stale -C path doesn't fail, it silently falls through to whatever OTHER
+// Asterisk instance owns the compiled-in default socket (PSTN Gateway's),
+// returning that instance's real data mislabeled as this one's, exit code
+// 0, no error. A structural existsSync check on the actual .ctl socket
+// file is immune to that — and cheaper than a doomed CLI round trip.
+export const A2G_RUN     = '/run/asterisk-2g';
+export const A2G_CONF    = `${A2G_ETC}/asterisk.conf`;
 const A2G_PJSIP   = `${A2G_ETC}/pjsip.conf`;
 const A2G_EXTEN   = `${A2G_ETC}/extensions.conf`;
 const A2G_MODULES = `${A2G_ETC}/modules.conf`;
@@ -307,15 +331,35 @@ function pjsip2gConf(bindIp: string, bindPort: number, sipConnIp: string, sipCon
   // the local UDP socket bound to bindIp:bindPort — every endpoint that
   // sends/receives through this instance shares the one transport,
   // regardless of how many distinct peers reference it; a second
-  // type=transport on the same bind would just fail to load). allow= is
-  // ordered amrwb/amr before gsm — this endpoint ultimately feeds toward
-  // PSTN's scscf_trunk (AMR-capable), so biasing negotiation toward AMR here
-  // keeps the call to exactly one transcode hop (AMR<->GSM-FR happening once,
-  // on whichever instance's dialplan the call lands on second) rather than
-  // risking a double transcode. direct_media=no is a hard functional
-  // requirement here, not inherited B2BUA hardening habit: transcoding is
-  // only possible while Asterisk itself stays in the RTP path on both legs.
-  // See CLAUDE.md's Cross-RAN Calling pattern entry for the full design.
+  // type=transport on the same bind would just fail to load). direct_media=no
+  // is a hard functional requirement here, not inherited B2BUA hardening
+  // habit: transcoding is only possible while Asterisk itself stays in the
+  // RTP path on both legs. See CLAUDE.md's Cross-RAN Calling pattern entry
+  // for the full design.
+  //
+  // Real bug found live 2026-09-26 (real cross-RAN test calls, both
+  // directions): allow= originally listed amrwb/amr before gsm here, on the
+  // theory that order alone would bias negotiation toward AMR when useful
+  // and still land on GSM the rest of the time, keeping the call to exactly
+  // one transcode hop wherever it happened to land. That bias never actually
+  // applied: PSTN's own asterisk2g_trunk (pstn-controller.ts) offers toward
+  // this endpoint with codec_prefs_outgoing_offer=prefer:pending,
+  // operation:intersect — the offer is already narrowed to whatever's
+  // pending on ITS other leg (e.g. AMR from scscf_trunk) before this
+  // endpoint's own allow= order ever gets a say, so a 4G/5G-originated call
+  // reached this leg as AMR-only regardless of gsm being listed here too.
+  // In the other direction, this endpoint has no codec_prefs_outgoing_offer
+  // override of its own, so Asterisk's default (operation:union, preferring
+  // this endpoint's OWN configured order) put amrwb/amr FIRST in the offer
+  // built for a 2G-originated call, even though the real originating leg
+  // (sipconn) is gsm-only — confirmed live as the cause of the one-way
+  // (2G-to-4G/5G) audio failure. Fixed by hard-restricting allow= to gsm
+  // only: a codec absent from allow= can never appear in an offer or answer
+  // for this endpoint regardless of codec_prefs/union/intersect behavior, so
+  // this forecloses AMR ever reaching this hop in either direction — the
+  // actual AMR<->GSM transcode now always happens on PSTN Gateway's own
+  // Asterisk (asterisk2g_trunk<->scscf_trunk), never here. See
+  // pstn-controller.ts's pjsipPstnConf() for the matching fix on that side.
   const crossRanBlock = crossRanPeer ? `
 [pstn_trunk]
 type=identify
@@ -330,8 +374,6 @@ contact=sip:${crossRanPeer.ip}:${crossRanPeer.port}
 type=endpoint
 context=2g-loopback
 disallow=all
-allow=amrwb
-allow=amr
 allow=gsm
 aors=pstn_trunk
 transport=transport-2g
@@ -455,7 +497,7 @@ async function withGsm2gExtensions<T>(mongoUri: string, fn: (col: Collection<Gsm
 
 function extensions2gConf(msisdnMatchPattern: string, echoTestNumber: string, shortCodes: { extension: string; subscriberMsisdn: string }[], crossRanPeerCodes: { extension: string; label?: string }[], subscriberMsisdns: string[]): string {
   const shortCodeBlocks = shortCodes.map(e => `exten => ${e.extension},1,NoOp(2G Short Code -> ${e.subscriberMsisdn})
- same => n,Dial(PJSIP/${e.subscriberMsisdn}@sipconn,30)
+ same => n,Dial(PJSIP/${e.subscriberMsisdn}@sipconn,60)
  same => n,Hangup()
 `).join('\n');
 
@@ -476,15 +518,35 @@ function extensions2gConf(msisdnMatchPattern: string, echoTestNumber: string, sh
   // itself to route anything else to pstn_trunk instead — reaching PSTN
   // Gateway's own [pstn-internal] _X. catch-all (external_trunk +
   // outbound-caller-ID DB lookup keyed by the caller's IMSI), the same real
-  // external-dialing mechanism 4G/5G subscribers already use. NOT yet
-  // confirmed live end-to-end past this dialplan hop — whether
-  // CALLERID(num) arriving at PSTN's side is the caller's IMSI (what its
-  // own DB lookup expects) or MSISDN (what a 2G-originated call's SIP
-  // identity is built from here) has not been verified with a real test
-  // call; if the call reaches PSTN's side but still gets Busy()'d, check
-  // that first.
+  // external-dialing mechanism 4G/5G subscribers already use.
+  //
+  // Real bug found live 2026-09-26 (a mixed-RAN retest session): a pure
+  // 2G-to-2G call (7070 -> 6060) never connected at all — both legs waited
+  // exactly this Dial()'s own 30s timeout, then CANCELed (confirmed via
+  // packet capture, both legs' own INVITE-to-CANCEL delta measured at
+  // 29.996-29.999s, no 200 OK ever). Every equivalent Dial() in PSTN
+  // Gateway's own dialplan (pstn-controller.ts) already uses 60s; this is
+  // the only real-radio-paging leg in the whole call chain that was still
+  // capped at 30 — real GSM paging plus a human noticing their phone and
+  // answering can genuinely take longer than that. Widened to 60s here and
+  // at every other Dial() in this function, matching PSTN Gateway's own
+  // convention.
+  //
+  // Real bug found live 2026-09-26 running the very end-to-end test this
+  // comment above called for: subscriberMsisdnBlocks was built from EVERY
+  // subscriber returned by findAllFull(), not just ones actually reachable
+  // via sipconn/osmo-msc. A 4G/5G-only subscriber's MSISDN got the same
+  // exact-match block as a real 2G subscriber, shadowing the pattern
+  // catch-all below and routing the dial attempt into sipconn anyway —
+  // osmo-msc correctly rejected it as an unknown subscriber, so the call
+  // failed instantly and never reached pstn_trunk at all (confirmed live:
+  // "far end did not ring" / "call can't be connected" for MSISDNs
+  // belonging to non-2G subscribers). Fixed in regenerateExtensions2g() by
+  // filtering to `s.gsmEnabled` before building this block — a real 2G
+  // subscriber's own MSISDN still routes via sipconn exactly as before, and
+  // everyone else now correctly falls through to pstn_trunk.
   const subscriberMsisdnBlocks = Array.from(new Set(subscriberMsisdns)).map(msisdn => `exten => ${msisdn},1,NoOp(2G-to-2G/4G/5G: dialing known subscriber ${msisdn} via osmo-sip-connector)
- same => n,Dial(PJSIP/${msisdn}@sipconn,30)
+ same => n,Dial(PJSIP/${msisdn}@sipconn,60)
  same => n,Hangup()
 `).join('\n');
 
@@ -494,7 +556,7 @@ function extensions2gConf(msisdnMatchPattern: string, echoTestNumber: string, sh
   // Dial() logic completes it unchanged. This side never needs to know which
   // subscriber a PSTN short code actually belongs to.
   const crossRanBlocks = crossRanPeerCodes.map(e => `exten => ${e.extension},1,NoOp(Cross-RAN -> 4G/5G short code ${e.extension}${e.label ? ' (' + e.label + ')' : ''})
- same => n,Dial(PJSIP/${e.extension}@pstn_trunk,30)
+ same => n,Dial(PJSIP/${e.extension}@pstn_trunk,60)
  same => n,Hangup()
 `).join('\n');
 
@@ -517,7 +579,7 @@ ${shortCodeBlocks}
 ${crossRanBlocks}
 ${subscriberMsisdnBlocks}
 exten => ${msisdnMatchPattern},1,NoOp(External PSTN: routing \${EXTEN} out via PSTN Gateway's own external trunk)
- same => n,Dial(PJSIP/\${EXTEN}@pstn_trunk,30)
+ same => n,Dial(PJSIP/\${EXTEN}@pstn_trunk,60)
  same => n,Hangup()
 `;
 }
@@ -577,7 +639,11 @@ async function regenerateExtensions2g(mongoUri: string, subscriberRepo: ISubscri
   const shortCodes = await resolveGsm2gShortCodes(mongoUri, subscriberRepo);
   const crossRanPeerCodes = await getCrossRanPeerCodes(mongoUri);
   const allSubs = await subscriberRepo.findAllFull();
-  const subscriberMsisdns = allSubs.map(s => s.msisdn?.[0]).filter((m): m is string => !!m);
+  // Only gsmEnabled-AND-actually-synced subscribers are really reachable via
+  // sipconn/osmo-msc — see filterToSyncedGsmSubscribers()'s own comment above,
+  // and extensions2gConf()'s own comment for the original bug this filter fixes.
+  const gsmSubs = await filterToSyncedGsmSubscribers(allSubs);
+  const subscriberMsisdns = gsmSubs.map(s => s.msisdn?.[0]).filter((m): m is string => !!m);
   fs.writeFileSync(`${HOST_ROOT}${A2G_EXTEN}`, extensions2gConf(msisdnMatchPattern, echoTestNumber, shortCodes, crossRanPeerCodes, subscriberMsisdns), 'utf-8');
   await nsenter('asterisk', ['-C', A2G_CONF, '-rx', 'dialplan reload']).catch(() => {});
 }
@@ -783,6 +849,15 @@ export async function configureAsterisk2g(
       return { success: false, error: `Echo test number ${echoTestNumber} collides with an assigned 2G short code — pick a different one.` };
     }
 
+    // Real, 2026-09-24 finding: ensureDirTreeAndOwnership() (which includes
+    // the cdr-csv/ subdirectory fix — see its own comment) only ran inside
+    // installAsterisk2g(), never here — not self-healing if any of these
+    // directories were ever lost outside a fresh bootstrap (log cleanup,
+    // disk issue, manual mistake). Safe to call unconditionally: plain
+    // mkdir -p + chown -R, idempotent, no destructive effect on existing
+    // content.
+    await ensureDirTreeAndOwnership();
+
     // Idempotent — matches the loopback-alias convention every other SIP
     // daemon in this project follows (each gets its own dedicated address).
     await nsenter('ip', ['addr', 'add', `${bindIp}/8`, 'dev', 'lo']).catch(() => {});
@@ -803,8 +878,17 @@ export async function configureAsterisk2g(
       crossRanPeer = getPstnBindAddress();
     }
     const crossRanPeerCodes = await getCrossRanPeerCodes(mongoUri);
+    // Same gsmEnabled-AND-synced filter as regenerateExtensions2g() above — real bug,
+    // confirmed live 2026-09-26 (see that function's own comment for the full incident):
+    // an unfiltered list here shadows pstn_trunk's catch-all with a 4G/5G-only
+    // subscriber's own MSISDN, which osmo-msc then rejects as unknown, instead of
+    // forwarding to PSTN. This second call site (configureAsterisk2g, not just
+    // regenerateExtensions2g) was missed when that fix first shipped — any full
+    // Configure re-run (not just an extensions edit or Cross-RAN toggle) silently
+    // regenerated extensions.conf with the unfiltered list again.
     const allSubsForMsisdns = await subscriberRepo.findAllFull();
-    const subscriberMsisdns = allSubsForMsisdns.map(s => s.msisdn?.[0]).filter((m): m is string => !!m);
+    const gsmSubsForMsisdns = await filterToSyncedGsmSubscribers(allSubsForMsisdns);
+    const subscriberMsisdns = gsmSubsForMsisdns.map(s => s.msisdn?.[0]).filter((m): m is string => !!m);
     fs.writeFileSync(`${HOST_ROOT}${A2G_CONF}`, asterisk2gConfTemplate(astmoddir, astdatadir), 'utf-8');
     fs.writeFileSync(`${HOST_ROOT}${A2G_PJSIP}`, pjsip2gConf(bindIp, bindPort, peer.ip, peer.port, crossRanPeer), 'utf-8');
     fs.writeFileSync(`${HOST_ROOT}${A2G_EXTEN}`, extensions2gConf(msisdnMatchPattern, echoTestNumber, shortCodes, crossRanPeerCodes, subscriberMsisdns), 'utf-8');
@@ -1160,12 +1244,19 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
     }
   });
 
-  // POST /api/asterisk-2g/uninstall — scoped ONLY to this instance's own
-  // tree/unit. Deliberately NEVER apt purges asterisk/asterisk-modules (see
-  // module header) — that package is shared with the PSTN Gateway's own,
-  // untouched instance; purging it would take PSTN down too. This is a real,
-  // intentional asymmetry with pstn-controller.ts's own uninstall (which DOES
-  // purge) — not an oversight.
+  // POST /api/asterisk-2g/uninstall — scoped to this instance's own tree/
+  // unit, PLUS a real check (not an unconditional skip) on whether the
+  // shared asterisk/asterisk-modules package is now orphaned. Real,
+  // 2026-09-23 finding: this used to NEVER purge, deferring entirely to
+  // pstn-controller.ts's own uninstall (which DOES purge, conditionally, via
+  // isAsterisk2gInstalled()) — but that made the shared package's removal
+  // silently order-dependent: uninstalling PSTN first correctly saw
+  // Asterisk-2G still present and skipped, and this handler never purged
+  // regardless, so uninstalling BOTH in that order permanently orphaned the
+  // package no matter what. Now checks the reverse (isPstnInstalled(), lazy-
+  // imported — see isAsterisk2gInstalled()'s own comment for why this
+  // direction can't be a static import) so whichever of the two runs LAST
+  // correctly finishes the job, order-independent.
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -1205,7 +1296,22 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
       const removed = await withGsm2gExtensions(mongoUri, col => col.deleteMany({})).then(r => r.deletedCount).catch(() => 0);
       write(`Removed ${removed} short code mapping(s).`);
 
-      write('\n=== NOT purging the asterisk/asterisk-modules packages — shared with the PSTN Gateway\'s own instance ===');
+      {
+        const { isPstnInstalled } = await import('./pstn-controller');
+        if (isPstnInstalled()) {
+          write('\n=== Skipping asterisk/asterisk-modules purge — the PSTN Gateway is installed and shares this same package ===');
+          write('Uninstall it first (its own page) if you actually want these packages removed.');
+        } else {
+          write('\n=== Purging asterisk packages (PSTN Gateway is not installed — package is no longer shared) ===');
+          const exitCode: number = await new Promise((resolve) => {
+            const child = exec(`nsenter -t 1 -m -u -i -p -- bash -c 'DEBIAN_FRONTEND=noninteractive apt-get purge -y asterisk asterisk-modules && apt-get autoremove -y'`);
+            child.stdout?.on('data', (d: Buffer) => write(d.toString()));
+            child.stderr?.on('data', (d: Buffer) => write(d.toString()));
+            child.on('close', (code) => resolve(code ?? 1));
+          });
+          write(exitCode === 0 ? 'Asterisk package purged.' : `⚠️  Asterisk package purge exited ${exitCode}.`);
+        }
+      }
 
       // Removing the one thing osmo-msc's external MNCC mode was pointed at
       // must not leave it stranded there — same reasoning as the GSM

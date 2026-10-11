@@ -36,6 +36,25 @@ function formatVoiceCapSeconds(seconds: number): string {
   return formatVoiceCap(seconds / 60);
 }
 
+// Same used/total -> color/width convention as TrafficHistoryPage.tsx's own
+// UsageBar (amber at 70%+, red at 90%+) — this file has its own copy since
+// that one is module-local there, not exported.
+function usageBarColor(used: number, total: number, baseColor: string): string {
+  if (total <= 0) return baseColor;
+  const pct = (used / total) * 100;
+  if (pct >= 90) return '#ef4444';
+  if (pct >= 70) return '#f59e0b';
+  return baseColor;
+}
+function UsageBar({ used, total, color }: { used: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.min((used / total) * 100, 100) : 0;
+  return (
+    <div className="w-full h-1 bg-nms-surface-2 rounded-full overflow-hidden">
+      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: usageBarColor(used, total, color) }} />
+    </div>
+  );
+}
+
 function PlanModal({
   plan, onClose, onSaved,
 }: {
@@ -190,25 +209,45 @@ function PlanCard({ plan, onEdit, onDeleted }: { plan: ChargingPlan; onEdit: () 
           ) : loadingUsage ? (
             <p className="text-xs text-nms-text-dim">Loading usage…</p>
           ) : (
-            <div className="space-y-1.5">
-              {plan.imsis.map(imsi => {
-                const u = usage?.[imsi];
-                return (
-                  <div key={imsi} className="flex items-center justify-between text-xs">
-                    <span className="font-mono text-nms-text-dim">{imsi}</span>
-                    {u ? (
-                      <span className="text-nms-text">
-                        {formatBytes(u.dataUsedBytes)} / {formatDataCapBytes(u.dataTotalBytes)} data
-                        <span className="mx-2 text-nms-text-dim">·</span>
-                        {formatMinutes(u.voiceUsedSeconds)} / {formatVoiceCapSeconds(u.voiceTotalSeconds)} voice
-                      </span>
-                    ) : (
-                      <span className="text-nms-text-dim">not provisioned yet</span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-nms-text-dim border-b border-nms-border">
+                  <th className="pb-2 font-medium">Subscriber</th>
+                  <th className="pb-2 font-medium">Data Usage</th>
+                  <th className="pb-2 font-medium">Voice Usage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {plan.imsis.map(imsi => {
+                  const u = usage?.[imsi];
+                  return (
+                    <tr key={imsi} className="border-b border-nms-border/50 last:border-0">
+                      <td className="py-2 pr-3 font-mono text-nms-text-dim align-top">{imsi}</td>
+                      {u ? (
+                        <>
+                          <td className="py-2 pr-3 align-top">
+                            <div className="flex items-center justify-between text-nms-text mb-1">
+                              <span className="flex items-center gap-1"><Database className="w-3 h-3 text-nms-text-dim" /> {formatBytes(u.dataUsedBytes)}</span>
+                              <span className="text-nms-text-dim">/ {formatDataCapBytes(u.dataTotalBytes)}</span>
+                            </div>
+                            <UsageBar used={u.dataUsedBytes} total={u.dataTotalBytes} color="#38bdf8" />
+                          </td>
+                          <td className="py-2 align-top">
+                            <div className="flex items-center justify-between text-nms-text mb-1">
+                              <span className="flex items-center gap-1"><Phone className="w-3 h-3 text-nms-text-dim" /> {formatMinutes(u.voiceUsedSeconds)}</span>
+                              <span className="text-nms-text-dim">/ {formatVoiceCapSeconds(u.voiceTotalSeconds)}</span>
+                            </div>
+                            <UsageBar used={u.voiceUsedSeconds} total={u.voiceTotalSeconds} color="#10b981" />
+                          </td>
+                        </>
+                      ) : (
+                        <td className="py-2 text-nms-text-dim" colSpan={2}>not provisioned yet</td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
       )}

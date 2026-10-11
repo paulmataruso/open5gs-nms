@@ -92,6 +92,15 @@ describe('interference', () => {
     expect(res.warnings.some(w => w.code === 'RESOLUTION_CLAMPED')).toBe(true);
   });
 
+  // Same hard-reject guard as coverage-grid.ts (shared MAX_RADIUS_M import,
+  // not redefined) — see that file's own test for the full rationale.
+  test('radius beyond MAX_RADIUS_M is rejected outright, not clamped', async () => {
+    const res = await calculateMultiSiteInterference({ ...baseInput, radiusM: 500_000 });
+    expect(res.ok).toBe(false);
+    expect(res.error?.reason).toMatch(/radiusM/);
+    expect(res.error?.availableInputs?.radiusM).toBe(500_000);
+  });
+
   test('empty sites array is a structured error, not a crash', async () => {
     const res = await calculateMultiSiteInterference({ ...baseInput, sites: [] });
     expect(res.ok).toBe(false);
