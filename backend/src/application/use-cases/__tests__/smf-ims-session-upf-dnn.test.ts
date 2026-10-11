@@ -151,4 +151,38 @@ describe('updateSmfImsSession with a per-UPF dnn route', () => {
       expect(d.smf.pfcp.client.upf[0].dnn).toBe('ims');
     });
   });
+
+  // The scoping fix stops NEW corruption but does not repair a file already
+  // broken by the old code — both transforms operated on unparseable YAML and
+  // wrote it straight back, so a deployment bitten once stayed broken forever
+  // and looked like a fresh failure on every IMS stop/start. These pin the
+  // guard that makes that state obvious and recoverable instead.
+  describe('a file that is already corrupt', () => {
+    // Exactly what the old code produced, reconstructed.
+    const CORRUPT = `          dnn: ims
+    - subnet: 10.46.0.0/16
+      gateway: 10.46.0.1
+      dnn: ims
+    - subnet: 10.45.0.0/16
+      gateway: 10.45.0.1
+      dnn: internet
+
+      dns:
+  p-cscf:
+    - 10.46.0.1
+        - 10.46.0.1
+parameter:
+  no_ipv4v6_local_addr_in_packet_filter: true
+`;
+
+    it('is genuinely unparseable, i.e. the premise holds', () => {
+      expect(() => yaml.load(CORRUPT)).toThrow();
+    });
+
+    it('neither transform can repair it on its own — hence the guard', () => {
+      // Documents the real limitation rather than implying it self-heals.
+      expect(() => yaml.load(updateSmfImsSession(CORRUPT, '10.46.0.1'))).toThrow();
+      expect(() => yaml.load(removeSmfImsSession(CORRUPT))).toThrow();
+    });
+  });
 });

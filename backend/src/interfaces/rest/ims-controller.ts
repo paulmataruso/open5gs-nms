@@ -3,6 +3,7 @@ import { revisionStaleness } from '../../domain/services/module-revision';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
+import * as yaml from 'js-yaml';
 import * as path from 'path';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -1593,6 +1594,78 @@ function removeNamedZone(raw: string, zoneName: string): string {
 // handler's own logger scope (same idiom as gsm-controller's cfgLogger).
 const imsLogger = pino({ name: 'ims-smf-yaml' });
 
+/**
+ * Apply a transform to smf.yaml, refusing to proceed on anything that is not
+ * valid YAML either coming in or going out.
+ *
+ * Added 2026-10-11 after a user reported the file still being "messed up" on
+ * every IMS stop/start. Two separate gaps, both real:
+ *
+ *  1. Scoping the session search (Known Issues §14) stopped NEW corruption, but
+ *     nothing repaired a file already corrupted by the old code. Both
+ *     transforms happily operated on unparseable YAML and wrote unparseable
+ *     YAML straight back, so a deployment that had been bitten once stayed
+ *     broken forever and kept looking like a fresh failure on every stop/start.
+ *     Refusing to touch a file we cannot parse makes that state obvious and
+ *     recoverable instead of self-perpetuating.
+ *
+ *  2. More importantly this is a POST-condition: whatever the transform does,
+ *     broken YAML never reaches disk. That holds regardless of which code path
+ *     has the bug, so it would have contained the original incident even
+ *     without knowing the cause — the guard the original code should have had.
+ *
+ * Throws with an actionable message naming the backup, rather than logging and
+ * continuing: these run inside Configure/Disable, and silently skipping a
+ * requested change is how a deployment ends up in a state nobody can explain.
+ */
+function writeSmfYamlGuarded(
+  transform: (raw: string) => string,
+  what: string,
+): void {
+  const raw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
+
+  const parse = (text: string): unknown => yaml.load(text);
+  let before: unknown;
+  try {
+    before = parse(raw);
+  } catch (err) {
+    throw new Error(
+      `Refusing to ${what}: /etc/open5gs/smf.yaml is not valid YAML, so it cannot be edited safely ` +
+      `(${String(err).split('\n')[0]}). This deployment was almost certainly hit by the ` +
+      `pre-2026-10-11 session-matching bug. Restore it first — a copy from before IMS first ` +
+      `configured it is at /etc/open5gs/.ims-smf.bak — then retry.`,
+    );
+  }
+  if (!before || typeof before !== 'object') {
+    throw new Error(
+      `Refusing to ${what}: /etc/open5gs/smf.yaml parsed to ${before === null ? 'nothing' : typeof before}, ` +
+      `not a mapping. Restore it (see /etc/open5gs/.ims-smf.bak) and retry.`,
+    );
+  }
+
+  const next = transform(raw);
+
+  // Post-condition: never persist something we cannot read back.
+  try {
+    const after = parse(next);
+    if (!after || typeof after !== 'object') throw new Error('result is not a YAML mapping');
+    // Nothing outside the IMS-owned keys may vanish. Catches a transform that
+    // "succeeds" while dropping unrelated sections, which is exactly the shape
+    // the original bug took.
+    const lost = Object.keys(before as Record<string, unknown>)
+      .filter(k => !(k in (after as Record<string, unknown>)));
+    if (lost.length > 0) throw new Error(`would drop top-level key(s): ${lost.join(', ')}`);
+  } catch (err) {
+    throw new Error(
+      `Refusing to ${what}: the edit would have produced an smf.yaml that is unusable ` +
+      `(${String(err).split('\n')[0]}). The file on disk has been left untouched. ` +
+      `This is a bug — please report it with your smf.yaml attached.`,
+    );
+  }
+
+  fs.writeFileSync(HOST_SMF_YAML, next, 'utf-8');
+}
+
 // Line range of smf.session[]'s own block, so edits to it can never wander into
 // another part of the document. `session:` is a child of the top-level `smf:`
 // key, so it is matched at its real nesting depth rather than by name alone —
@@ -2948,8 +3021,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // 11. Update SMF yaml
   if (fs.existsSync(HOST_SMF_YAML)) {
     if (!fs.existsSync(HOST_IMS_SMF_BAK)) fs.copyFileSync(HOST_SMF_YAML, HOST_IMS_SMF_BAK);
-    const smfRaw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
-    fs.writeFileSync(HOST_SMF_YAML, updateSmfImsSession(smfRaw, pcscfIp, dnsIp), 'utf-8');
+    writeSmfYamlGuarded(raw => updateSmfImsSession(raw, pcscfIp, dnsIp), 'add the IMS session to smf.yaml');
   }
 
   // 11b. HSS yaml — sms_over_ims capability for 4G subscribers
@@ -5049,8 +5121,7 @@ export function createImsRouter(
       if (fs.existsSync(HOST_IMS_SMF_BAK) && fs.existsSync(HOST_IMS_STATE)) {
         const { config } = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
         if (fs.existsSync(HOST_SMF_YAML) && config) {
-          const smfRaw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
-          fs.writeFileSync(HOST_SMF_YAML, updateSmfImsSession(smfRaw, config.pcscfIp, config.dnsIp), 'utf-8');
+          writeSmfYamlGuarded(raw => updateSmfImsSession(raw, config.pcscfIp, config.dnsIp), 're-add the IMS session to smf.yaml');
           await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
         }
       }
@@ -5067,8 +5138,7 @@ export function createImsRouter(
     const user = (req as any).user?.username ?? 'unknown';
     try {
       if (fs.existsSync(HOST_SMF_YAML)) {
-        const smfRaw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
-        fs.writeFileSync(HOST_SMF_YAML, removeSmfImsSession(smfRaw), 'utf-8');
+        writeSmfYamlGuarded(removeSmfImsSession, 'remove the IMS session from smf.yaml');
         await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
       }
       if (fs.existsSync(HOST_UPF_YAML)) {
@@ -5122,8 +5192,7 @@ export function createImsRouter(
     // 2. Remove IMS DNN and p-cscf from SMF YAML, restart SMF
     write('\n=== Removing IMS APN from SMF config ===\n');
     if (fs.existsSync(HOST_SMF_YAML)) {
-      const smfRaw = fs.readFileSync(HOST_SMF_YAML, 'utf-8');
-      fs.writeFileSync(HOST_SMF_YAML, removeSmfImsSession(smfRaw), 'utf-8');
+      writeSmfYamlGuarded(removeSmfImsSession, 'remove the IMS session from smf.yaml');
       await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});
       write('  p-cscf + dnn:ims removed from smf.yaml, open5gs-smfd restarted.\n');
     } else {
