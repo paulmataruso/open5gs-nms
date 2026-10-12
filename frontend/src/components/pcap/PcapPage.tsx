@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Radar, RefreshCw, Play, Square, Download, Trash2, ArrowUp, ArrowDown, Eye, AlertTriangle,
+  Radar, RefreshCw, Play, Square, Download, Trash2, ArrowUp, ArrowDown, Eye, AlertTriangle, Antenna,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import {
   pcapApi, HostInterface, NfCaptureDescriptor, DecodePreset, PcapManifest, CaptureScopeMode,
 } from '../../api/pcap';
+import { SipTraceTab } from './SipTraceTab';
 import { PacketTableModal } from './PacketTableModal';
 import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
 
@@ -86,6 +87,7 @@ export function PcapPage(): JSX.Element {
 
   const [sortKey, setSortKey] = useState<SortKey>('id');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [tab, setTab] = useState<'captures' | 'sip'>('captures');
 
   const hasRunning = captures.some(c => c.status === 'running' || c.status === 'starting');
 
@@ -215,6 +217,34 @@ export function PcapPage(): JSX.Element {
           <RefreshCw className="w-3 h-3" /> Refresh
         </button>
       </div>
+
+      {/* Centered pill tab bar -- the standard page shape (see CLAUDE.md). */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          {([
+            { id: 'captures' as const, label: 'Captures', Icon: Radar },
+            { id: 'sip' as const, label: 'SIP Capture', Icon: Antenna },
+          ]).map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              aria-pressed={tab === id}
+              className={clsx(
+                'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
+                tab === id
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
+                  : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+              )}
+            >
+              <Icon className="w-4 h-4" /> {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === 'sip' && <SipTraceTab />}
+
+      {tab === 'captures' && (<>
 
       {/* New capture form */}
       <div className="nms-card space-y-4">
@@ -395,6 +425,7 @@ export function PcapPage(): JSX.Element {
       {viewingCapture && (
         <PacketTableModal capture={viewingCapture} presets={presets} onClose={() => setViewingCapture(null)} />
       )}
+      </>)}
     </div>
   );
 }

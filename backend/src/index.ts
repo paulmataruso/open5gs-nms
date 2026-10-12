@@ -86,6 +86,9 @@ import { CdrMetricsMonitor } from './application/use-cases/cdr/cdr-metrics-monit
 import { createCdrMetricsRegistry } from './application/use-cases/cdr/cdr-metrics';
 import { ensureCdrIndexes } from './application/use-cases/cdr/cdr-store';
 import { createCdrRouter, readCdrSettings } from './interfaces/rest/cdr-controller';
+import { HepCollector } from './application/use-cases/sip-trace/hep-collector';
+import { ensureSipTraceIndexes } from './application/use-cases/sip-trace/sip-trace-store';
+import { createSipTraceRouter, readSipTraceSettings } from './interfaces/rest/sip-trace-controller';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
@@ -287,6 +290,15 @@ async function main() {
   ensureCdrIndexes(subscriberRepo.getDb(), readCdrSettings().retentionDays)
     .catch(err => logger.warn({ err: String(err) }, 'CDR: failed to ensure indexes at startup'));
   cdrSyncMonitor.start();
+
+  // HEP collector for SIP tracing. Started unconditionally even when tracing
+  // is switched off: it is three idle loopback sockets, and having it already
+  // listening means enabling tracing from the UI needs no backend restart and
+  // cannot race Kamailio's first duplicated message.
+  const hepCollector = new HepCollector(subscriberRepo.getDb(), logger);
+  ensureSipTraceIndexes(subscriberRepo.getDb(), readSipTraceSettings().retentionHours)
+    .catch(err => logger.warn({ err: String(err) }, 'SIP trace: index setup failed'));
+  hepCollector.start().catch(err => logger.warn({ err: String(err) }, 'SIP trace: HEP collector failed to start'));
 
   // Periodically clears stuck Gy/Ro reservations leaked by a real,
   // still-unresolved OCS rating-engine crash (ocs_rating:charge2 on session
@@ -696,6 +708,7 @@ async function main() {
   app.use('/api/ocs',        createOcsRouter(subscriberRepo, subscriberRepo.getDb(), logger, auditLogger));
   app.use('/api/charging-plans', createChargingPlansRouter(subscriberRepo, subscriberRepo.getDb(), logger, auditLogger));
   app.use('/api/cdr',        createCdrRouter(subscriberRepo.getDb(), logger, auditLogger, cdrSyncMonitor));
+  app.use('/api/sip-trace', createSipTraceRouter(subscriberRepo.getDb(), hepCollector, logger, auditLogger));
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/bind', createBindRouter(logger, auditLogger));
   app.use('/api/validation/volte', createVolteValidationRouter(logger, auditLogger));
