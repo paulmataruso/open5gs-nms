@@ -3,6 +3,7 @@ import { X, AlertCircle, CheckCircle, Loader, RotateCcw } from 'lucide-react';
 import { genieacsApi, NbiTask } from '../../api';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface Props {
   deviceId:  string;
@@ -21,6 +22,10 @@ const TASK_LABELS = [
 ];
 
 export const ProvisionConfirmModal: React.FC<Props> = ({ deviceId, serial, tasks, onClose, onSuccess }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   // Each task has its own editable JSON textarea + parse state
   const [editors, setEditors] = useState<string[]>(
     () => tasks.map(t => JSON.stringify(t.body, null, 2)),

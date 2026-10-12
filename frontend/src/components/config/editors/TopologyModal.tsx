@@ -1,4 +1,5 @@
 import { X } from 'lucide-react';
+import { useEscapeKey } from '../../../hooks/useKeyboardA11y';
 
 // ── SVG topology diagram (inline — no external file dependency) ───────────────
 // Shows central site (AMF, MME, SMF, SGW-C) ↔ edge site (UPF, SGW-U) with
@@ -98,6 +99,10 @@ interface Props {
 }
 
 export function TopologyModal({ onClose, focus }: Props): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4"

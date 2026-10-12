@@ -10,6 +10,7 @@ import { TunInterfacePage } from './TunInterfacePage';
 import { FrrSourceBuildTab } from '../components/frr/FrrSourceBuildTab';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 type Phase =
   | 'INIT' | 'BACKUP_CREATED' | 'FRR_INSTALLED' | 'TRANSIT_CONFIGURED'
@@ -221,6 +222,10 @@ function ArchitectureCard() {
 // ─── Safety modal ─────────────────────────────────────────────────────────────
 
 function SafetyWarningModal({ onAccept, onCancel }: { onAccept: () => void; onCancel: () => void }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onCancel);
+
   const [confirmed, setConfirmed] = useState(false);
   return (
     <div className="fixed inset-0 z-50 p-6 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)' }}>
@@ -976,6 +981,10 @@ function DummyCreateModal({ onClose, onCreated, frrActive, frrProtocol }: {
   frrActive: boolean;
   frrProtocol?: string;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [name,      setName]      = useState('dummy-');
   const [ip,        setIp]        = useState('');
   const [prefix,    setPrefix]    = useState('32');

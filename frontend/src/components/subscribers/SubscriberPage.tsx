@@ -14,6 +14,7 @@ import { FEATURES } from '../../config/features';
 import type { Subscriber, SubscriberListItem, SubscriberSession, PccRule, FramedRouteEntry } from '../../types';
 import toast from 'react-hot-toast';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { activateOnKey, useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 const CUSTOM_DNN = '__custom__';
 
@@ -150,6 +151,14 @@ function InlineTextCell({
         isAdmin && 'cursor-pointer hover:bg-nms-surface-2 transition-colors',
       )}
       onClick={() => { if (isAdmin) { setVal(value); setEditing(true); } }}
+      {...(isAdmin
+        ? {
+            role: 'button' as const,
+            tabIndex: 0,
+            'aria-label': 'Edit',
+            onKeyDown: activateOnKey(() => { setVal(value); setEditing(true); }),
+          }
+        : {})}
     >
       {renderDisplay ? renderDisplay(value) : (value || <span className="text-nms-text-dim">—</span>)}
     </div>
@@ -454,6 +463,10 @@ function generateICCID(mcc: string, issuer: string, accountNumber?: string): str
 
 // IP Assignments Modal Component
 function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [routes, setRoutes] = useState<FramedRouteEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -558,6 +571,10 @@ function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
 }
 
 function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [assignments, setAssignments] = useState<Array<{ imsi: string; ipv4: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -677,6 +694,10 @@ function SubscriberPickerBox({ initialSelected, onConfirm, onCancel }: {
   onConfirm: (imsis: Set<string>) => void;
   onCancel: () => void;
 }): JSX.Element {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onCancel);
+
   const [all, setAll] = useState<SubscriberListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -764,6 +785,10 @@ function BulkToolsDialog({
   onClose: () => void;
   onDone: () => void;
 }): JSX.Element {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   // ── Scope ──
   const [scope, setScope] = useState<'all' | 'selected'>(initialSelectedImsis.length > 0 ? 'selected' : 'all');
   const [chosenImsis, setChosenImsis] = useState<Set<string>>(new Set(initialSelectedImsis));
@@ -1171,6 +1196,10 @@ function GroupModal({
   onConfirm: (name: string, color: string) => void;
   onClose: () => void;
 }): JSX.Element {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [name, setName] = useState(initial?.name ?? '');
   const [color, setColor] = useState(initial?.color ?? GROUP_COLORS[0]);
 
@@ -1273,6 +1302,10 @@ interface GeneratedSIMData {
 function SIMGeneratorDialog({ onClose }: {
   onClose: () => void;
 }): JSX.Element {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const { keys, fetchKeys } = useSuciStore();
   const copyToClipboard = useCopyToClipboard();
   const [mccOption, setMccOption] = useState('001');

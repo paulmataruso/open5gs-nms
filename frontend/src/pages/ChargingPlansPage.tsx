@@ -3,6 +3,7 @@ import { Wallet, Plus, Pencil, Trash2, Users, Database, Phone, ChevronDown, Chev
 import toast from 'react-hot-toast';
 import { chargingPlansApi, type ChargingPlan, type SubscriberUsage } from '../api';
 import { imsApi, type ImsStatus } from '../api/ims';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
@@ -62,6 +63,10 @@ function PlanModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [name, setName] = useState(plan?.name ?? '');
   const [dataCapGB, setDataCapGB] = useState(plan?.dataCapGB ?? 5);
   const [voiceCapMinutes, setVoiceCapMinutes] = useState(plan?.voiceCapMinutes ?? 500);

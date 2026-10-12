@@ -4,12 +4,17 @@ import { useSuciStore } from '../../stores/suci';
 import toast from 'react-hot-toast';
 import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
 import { SUCI_TOOLTIPS } from '../../data/tooltips';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface GenerateKeyModalProps {
   onClose: () => void;
 }
 
 export function GenerateKeyModal({ onClose }: GenerateKeyModalProps): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const { generateKey, getNextId } = useSuciStore();
   const [id, setId] = useState(1);
   const [scheme, setScheme] = useState<1 | 2>(1);

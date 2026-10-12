@@ -19,6 +19,7 @@ import { ocsApi } from '../../api/ocs';
 import { smsApi } from '../../api/sms';
 import { mmsApi } from '../../api/mms';
 import { Signal } from 'lucide-react';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface RANPageProps {
   onNavigateToSubscriber?: (imsi: string) => void;
@@ -1432,6 +1433,10 @@ function AllIPsTab({ rows }: { rows: IPRow[] }) {
 // ── IP Plumbing Modal ─────────────────────────────────────────────────────────
 
 function IPPlumbingModal({ onClose, configs }: { onClose: () => void; configs: any }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [activeTab, setActiveTab] = useState<'all-ips' | 'connections'>('all-ips');
   const rows = useMemo(() => buildIPTable(configs), [configs]);
 

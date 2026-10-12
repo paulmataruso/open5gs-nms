@@ -9,6 +9,7 @@ import { interfaceApi } from '../api';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 const SAS_BASE = `http://${window.location.hostname}:8888/sas/v1.2`;
 
@@ -158,6 +159,10 @@ function BandRow({ band, onChange, onDelete }: {
 
 // ─── EARFCN Reference modal ──────────────────────────────────────────────────
 function EarfcnReferenceModal({ onClose }: { onClose: () => void }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}

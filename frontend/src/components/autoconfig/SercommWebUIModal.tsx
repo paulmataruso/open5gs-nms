@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Copy, Check, Terminal } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface Props {
   ip:        string;
@@ -51,6 +52,10 @@ function CodeBlock({ children, copyText }: { children: React.ReactNode; copyText
 }
 
 export const SercommWebUIModal: React.FC<Props> = ({ ip, mac: initialMac = '', rootPass: initialRoot, webuiPass: initialWebui, onClose }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [localMac,   setLocalMac]   = useState(initialMac);
   const [rootPass,   setRootPass]   = useState(initialRoot);
   const [webuiPass,  setWebuiPass]  = useState(initialWebui);

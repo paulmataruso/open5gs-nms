@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, ChevronLeft, ChevronRight, Monitor } from 'lucide-react';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface Props {
   acsUrl: string;
@@ -25,6 +26,10 @@ const SLIDES = [
 ];
 
 export const CwmpScreenshotsModal: React.FC<Props> = ({ acsUrl, onClose }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [slide, setSlide] = useState(0);
   const current = SLIDES[slide];
 

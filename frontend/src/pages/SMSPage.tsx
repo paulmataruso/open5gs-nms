@@ -17,6 +17,7 @@ import type { VectorcoreSmscStatus } from '../api/vectorcoreSmsc';
 import { imsApi } from '../api/ims';
 import type { ImsStatus } from '../api/ims';
 import { FEATURES } from '../config/features';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 type PageTab = 'overview' | 'mms' | 'sms-ims' | 'sms-sgs' | 'sms-vectorcore';
 type SmsDeliveryMode = 'sgs' | 'ims' | 'vectorcore';
@@ -696,6 +697,8 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
   const [streamLog,  setStreamLog]  = useState('');
   const [syncResult, setSyncResult] = useState<{ synced: number; failed: string[]; removed?: number } | null>(null);
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setShowUninstallConfirm(false), showUninstallConfirm);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallLog, setUninstallLog] = useState('');
 
@@ -1231,6 +1234,8 @@ function MmsTab({ onNavigate }: { onNavigate: (t: PageTab) => void }) {
   const [streamLog,  setStreamLog]  = useState('');
   const [syncResult, setSyncResult] = useState<{ synced: number; failed: string[]; removed: number } | null>(null);
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setShowUninstallConfirm(false), showUninstallConfirm);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallLog, setUninstallLog] = useState('');
   const [mm1PublicIp, setMm1PublicIp] = useState('');
@@ -1635,6 +1640,8 @@ function VectorcoreSmscTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDel
   const [acting,     setActing]     = useState(false);
   const [streamLog,  setStreamLog]  = useState('');
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setShowUninstallConfirm(false), showUninstallConfirm);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallLog, setUninstallLog] = useState('');
 

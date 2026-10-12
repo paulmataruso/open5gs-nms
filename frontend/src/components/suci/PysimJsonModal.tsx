@@ -3,6 +3,7 @@ import { X, FileJson, Copy, Check, Terminal } from 'lucide-react';
 import type { HnetKey } from '../../types/suci';
 import toast from 'react-hot-toast';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface PysimJsonModalProps {
   keys: HnetKey[];
@@ -60,6 +61,10 @@ function buildPysimJson(keys: HnetKey[]) {
 }
 
 export function PysimJsonModal({ keys, onClose }: PysimJsonModalProps): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [copiedPretty, setCopiedPretty] = useState(false);
   const [copiedOneline, setCopiedOneline] = useState(false);
   const copyToClipboard = useCopyToClipboard();

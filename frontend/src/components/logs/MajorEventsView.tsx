@@ -5,6 +5,7 @@ import { useLogStream, LogEntry, MajorEventType } from '../../hooks/useLogStream
 import { MultiSelectDropdown } from '../common/MultiSelectDropdown';
 import { LogContextModal } from './LogContextModal';
 import { radioTagsApi, subscriberApi } from '../../api';
+import { activateOnKey } from '../../hooks/useKeyboardA11y';
 
 const ALL_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 
@@ -71,6 +72,9 @@ function renderEventLine(log: LogEntry, index: number, onSelect: (log: LogEntry)
     <div
       key={index}
       onClick={() => onSelect(log)}
+      onKeyDown={activateOnKey(() => onSelect(log))}
+      role="button"
+      tabIndex={0}
       title="Click to view this line in its raw log file"
       className="flex items-start gap-2 px-3 py-1.5 text-xs font-mono border-b border-nms-border/30 hover:bg-nms-surface-2/50 cursor-pointer"
     >

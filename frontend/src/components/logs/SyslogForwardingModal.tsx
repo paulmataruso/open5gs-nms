@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { X, RadioTower, CheckCircle, XCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface Props {
   onClose: () => void;
@@ -19,6 +20,10 @@ interface StatusData {
 }
 
 export const SyslogForwardingModal: React.FC<Props> = ({ onClose }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const API_URL = import.meta.env.VITE_API_URL || '/api';
 
   const [status, setStatus] = useState<StatusData | null>(null);

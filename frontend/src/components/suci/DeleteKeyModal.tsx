@@ -5,6 +5,7 @@ import { useSuciStore } from '../../stores/suci';
 import toast from 'react-hot-toast';
 import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
 import { SUCI_TOOLTIPS } from '../../data/tooltips';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface DeleteKeyModalProps {
   keyData: HnetKey;
@@ -12,6 +13,10 @@ interface DeleteKeyModalProps {
 }
 
 export function DeleteKeyModal({ keyData, onClose }: DeleteKeyModalProps): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const { deleteKey } = useSuciStore();
   const [deleteFile, setDeleteFile] = useState(true);
   const [loading, setLoading] = useState(false);

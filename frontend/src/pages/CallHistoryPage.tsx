@@ -5,6 +5,7 @@ import { clsx } from 'clsx';
 import { cdrApi, type CdrRecord } from '../api';
 import { imsApi, type ImsStatus } from '../api/ims';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
+import { activateOnKey } from '../hooks/useKeyboardA11y';
 
 const DEFAULT_TIME_RANGE: TimeRangeValue = { type: 'relative', ms: 24 * 60 * 60 * 1000, label: 'Last 24 hours' };
 const PAGE_SIZE = 50;
@@ -53,6 +54,9 @@ function CdrRow({ record }: { record: CdrRecord }) {
       <tr
         className="border-b border-nms-border/50 hover:bg-nms-surface-2/50 transition-colors cursor-pointer"
         onClick={() => setExpanded(e => !e)}
+        onKeyDown={activateOnKey(() => setExpanded(e => !e))}
+        tabIndex={0}
+        aria-expanded={expanded}
       >
         <td className="px-4 py-3 text-xs text-nms-text-dim whitespace-nowrap">
           {new Date(record.startTime).toLocaleString()}

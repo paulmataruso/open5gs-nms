@@ -5,6 +5,7 @@ import { clsx } from 'clsx';
 import { usersApi } from '../../api';
 import { useAuth } from '../../contexts/AuthContext';
 import type { AuthUser } from '../../contexts/AuthContext';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 function scorePassword(password: string) {
   if (!password) return { score: 0, label: '', color: '', barColor: '' };
@@ -73,6 +74,10 @@ function RoleBadge({ role }: { role: string }) {
 }
 
 function ChangePasswordModal({ user, onClose, onSaved }: { user: AuthUser; onClose: () => void; onSaved: () => void; }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [password, setPassword] = useState('');
   const [confirm, setConfirm]   = useState('');
   const [saving, setSaving]     = useState(false);
@@ -125,6 +130,10 @@ function ChangePasswordModal({ user, onClose, onSaved }: { user: AuthUser; onClo
 }
 
 function DeleteConfirmModal({ user, onClose, onDeleted }: { user: AuthUser; onClose: () => void; onDeleted: () => void; }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [deleting, setDeleting] = useState(false);
   const handleDelete = async () => {
     setDeleting(true);

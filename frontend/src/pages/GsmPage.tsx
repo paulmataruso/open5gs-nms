@@ -14,6 +14,7 @@ import { asterisk2gApi, type Asterisk2gStatus } from '../api/asterisk-2g';
 import { ipPlanApi } from '../api/ip-plan';
 import { FEATURES } from '../config/features';
 import { SubscriberAuthTab } from './SubscriberAuthTab';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 function LogTerminal({ lines }: { lines: string }) {
   return (
@@ -442,6 +443,10 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
   existing?: BtsEntry;
   prefill?: DiscoveredRadio;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const isEdit = !!existing;
   const [name, setName] = useState(existing?.name ?? (prefill ? (prefill.unitName || 'BTS 1') : 'BTS 1'));
   const [backend, setBackend] = useState<BtsBackend>(existing?.backend ?? (prefill ? 'remote-abis-ip' : 'virtual'));
@@ -642,6 +647,10 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
 function DiscoverRadiosModal({ onClose, onUseRadio, defaultCidr }: {
   onClose: () => void; onUseRadio: (radio: DiscoveredRadio) => void; defaultCidr: string;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [cidr, setCidr] = useState(defaultCidr);
   const [scanning, setScanning] = useState(false);
   const [radios, setRadios] = useState<DiscoveredRadio[] | null>(null);

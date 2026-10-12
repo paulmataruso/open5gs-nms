@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, Download, Bug, CheckSquare, Square, AlertTriangle, Loader2 } from 'lucide-react';
 import axios from 'axios';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 const ALL_OPEN5GS_SERVICES = [
   'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
@@ -25,6 +26,10 @@ export const LogDownloadModal: React.FC<Props> = ({
   initialSource = 'open5gs',
   dockerContainers = [],
 }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const API_URL = import.meta.env.VITE_API_URL || '/api';
 
   const [source, setSource] = useState<'open5gs' | 'docker' | 'genieacs'>(initialSource);

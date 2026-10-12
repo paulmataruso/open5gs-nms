@@ -9,6 +9,7 @@ import { clsx } from 'clsx';
 import { sercommNRApi, radioTagsApi, SercommNRDevice, NRConfigInput } from '../../api';
 import { useTopologyStore } from '../../stores';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 const POLL_INTERVAL_MS = 30_000;
 const DEFAULT_NR_SAS_URL = `http://${window.location.hostname}:8899/sas`;
@@ -104,6 +105,8 @@ function calcArfcnOptions(bwMhz: CalcBw, band: number = 48): ArfcnOption[] {
 
 function ArfcnCalculator() {
   const [open, setOpen] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setOpen(false), open);
   const [bw, setBw]     = useState<CalcBw>(40);
   const [band, setBand] = useState(48);
   const options = calcArfcnOptions(bw, band);

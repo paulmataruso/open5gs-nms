@@ -24,6 +24,7 @@ import { genieacsApi } from '../api/genieacs';
 import type { BaicellsRadio, SercommRadio } from '../api/genieacs';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { ipPlanApi } from '../api/ip-plan';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 function optionLabel<T extends string>(options: { label: string; value: T }[], value: T): string {
   return options.find(o => o.value === value)?.label ?? value;
@@ -565,6 +566,10 @@ function nokiaPskError(psk: string): string | null {
 // existing radio pre-fills from it and always uses genieacs/manual mode based on
 // which identifier the radio currently has set.
 function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadioVendor; radio?: SecGwRadio; onClose: () => void; onSaved: () => void }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const isEdit = !!radio;
   const effectiveVendor: SecGwRadioVendor = radio?.vendor ?? vendor;
   const isNokia = effectiveVendor === 'nokia';

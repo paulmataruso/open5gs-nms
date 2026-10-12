@@ -7,6 +7,7 @@ import { ConfigRestoreModal } from '../components/backup/ConfigRestoreModal';
 import { FullRestoreSelectionModal } from '../components/backup/FullRestoreSelectionModal';
 import { LabelWithTooltip } from '../components/common/UniversalTooltipWrappers';
 import { BACKUP_TOOLTIPS } from '../data/tooltips';
+import { activateOnKey } from '../hooks/useKeyboardA11y';
 
 export const BackupPage: React.FC = () => {
   const [mongoBackups, setMongoBackups] = useState<BackupListItem[]>([]);
@@ -350,6 +351,10 @@ export const BackupPage: React.FC = () => {
                 <div
                   key={backup.name}
                   onClick={() => setSelectedMongoBackup(backup.name)}
+                  onKeyDown={activateOnKey(() => setSelectedMongoBackup(backup.name))}
+                  role="button"
+                  tabIndex={0}
+                  aria-current={selectedMongoBackup === backup.name}
                   className={`p-3 cursor-pointer border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2 transition-colors ${
                     selectedMongoBackup === backup.name ? 'bg-nms-accent/10 border-l-2 border-l-nms-accent' : ''
                   }`}
@@ -405,6 +410,10 @@ export const BackupPage: React.FC = () => {
                 <div
                   key={backup.name}
                   onClick={() => setSelectedConfigBackup(backup.name)}
+                  onKeyDown={activateOnKey(() => setSelectedConfigBackup(backup.name))}
+                  role="button"
+                  tabIndex={0}
+                  aria-current={selectedConfigBackup === backup.name}
                   className={`p-3 cursor-pointer border-b border-nms-border last:border-b-0 hover:bg-nms-surface-2 transition-colors ${
                     selectedConfigBackup === backup.name ? 'bg-nms-accent/10 border-l-2 border-l-nms-accent' : ''
                   }`}

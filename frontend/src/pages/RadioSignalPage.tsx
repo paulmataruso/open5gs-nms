@@ -3,6 +3,7 @@ import { Activity, AlertCircle, Antenna, CheckCircle2, ChevronRight, Gauge, Info
 import toast from 'react-hot-toast';
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { radioSignalApi, type SignalRadio, type SignalUe } from '../api/radioSignal';
+import { activateOnKey, useEscapeKey } from '../hooks/useKeyboardA11y';
 
 type Tone = 'good' | 'warn' | 'bad' | 'neutral';
 const tones: Record<Tone, string> = {
@@ -43,7 +44,7 @@ function Metric({ label, value, unit, metric, showWatts = false }: { label: stri
 function UeCard({ ue, selected, onClick, onWake }: { ue: SignalUe; selected: boolean; onClick: () => void; onWake: () => void }) {
   const primary = ue.sinr ?? ue.snr;
   const tone = quality('sinr', primary);
-  return <button onClick={onClick} className={`w-full text-left rounded-2xl border p-4 transition-all ${selected ? 'border-nms-accent bg-nms-accent/5 shadow-[0_0_28px_rgba(6,182,212,.08)]' : 'border-nms-border bg-nms-surface hover:border-nms-accent/40'}`}>
+  return <div role="button" tabIndex={0} onClick={onClick} onKeyDown={activateOnKey(onClick)} className={`w-full text-left rounded-2xl border p-4 transition-all ${selected ? 'border-nms-accent bg-nms-accent/5 shadow-[0_0_28px_rgba(6,182,212,.08)]' : 'border-nms-border bg-nms-surface hover:border-nms-accent/40'}`}>
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -61,9 +62,9 @@ function UeCard({ ue, selected, onClick, onWake }: { ue: SignalUe; selected: boo
     </div>
     <div className="mt-3 flex items-center justify-between text-[11px] text-nms-text-dim">
       <span>{ue.radioName} · {ue.vendor}</span>
-      <span className="flex items-center gap-2"><span>{new Date(ue.sampledAt).toLocaleTimeString()}</span><span onClick={e => { e.stopPropagation(); onWake(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-nms-accent hover:bg-nms-accent/10"><Send className="w-3 h-3" /> Wake</span></span>
+      <span className="flex items-center gap-2"><span>{new Date(ue.sampledAt).toLocaleTimeString()}</span><button type="button" onClick={e => { e.stopPropagation(); onWake(); }} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-nms-accent hover:bg-nms-accent/10"><Send className="w-3 h-3" /> Wake</button></span>
     </div>
-  </button>;
+  </div>;
 }
 
 const emptyRadio: Partial<SignalRadio> = {
@@ -80,6 +81,8 @@ export function RadioSignalPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [polling, setPolling] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setConfigOpen(false), configOpen);
   const [form, setForm] = useState<Partial<SignalRadio>>(emptyRadio);
 
   const load = async () => {

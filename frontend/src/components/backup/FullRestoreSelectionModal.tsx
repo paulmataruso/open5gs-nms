@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { BackupCategory, BackupCategoryInfo, backupApi, FullRestoreOrchestratorState } from '../../api/backup';
 import { LogBlock } from '../common/LogBlock';
 import { IpPlanPanel } from '../common/IpPlanPanel';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface FullRestoreSelectionModalProps {
   uploadId: string;
@@ -55,6 +56,10 @@ function StatusIcon({ success, skipped }: { success: boolean; skipped: boolean }
 export const FullRestoreSelectionModal: React.FC<FullRestoreSelectionModalProps> = ({
   uploadId, categories, createdAt, presentModules, onClose, onRestored,
 }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [selected, setSelected] = useState<Set<BackupCategory>>(
     new Set(categories.filter(c => c.present && !DEFAULT_UNCHECKED.includes(c.id)).map(c => c.id)),
   );

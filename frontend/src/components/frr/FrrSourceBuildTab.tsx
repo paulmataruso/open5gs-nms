@@ -6,6 +6,7 @@ import {
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { frrSourceBuildApi, FrrBuildState } from '../../api/frr';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 const STEP_ORDER: FrrBuildState['status'][] = [
   'preparing', 'building_libyang', 'building_frr', 'swapping', 'starting_service', 'verifying',
@@ -34,6 +35,10 @@ function LogTerminal({ lines }: { lines: string }) {
 }
 
 function BuildWarningModal({ onAccept, onCancel }: { onAccept: () => void; onCancel: () => void }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onCancel);
+
   const [confirmed, setConfirmed] = useState(false);
   return (
     <div className="fixed inset-0 z-50 p-6 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)' }}>

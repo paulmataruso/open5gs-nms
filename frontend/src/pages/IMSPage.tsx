@@ -12,6 +12,7 @@ import toast from 'react-hot-toast';
 import { imsApi, ImsConfigureInput } from '../api/ims';
 import { ipPlanApi } from '../api/ip-plan';
 import type { ImsStatus, ValidationCheck, ImsConfigFile, ImsLiveStatus, RegisteredUserInfo } from '../api/ims';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 // ── Shared sub-components ─────────────────────────────────────────────────────
 
@@ -379,6 +380,8 @@ function DnsRecordsCard() {
   // config-file save/restart endpoints the Config Files tab uses, so there's only
   // one code path for "write a file on the host and restart bind9".
   const [editorOpen, setEditorOpen] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setEditorOpen(false), editorOpen);
   const [editorPath, setEditorPath] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState('');
   const [editorLoading, setEditorLoading] = useState(false);

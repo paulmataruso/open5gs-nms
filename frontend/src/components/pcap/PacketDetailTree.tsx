@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import { clsx } from 'clsx';
 import { PacketTreeNode } from '../../api/pcap';
+import { activateOnKey } from '../../hooks/useKeyboardA11y';
 
 // One row of the tree — collapsed by default, exactly like Wireshark's own Packet
 // Details pane when a packet is first selected (Frame/Ethernet II/Internet
@@ -14,6 +15,14 @@ function TreeNode({ node, depth }: { node: PacketTreeNode; depth: number }): JSX
   return (
     <div>
       <div
+        {...(hasChildren
+          ? {
+              role: 'button' as const,
+              tabIndex: 0,
+              'aria-expanded': expanded,
+              onKeyDown: activateOnKey(() => setExpanded(e => !e)),
+            }
+          : {})}
         className={clsx(
           'flex items-start gap-1.5 py-1 rounded',
           hasChildren ? 'cursor-pointer hover:bg-nms-surface-2/50' : '',

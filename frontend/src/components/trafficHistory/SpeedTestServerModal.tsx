@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { X, Gauge, CheckCircle, XCircle, AlertTriangle, Loader2, ExternalLink } from 'lucide-react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface Props {
   onClose: () => void;
@@ -17,6 +18,10 @@ interface Settings {
 const DEFAULT_SETTINGS: Settings = { bindIp: '0.0.0.0', httpPort: 9080, httpsPort: 9081, enableHttps: true };
 
 export const SpeedTestServerModal: React.FC<Props> = ({ onClose }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const API_URL = import.meta.env.VITE_API_URL || '/api';
 
   const [running, setRunning] = useState(false);

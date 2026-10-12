@@ -14,6 +14,7 @@ import type {
   InterferenceGridResult, CalibrationResult,
 } from '../../api/rfPlanning';
 import { NumField, SelectField, EquationDisclosure, AssumptionsWarnings, ResultLine, fixLeafletDefaultIcon } from './shared';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 fixLeafletDefaultIcon();
 
@@ -133,6 +134,10 @@ function QuickAdd3SectorModal({ defaultBeamwidthDeg, onClose, onConfirm }: {
   onClose: () => void;
   onConfirm: (opts: { name: string; startAzimuthDeg: number; spacingDeg: number; beamwidthDeg: number }) => void;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [name, setName] = useState('Tower');
   const [startAzimuthDeg, setStartAzimuthDeg] = useState('0');
   const [spacingDeg, setSpacingDeg] = useState('120');

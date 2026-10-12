@@ -16,6 +16,7 @@ import type {
 } from '../api/twamp';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
 import { useZoomableChartData } from '../hooks/useZoomableChartData';
+import { activateOnKey, useEscapeKey } from '../hooks/useKeyboardA11y';
 
 function LogTerminal({ lines }: { lines: string }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -39,6 +40,10 @@ const emptyForm: TwampTargetInput = {
 function TargetFormModal({ initial, onClose, onSaved }: {
   initial?: TwampTarget; onClose: () => void; onSaved: () => void;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [form, setForm] = useState<TwampTargetInput>(initial ? {
     name: initial.name, host: initial.host, port: initial.port, protocol: initial.protocol, mode: initial.mode,
     sharedSecret: initial.sharedSecret ?? '', keyId: initial.keyId ?? '',
@@ -919,6 +924,9 @@ function HistorySection() {
                   <tr
                     key={r.targetId}
                     onClick={() => setSelectedTargetId(r.targetId)}
+                    onKeyDown={activateOnKey(() => setSelectedTargetId(r.targetId))}
+                    tabIndex={0}
+                    aria-selected={selectedTargetId === r.targetId}
                     className={clsx(
                       'border-b border-nms-border/50 hover:bg-nms-bg/50 cursor-pointer',
                       selectedTargetId === r.targetId && 'bg-nms-accent/10',

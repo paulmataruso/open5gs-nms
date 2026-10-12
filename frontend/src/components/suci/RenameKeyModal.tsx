@@ -3,6 +3,7 @@ import { X, Pencil } from 'lucide-react';
 import { useSuciStore } from '../../stores/suci';
 import type { HnetKey } from '../../types/suci';
 import toast from 'react-hot-toast';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface RenameKeyModalProps {
   keyData: HnetKey;
@@ -10,6 +11,10 @@ interface RenameKeyModalProps {
 }
 
 export function RenameKeyModal({ keyData, onClose }: RenameKeyModalProps): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const { fetchKeys } = useSuciStore();
   const [newId, setNewId] = useState<string>(String(keyData.id));
   const [loading, setLoading] = useState(false);

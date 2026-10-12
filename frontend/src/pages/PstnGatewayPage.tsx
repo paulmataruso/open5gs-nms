@@ -17,6 +17,7 @@ import type { HlrSubscriberStatus } from '../api/gsm';
 import { subscriberApi } from '../api';
 import type { SubscriberListItem } from '../types';
 import { FEATURES } from '../config/features';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 function LogTerminal({ lines }: { lines: string }) {
   const ref = useRef<HTMLPreElement>(null);
@@ -1071,6 +1072,8 @@ export function PstnGatewayPage({ onNavigate }: { onNavigate?: (tab: string) => 
   const [acting, setActing] = useState(false);
   const [streamLog, setStreamLog] = useState('');
   const [showUninstallConfirm, setShowUninstallConfirm] = useState(false);
+  // Escape dismisses this overlay.
+  useEscapeKey(() => setShowUninstallConfirm(false), showUninstallConfirm);
   const [uninstalling, setUninstalling] = useState(false);
   const [uninstallLog, setUninstallLog] = useState('');
   const [asteriskIp, setAsteriskIp] = useState('127.0.1.4');

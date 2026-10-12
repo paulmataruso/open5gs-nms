@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { X, Check, CheckSquare, Square, AlertCircle } from 'lucide-react';
 import { backupApi, ConfigDiffFile } from '../../api/backup';
 import toast from 'react-hot-toast';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 // Simple diff implementation (no external library needed)
 interface Change {
   value: string;
@@ -44,6 +45,10 @@ interface ConfigRestoreModalProps {
 const ALL_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'];
 
 export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupName, onClose, onRestoreComplete }) => {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [loading, setLoading] = useState(true);
   const [files, setFiles] = useState<Record<string, ConfigDiffFile>>({});
   const [activeTab, setActiveTab] = useState('nrf');

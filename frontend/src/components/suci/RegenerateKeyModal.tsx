@@ -3,6 +3,7 @@ import { X, AlertTriangle, RefreshCw } from 'lucide-react';
 import type { HnetKey } from '../../types/suci';
 import { useSuciStore } from '../../stores/suci';
 import toast from 'react-hot-toast';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface RegenerateKeyModalProps {
   keyData: HnetKey;
@@ -10,6 +11,10 @@ interface RegenerateKeyModalProps {
 }
 
 export function RegenerateKeyModal({ keyData, onClose }: RegenerateKeyModalProps): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const { regenerateKey } = useSuciStore();
   const [confirmation, setConfirmation] = useState('');
   const [loading, setLoading] = useState(false);

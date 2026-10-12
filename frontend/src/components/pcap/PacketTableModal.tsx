@@ -3,6 +3,7 @@ import { X, RefreshCw, ArrowUp, ArrowDown, AlertTriangle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { pcapApi, PcapManifest, DecodePreset, PacketRow, PacketTreeNode } from '../../api/pcap';
 import { PacketDetailTree } from './PacketDetailTree';
+import { activateOnKey, useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 type SortKey = 'frameNumber' | 'timeEpoch' | 'src' | 'dst' | 'protocol' | 'length';
 
@@ -11,6 +12,10 @@ export function PacketTableModal({ capture, presets, onClose }: {
   presets: DecodePreset[];
   onClose: () => void;
 }): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [presetId, setPresetId] = useState(presets[0]?.id ?? 'none');
   const [customFilter, setCustomFilter] = useState('');
   const [useCustom, setUseCustom] = useState(false);
@@ -165,6 +170,9 @@ export function PacketTableModal({ capture, presets, onClose }: {
                 <tr
                   key={row.frameNumber}
                   onClick={() => selectRow(row.frameNumber)}
+                  onKeyDown={activateOnKey(() => selectRow(row.frameNumber))}
+                  tabIndex={0}
+                  aria-selected={selectedFrame === row.frameNumber}
                   className={clsx(
                     'border-t border-nms-border cursor-pointer',
                     selectedFrame === row.frameNumber ? 'bg-nms-accent/15' : 'hover:bg-nms-surface-2/50',

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import {
   apnProfilesApi, type ApnProfileListEntry, type ApnProfileInput, type ApnProfile,
 } from '../api/apnProfiles';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 const DEFAULT_INPUT: ApnProfileInput = {
   dnn: '', dev: '', subnet: '', gateway: '',
@@ -19,6 +20,10 @@ function ProfileFormModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [form, setForm] = useState<ApnProfileInput>(initial ? {
     dnn: initial.dnn, dev: initial.dev, subnet: initial.subnet, gateway: initial.gateway,
     subnetV6: initial.subnetV6, gatewayV6: initial.gatewayV6, qos: initial.qos,

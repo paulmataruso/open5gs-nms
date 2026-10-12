@@ -6,6 +6,7 @@ import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import { subscriberApi } from '../../api';
 import { esimApi, type SimlesslyGenerateAcResult } from '../../api/esim';
 import type { Subscriber, SubscriberListItem } from '../../types';
+import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 interface EsimGeneratorModalProps {
   subscriber?: Subscriber;
@@ -127,6 +128,10 @@ function TextField({
 }
 
 export function EsimGeneratorModal({ subscriber, onClose }: EsimGeneratorModalProps): JSX.Element {
+  // Escape closes this dialog. Its backdrop already closes on click, which
+  // has no keyboard equivalent -- and a focusable backdrop would be worse.
+  useEscapeKey(onClose);
+
   const [form, setForm] = useState<EsimFormState>(() => (subscriber ? fromSubscriber(subscriber) : emptyForm()));
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [copiedPretty, setCopiedPretty] = useState(false);

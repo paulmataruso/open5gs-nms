@@ -7,6 +7,7 @@ import { tunApi, type TunInterface } from '../api';
 import { useAuth } from '../contexts/AuthContext';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
+import { useEscapeKey } from '../hooks/useKeyboardA11y';
 
 interface ModalProps {
   mode: 'create' | 'edit';
@@ -17,6 +18,10 @@ interface ModalProps {
 }
 
 function TunModal({ mode, initial, suggestedName, onSave, onClose }: ModalProps) {
+  // Escape closes this dialog (its backdrop closes on click, which the
+  // keyboard has no equivalent for).
+  useEscapeKey(onClose);
+
   const [name,   setName]   = useState(initial?.name   || suggestedName || 'ogstun2');
   const [ip,     setIp]     = useState(initial?.ip     || '');
   const [prefix, setPrefix] = useState(String(initial?.prefix || 16));
