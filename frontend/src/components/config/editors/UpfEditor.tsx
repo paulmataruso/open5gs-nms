@@ -280,7 +280,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
       <FunctionInfoBox
         title="User Plane Function (UPF)"
         generation="4G + 5G"
-        description="The UPF is the data plane anchor of the core network. All user traffic flows through it — GTP-U tunnels arrive from the gNB/eNB, the UPF decapsulates them, applies QoS marking, and routes packets to/from the internet (DNN/APN). The UPF is controlled entirely by the SMF via the PFCP protocol (N4 interface), which installs per-session packet forwarding and detection rules. In 4G it acts as the combined SGW-U + PGW-U."
+        description="The UPF is the data plane anchor of the core network, and the one data-plane function shared by both generations. It owns the UE IP pools and the tun device, decapsulates arriving GTP-U, applies QoS marking, and routes packets to and from the internet. The SMF controls it entirely over PFCP, installing per-session forwarding and detection rules. In 4G terms it is the PGW-U — it is NOT a combined SGW-U + PGW-U: the SGW-U is a separate function with its own controller (SGW-C over Sxa), and 4G traffic reaches the UPF through it. So the path is gNB → UPF for 5G, but eNB → SGW-U → UPF for 4G."
       />
 
       {/* ── Section 1: Local UPF ── */}
@@ -750,8 +750,26 @@ sudo iptables -I INPUT -i ogstun -j ACCEPT
 sudo apt-get install -y iptables-persistent
 sudo netfilter-persistent save`}</pre>
 
-                    <p className="font-semibold text-nms-text-dim">4. Ensure firewall allows PFCP</p>
-                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ufw allow 8805/udp`}</pre>
+                    <p className="font-semibold text-nms-text-dim">4. Ensure firewall allows PFCP and GTP-U</p>
+                    <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo ufw allow 8805/udp   # PFCP (from the SMF)
+sudo ufw allow 2152/udp   # GTP-U (from gNBs, and from the SGW-U for 4G)`}</pre>
+
+                    <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-300 space-y-1">
+                      <p className="font-semibold">Also required for 4G: the SGW-U's GTP-U address</p>
+                      <p>
+                        Moving the UPF affects <span className="font-semibold">both</span> generations — 5G
+                        arrives here directly from the gNB over N3, but 4G arrives from the SGW-U over S5-U.
+                        On a default all-in-one install the SGW-U binds GTP-U on <span className="font-mono">127.0.0.6</span>,
+                        which cannot reach a UPF on another host. Set the SGW-U's{' '}
+                        <span className="font-mono">gtpu.server</span> to a routable address on the SGW-C/SGW-U
+                        host too, or 4G sessions will establish normally and then silently carry no traffic.
+                      </p>
+                      <p>
+                        PFCP coming up is not evidence this is right: the SGW-C learns this UPF's S5-U address
+                        over S5-C and installs it into the SGW-U as a forwarding rule, so a wrong address fails
+                        only in the data plane, with nothing logged on the control plane.
+                      </p>
+                    </div>
 
                     <p className="font-semibold text-nms-text-dim">5. Start the UPF service</p>
                     <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo systemctl enable --now open5gs-upfd

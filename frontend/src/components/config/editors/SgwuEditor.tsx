@@ -577,6 +577,23 @@ sudo ufw allow 2152/udp   # GTP-U`}</pre>
                     <pre className="bg-nms-surface rounded p-2 text-nms-text font-mono overflow-x-auto">{`sudo systemctl enable --now open5gs-sgwud
 sudo systemctl status open5gs-sgwud`}</pre>
 
+                    <div className="px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded text-xs text-amber-300 space-y-1">
+                      <p className="font-semibold">Also required: the central UPF's GTP-U address</p>
+                      <p>
+                        This SGW-U forwards user traffic on to the central UPF over S5-U. On a default
+                        all-in-one install the UPF binds GTP-U on <span className="font-mono">127.0.0.7</span>,
+                        which is unreachable from this host. Set the central UPF's{' '}
+                        <span className="font-mono">gtpu.server</span> to a routable address (UPF Config page)
+                        and allow UDP/2152 between the two hosts.
+                      </p>
+                      <p>
+                        PFCP coming up is not evidence this is right: the SGW-C learns the UPF's S5-U address
+                        over S5-C and installs it here as a forwarding rule, so a wrong address fails only in
+                        the data plane — sessions establish normally and carry no traffic, with nothing logged
+                        on the control plane.
+                      </p>
+                    </div>
+
                     <div className="px-3 py-2 bg-blue-500/10 border border-blue-500/20 rounded text-xs text-blue-300 space-y-1">
                       <p className="font-semibold">Important: internet breakout is handled by the UPF, not SGW-U</p>
                       <p>The SGW-U only terminates the S1-U GTP tunnel from the eNodeB and forwards packets to the central PGW/UPF. For local internet breakout at the edge site you also need to deploy a remote UPF on this host — use the UPF Config page to generate the upf.yaml and add it to the SMF.</p>
