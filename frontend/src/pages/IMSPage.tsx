@@ -48,7 +48,7 @@ function IpInput({ label, value, onChange, hint }: { label: string; value: strin
         className="nms-input w-full font-mono text-sm"
         spellCheck={false}
       />
-      {hint && <p className="text-[10px] text-nms-text-dim mt-1 leading-relaxed">{hint}</p>}
+      {hint && <p className="text-xs text-nms-text-dim mt-1 leading-relaxed">{hint}</p>}
     </div>
   );
 }

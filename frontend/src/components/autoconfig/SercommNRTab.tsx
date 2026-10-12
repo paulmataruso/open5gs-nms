@@ -171,7 +171,7 @@ function ArfcnCalculator() {
               {options.length === 0 ? (
                 <p className="text-xs text-red-400 px-5 py-4">{bw} MHz BW does not fit in n{band}</p>
               ) : (
-                <table className="w-full text-xs font-mono">
+                <div className="nms-table-scroll"><table className="w-full text-xs font-mono">
                   <thead className="sticky top-0 bg-nms-bg border-b border-nms-border">
                     <tr className="text-nms-text-dim">
                       <th className="text-left px-5 py-2 font-medium">ARFCN</th>
@@ -190,7 +190,7 @@ function ArfcnCalculator() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               )}
             </div>
           </div>

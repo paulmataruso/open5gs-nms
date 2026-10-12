@@ -123,7 +123,7 @@ function CopyField({ label, value, maskable }: { label: string; value: string; m
 
   return (
     <div>
-      <p className="text-[10px] text-nms-text-dim uppercase tracking-wider mb-0.5">{label}</p>
+      <p className="text-xs text-nms-text-dim uppercase tracking-wider mb-0.5">{label}</p>
       <div className="flex items-center gap-1.5">
         <code className="flex-1 text-xs font-mono text-nms-text bg-nms-bg border border-nms-border rounded px-2 py-1 truncate">
           {maskable && !revealed ? '•'.repeat(Math.min(value.length, 32)) : value}
@@ -183,7 +183,7 @@ function RadioDetailsPanel({ radio, gatewayFqdn, gatewayIp }: { radio: SecGwRadi
     return (
       <tr className="border-b border-nms-border/50 bg-nms-bg/30">
         <td colSpan={6} className="py-3 px-2">
-          <table className="w-full text-xs">
+          <div className="nms-table-scroll"><table className="w-full text-xs">
             <tbody>
               {rows.map(row => (
                 <tr key={row.label} className="border-b border-nms-border/40 last:border-0">
@@ -192,7 +192,7 @@ function RadioDetailsPanel({ radio, gatewayFqdn, gatewayIp }: { radio: SecGwRadi
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
           {radio.psk && (
             <div className="mt-2 max-w-sm">
               <CopyField label="Secret Key (PSK)" value={radio.psk} maskable />
@@ -216,7 +216,7 @@ function RadioDetailsPanel({ radio, gatewayFqdn, gatewayIp }: { radio: SecGwRadi
             </div>
           )}
         </div>
-        <p className="text-[10px] text-nms-text-dim mt-3">
+        <p className="text-xs text-nms-text-dim mt-3">
           IKE: {optionLabel(IKE_ENCRYPTION_OPTIONS, radio.ikeEncryption)} / {optionLabel(IKE_INTEGRITY_OPTIONS, radio.ikeIntegrity)} / {optionLabel(IKE_DH_GROUP_OPTIONS, radio.ikeDhGroup)}
           {'  ·  '}
           ESP: {optionLabel(ESP_ENCRYPTION_OPTIONS, radio.espEncryption)} / {optionLabel(ESP_INTEGRITY_OPTIONS, radio.espIntegrity)} / {optionLabel(ESP_DH_GROUP_OPTIONS, radio.espDhGroup)}
@@ -771,7 +771,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               onChange={e => setExtraLocalCidrs(e.target.value)}
               placeholder="e.g. 10.0.1.180 (BIND DNS server)"
             />
-            <p className="text-[10px] text-nms-text-dim mt-1">
+            <p className="text-xs text-nms-text-dim mt-1">
               Comma-separated IPv4 addresses or CIDRs reachable through this radio's tunnel, on top
               of the core NFs above — e.g. the BIND DNS server, if the radio's own IPsec page can't
               do a plaintext "Bypass" policy and needs it added as a real "Protect" entry instead.
@@ -801,7 +801,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
                     </button>
                   </div>
                   {isNokia && (
-                    <p className="text-[10px] text-nms-text-dim mt-1">
+                    <p className="text-xs text-nms-text-dim mt-1">
                       Nokia's own IPsec page requires: 8-128 chars, 2+ digits, both upper and lower
                       case, 1+ non-alphanumeric character, no spaces/quotes, no repeated character
                       twice in a row.
@@ -1220,7 +1220,7 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
         {error && <p className="text-xs text-red-400 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> {error}</p>}
         {!error && sessions.length === 0 && <p className="text-xs text-nms-text-dim">No sessions.</p>}
         {sessions.length > 0 && (
-          <table className="w-full text-xs">
+          <div className="nms-table-scroll"><table className="w-full text-xs">
             <thead>
               <tr className="text-left text-nms-text-dim border-b border-nms-border">
                 <th className="pb-2 font-medium">Radio / SA</th>
@@ -1259,7 +1259,7 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
                 );
               })}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

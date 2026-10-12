@@ -382,7 +382,7 @@ function ClientDiagPanel({ diag }: { diag: VectorcoreClientDiag }) {
           <p className="font-mono text-nms-text">{new Date(diag.last_activity).toLocaleString()}</p>
         </div>
       </div>
-      <table className="w-full text-xs">
+      <div className="nms-table-scroll"><table className="w-full text-xs">
         <thead>
           <tr className="text-left text-nms-text-dim border-b border-nms-border/50">
             <th className="pb-1.5 font-medium">Bearer</th>
@@ -409,7 +409,7 @@ function ClientDiagPanel({ diag }: { diag: VectorcoreClientDiag }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }
@@ -529,7 +529,7 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
         {error && <p className="text-xs text-red-400 flex items-center gap-1.5"><AlertCircle className="w-3.5 h-3.5" /> {error}</p>}
         {!error && sessions.length === 0 && <p className="text-xs text-nms-text-dim">No active sessions.</p>}
         {sessions.length > 0 && (
-          <table className="w-full text-xs">
+          <div className="nms-table-scroll"><table className="w-full text-xs">
             <thead>
               <tr className="text-left text-nms-text-dim border-b border-nms-border">
                 <th className="pb-2 font-medium">IMSI</th>
@@ -578,7 +578,7 @@ function LiveSessionsTab({ enabled }: { enabled: boolean }) {
                 </Fragment>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

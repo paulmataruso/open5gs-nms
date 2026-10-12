@@ -206,7 +206,7 @@ function ProfileFormModal({
             <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">
               Static / Dynamic Split
             </p>
-            <p className="text-[11px] text-nms-text-dim mb-2">
+            <p className="text-xs text-nms-text-dim mb-2">
               Auto-Assign IPs draws exclusively from the dynamic range — addresses in the
               static range are never at risk of being handed out automatically. Leave both
               blank to let auto-assign use the whole pool (today's behavior).
@@ -315,7 +315,7 @@ function Ipv6PoolCard() {
       <Globe2 className="w-4 h-4 text-nms-accent shrink-0" />
       <div className="flex-1 min-w-[240px]">
         <p className="text-xs font-semibold text-nms-text">IPv6 Pool</p>
-        <p className="text-[11px] text-nms-text-dim">
+        <p className="text-xs text-nms-text-dim">
           A core-wide parent prefix (e.g. a /48 or /56) — new profiles can auto-allocate the next unused /64 from it instead of a hand-typed subnet.
         </p>
       </div>

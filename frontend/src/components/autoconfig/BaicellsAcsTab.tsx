@@ -506,7 +506,7 @@ const MmePoolTable: React.FC<{ rows: MmePoolEntry[]; onChange: (rows: MmePoolEnt
             </tbody>
           </table>
           {duplicateCombos.size > 0 && (
-            <p className="text-[11px] text-red-400 px-2 py-1.5 border-t border-nms-border bg-nms-surface">
+            <p className="text-xs text-red-400 px-2 py-1.5 border-t border-nms-border bg-nms-surface">
               ⚠ The same PLMN+MME-IP combination cannot appear in more than one row — fix or remove the duplicate before saving.
             </p>
           )}
@@ -1114,7 +1114,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
             <div className="bg-nms-surface rounded-lg border border-nms-border p-3 space-y-4">
               <NeighborFreqTable rows={radio.neighborFreqTable} />
               <NeighborCellTable rows={radio.neighborCellTable} />
-              <p className="text-[11px] text-nms-text-dim">
+              <p className="text-xs text-nms-text-dim">
                 Read-only — writes to these tables aren't supported on this radio/firmware (GenieACS
                 session limits block every commit regardless of size). Edit on the radio's own web UI,
                 then hit Refresh here to pick up the change.
@@ -1125,7 +1125,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
             <div className="bg-nms-surface rounded-lg border border-nms-border p-3 space-y-4">
               <MmePoolTable rows={mmePoolTable} onChange={setMmePoolTable} />
               <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] text-nms-text-dim max-w-md">
+                <p className="text-xs text-nms-text-dim max-w-md">
                   The same PLMN + MME IP combination can't be used in two rows — the same PLMN with a
                   different MME IP (multi-MME redundancy) is fine. Removing a row clears that slot back
                   to the device's own blank state.
@@ -1161,7 +1161,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-[11px] text-nms-text-dim block mb-1">
+                  <label className="text-xs text-nms-text-dim block mb-1">
                     MME Pool 1 List {mmePoolConfig.pool1Status && <span className="text-nms-text-dim">({mmePoolConfig.pool1Status === '1' ? 'Connected' : 'Not connected'})</span>}
                   </label>
                   <input aria-label="MME Pool 1 List ( )"
@@ -1172,7 +1172,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] text-nms-text-dim block mb-1">
+                  <label className="text-xs text-nms-text-dim block mb-1">
                     MME Pool 2 List {mmePoolConfig.pool2Status && <span className="text-nms-text-dim">({mmePoolConfig.pool2Status === '1' ? 'Connected' : 'Not connected'})</span>}
                   </label>
                   <input aria-label="MME Pool 2 List ( )"
@@ -1184,7 +1184,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                 </div>
               </div>
               <div>
-                <label className="text-[11px] text-nms-text-dim block mb-1">IPsec Tunnel Map</label>
+                <label className="text-xs text-nms-text-dim block mb-1">IPsec Tunnel Map</label>
                 <input aria-label="IPsec Tunnel Map"
                   className="nms-input font-mono text-xs px-1.5 py-1 w-full"
                   value={mmePoolConfig.ipsecTunnelMap}
@@ -1193,7 +1193,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                 />
               </div>
               <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] text-nms-text-dim max-w-md">
+                <p className="text-xs text-nms-text-dim max-w-md">
                   Binds MME Pool 1/2 List to a named IPsec tunnel, e.g. "tunnel1:LTE_POOL_MME_LIST1"
                   — comma-separate to bind more than one pool. Leave a pool list blank to unset it.
                 </p>

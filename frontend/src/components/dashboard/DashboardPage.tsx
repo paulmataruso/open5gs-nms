@@ -849,7 +849,7 @@ export function DashboardPage(): JSX.Element {
                 { label: '5G', active: ues5G.active, total: ues5G.total, tone: 'text-nms-accent' },
               ].map((c, i) => (
                 <div key={c.label} className={i === 0 ? 'pr-3' : 'px-3'}>
-                  <p className="text-[10px] text-nms-text-dim uppercase tracking-wider">{c.label}</p>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">{c.label}</p>
                   <p className={`text-base font-semibold font-display leading-tight ${c.tone}`}>
                     {c.active}<span className="text-nms-text-dim text-xs font-normal">/{c.total ?? '—'}</span>
                   </p>

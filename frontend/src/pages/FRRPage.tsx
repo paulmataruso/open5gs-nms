@@ -888,7 +888,7 @@ function DummyInterfacesTab() {
             <p className="text-xs text-nms-text-dim mt-1">Click "New Dummy Interface" to create one.</p>
           </div>
         ) : (
-          <table className="w-full">
+          <div className="nms-table-scroll"><table className="w-full">
             <thead>
               <tr className="border-b border-nms-border">
                 <th className="px-4 py-3 text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider">State</th>
@@ -942,7 +942,7 @@ function DummyInterfacesTab() {
                 );
               })}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 
@@ -1509,7 +1509,7 @@ export function FRRPage() {
                 <GitBranch className="w-3 h-3" /> EIGRP Topology — {detection.topology.length} prefixes
               </p>
               <div className="rounded-xl border border-nms-border overflow-hidden">
-                <table className="w-full text-xs">
+                <div className="nms-table-scroll"><table className="w-full text-xs">
                   <thead>
                     <tr className="bg-nms-surface-2 border-b border-nms-border">
                       <th className="text-left px-4 py-2 text-nms-text-dim font-medium">Prefix</th>
@@ -1532,7 +1532,7 @@ export function FRRPage() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               </div>
             </div>
           )}
@@ -1687,7 +1687,7 @@ export function FRRPage() {
             <div>
               <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">Service IP → VSI Mappings</p>
               <div className="rounded-xl border border-nms-border overflow-hidden">
-                <table className="w-full text-xs">
+                <div className="nms-table-scroll"><table className="w-full text-xs">
                   <thead>
                     <tr className="bg-nms-surface-2 border-b border-nms-border">
                       <th className="text-left px-4 py-2 text-nms-text-dim font-medium">Service</th>
@@ -1704,7 +1704,7 @@ export function FRRPage() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               </div>
             </div>
           </div>

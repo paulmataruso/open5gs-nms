@@ -184,7 +184,7 @@ export const SpeedTestServerModal: React.FC<Props> = ({ onClose }) => {
                       <option key={ip} value={ip}>{iface}</option>
                     ))}
                   </datalist>
-                  <p className="text-[11px] text-nms-text-dim mt-1">
+                  <p className="text-xs text-nms-text-dim mt-1">
                     Use a DNN gateway IP (e.g. ogstun's 10.45.0.1) so UEs reach it directly over the core.
                   </p>
                 </div>

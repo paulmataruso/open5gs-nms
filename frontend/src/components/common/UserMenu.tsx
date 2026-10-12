@@ -49,12 +49,12 @@ export function UserMenu({ collapsed }: { collapsed: boolean }): JSX.Element {
           )}
         >
           <div className="px-3 py-2.5 border-b border-nms-border">
-            <p className="text-[10px] text-nms-text-dim uppercase tracking-wider">Signed in as</p>
+            <p className="text-xs text-nms-text-dim uppercase tracking-wider">Signed in as</p>
             <p className="text-sm font-medium text-nms-text truncate">{user?.username}</p>
           </div>
 
           <div className="p-1.5">
-            <p className="px-1.5 pt-1 pb-1.5 text-[10px] font-semibold text-nms-text-dim uppercase tracking-wider flex items-center gap-1.5">
+            <p className="px-1.5 pt-1 pb-1.5 text-xs font-semibold text-nms-text-dim uppercase tracking-wider flex items-center gap-1.5">
               <Palette className="w-3 h-3" /> Theme
             </p>
             {THEME_OPTIONS.map(t => (

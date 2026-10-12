@@ -24,7 +24,7 @@ const TONE_CLASS: Record<string, string> = {
 function MetricTile({ label, value, tone }: { label: string; value: string; tone: 'good' | 'warn' | 'bad' | 'neutral' }) {
   return (
     <div className="bg-nms-bg rounded-lg border border-nms-border px-3 py-2">
-      <p className="text-[10px] text-nms-text-dim uppercase tracking-wider">{label}</p>
+      <p className="text-xs text-nms-text-dim uppercase tracking-wider">{label}</p>
       <p className={clsx('text-sm font-mono font-semibold', TONE_CLASS[tone])}>{value}</p>
     </div>
   );
@@ -99,7 +99,7 @@ export function Gsm2gSignalPage() {
                   <span className={clsx('w-1.5 h-1.5 rounded-full shrink-0',
                     rxLevTone(s.ulRxLevDbm) === 'good' ? 'bg-green-400' : rxLevTone(s.ulRxLevDbm) === 'warn' ? 'bg-amber-400' : rxLevTone(s.ulRxLevDbm) === 'bad' ? 'bg-red-400' : 'bg-nms-text-dim')} />
                 </div>
-                <p className="text-[11px] text-nms-text-dim font-mono">{s.imsi}</p>
+                <p className="text-xs text-nms-text-dim font-mono">{s.imsi}</p>
                 <div className="grid grid-cols-3 gap-1.5 mt-1.5">
                   <MetricTile label="UL RxLev" value={s.ulRxLevDbm !== null ? `${s.ulRxLevDbm} dBm` : '—'} tone={rxLevTone(s.ulRxLevDbm)} />
                   <MetricTile label="UL RxQual" value={s.ulRxQual !== null ? String(s.ulRxQual) : '—'} tone={rxQualTone(s.ulRxQual)} />

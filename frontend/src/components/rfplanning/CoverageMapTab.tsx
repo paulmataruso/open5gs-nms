@@ -173,7 +173,7 @@ function QuickAdd3SectorModal({ defaultBeamwidthDeg, onClose, onConfirm }: {
             <label className="block text-xs text-nms-text-dim mb-1">Horizontal beamwidth per sector (°)</label>
             <input aria-label="Horizontal beamwidth per sector (°)" type="number" step="any" className="nms-input w-full" value={beamwidthDeg} onChange={e => setBeamwidthDeg(e.target.value)} />
           </div>
-          <p className="text-[11px] text-nms-text-dim">
+          <p className="text-xs text-nms-text-dim">
             {valid
               ? `Sectors will point at ${previewAzimuths.map(a => `${a}°`).join(' / ')} (${SECTOR_LABELS.join('/')}), ${beamwidth}° wide each.`
               : 'Enter a name, a positive spacing, and a positive beamwidth.'}
@@ -1183,7 +1183,7 @@ export function CoverageMapTab() {
             <button type="button" onClick={compareSites} disabled={comparing} className="nms-btn-ghost flex items-center gap-1.5 text-xs border border-nms-border">
               <Scale className="w-3.5 h-3.5" /> {comparing ? 'Comparing…' : 'Compare Saved Sites Against Drawn Area'}
             </button>
-            <p className="text-[11px] text-nms-text-dim">
+            <p className="text-xs text-nms-text-dim">
               For every site saved in this project, computes the TX power that site would need (at its own saved azimuth/tilt/antenna) to cover the drawn target area at the Min Acceptable Signal threshold below — a side-by-side comparison, not an automatic recommendation.
             </p>
             {comparison && (
@@ -1293,7 +1293,7 @@ export function CoverageMapTab() {
               </button>
             </div>
           )}
-          <label className="flex items-center gap-1.5 text-[11px] text-nms-text-dim" title="Interpolates between computed grid points for display only — does not increase actual resolution or accuracy">
+          <label className="flex items-center gap-1.5 text-xs text-nms-text-dim" title="Interpolates between computed grid points for display only — does not increase actual resolution or accuracy">
             <input type="checkbox" checked={smoothHeatmap} onChange={e => setSmoothHeatmap(e.target.checked)} className="nms-checkbox" />
             Smooth
           </label>
@@ -1491,7 +1491,7 @@ export function CoverageMapTab() {
                 {model.propagationModel === 'itm' ? 'Real terrain required by ITM (always on)' : 'Use real terrain (line-of-sight/diffraction)'}
               </label>
             </div>
-            <p className="text-[11px] text-nms-text-dim">
+            <p className="text-xs text-nms-text-dim">
               Terrain data is fetched by the server on demand and cached — the first calculation over a new area may take a little longer while elevation tiles download.
               {model.propagationModel === 'close-in' && ' With terrain enabled, Close-In automatically picks the LOS/NLOS exponent from the real terrain check instead of the checkbox above.'}
               {model.propagationModel === 'itm' && ' ITM (NTIA Longley-Rice) computes diffraction/troposcatter internally from this same terrain profile — the separate Deygout diffraction figure shown elsewhere is diagnostic only for this model, not added on top.'}
@@ -1510,7 +1510,7 @@ export function CoverageMapTab() {
               <NumField label="Grid Resolution" value={grid.resolution} onChange={setGridField('resolution')} unit="cells/side" />
               <NumField label="Min Acceptable Signal" value={grid.minAcceptableSignalDbm} onChange={setGridField('minAcceptableSignalDbm')} unit="dBm" placeholder="-100" />
             </div>
-            <p className="text-[11px] text-nms-text-dim">
+            <p className="text-xs text-nms-text-dim">
               Min Acceptable Signal only applies if you've drawn a target area on the map — it's used to compute the TX power required to cover it.
             </p>
           </div>
@@ -1530,7 +1530,7 @@ export function CoverageMapTab() {
               <p className="text-sm font-semibold text-nms-text mb-1">Coverage Requirement</p>
               <ResultLine label="Required TX Power" value={res.result.coverageRequirement.requiredTxPowerDbm} unit="dBm" />
               <ResultLine label="Limiting Distance" value={res.result.coverageRequirement.limitingDistanceM} unit="m" />
-              <p className="text-[11px] text-nms-text-dim">
+              <p className="text-xs text-nms-text-dim">
                 Limited by the point at ({res.result.coverageRequirement.limitingPoint.lat.toFixed(5)}, {res.result.coverageRequirement.limitingPoint.lon.toFixed(5)}),
                 sampled from {res.result.coverageRequirement.pointsSampled} grid points inside the drawn area, against a threshold of {res.result.coverageRequirement.thresholdDbm} dBm.
               </p>

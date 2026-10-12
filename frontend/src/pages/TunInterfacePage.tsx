@@ -209,7 +209,7 @@ export function TunInterfacePage() {
         ) : interfaces.length === 0 ? (
           <div className="p-8 text-center text-nms-text-dim">No ogstun interfaces found.</div>
         ) : (
-          <table className="w-full">
+          <div className="nms-table-scroll"><table className="w-full">
             <thead>
               <tr className="border-b border-nms-border">
                 <th className="px-4 py-3 text-left text-xs font-semibold text-nms-text-dim uppercase tracking-wider">State</th>
@@ -299,7 +299,7 @@ export function TunInterfacePage() {
                 );
               })}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
 

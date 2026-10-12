@@ -531,7 +531,7 @@ function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
               {searchTerm ? 'No matching routes found' : 'No framed routes configured'}
             </div>
           ) : (
-            <table className="w-full text-sm">
+            <div className="nms-table-scroll"><table className="w-full text-sm">
               <thead className="sticky top-0 bg-nms-surface-2 border-b border-nms-border">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Subnet</th>
@@ -556,7 +556,7 @@ function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
 
@@ -636,7 +636,7 @@ function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
               {searchTerm ? 'No matching assignments found' : 'No IP assignments found'}
             </div>
           ) : (
-            <table className="w-full text-sm">
+            <div className="nms-table-scroll"><table className="w-full text-sm">
               <thead className="sticky top-0 bg-nms-surface-2 border-b border-nms-border">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-nms-text-dim uppercase tracking-wider">IMSI</th>
@@ -663,7 +663,7 @@ function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
 
@@ -3442,7 +3442,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
       )}
 
       <div className="nms-card overflow-hidden p-0">
-        <table className="w-full text-sm">
+        <div className="nms-table-scroll"><table className="w-full text-sm">
           <thead>
             <tr className="border-b border-nms-border">
               {!isViewer && <th className="w-10 px-3 py-3" />}
@@ -3780,7 +3780,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
               </tr>
             )}
           </tbody>
-        </table>
+        </table></div>
       </div>
 
       {total > 50 && (

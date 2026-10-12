@@ -214,7 +214,7 @@ function PlanCard({ plan, onEdit, onDeleted }: { plan: ChargingPlan; onEdit: () 
           ) : loadingUsage ? (
             <p className="text-xs text-nms-text-dim">Loading usage…</p>
           ) : (
-            <table className="w-full text-xs">
+            <div className="nms-table-scroll"><table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-nms-text-dim border-b border-nms-border">
                   <th className="pb-2 font-medium">Subscriber</th>
@@ -252,7 +252,7 @@ function PlanCard({ plan, onEdit, onDeleted }: { plan: ChargingPlan; onEdit: () 
                   );
                 })}
               </tbody>
-            </table>
+            </table></div>
           )}
         </div>
       )}

@@ -213,7 +213,7 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
             <p className="text-xs text-nms-text-dim text-center py-6">No extensions assigned yet.</p>
           ) : (
             <div className="border border-nms-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
+              <div className="nms-table-scroll"><table className="w-full text-xs">
                 <thead className="bg-nms-surface-2 text-nms-text-dim">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium">Extension</th>
@@ -240,7 +240,7 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </div>
           )}
         </>
@@ -393,7 +393,7 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
             <p className="text-xs text-nms-text-dim text-center py-6">No DID mappings assigned yet.</p>
           ) : (
             <div className="border border-nms-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
+              <div className="nms-table-scroll"><table className="w-full text-xs">
                 <thead className="bg-nms-surface-2 text-nms-text-dim">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium">DID</th>
@@ -455,7 +455,7 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </div>
           )}
         </>
@@ -607,7 +607,7 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
             <p className="text-xs text-nms-text-dim text-center py-6">No outbound caller IDs assigned yet.</p>
           ) : (
             <div className="border border-nms-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
+              <div className="nms-table-scroll"><table className="w-full text-xs">
                 <thead className="bg-nms-surface-2 text-nms-text-dim">
                   <tr>
                     <th className="text-left px-3 py-2 font-medium">Caller ID</th>
@@ -666,7 +666,7 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </div>
           )}
         </>
@@ -1030,7 +1030,7 @@ function Gsm2gExtensionsCard() {
         </p>
       ) : (
         <div className="border border-nms-border rounded-lg overflow-hidden">
-          <table className="w-full text-xs">
+          <div className="nms-table-scroll"><table className="w-full text-xs">
             <thead className="bg-nms-surface-2 text-nms-text-dim">
               <tr>
                 <th className="text-left px-3 py-2 font-medium">Short code</th>
@@ -1057,7 +1057,7 @@ function Gsm2gExtensionsCard() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         </div>
       )}
     </div>
@@ -1445,15 +1445,15 @@ export function PstnGatewayPage({ onNavigate }: { onNavigate?: (tab: string) => 
               {a2gStatus && (
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-3">
                   <div className="bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-nms-text-dim">Bind</p>
+                    <p className="text-xs uppercase tracking-wider text-nms-text-dim">Bind</p>
                     <p className="text-sm font-mono text-nms-text mt-0.5 truncate">{a2gStatus.bindIp}:{a2gStatus.bindPort}</p>
                   </div>
                   <div className="bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-nms-text-dim">Echo test number</p>
+                    <p className="text-xs uppercase tracking-wider text-nms-text-dim">Echo test number</p>
                     <p className="text-sm font-mono text-nms-text mt-0.5 truncate">{a2gStatus.echoTestNumber}</p>
                   </div>
                   <div className="bg-nms-bg border border-nms-border rounded-lg px-3 py-2">
-                    <p className="text-[10px] uppercase tracking-wider text-nms-text-dim">Codec GSM</p>
+                    <p className="text-xs uppercase tracking-wider text-nms-text-dim">Codec GSM</p>
                     <p className="text-sm font-mono text-nms-text mt-0.5 truncate">{a2gStatus.codecGsmLoaded ? 'loaded' : 'not loaded'}</p>
                   </div>
                 </div>

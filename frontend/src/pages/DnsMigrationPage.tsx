@@ -37,7 +37,7 @@ function MigrationSummaryTable({ plan, onRerun }: { plan: DnsMigrationPlan; onRe
     <div>
       <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">{title}</h3>
       <div className="border border-nms-border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="nms-table-scroll"><table className="w-full text-sm">
           <thead>
             <tr className="bg-nms-surface-2 text-left text-xs text-nms-text-dim uppercase tracking-wider">
               <th className="px-4 py-2 font-semibold">Function</th>
@@ -59,7 +59,7 @@ function MigrationSummaryTable({ plan, onRerun }: { plan: DnsMigrationPlan; onRe
               );
             })}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>
   );

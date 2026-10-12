@@ -1316,7 +1316,7 @@ function ConnectionsTab({ rows }: { rows: IPRow[] }) {
               <div className="flex-1 h-px bg-nms-border" />
             </div>
             <div className="border border-nms-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
+              <div className="nms-table-scroll"><table className="w-full text-xs">
                 <thead className="bg-nms-surface-2 border-b border-nms-border">
                   <tr>
                     <th className="px-3 py-2.5 text-left font-semibold text-nms-text uppercase tracking-wider">Interface</th>
@@ -1347,7 +1347,7 @@ function ConnectionsTab({ rows }: { rows: IPRow[] }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </div>
           </div>
         );
@@ -1382,7 +1382,7 @@ function AllIPsTab({ rows }: { rows: IPRow[] }) {
               <div className="flex-1 h-px bg-nms-border" />
             </div>
             <div className="border border-nms-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
+              <div className="nms-table-scroll"><table className="w-full text-xs">
                 <thead className="bg-nms-surface-2 border-b border-nms-border">
                   <tr>
                     <th className="px-3 py-2.5 text-left font-semibold text-nms-text uppercase tracking-wider">Service</th>
@@ -1416,7 +1416,7 @@ function AllIPsTab({ rows }: { rows: IPRow[] }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </div>
           </div>
         );
@@ -2311,7 +2311,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
 
         {allSessions.length > 0 ? (
           <div className="border border-nms-border rounded-md overflow-hidden">
-            <table className="w-full text-sm">
+            <div className="nms-table-scroll"><table className="w-full text-sm">
               <thead className="bg-nms-surface-2 border-b border-nms-border">
                 <tr>
                   <th className="px-3 py-2.5 text-left text-xs font-semibold text-nms-text uppercase tracking-wider min-w-[180px]">
@@ -2421,7 +2421,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                   );
                 })}
               </tbody>
-            </table>
+            </table></div>
           </div>
         ) : (
           <div className="text-center py-12 text-nms-text-dim">

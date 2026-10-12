@@ -400,7 +400,7 @@ export function MetricsPage(): JSX.Element {
                 {group}
               </span>
             </div>
-            <table className="w-full text-sm">
+            <div className="nms-table-scroll"><table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-nms-border text-nms-text-dim text-xs uppercase tracking-wider">
                   <th className="text-left px-5 py-3 w-28  font-semibold">NF</th>
@@ -466,7 +466,7 @@ export function MetricsPage(): JSX.Element {
                   );
                 })}
               </tbody>
-            </table>
+            </table></div>
           </div>
         );
       })}

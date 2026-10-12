@@ -224,12 +224,12 @@ function SetupTab({ status, refresh, onNavigate }: { status: GsmStatus | null; r
             <div>
               <label className="nms-label">osmo-bsc / osmo-mgw bind IP</label>
               <input aria-label="osmo-bsc / osmo-mgw bind IP" className="nms-input font-mono text-xs" value={bscMgwBindIp} onChange={e => setBscMgwBindIp(e.target.value)} placeholder="127.0.0.1" />
-              <p className="text-[11px] text-nms-text-dim mt-1">osmo-mgw's own MGCP control-plane listen address, and where osmo-bsc's BTS entries dial for OML by default.</p>
+              <p className="text-xs text-nms-text-dim mt-1">osmo-mgw's own MGCP control-plane listen address, and where osmo-bsc's BTS entries dial for OML by default.</p>
             </div>
             <div>
               <label className="nms-label">osmo-mgw RTP bind IP</label>
               <input aria-label="osmo-mgw RTP bind IP" className="nms-input font-mono text-xs" value={mgwRtpBindIp} onChange={e => setMgwRtpBindIp(e.target.value)} placeholder="127.0.0.1" />
-              <p className="text-[11px] text-nms-text-dim mt-1">Where actual call audio (RTP) binds — separate from MGCP control above, in case they should ever differ.</p>
+              <p className="text-xs text-nms-text-dim mt-1">Where actual call audio (RTP) binds — separate from MGCP control above, in case they should ever differ.</p>
             </div>
             <div>
               <label className="nms-label">osmo-msc's MGW peer IP</label>
@@ -252,7 +252,7 @@ function SetupTab({ status, refresh, onNavigate }: { status: GsmStatus | null; r
                   <option value="gprs">GPRS (GMSK only)</option>
                   <option value="egprs">EDGE / EGPRS (adds 8PSK MCS-5..9)</option>
                 </select>
-                <p className="text-[11px] text-nms-text-dim mt-1">
+                <p className="text-xs text-nms-text-dim mt-1">
                   Applied to every packet-data BTS on Configure. An EDGE cell still serves GPRS-only handsets; a radio that can't do 8PSK just uses the GPRS coding schemes.
                 </p>
               </div>
@@ -277,12 +277,12 @@ function SetupTab({ status, refresh, onNavigate }: { status: GsmStatus | null; r
                 <div className="md:col-span-2">
                   <label className="nms-label">SGSN Gb address (reachable from the BTS)</label>
                   <input aria-label="SGSN Gb address (reachable from the BTS)" className="nms-input font-mono text-xs" value={sgsnGbRemoteIp} onChange={e => setSgsnGbRemoteIp(e.target.value)} placeholder="auto — this host's IP on the RAN subnet" />
-                  <p className="text-[11px] text-nms-text-dim mt-1">The IP a real nanoBTS's PCU dials for the Gb/NS link. Leave blank to auto-derive this host's address on the radio's subnet. <span className="text-amber-400">127.0.0.1 only works for a local virtual BTS</span> — a remote radio needs a real routable IP or GPRS never attaches.</p>
+                  <p className="text-xs text-nms-text-dim mt-1">The IP a real nanoBTS's PCU dials for the Gb/NS link. Leave blank to auto-derive this host's address on the radio's subnet. <span className="text-amber-400">127.0.0.1 only works for a local virtual BTS</span> — a remote radio needs a real routable IP or GPRS never attaches.</p>
                 </div>
                 <div>
                   <label className="nms-label">APN name</label>
                   <input aria-label="APN name" className="nms-input text-xs" value={ggsnApn} onChange={e => setGgsnApn(e.target.value)} placeholder="gprs" />
-                  <p className="text-[11px] text-nms-text-dim mt-1">Must match the APN configured on the phone — see the reference doc's own "APN for Data Service" note.</p>
+                  <p className="text-xs text-nms-text-dim mt-1">Must match the APN configured on the phone — see the reference doc's own "APN for Data Service" note.</p>
                 </div>
                 <div>
                   <label className="nms-label">Tun device name</label>
@@ -549,7 +549,7 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
               <option value="trx">SDR (osmo-trx) — real RF</option>
               <option value="remote-abis-ip">Dedicated BTS hardware (real RF, own embedded unit)</option>
             </select>
-            {(isEdit || !!prefill) && <p className="text-[11px] text-nms-text-dim mt-1">Backend type can't be changed after creation — remove and re-add to switch.</p>}
+            {(isEdit || !!prefill) && <p className="text-xs text-nms-text-dim mt-1">Backend type can't be changed after creation — remove and re-add to switch.</p>}
           </div>
           <div>
             <label className="nms-label">Band</label>
@@ -565,7 +565,7 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
             <label className="nms-label">ARFCN</label>
             <input aria-label="ARFCN" type="number" value={arfcn} onChange={e => setArfcn(e.target.value)} className={clsx('nms-input font-mono text-xs', arfcnOutOfRange && 'border-red-500')} />
             {arfcnRange && (
-              <p className={clsx('text-[11px] mt-1', arfcnOutOfRange ? 'text-red-400' : 'text-nms-text-dim')}>
+              <p className={clsx('text-xs mt-1', arfcnOutOfRange ? 'text-red-400' : 'text-nms-text-dim')}>
                 {band} valid range: {arfcnRange.min}–{arfcnRange.max}
                 {arfcnOutOfRange && ' — out of range for this band'}
               </p>
@@ -586,7 +586,7 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
           <div className="md:col-span-2">
             <label className="nms-label">LTE neighbour EARFCNs</label>
             <input aria-label="LTE neighbour EARFCNs" value={lteEarfcns} onChange={e => setLteEarfcns(e.target.value)} placeholder="e.g. 1850, 900" className="nms-input font-mono text-xs" />
-            <p className="text-[11px] text-nms-text-dim mt-1">
+            <p className="text-xs text-nms-text-dim mt-1">
               Comma-separated LTE EARFCNs this cell broadcasts in SI2quater — lets a phone reselect back to LTE after a CSFB call. Leave blank if not using CSFB.
             </p>
           </div>
@@ -595,7 +595,7 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
               <div>
                 <label className="nms-label">Unit IP</label>
                 <input aria-label="Unit IP" value={remoteIp} onChange={e => setRemoteIp(e.target.value)} placeholder="10.0.x.x" className="nms-input font-mono text-xs" />
-                <p className="text-[11px] text-nms-text-dim mt-1">
+                <p className="text-xs text-nms-text-dim mt-1">
                   The radio's current, reachable IP — used once to repoint its OML target at this host
                   (<code className="font-mono">ipaccess-config -o … -r …</code>) and restart it. Not written into osmo-bsc.cfg itself
                   (Abis/IP units dial in and are matched by unit ID, not source IP), so it's safe to leave stale after the radio's own IP changes.
@@ -604,14 +604,14 @@ function AddBtsModal({ onClose, onAdded, defaultOmlIp, existing, prefill }: {
               <div>
                 <label className="nms-label">Unit ID <span className="text-nms-text-dim font-normal">(leave blank to auto-assign)</span></label>
                 <input aria-label="Unit ID (leave blank to auto-assign)" type="number" value={unitId} onChange={e => setUnitId(e.target.value)} placeholder="e.g. 1 — read via ipaccess-config -G" className="nms-input font-mono text-xs" />
-                <p className="text-[11px] text-nms-text-dim mt-1">Real hardware usually already has one burned in — use its existing value rather than reconfigure the unit.</p>
+                <p className="text-xs text-nms-text-dim mt-1">Real hardware usually already has one burned in — use its existing value rather than reconfigure the unit.</p>
               </div>
             </>
           ) : (
             <div>
               <label className="nms-label">OML target IP (osmo-bsc's address)</label>
               <input aria-label="OML target IP (osmo-bsc's address)" value={omlRemoteIp} onChange={e => setOmlRemoteIp(e.target.value)} placeholder="127.0.0.1" className="nms-input font-mono text-xs" />
-              <p className="text-[11px] text-nms-text-dim mt-1">Which IP this local osmo-bts process dials to reach osmo-bsc's OML listener — defaults to the Setup tab's bind IP.</p>
+              <p className="text-xs text-nms-text-dim mt-1">Which IP this local osmo-bts process dials to reach osmo-bsc's OML listener — defaults to the Setup tab's bind IP.</p>
             </div>
           )}
         </div>
@@ -1093,7 +1093,7 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
 
         <div className="border-t border-nms-border pt-4">
           <p className="text-sm font-semibold text-nms-text mb-1">Call Routing (osmo-msc's MNCC handler)</p>
-          <p className="text-[11px] text-nms-text-dim mb-3">
+          <p className="text-xs text-nms-text-dim mb-3">
             This controls how osmo-msc routes EVERY call it handles, not just ones headed to osmo-sip-connector — including a
             plain call between two of its own 2G subscribers. Switching modes restarts osmo-msc.
           </p>
@@ -1109,7 +1109,7 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
               <div className="flex items-center gap-2 text-sm font-medium text-nms-text">
                 <RadioTower className="w-3.5 h-3.5" /> Internal <span className="text-[10px] font-normal text-nms-text-dim">(default)</span>
               </div>
-              <p className="text-[11px] text-nms-text-dim mt-1">osmo-msc/osmo-mgw route calls themselves. Plain 2G-to-2G calling works with nothing else set up.</p>
+              <p className="text-xs text-nms-text-dim mt-1">osmo-msc/osmo-mgw route calls themselves. Plain 2G-to-2G calling works with nothing else set up.</p>
             </button>
             <button
               onClick={() => handleMnccMode('external')}
@@ -1124,7 +1124,7 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
               <div className="flex items-center gap-2 text-sm font-medium text-nms-text">
                 <Phone className="w-3.5 h-3.5" /> External
               </div>
-              <p className="text-[11px] text-nms-text-dim mt-1">Every call is handed to osmo-sip-connector ({sip?.mnccSocketPath}). Needs it configured and running below.</p>
+              <p className="text-xs text-nms-text-dim mt-1">Every call is handed to osmo-sip-connector ({sip?.mnccSocketPath}). Needs it configured and running below.</p>
             </button>
           </div>
           {sip?.mnccMode === 'external' && !sip?.running && (
@@ -1141,7 +1141,7 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
             <div>
               <label className="nms-label">Local bind IP</label>
               <input aria-label="Local bind IP" className="nms-input font-mono text-xs" value={localIp} onChange={e => setLocalIp(e.target.value)} placeholder="127.0.1.6" />
-              <p className="text-[11px] text-nms-text-dim mt-1">Use a dedicated address, not 0.0.0.0 — this host already has other SIP daemons on port 5060 (P-CSCF, Asterisk, SMSC), and a wildcard bind conflicts with any of them.</p>
+              <p className="text-xs text-nms-text-dim mt-1">Use a dedicated address, not 0.0.0.0 — this host already has other SIP daemons on port 5060 (P-CSCF, Asterisk, SMSC), and a wildcard bind conflicts with any of them.</p>
             </div>
             <div>
               <label className="nms-label">Local port</label>
@@ -1161,7 +1161,7 @@ function SipTab({ status, refresh }: { status: GsmStatus | null; refresh: () => 
                 )}
               </div>
               <input aria-label="Remote SIP peer (host/IP)" className="nms-input font-mono text-xs" value={remoteHost} onChange={e => setRemoteHost(e.target.value)} placeholder="e.g. 10.0.1.178" />
-              <p className="text-[11px] text-nms-text-dim mt-1">Where 2G calls are sent to / received from. Required.</p>
+              <p className="text-xs text-nms-text-dim mt-1">Where 2G calls are sent to / received from. Required.</p>
             </div>
             <div>
               <label className="nms-label">Remote port</label>
@@ -1333,7 +1333,7 @@ function Asterisk2gTab() {
           <div>
             <label className="nms-label">Bind IP</label>
             <input aria-label="Bind IP" className="nms-input font-mono text-xs" value={bindIp} onChange={e => setBindIp(e.target.value)} placeholder="127.0.1.7" />
-            <p className="text-[11px] text-nms-text-dim mt-1">This project's own dedicated-loopback-per-SIP-daemon convention — 127.0.1.7 is the next free one.</p>
+            <p className="text-xs text-nms-text-dim mt-1">This project's own dedicated-loopback-per-SIP-daemon convention — 127.0.1.7 is the next free one.</p>
           </div>
           <div>
             <label className="nms-label">Bind port</label>
@@ -1342,7 +1342,7 @@ function Asterisk2gTab() {
           <div className="md:col-span-2">
             <label className="nms-label">MSISDN match pattern</label>
             <input aria-label="MSISDN match pattern" className="nms-input font-mono text-xs" value={msisdnMatchPattern} onChange={e => setMsisdnMatchPattern(e.target.value)} placeholder="_X." />
-            <p className="text-[11px] text-nms-text-dim mt-1">
+            <p className="text-xs text-nms-text-dim mt-1">
               Asterisk dialplan pattern for "this dialed number is a local 2G subscriber." The default (<code className="font-mono">_X.</code>, any
               number) is safe as-is — this instance has exactly one trunk to route to either way — but you can tighten it to your real
               numbering plan (e.g. <code className="font-mono">_1555X.</code>) any time.
@@ -1351,7 +1351,7 @@ function Asterisk2gTab() {
           <div className="md:col-span-2">
             <label className="nms-label">Echo test number</label>
             <input aria-label="Echo test number" className="nms-input font-mono text-xs" value={echoTestNumber} onChange={e => setEchoTestNumber(e.target.value)} placeholder="600" />
-            <p className="text-[11px] text-nms-text-dim mt-1">
+            <p className="text-xs text-nms-text-dim mt-1">
               Dial this number from any 2G phone to hear your own audio looped back (Asterisk's native Echo() test) — no
               second phone or subscriber needed. An exact match always wins over the MSISDN match pattern above, so pick
               anything that doesn't collide with a real MSISDN on this network.

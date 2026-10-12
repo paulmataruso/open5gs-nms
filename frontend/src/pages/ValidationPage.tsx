@@ -1489,7 +1489,7 @@ export function ValidationPage() {
                     />
                   </div>
                 </div>
-                <p className="text-[10px] text-nms-text-dim">
+                <p className="text-xs text-nms-text-dim">
                   AMF must be reachable via SCTP. UPF GTP-U port 2152 must not conflict with open5gs-smfd.
                   Values are inferred from amf.yaml / upf.yaml automatically.
                 </p>

@@ -77,12 +77,12 @@ export function EquationDisclosure({ eq }: { eq: EquationRecord }) {
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-nms-text-dim italic">Source: {eq.source}</p>
+          <p className="text-xs text-nms-text-dim italic">Source: {eq.source}</p>
           {eq.applicableConditions && (
-            <p className="text-[11px] text-nms-text-dim">Applies when: {eq.applicableConditions}</p>
+            <p className="text-xs text-nms-text-dim">Applies when: {eq.applicableConditions}</p>
           )}
           {eq.limitations && (
-            <p className="text-[11px] text-amber-400">Limitations: {eq.limitations}</p>
+            <p className="text-xs text-amber-400">Limitations: {eq.limitations}</p>
           )}
         </div>
       )}
@@ -100,7 +100,7 @@ export function AssumptionsWarnings<T>({ res }: { res: CalculationResult<T> }) {
             <Info className="w-3.5 h-3.5 text-nms-accent" /> Assumptions
           </p>
           {res.assumptions.map((a, i) => (
-            <p key={i} className="text-[11px] text-nms-text-dim">
+            <p key={i} className="text-xs text-nms-text-dim">
               <span className="text-nms-text font-mono">{a.parameter}</span> = {a.assumedValue}{a.unit ? ` ${a.unit}` : ''} — {a.reason}
             </p>
           ))}
@@ -112,7 +112,7 @@ export function AssumptionsWarnings<T>({ res }: { res: CalculationResult<T> }) {
             <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Warnings
           </p>
           {res.warnings.map((w, i) => (
-            <p key={i} className={clsx('text-[11px]', w.severity === 'error' ? 'text-red-400' : w.severity === 'warning' ? 'text-amber-400' : 'text-nms-text-dim')}>
+            <p key={i} className={clsx('text-xs', w.severity === 'error' ? 'text-red-400' : w.severity === 'warning' ? 'text-amber-400' : 'text-nms-text-dim')}>
               {w.message}
             </p>
           ))}
