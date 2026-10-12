@@ -8,6 +8,61 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.70] - 2026-10-12
+
+### Changed — accessibility and interface pass across the whole web interface
+
+- Buttons, active tabs and form fields are readable on every colour theme.
+  Primary buttons and the selected tab previously used white text on the accent
+  colour, which was too faint to read reliably — worst on the Amber and Cyan
+  themes. They now use a dark label on the accent fill, and the accent colours
+  themselves are unchanged.
+- Input, dropdown and checkbox outlines are now visible against the page
+  background instead of nearly blending into it.
+- Pop-up messages follow the selected theme instead of always using the Cyan
+  Slate palette.
+- Explanatory help text that was set at 10–11px is now 12px. Compact labels,
+  badges and log output keep their existing size, so screen density is
+  unchanged.
+
+### Added — the interface can be operated entirely from the keyboard
+
+- Every dialog and pop-up closes with Escape. Previously only a handful did,
+  and the rest could only be dismissed by clicking.
+- Clickable rows and cards — selecting a log line, a captured packet, a backup,
+  a TWAMP target, or expanding a call record — can now be reached with Tab and
+  activated with Enter or Space.
+- Whichever control has keyboard focus is now clearly outlined. Nothing showed
+  a focus outline before, which made keyboard navigation impossible to follow.
+- The "Wake" action on a UE signal card is now reachable; it previously could
+  only be clicked.
+
+### Added — screen reader support
+
+- Every form field and every icon-only button now announces what it is and what
+  it does. Buttons that delete or remove something say what they act on, rather
+  than just "remove".
+
+### Fixed — wide tables no longer hide their own columns
+
+- Tables wider than their container were being cut off with no way to reach the
+  hidden columns. They now scroll sideways.
+
+### Changed — the interface loads about seven times less data up front
+
+- Each page's code is now fetched when that page is opened rather than all of
+  it on first load. The initial download drops from roughly 820 KB to 110 KB
+  compressed, which is most noticeable on a slow link or a first visit.
+
+### Changed — reduced-motion preference is honoured
+
+- If the operating system is set to reduce motion, animations are disabled.
+  The flashing highlight on a blocked radio becomes a steady colour instead of
+  pulsing continuously. Progress spinners slow down rather than stopping, so a
+  long install still looks like it is working.
+
+---
+
 ## [v2.0-beta_0.69] - 2026-10-11
 
 ### Fixed

@@ -1025,8 +1025,9 @@ Full detail on any of these: `docs/features.md`.
   tab bar**: `flex justify-center` wrapping `flex gap-1 p-1 bg-nms-surface-2
   rounded-lg border border-nms-border`, each tab `flex items-center gap-2 px-4
   py-2 rounded-md text-sm font-medium transition-all` with an icon, active
-  `bg-nms-accent text-white shadow-sm` / inactive `text-nms-text-dim
-  hover:text-nms-text hover:bg-nms-surface` — not the older left-aligned
+  `bg-nms-accent text-nms-accent-fg shadow-sm` / inactive `text-nms-text-dim
+  hover:text-nms-text hover:bg-nms-surface` (**`text-nms-accent-fg`, never
+  `text-white`** — see the theme-token rule below) — not the older left-aligned
   underline-tab style. Full-width cards throughout (no `max-w`/centering
   wrappers on card content itself). Reference implementations: `AutoConfigPage.
   tsx`, `SecGWPage.tsx`, `VoWiFiPage.tsx`, `IMSPage.tsx`, `PstnGatewayPage.tsx`,
@@ -1038,6 +1039,67 @@ Full detail on any of these: `docs/features.md`.
   wrong. Full rationale and a per-page shape breakdown: PROJECT_STATE.md's
   Engineering Decision Log, "centered pill-style tab nav + header-mounted
   service control" entry.
+- **Theme tokens and accessibility baseline (standard as of 2026-10-12 — every
+  new page, panel, modal and control).** The frontend was audited and fixed
+  against WCAG 2.2 AA in one pass; the whole point of that pass is lost if new
+  UI reintroduces what it removed. Concretely, for anything new:
+  - **Never `text-white` on a themed background.** Use `text-nms-accent-fg` on
+    `bg-nms-accent` (primary buttons, active tabs) and `bg-nms-red-strong` for a
+    solid red fill that carries white text. White on `nms-accent` measures
+    2.15:1 (amber theme) to 4.23:1 (violet) — it fails AA in **all five** themes
+    and fails even the 3:1 large-text floor in three of them. `index.css`'s
+    header comment carries the measured numbers.
+  - **Never hardcode a hex colour in a component.** There are five themes
+    swapped at runtime via CSS custom properties; a literal hex pins that
+    element to whichever theme it was eyeballed against. (Real example: the
+    `Toaster` in `App.tsx` had Cyan Slate's palette inlined, so toasts stayed
+    blue-grey on every theme.) Use the `nms-*` Tailwind tokens.
+  - **`border-nms-border-strong` for interactive boundaries** (input, select,
+    textarea, checkbox), which WCAG 1.4.11 holds to 3:1. Plain `nms-border` is
+    1.32–1.53:1 against the page — correct for a decorative card edge or
+    divider (those are exempt), wrong for the edge of a control.
+  - **Every icon-only button needs an `aria-label`**, and a destructive one must
+    name what it acts on ("Remove network slice", not "Remove"). A state toggle
+    should describe what pressing it will *do*
+    (`aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}`).
+  - **Every form control needs an accessible name.** A visible `<label>` that is
+    merely adjacent does not give the control one — associate it with
+    `htmlFor`/`id`, wrap the control in the label, or put an `aria-label` on the
+    control matching the visible text. A wrapper component whose caller renders
+    the `<label>` (`PasswordInput`, `DnnSelect`) must accept a name prop and
+    forward it, because the caller's label cannot reach inside.
+  - **Don't remove focus outlines.** `index.css` has one zero-specificity
+    `:focus-visible` rule covering every interactive element; `focus:outline-none`
+    is only acceptable alongside a `focus:ring-*` replacement (which is what
+    `.nms-input` does).
+  - **A new overlay/modal closes on Escape.** Use `useEscapeKey(onClose)` from
+    `hooks/useKeyboardA11y.ts`. A backdrop that closes on click has no keyboard
+    equivalent, and giving the backdrop a tab stop is worse than the gap.
+    (`StaleModulesModal` is the one deliberate exception — non-dismissible by
+    design while auto-fixable staleness remains.)
+  - **A clickable non-button** (`div`/`tr` with `onClick`) needs
+    `tabIndex={0}` + `onKeyDown={activateOnKey(fn)}` (same module) plus
+    `role="button"`, or for a table row, the `tabIndex`/`onKeyDown` pair and
+    `aria-expanded`/`-selected`/`-current` without `role="button"` — that role
+    on a `<tr>` destroys the table's semantics. Never nest an interactive
+    element inside another (a `<button>` inside a `<button>` is invalid HTML and
+    the inner one is keyboard-unreachable).
+  - **Wrap any table that can outgrow its column in `.nms-table-scroll`.** The
+    old idiom, a bare table inside `rounded-lg overflow-hidden`, *clips* the
+    overflow and leaves those columns permanently unreachable.
+  - **Body copy and field labels stay at `text-xs` (12px) or larger.** Badges,
+    inline markers, `<pre>` log output and table cells may go smaller — that
+    density is deliberate and WCAG sets no minimum font size — but explanatory
+    `<p>` help text must not.
+  - **New motion must survive `prefers-reduced-motion`.** There is a global
+    reduce block in `index.css`; anything with its own keyframes should be
+    checked against it (spinners there slow rather than freeze, because a
+    motionless spinner during a real multi-minute install reads as a hung UI).
+  - **A new page is lazily imported in `App.tsx`** (`lazy(() => import(...)
+    .then(m => ({ default: m.X })))`), not statically. Static imports are what
+    produced a single 2.9 MB initial bundle; route splitting cut first load from
+    ~821 kB to ~111 kB gzip, and one new static page import silently gives a
+    chunk of that back.
 - **Only commit when explicitly asked.** This project has gone through periods of
   large uncommitted work by design (user wanted a clean-host test before committing) —
   don't assume "the fix works" means "commit it."
