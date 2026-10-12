@@ -39,7 +39,7 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_address}>Address</LabelWithTooltip></label>
-            <input
+            <input aria-label="Address"
               className="nms-input font-mono text-xs"
               value={server.address}
               onChange={(e) => updateBsf({ sbi: { ...bsf.sbi, server: [{ ...server, address: e.target.value }] } })}
@@ -47,7 +47,7 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_port}>Port</LabelWithTooltip></label>
-            <input
+            <input aria-label="Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={server.port}
@@ -56,7 +56,7 @@ export function BsfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
-            <input
+            <input aria-label="Advertise (optional)"
               className="nms-input font-mono text-xs"
               value={server.advertise || ''}
               onChange={(e) => updateBsf({ sbi: { ...bsf.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}

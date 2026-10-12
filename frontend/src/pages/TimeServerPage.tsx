@@ -386,7 +386,7 @@ export function TimeServerPage() {
               )}
               {config.servers.map((s, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <select
+                  <select aria-label="Server type"
                     value={s.type}
                     onChange={e => updateServer(i, 'type', e.target.value as 'server' | 'pool')}
                     className="bg-nms-bg border border-nms-border rounded px-2 py-1.5 text-xs text-nms-text w-20 shrink-0"
@@ -394,19 +394,19 @@ export function TimeServerPage() {
                     <option value="server">server</option>
                     <option value="pool">pool</option>
                   </select>
-                  <input
+                  <input aria-label="NTP server address"
                     value={s.address}
                     onChange={e => updateServer(i, 'address', e.target.value)}
                     placeholder="time.nist.gov"
                     className="nms-input font-mono text-xs flex-1"
                   />
-                  <input
+                  <input aria-label="Server options"
                     value={s.options}
                     onChange={e => updateServer(i, 'options', e.target.value)}
                     placeholder="iburst"
                     className="nms-input font-mono text-xs w-32 shrink-0"
                   />
-                  <button onClick={() => removeServer(i)}
+                  <button aria-label="Delete NTP server" onClick={() => removeServer(i)}
                     className="text-red-400/60 hover:text-red-400 transition-colors p-1">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -432,13 +432,13 @@ export function TimeServerPage() {
               )}
               {config.allowNets.map((net, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <input
+                  <input aria-label="Allowed network"
                     value={net}
                     onChange={e => updateNet(i, e.target.value)}
                     placeholder="172.16.0.0/24"
                     className="nms-input font-mono text-xs flex-1"
                   />
-                  <button onClick={() => removeNet(i)}
+                  <button aria-label="Delete allowed network" onClick={() => removeNet(i)}
                     className="text-red-400/60 hover:text-red-400 transition-colors p-1">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -458,7 +458,7 @@ export function TimeServerPage() {
               <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="nms-label">Local Stratum</label>
-                  <input
+                  <input aria-label="Local Stratum"
                     type="number" min={1} max={15}
                     value={config.localStratum}
                     onChange={e => { markDirty(); setConfig(c => c ? { ...c, localStratum: parseInt(e.target.value) || 10 } : c); }}
@@ -468,7 +468,7 @@ export function TimeServerPage() {
                 </div>
                 <div>
                   <label className="nms-label">Makestep</label>
-                  <input
+                  <input aria-label="Makestep"
                     value={config.makestep}
                     onChange={e => { markDirty(); setConfig(c => c ? { ...c, makestep: e.target.value } : c); }}
                     placeholder="1.0 3"
@@ -478,7 +478,7 @@ export function TimeServerPage() {
                 </div>
                 <div>
                   <label className="nms-label">Drift File</label>
-                  <input
+                  <input aria-label="Drift File"
                     value={config.driftfile}
                     onChange={e => { markDirty(); setConfig(c => c ? { ...c, driftfile: e.target.value } : c); }}
                     className="nms-input font-mono text-xs"
@@ -486,7 +486,7 @@ export function TimeServerPage() {
                 </div>
                 <div>
                   <label className="nms-label">Log Directory</label>
-                  <input
+                  <input aria-label="Log Directory"
                     value={config.logdir}
                     onChange={e => { markDirty(); setConfig(c => c ? { ...c, logdir: e.target.value } : c); }}
                     className="nms-input font-mono text-xs"

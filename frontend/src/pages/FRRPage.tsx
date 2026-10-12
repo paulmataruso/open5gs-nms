@@ -343,20 +343,20 @@ function ProtocolForm({ protocol, eigrpAs, setEigrpAs, eigrpPeer, setEigrpPeer,
     <div className="bg-nms-bg border border-nms-border rounded-lg p-4 space-y-3">
       {protocol === 'eigrp' && (
         <div className="grid grid-cols-2 gap-3">
-          <div><label className="nms-label">AS number</label><input value={eigrpAs} onChange={(e: any) => setEigrpAs(e.target.value)} className="nms-input font-mono text-sm" /></div>
-          <div><label className="nms-label">Peer IP (upstream)</label><input value={eigrpPeer} onChange={(e: any) => setEigrpPeer(e.target.value)} className="nms-input font-mono text-sm" placeholder="192.168.253.1" /></div>
+          <div><label className="nms-label">AS number</label><input aria-label="AS number" value={eigrpAs} onChange={(e: any) => setEigrpAs(e.target.value)} className="nms-input font-mono text-sm" /></div>
+          <div><label className="nms-label">Peer IP (upstream)</label><input aria-label="Peer IP (upstream)" value={eigrpPeer} onChange={(e: any) => setEigrpPeer(e.target.value)} className="nms-input font-mono text-sm" placeholder="192.168.253.1" /></div>
         </div>
       )}
       {protocol === 'ospf' && (
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div><label className="nms-label">Area ID</label><input value={ospfArea} onChange={(e: any) => setOspfArea(e.target.value)} className="nms-input font-mono text-sm" /></div>
+          <div><label className="nms-label">Area ID</label><input aria-label="Area ID" value={ospfArea} onChange={(e: any) => setOspfArea(e.target.value)} className="nms-input font-mono text-sm" /></div>
           <div><label className="nms-label">Network type</label>
-            <select value={ospfNetType} onChange={(e: any) => setOspfNetType(e.target.value)} className="nms-input text-sm">
+            <select aria-label="Network type" value={ospfNetType} onChange={(e: any) => setOspfNetType(e.target.value)} className="nms-input text-sm">
               <option value="point-to-point">point-to-point</option><option value="broadcast">broadcast</option>
             </select>
           </div>
           <div><label className="nms-label">Advertisement</label>
-            <select value={ospfMethod} onChange={(e: any) => setOspfMethod(e.target.value)} className="nms-input text-sm">
+            <select aria-label="Advertisement" value={ospfMethod} onChange={(e: any) => setOspfMethod(e.target.value)} className="nms-input text-sm">
               <option value="redistribute">redistribute connected</option><option value="network">network statements</option>
             </select>
           </div>
@@ -364,10 +364,10 @@ function ProtocolForm({ protocol, eigrpAs, setEigrpAs, eigrpPeer, setEigrpPeer,
       )}
       {protocol === 'bgp' && (
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <div><label className="nms-label">Local AS</label><input value={bgpLocal} onChange={(e: any) => setBgpLocal(e.target.value)} className="nms-input font-mono text-sm" /></div>
-          <div><label className="nms-label">Peer AS</label><input value={bgpPeer} onChange={(e: any) => setBgpPeer(e.target.value)} className="nms-input font-mono text-sm" /></div>
-          <div><label className="nms-label">Peer IP</label><input value={bgpPeerIp} onChange={(e: any) => setBgpPeerIp(e.target.value)} className="nms-input font-mono text-sm" /></div>
-          <div><label className="nms-label">eBGP multihop TTL</label><input value={bgpHop} onChange={(e: any) => setBgpHop(e.target.value)} className="nms-input font-mono text-sm" /></div>
+          <div><label className="nms-label">Local AS</label><input aria-label="Local AS" value={bgpLocal} onChange={(e: any) => setBgpLocal(e.target.value)} className="nms-input font-mono text-sm" /></div>
+          <div><label className="nms-label">Peer AS</label><input aria-label="Peer AS" value={bgpPeer} onChange={(e: any) => setBgpPeer(e.target.value)} className="nms-input font-mono text-sm" /></div>
+          <div><label className="nms-label">Peer IP</label><input aria-label="Peer IP" value={bgpPeerIp} onChange={(e: any) => setBgpPeerIp(e.target.value)} className="nms-input font-mono text-sm" /></div>
+          <div><label className="nms-label">eBGP multihop TTL</label><input aria-label="eBGP multihop TTL" value={bgpHop} onChange={(e: any) => setBgpHop(e.target.value)} className="nms-input font-mono text-sm" /></div>
           <div className="flex items-center gap-2 pt-5">
             <input type="checkbox" id="nhs" checked={bgpNHS} onChange={(e: any) => setBgpNHS(e.target.checked)} className="w-4 h-4 rounded" />
             <label htmlFor="nhs" className="text-sm text-nms-text cursor-pointer">next-hop-self</label>
@@ -506,7 +506,7 @@ function RouteFilterCard({ filters, setFilters, onSave, onRollback, hasBackup, p
           {filters.map((f, i) => (
             <div key={f.id} className="border border-nms-border rounded-lg overflow-hidden">
               <div className="flex items-center gap-2 px-3 py-2 bg-nms-surface-2 border-b border-nms-border">
-                <input
+                <input aria-label="Filter name"
                   value={f.name}
                   onChange={(e: any) => update(i, { name: e.target.value })}
                   placeholder="Filter name (e.g. block-rfc1918-in)"
@@ -535,11 +535,11 @@ function RouteFilterCard({ filters, setFilters, onSave, onRollback, hasBackup, p
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <span className="text-xs text-nms-text-dim">seq</span>
-                  <input type="number" value={f.seq}
+                  <input aria-label="Sequence number" type="number" value={f.seq}
                     onChange={(e: any) => update(i, { seq: parseInt(e.target.value) || 10 })}
                     className="nms-input font-mono text-xs w-14" />
                 </div>
-                <button onClick={() => remove(i)} className="text-nms-text-dim/50 hover:text-red-400 transition-colors shrink-0 p-1">
+                <button aria-label="Delete filter rule" onClick={() => remove(i)} className="text-nms-text-dim/50 hover:text-red-400 transition-colors shrink-0 p-1">
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
@@ -554,13 +554,13 @@ function RouteFilterCard({ filters, setFilters, onSave, onRollback, hasBackup, p
                       f.action === 'permit' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
                     )}>{f.action}</span>
                     <code className="font-mono text-xs text-nms-text flex-1 bg-nms-bg border border-nms-border rounded px-2 py-0.5">{pfx}</code>
-                    <button onClick={() => removePrefix(i, pi)} className="text-nms-text-dim/40 hover:text-red-400 shrink-0">
+                    <button aria-label="Remove prefix" onClick={() => removePrefix(i, pi)} className="text-nms-text-dim/40 hover:text-red-400 shrink-0">
                       <XCircle className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 ))}
                 <div className="flex items-center gap-2 pt-1">
-                  <input
+                  <input aria-label="New prefix"
                     value={newPrefix[f.id] ?? ''}
                     onChange={(e: any) => setNewPrefix(p => ({ ...p, [f.id]: e.target.value }))}
                     onKeyDown={(e: any) => e.key === 'Enter' && addPrefix(i)}
@@ -1022,7 +1022,7 @@ function DummyCreateModal({ onClose, onCreated, frrActive, frrProtocol }: {
         <div className="space-y-4">
           <div>
             <label className="nms-label">Interface Name</label>
-            <input
+            <input aria-label="Interface Name"
               className="nms-input font-mono"
               value={name}
               onChange={e => setName(e.target.value)}
@@ -1036,7 +1036,7 @@ function DummyCreateModal({ onClose, onCreated, frrActive, frrProtocol }: {
           <div className="flex gap-3">
             <div className="flex-1">
               <label className="nms-label">IP Address</label>
-              <input
+              <input aria-label="IP Address"
                 className="nms-input font-mono"
                 value={ip}
                 onChange={e => setIp(e.target.value)}
@@ -1045,7 +1045,7 @@ function DummyCreateModal({ onClose, onCreated, frrActive, frrProtocol }: {
             </div>
             <div className="w-28">
               <label className="nms-label">Prefix</label>
-              <input
+              <input aria-label="Prefix"
                 className="nms-input font-mono"
                 type="number"
                 min={1}
@@ -1351,7 +1351,7 @@ export function FRRPage() {
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 pageTab === id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}>
               <Icon className="w-4 h-4" /> {label}
@@ -1555,18 +1555,18 @@ export function FRRPage() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="nms-label">Management interface</label>
-                <select value={mgmtIface} onChange={e => setMgmtIface(e.target.value)} className="nms-input text-sm">
+                <select aria-label="Management interface" value={mgmtIface} onChange={e => setMgmtIface(e.target.value)} className="nms-input text-sm">
                   <option value="">— select —</option>
                   {interfaces.map(i => <option key={i.name} value={i.name}>{i.name}{i.isMgmt ? ' ★' : ''}</option>)}
                 </select>
               </div>
               <div>
                 <label className="nms-label">Transit interface</label>
-                <select value={transitIface} onChange={e => setTransitIface(e.target.value)} className="nms-input text-sm">
+                <select aria-label="Transit interface" value={transitIface} onChange={e => setTransitIface(e.target.value)} className="nms-input text-sm">
                   <option value="">— select —</option>
                   {interfaces.filter(i => i.name !== mgmtIface).map(i => <option key={i.name} value={i.name}>{i.name}{i.addresses[0] ? ` (${i.addresses[0]})` : ''}</option>)}
                 </select>
-                <input value={transitCidr} onChange={e => setTransitCidr(e.target.value)} className="nms-input font-mono text-sm mt-1" />
+                <input aria-label="Management interface" value={transitCidr} onChange={e => setTransitCidr(e.target.value)} className="nms-input font-mono text-sm mt-1" />
               </div>
               <div>
                 <label className="nms-label">Protocol</label>
@@ -1708,22 +1708,22 @@ export function FRRPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="nms-label">Management interface <span className="text-red-400">(never touched)</span></label>
-              <select value={mgmtIface} onChange={e => setMgmtIface(e.target.value)} className="nms-input text-sm">
+              <select aria-label="Management interface (never touched)" value={mgmtIface} onChange={e => setMgmtIface(e.target.value)} className="nms-input text-sm">
                 <option value="">— select —</option>
                 {interfaces.map(i => <option key={i.name} value={i.name}>{i.name}{i.addresses[0] ? ` (${i.addresses[0]})` : ''}{i.isMgmt ? ' ★' : ''}</option>)}
               </select>
             </div>
             <div>
               <label className="nms-label">Transit interface (L3 uplink)</label>
-              <select value={transitIface} onChange={e => setTransitIface(e.target.value)} className="nms-input text-sm">
+              <select aria-label="Transit interface (L3 uplink)" value={transitIface} onChange={e => setTransitIface(e.target.value)} className="nms-input text-sm">
                 <option value="">— select —</option>
                 {interfaces.filter(i => i.name !== mgmtIface).map(i => <option key={i.name} value={i.name}>{i.name}{i.addresses[0] ? ` (${i.addresses[0]})` : ' (unconfigured)'}</option>)}
               </select>
-              <input value={transitCidr} onChange={e => setTransitCidr(e.target.value)} placeholder="192.168.253.2/30" className="nms-input text-sm font-mono mt-1" />
+              <input aria-label="Management interface (never touched)" value={transitCidr} onChange={e => setTransitCidr(e.target.value)} placeholder="192.168.253.2/30" className="nms-input text-sm font-mono mt-1" />
             </div>
             <div>
               <label className="nms-label">Service plane interface (to migrate)</label>
-              <select value={svcIface} onChange={e => setSvcIface(e.target.value)} className="nms-input text-sm">
+              <select aria-label="Service plane interface (to migrate)" value={svcIface} onChange={e => setSvcIface(e.target.value)} className="nms-input text-sm">
                 <option value="">— select —</option>
                 {interfaces.filter(i => i.name !== mgmtIface && i.name !== transitIface).map(i => <option key={i.name} value={i.name}>{i.name}{i.addresses[0] ? ` (${i.addresses[0]})` : ''}</option>)}
               </select>
@@ -1754,12 +1754,12 @@ export function FRRPage() {
             <div className="space-y-1.5">
               {serviceMappings.map((svc, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <input value={svc.service} onChange={e => setServiceMappings(m => m.map((s, j) => j === i ? { ...s, service: e.target.value } : s))}
+                  <input aria-label="Service name" value={svc.service} onChange={e => setServiceMappings(m => m.map((s, j) => j === i ? { ...s, service: e.target.value } : s))}
                     placeholder="service" className="nms-input font-mono text-xs w-20 shrink-0" />
-                  <input value={svc.ip} onChange={e => setServiceMappings(m => m.map((s, j) => j === i ? { ...s, ip: e.target.value } : s))}
+                  <input aria-label="Service IP address" value={svc.ip} onChange={e => setServiceMappings(m => m.map((s, j) => j === i ? { ...s, ip: e.target.value } : s))}
                     placeholder="10.0.1.155" className="nms-input font-mono text-xs flex-1" />
                   <ChevronRight className="w-3 h-3 text-nms-text-dim shrink-0" />
-                  <input value={svc.dummyName} onChange={e => setServiceMappings(m => m.map((s, j) => j === i ? { ...s, dummyName: e.target.value } : s))}
+                  <input aria-label="Dummy interface name" value={svc.dummyName} onChange={e => setServiceMappings(m => m.map((s, j) => j === i ? { ...s, dummyName: e.target.value } : s))}
                     placeholder="dummy-amf" className="nms-input font-mono text-xs flex-1" />
                   <span className="text-xs text-nms-text-dim shrink-0">/32</span>
                   <button onClick={() => setServiceMappings(m => m.filter((_, j) => j !== i))} className="text-red-400/60 hover:text-red-400 text-xs shrink-0 px-1">✕</button>

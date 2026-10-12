@@ -152,21 +152,21 @@ function QuickAdd3SectorModal({ defaultBeamwidthDeg, onClose, onConfirm }: {
         <div className="space-y-3">
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">Tower / site name</label>
-            <input className="nms-input w-full" value={name} onChange={e => setName(e.target.value)} placeholder="Tower" />
+            <input aria-label="Tower / site name" className="nms-input w-full" value={name} onChange={e => setName(e.target.value)} placeholder="Tower" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs text-nms-text-dim mb-1">Starting azimuth (°)</label>
-              <input type="number" step="any" className="nms-input w-full" value={startAzimuthDeg} onChange={e => setStartAzimuthDeg(e.target.value)} />
+              <input aria-label="Starting azimuth (°)" type="number" step="any" className="nms-input w-full" value={startAzimuthDeg} onChange={e => setStartAzimuthDeg(e.target.value)} />
             </div>
             <div>
               <label className="block text-xs text-nms-text-dim mb-1">Spacing between sectors (°)</label>
-              <input type="number" step="any" className="nms-input w-full" value={spacingDeg} onChange={e => setSpacingDeg(e.target.value)} />
+              <input aria-label="Spacing between sectors (°)" type="number" step="any" className="nms-input w-full" value={spacingDeg} onChange={e => setSpacingDeg(e.target.value)} />
             </div>
           </div>
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">Horizontal beamwidth per sector (°)</label>
-            <input type="number" step="any" className="nms-input w-full" value={beamwidthDeg} onChange={e => setBeamwidthDeg(e.target.value)} />
+            <input aria-label="Horizontal beamwidth per sector (°)" type="number" step="any" className="nms-input w-full" value={beamwidthDeg} onChange={e => setBeamwidthDeg(e.target.value)} />
           </div>
           <p className="text-[11px] text-nms-text-dim">
             {valid
@@ -1101,7 +1101,7 @@ export function CoverageMapTab() {
       <div className="nms-card space-y-3">
         <p className="text-sm font-semibold text-nms-text">Project</p>
         <div className="flex items-center gap-2 flex-wrap">
-          <select className="nms-input flex-1 min-w-[200px]" value={activeProjectId} onChange={e => { setActiveProjectId(e.target.value); setComparison(null); setLoadedSiteId(null); }}>
+          <select aria-label="Active project" className="nms-input flex-1 min-w-[200px]" value={activeProjectId} onChange={e => { setActiveProjectId(e.target.value); setComparison(null); setLoadedSiteId(null); }}>
             <option value="">— No project selected (unsaved) —</option>
             {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sites.length} site{p.sites.length === 1 ? '' : 's'})</option>)}
           </select>
@@ -1201,7 +1201,7 @@ export function CoverageMapTab() {
         {activeProject && activeProject.sites.length > 0 && (
           <div className="space-y-2 pt-2 border-t border-nms-border">
             <p className="text-sm font-semibold text-nms-text flex items-center gap-1.5"><Target className="w-3.5 h-3.5" /> Field-Survey Calibration</p>
-            <select className="nms-input w-full" value={surveySiteId} onChange={e => { setSurveySiteId(e.target.value); setCalibration(null); }}>
+            <select aria-label="Survey site" className="nms-input w-full" value={surveySiteId} onChange={e => { setSurveySiteId(e.target.value); setCalibration(null); }}>
               <option value="">— Select a site —</option>
               {activeProject.sites.map(s => <option key={s.id} value={s.id}>{s.name} ({(s.surveyPoints ?? []).length} survey point{(s.surveyPoints ?? []).length === 1 ? '' : 's'})</option>)}
             </select>
@@ -1218,7 +1218,7 @@ export function CoverageMapTab() {
                     {(surveySite.surveyPoints ?? []).map((p, i) => (
                       <div key={i} className="flex items-center justify-between bg-nms-bg border border-nms-border rounded px-2 py-1 text-[11px]">
                         <span className="text-nms-text-dim">({p.lat.toFixed(5)}, {p.lon.toFixed(5)}) — {p.measuredDbm} dBm</span>
-                        <button type="button" onClick={() => removeSurveyPoint(i)} className="text-red-400"><Trash2 className="w-3 h-3" /></button>
+                        <button aria-label="Delete survey point" type="button" onClick={() => removeSurveyPoint(i)} className="text-red-400"><Trash2 className="w-3 h-3" /></button>
                       </div>
                     ))}
                   </div>
@@ -1276,13 +1276,13 @@ export function CoverageMapTab() {
             <div className="flex items-center gap-1 p-0.5 bg-nms-surface-2 rounded-md border border-nms-border">
               <button
                 type="button" onClick={() => setActiveHeatmap('coverage')}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium ${activeHeatmap === 'coverage' ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text'}`}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium ${activeHeatmap === 'coverage' ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text'}`}
               >
                 Combined Coverage
               </button>
               <button
                 type="button" onClick={() => setActiveHeatmap('interference')}
-                className={`px-2 py-0.5 rounded text-[11px] font-medium ${activeHeatmap === 'interference' ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text'}`}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium ${activeHeatmap === 'interference' ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text'}`}
               >
                 SINR
               </button>

@@ -251,7 +251,7 @@ function UeUsageDetail({ row }: { row: UeUsageRow | null }) {
                 onClick={() => setPeriod(p)}
                 className={clsx(
                   'px-2.5 py-1 rounded text-[11px] font-medium transition-all capitalize',
-                  period === p ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text',
+                  period === p ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text',
                 )}
               >
                 {p}
@@ -492,7 +492,7 @@ export function TrafficHistoryPage() {
       <div className="nms-card flex flex-wrap items-end gap-4">
         <div>
           <label className="nms-label">Resolution</label>
-          <select
+          <select aria-label="Resolution"
             className="nms-input"
             value={resolution}
             onChange={e => { setResolution(e.target.value as Resolution); setResolutionOverridden(true); }}
@@ -505,7 +505,7 @@ export function TrafficHistoryPage() {
 
         <div className="flex-1 min-w-[200px]">
           <label className="nms-label">Subscriber</label>
-          <select className="nms-input" value={imsi} onChange={e => setImsi(e.target.value)}>
+          <select aria-label="Subscriber" className="nms-input" value={imsi} onChange={e => setImsi(e.target.value)}>
             <option value="">All (aggregate)</option>
             {subscribers.map(s => (
               <option key={s.imsi} value={s.imsi}>
@@ -517,7 +517,7 @@ export function TrafficHistoryPage() {
 
         <div>
           <label className="nms-label">Radio</label>
-          <select className="nms-input" value={radio} onChange={e => setRadio(e.target.value)}>
+          <select aria-label="Radio" className="nms-input" value={radio} onChange={e => setRadio(e.target.value)}>
             <option value="">All radios</option>
             {radios.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
@@ -525,7 +525,7 @@ export function TrafficHistoryPage() {
 
         <div>
           <label className="nms-label">RAN Type</label>
-          <select className="nms-input" value={ranType} onChange={e => setRanType(e.target.value as RanType)}>
+          <select aria-label="RAN Type" className="nms-input" value={ranType} onChange={e => setRanType(e.target.value as RanType)}>
             <option value="">All</option>
             <option value="2g">2G</option>
             <option value="4g">4G</option>
@@ -599,7 +599,7 @@ export function TrafficHistoryPage() {
                   onClick={() => setUeUsageLayout('cards')}
                   className={clsx(
                     'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all',
-                    ueUsageLayout === 'cards' ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text',
+                    ueUsageLayout === 'cards' ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text',
                   )}
                 >
                   <LayoutGrid className="w-3.5 h-3.5" /> Cards
@@ -608,7 +608,7 @@ export function TrafficHistoryPage() {
                   onClick={() => setUeUsageLayout('detail')}
                   className={clsx(
                     'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all',
-                    ueUsageLayout === 'detail' ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text',
+                    ueUsageLayout === 'detail' ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text',
                   )}
                 >
                   <PanelLeft className="w-3.5 h-3.5" /> Detail
@@ -631,7 +631,7 @@ export function TrafficHistoryPage() {
             <div className="space-y-5">
               <div className="max-w-sm">
                 <label className="nms-label">Select UE</label>
-                <select className="nms-input" value={detailImsi} onChange={e => setDetailImsi(e.target.value)}>
+                <select aria-label="Select UE" className="nms-input" value={detailImsi} onChange={e => setDetailImsi(e.target.value)}>
                   <option value="">Choose a subscriber…</option>
                   {ueUsage.map(row => (
                     <option key={row.imsi} value={row.imsi}>{row.nickname ? `${row.nickname} (${row.imsi})` : row.imsi}</option>

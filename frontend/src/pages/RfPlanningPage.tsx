@@ -260,7 +260,7 @@ export const RfPlanningPage: React.FC = () => {
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 activeTab === tab.id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >

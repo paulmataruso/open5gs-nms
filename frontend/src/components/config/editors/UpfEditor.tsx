@@ -53,6 +53,7 @@ function FieldRow({
       </label>
       <input
         type={type}
+        aria-label={label}
         className={`nms-input text-sm ${mono ? 'font-mono' : ''}`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -596,7 +597,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Pool {i + 1}</span>
                   {remoteForm.sessions.length > 1 && (
-                    <button
+                    <button aria-label="Remove session pool"
                       onClick={() => setRemote({ sessions: remoteForm.sessions.filter((_, idx) => idx !== i) })}
                       className="text-nms-text-dim hover:text-nms-red transition-colors"
                     >

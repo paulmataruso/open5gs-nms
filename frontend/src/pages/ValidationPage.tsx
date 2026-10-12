@@ -230,19 +230,19 @@ function SwuEmulatorCard() {
             <div className="flex items-end gap-3 flex-wrap">
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">IMSI (optional)</label>
-                <input value={imsi} onChange={e => setImsi(e.target.value)} placeholder="auto" className="nms-input text-sm w-40 font-mono" spellCheck={false} />
+                <input aria-label="IMSI (optional)" value={imsi} onChange={e => setImsi(e.target.value)} placeholder="auto" className="nms-input text-sm w-40 font-mono" spellCheck={false} />
               </div>
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">K (optional)</label>
-                <input value={k} onChange={e => setK(e.target.value)} placeholder="auto" className="nms-input text-sm w-40 font-mono" spellCheck={false} />
+                <input aria-label="K (optional)" value={k} onChange={e => setK(e.target.value)} placeholder="auto" className="nms-input text-sm w-40 font-mono" spellCheck={false} />
               </div>
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">OPc (optional)</label>
-                <input value={opc} onChange={e => setOpc(e.target.value)} placeholder="auto" className="nms-input text-sm w-40 font-mono" spellCheck={false} />
+                <input aria-label="OPc (optional)" value={opc} onChange={e => setOpc(e.target.value)} placeholder="auto" className="nms-input text-sm w-40 font-mono" spellCheck={false} />
               </div>
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">Static IP</label>
-                <input value={staticIp} onChange={e => setStaticIp(e.target.value)} placeholder="auto" className="nms-input text-sm w-32 font-mono" spellCheck={false} />
+                <input aria-label="Static IP" value={staticIp} onChange={e => setStaticIp(e.target.value)} placeholder="auto" className="nms-input text-sm w-32 font-mono" spellCheck={false} />
               </div>
               <button onClick={doRun} disabled={busy !== null || !status?.epdgIp} className="nms-btn-primary flex items-center gap-2 text-sm disabled:opacity-40">
                 {busy === 'run' ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />} Start Test Tunnel
@@ -472,7 +472,7 @@ function QciHwTestCard() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">Radio</label>
-                <select
+                <select aria-label="Radio"
                   value={selectedRadio}
                   onChange={(e) => setSelectedRadio(e.target.value)}
                   disabled={running}
@@ -484,7 +484,7 @@ function QciHwTestCard() {
               </div>
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">QCI to test</label>
-                <select
+                <select aria-label="QCI to test"
                   value={qci}
                   onChange={(e) => setQci(Number(e.target.value))}
                   disabled={running}
@@ -757,7 +757,7 @@ function TestNumberRow({ n, onStop, stopping, onRefresh }: {
           </>
         ) : (
           <>
-            <input
+            <input aria-label="Number to dial"
               type="text"
               value={targetInput}
               onChange={(e) => setTargetInput(e.target.value.replace(/[^\d]/g, ''))}
@@ -853,7 +853,7 @@ function ImsTestNumbersCard() {
         </p>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <input
+          <input aria-label="MSISDN"
             type="text"
             value={msisdnInput}
             onChange={(e) => setMsisdnInput(e.target.value.replace(/[^\d]/g, ''))}
@@ -1124,7 +1124,7 @@ function NumInput({ label, value, onChange, min = 1, max = 50, hint }: {
           onClick={() => onChange(Math.max(min, value - 1))}
           className="w-7 h-7 rounded border border-nms-border text-nms-text-dim hover:text-nms-text hover:border-nms-accent/50 transition-colors flex items-center justify-center text-sm"
         >−</button>
-        <input
+        <input aria-label={label}
           type="number" min={min} max={max} value={value}
           onChange={e => onChange(Math.max(min, Math.min(max, Number(e.target.value) || min)))}
           className="w-16 text-center bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text"
@@ -1441,14 +1441,14 @@ export function ValidationPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs text-nms-text-dim mb-1">SST</label>
-                    <input
+                    <input aria-label="SST"
                       type="number" value={sst} onChange={e => setSst(Number(e.target.value))} min={0} max={255}
                       className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text"
                     />
                   </div>
                   <div>
                     <label className="block text-xs text-nms-text-dim mb-1">SD (hex, optional)</label>
-                    <input
+                    <input aria-label="SD (hex, optional)"
                       type="text" value={sd} onChange={e => setSd(e.target.value)} placeholder="000000"
                       className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text font-mono"
                     />
@@ -1456,7 +1456,7 @@ export function ValidationPage() {
                 </div>
                 <div>
                   <label className="block text-xs text-nms-text-dim mb-1">DNN</label>
-                  <input
+                  <input aria-label="DNN"
                     type="text" value={dnn} onChange={e => setDnn(e.target.value)} placeholder="internet"
                     className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text"
                   />
@@ -1474,7 +1474,7 @@ export function ValidationPage() {
                 <div className="grid grid-cols-2 gap-3 border-t border-nms-border/30 pt-3">
                   <div>
                     <label className="block text-xs text-nms-text-dim mb-1">AMF IP <span className="text-nms-text-dim/50">(NGAP)</span></label>
-                    <input
+                    <input aria-label="AMF IP (NGAP)"
                       type="text" value={amfIp} onChange={e => setAmfIp(e.target.value)}
                       placeholder={inferredCfg?.amfIp ?? '10.0.0.1'}
                       className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text font-mono"
@@ -1482,7 +1482,7 @@ export function ValidationPage() {
                   </div>
                   <div>
                     <label className="block text-xs text-nms-text-dim mb-1">UPF IP <span className="text-nms-text-dim/50">(GTP-U)</span></label>
-                    <input
+                    <input aria-label="UPF IP (GTP-U)"
                       type="text" value={upfIp} onChange={e => setUpfIp(e.target.value)}
                       placeholder={inferredCfg?.upfIp ?? '10.0.0.2'}
                       className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text font-mono"
@@ -1537,7 +1537,7 @@ export function ValidationPage() {
               <div className="space-y-3 border-t border-nms-border/50 pt-3">
                 <div>
                   <label className="block text-xs text-nms-text-dim mb-1">APN</label>
-                  <input
+                  <input aria-label="APN"
                     type="text" value={apn} onChange={e => setApn(e.target.value)} placeholder="internet"
                     className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text"
                   />
@@ -1572,7 +1572,7 @@ export function ValidationPage() {
         <button
           onClick={handleStart}
           disabled={starting || totalUes === 0}
-          className="flex items-center gap-2 px-4 py-2 bg-nms-accent hover:bg-nms-accent/90 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold rounded transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-nms-accent hover:bg-nms-accent/90 disabled:opacity-50 disabled:cursor-not-allowed text-nms-accent-fg text-sm font-semibold rounded transition-colors"
         >
           {starting ? <Loader className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
           {starting ? 'Launching…' : 'Start Test'}
@@ -1686,7 +1686,7 @@ function SessionCard({ session, onStop }: { session: SessionSummary; onStop: () 
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setExpanded(v => !v)}
+          <button aria-label={expanded ? 'Collapse session details' : 'Expand session details'} onClick={() => setExpanded(v => !v)}
             className="p-1 text-nms-text-dim hover:text-nms-text transition-colors">
             {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
           </button>

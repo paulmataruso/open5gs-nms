@@ -14,10 +14,18 @@ export default {
         'nms-surface': 'rgb(var(--nms-surface-rgb) / <alpha-value>)',
         'nms-surface-2': 'rgb(var(--nms-surface-2-rgb) / <alpha-value>)',
         'nms-border': 'rgb(var(--nms-border-rgb) / <alpha-value>)',
+        // 3:1 against nms-bg, for interactive boundaries (WCAG 1.4.11).
+        // Decorative card/divider edges keep using nms-border.
+        'nms-border-strong': 'rgb(var(--nms-border-strong-rgb) / <alpha-value>)',
         'nms-accent': 'rgb(var(--nms-accent-rgb) / <alpha-value>)',
         'nms-accent-dim': 'rgb(var(--nms-accent-dim-rgb) / <alpha-value>)',
+        // Foreground for content sitting ON nms-accent. See index.css's header
+        // comment: white-on-accent fails WCAG AA in all five themes.
+        'nms-accent-fg': 'rgb(var(--nms-accent-fg-rgb) / <alpha-value>)',
         'nms-green': 'rgb(var(--nms-green-rgb) / <alpha-value>)',
         'nms-red': 'rgb(var(--nms-red-rgb) / <alpha-value>)',
+        // Solid red fill that carries white text at AA (see index.css header).
+        'nms-red-strong': 'rgb(var(--nms-red-strong-rgb) / <alpha-value>)',
         'nms-amber': 'rgb(var(--nms-amber-rgb) / <alpha-value>)',
         'nms-text': 'rgb(var(--nms-text-rgb) / <alpha-value>)',
         'nms-text-dim': 'rgb(var(--nms-text-dim-rgb) / <alpha-value>)',

@@ -77,7 +77,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
                 <label className="nms-label text-xs">
                   <LabelWithTooltip tooltip={PLMN_INPUT_TOOLTIPS.mcc}>MCC</LabelWithTooltip>
                 </label>
-                <input
+                <input aria-label="MCC"
                   type="text"
                   placeholder="999"
                   maxLength={3}
@@ -90,7 +90,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
                 <label className="nms-label text-xs">
                   <LabelWithTooltip tooltip={PLMN_INPUT_TOOLTIPS.mnc}>MNC</LabelWithTooltip>
                 </label>
-                <input
+                <input aria-label="MNC"
                   type="text"
                   placeholder="70"
                   maxLength={3}
@@ -107,7 +107,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
                   <label className="nms-label text-xs">
                     <LabelWithTooltip tooltip={PLMN_INPUT_TOOLTIPS.mme_gid}>MME GID</LabelWithTooltip>
                   </label>
-                  <input
+                  <input aria-label="MME GID"
                     type="number"
                     placeholder="2"
                     min={0}
@@ -121,7 +121,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
                   <label className="nms-label text-xs">
                     <LabelWithTooltip tooltip={PLMN_INPUT_TOOLTIPS.mme_code}>MME Code</LabelWithTooltip>
                   </label>
-                  <input
+                  <input aria-label="MME Code"
                     type="number"
                     placeholder="1"
                     min={0}
@@ -135,7 +135,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
                   <label className="nms-label text-xs">
                     <LabelWithTooltip tooltip={PLMN_INPUT_TOOLTIPS.tac}>TAC</LabelWithTooltip>
                   </label>
-                  <input
+                  <input aria-label="TAC"
                     type="number"
                     placeholder="1"
                     min={0}
@@ -154,7 +154,7 @@ export const PlmnInput: React.FC<PlmnInputProps> = ({
                   <label className="nms-label text-xs">
                     <LabelWithTooltip tooltip={PLMN_INPUT_TOOLTIPS.tac}>TAC</LabelWithTooltip>
                   </label>
-                  <input
+                  <input aria-label="TAC"
                     type="number"
                     placeholder="1"
                     min={0}

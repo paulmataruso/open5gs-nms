@@ -100,7 +100,7 @@ export const ProvisionConfirmModal: React.FC<Props> = ({ deviceId, serial, tasks
             <h2 className="text-base font-semibold text-nms-text">Review &amp; Confirm — GenieACS NBI Calls</h2>
             <p className="text-xs text-nms-text-dim mt-0.5 font-mono">{serial}</p>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
+          <button aria-label="Close" onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -142,7 +142,7 @@ export const ProvisionConfirmModal: React.FC<Props> = ({ deviceId, serial, tasks
 
               {/* JSON editor */}
               <div className="relative">
-                <textarea
+                <textarea aria-label="Provisioning JSON"
                   value={editors[i]}
                   onChange={e => handleEdit(i, e.target.value)}
                   disabled={running}

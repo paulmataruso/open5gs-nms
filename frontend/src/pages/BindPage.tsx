@@ -305,7 +305,7 @@ export function BindPage() {
             {([['files', 'Files'], ['migration', 'FQDN Migration']] as const).map(([key, label]) => (
               <button key={key} onClick={() => setActiveTab(key)}
                 className={clsx('px-4 py-1.5 rounded-md text-sm font-medium transition-colors',
-                  activeTab === key ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text')}>
+                  activeTab === key ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text')}>
                 {label}
               </button>
             ))}
@@ -383,7 +383,7 @@ export function BindPage() {
           <div className="flex items-end gap-3 flex-wrap">
             <div className="flex-1 min-w-[240px]">
               <label className="text-xs text-nms-text-dim block mb-1">Listen IP(s), comma-separated</label>
-              <input
+              <input aria-label="Listen IP(s), comma-separated"
                 value={listenOnInput}
                 onChange={e => setListenOnInput(e.target.value)}
                 placeholder="127.0.0.1, 10.0.1.178"
@@ -409,7 +409,7 @@ export function BindPage() {
           <div className="flex items-end gap-3 flex-wrap">
             <div className="flex-1 min-w-[240px]">
               <label className="text-xs text-nms-text-dim block mb-1">Forwarder IP(s), comma-separated</label>
-              <input
+              <input aria-label="Forwarder IP(s), comma-separated"
                 value={forwardersInput}
                 onChange={e => setForwardersInput(e.target.value)}
                 placeholder="8.8.8.8, 8.8.4.4"

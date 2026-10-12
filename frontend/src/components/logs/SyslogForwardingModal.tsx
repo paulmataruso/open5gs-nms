@@ -125,7 +125,7 @@ export const SyslogForwardingModal: React.FC<Props> = ({ onClose }) => {
             <RadioTower className="w-5 h-5 text-nms-accent" />
             Syslog Forwarding
           </h2>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -208,7 +208,7 @@ export const SyslogForwardingModal: React.FC<Props> = ({ onClose }) => {
                   <div className="grid grid-cols-3 gap-2">
                     <div className="col-span-2">
                       <label className="nms-label mb-1">Syslog Server Host / IP</label>
-                      <input
+                      <input aria-label="Syslog Server Host / IP"
                         type="text"
                         value={host}
                         onChange={e => setHost(e.target.value)}
@@ -218,7 +218,7 @@ export const SyslogForwardingModal: React.FC<Props> = ({ onClose }) => {
                     </div>
                     <div>
                       <label className="nms-label mb-1">Port</label>
-                      <input
+                      <input aria-label="Port"
                         type="number"
                         value={port}
                         onChange={e => setPort(parseInt(e.target.value) || 514)}

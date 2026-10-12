@@ -225,7 +225,7 @@ export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupNa
             <h2 className="text-xl font-bold font-display text-nms-text">Config Restore Preview</h2>
             <p className="text-xs text-nms-text-dim">Backup: {backupName}</p>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-6 h-6" />
           </button>
         </div>
@@ -236,7 +236,7 @@ export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupNa
             const file = files[service];
             const hasDiff = file?.hasDiff || false;
             return (
-              <button
+              <button aria-label={`Show ${service} differences`}
                 key={service}
                 onClick={() => setActiveTab(service)}
                 className={`px-3 py-2 text-xs font-medium rounded-t-md transition-colors whitespace-nowrap ${
@@ -269,7 +269,7 @@ export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupNa
               const isSelected = selectedServices.has(service);
               
               return (
-                <button
+                <button aria-label={`${isSelected ? 'Deselect' : 'Select'} ${service}`}
                   key={service}
                   onClick={() => toggleService(service)}
                   className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors ${

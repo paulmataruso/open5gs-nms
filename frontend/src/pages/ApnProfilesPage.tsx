@@ -84,7 +84,7 @@ function ProfileFormModal({
             <Network className="w-5 h-5 text-nms-accent" />
             {initial ? `Edit ${initial.dnn}` : 'New APN Profile'}
           </h2>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -93,7 +93,7 @@ function ProfileFormModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="nms-label mb-1">DNN / APN Name</label>
-              <input
+              <input aria-label="DNN / APN Name"
                 className="nms-input w-full font-mono disabled:opacity-60"
                 value={form.dnn}
                 onChange={e => setForm(f => ({ ...f, dnn: e.target.value }))}
@@ -103,7 +103,7 @@ function ProfileFormModal({
             </div>
             <div>
               <label className="nms-label mb-1">TUN Device</label>
-              <input
+              <input aria-label="TUN Device"
                 className="nms-input w-full font-mono"
                 value={form.dev}
                 onChange={e => setForm(f => ({ ...f, dev: e.target.value }))}
@@ -115,7 +115,7 @@ function ProfileFormModal({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="nms-label mb-1">IPv4 Subnet</label>
-              <input
+              <input aria-label="IPv4 Subnet"
                 className="nms-input w-full font-mono"
                 value={form.subnet}
                 onChange={e => setForm(f => ({ ...f, subnet: e.target.value }))}
@@ -124,7 +124,7 @@ function ProfileFormModal({
             </div>
             <div>
               <label className="nms-label mb-1">Gateway</label>
-              <input
+              <input aria-label="Gateway"
                 className="nms-input w-full font-mono"
                 value={form.gateway}
                 onChange={e => setForm(f => ({ ...f, gateway: e.target.value }))}
@@ -149,13 +149,13 @@ function ProfileFormModal({
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
-              <input
+              <input aria-label="IPv6 (optional) value"
                 className="nms-input w-full font-mono"
                 value={form.subnetV6 ?? ''}
                 onChange={e => setForm(f => ({ ...f, subnetV6: e.target.value || undefined }))}
                 placeholder="2001:db8:cafe::/64"
               />
-              <input
+              <input aria-label="IPv6 (optional) value 2"
                 className="nms-input w-full font-mono"
                 value={form.gatewayV6 ?? ''}
                 onChange={e => setForm(f => ({ ...f, gatewayV6: e.target.value || undefined }))}
@@ -169,7 +169,7 @@ function ProfileFormModal({
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="nms-label mb-1">5QI/QCI</label>
-                <input
+                <input aria-label="5QI/QCI"
                   className="nms-input w-full font-mono" type="number" min={1} max={255}
                   value={form.qos.index}
                   onChange={e => setForm(f => ({ ...f, qos: { ...f.qos, index: parseInt(e.target.value) || 9 } }))}
@@ -177,7 +177,7 @@ function ProfileFormModal({
               </div>
               <div>
                 <label className="nms-label mb-1">ARP Priority</label>
-                <input
+                <input aria-label="ARP Priority"
                   className="nms-input w-full font-mono" type="number" min={1} max={15}
                   value={form.qos.arp.priority_level}
                   onChange={e => setForm(f => ({ ...f, qos: { ...f.qos, arp: { ...f.qos.arp, priority_level: parseInt(e.target.value) || 8 } } }))}
@@ -185,7 +185,7 @@ function ProfileFormModal({
               </div>
               <div>
                 <label className="nms-label mb-1">Pre-emption</label>
-                <select
+                <select aria-label="Pre-emption"
                   className="nms-input w-full"
                   value={form.qos.arp.pre_emption_capability}
                   onChange={e => setForm(f => ({ ...f, qos: { ...f.qos, arp: { ...f.qos.arp, pre_emption_capability: parseInt(e.target.value) } } }))}
@@ -209,7 +209,7 @@ function ProfileFormModal({
             <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
                 <label className="nms-label mb-1">Static Start</label>
-                <input
+                <input aria-label="Static Start"
                   className="nms-input w-full font-mono"
                   value={form.staticRangeStart ?? ''}
                   onChange={e => setForm(f => ({ ...f, staticRangeStart: e.target.value || null }))}
@@ -218,7 +218,7 @@ function ProfileFormModal({
               </div>
               <div>
                 <label className="nms-label mb-1">Static End</label>
-                <input
+                <input aria-label="Static End"
                   className="nms-input w-full font-mono"
                   value={form.staticRangeEnd ?? ''}
                   onChange={e => setForm(f => ({ ...f, staticRangeEnd: e.target.value || null }))}
@@ -229,7 +229,7 @@ function ProfileFormModal({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="nms-label mb-1">Dynamic Start</label>
-                <input
+                <input aria-label="Dynamic Start"
                   className="nms-input w-full font-mono"
                   value={form.dynamicRangeStart ?? ''}
                   onChange={e => setForm(f => ({ ...f, dynamicRangeStart: e.target.value || null }))}
@@ -238,7 +238,7 @@ function ProfileFormModal({
               </div>
               <div>
                 <label className="nms-label mb-1">Dynamic End</label>
-                <input
+                <input aria-label="Dynamic End"
                   className="nms-input w-full font-mono"
                   value={form.dynamicRangeEnd ?? ''}
                   onChange={e => setForm(f => ({ ...f, dynamicRangeEnd: e.target.value || null }))}
@@ -314,7 +314,7 @@ function Ipv6PoolCard() {
           A core-wide parent prefix (e.g. a /48 or /56) — new profiles can auto-allocate the next unused /64 from it instead of a hand-typed subnet.
         </p>
       </div>
-      <input
+      <input aria-label="Core-wide IPv6 parent prefix"
         className="nms-input font-mono text-xs w-56"
         value={input}
         onChange={e => setInput(e.target.value)}

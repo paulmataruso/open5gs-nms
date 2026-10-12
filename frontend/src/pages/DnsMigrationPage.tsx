@@ -422,7 +422,7 @@ export function DnsMigrationPage(): JSX.Element {
               Restores NF yaml, freeDiameter confs, and BIND config from a migration backup, then restarts every core service.
             </p>
             <div className="flex items-center gap-3">
-              <select
+              <select aria-label="Migration backup"
                 className="nms-input font-mono text-xs"
                 value={selectedBackupId}
                 onChange={e => setSelectedBackupId(e.target.value)}

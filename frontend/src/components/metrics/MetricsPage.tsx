@@ -337,7 +337,7 @@ export function MetricsPage(): JSX.Element {
             className={clsx(
               'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
               editMode === 'table'
-                ? 'bg-nms-accent text-white shadow-sm'
+                ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                 : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
             )}
           >
@@ -349,7 +349,7 @@ export function MetricsPage(): JSX.Element {
             className={clsx(
               'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
               editMode === 'scrape'
-                ? 'bg-nms-accent text-white shadow-sm'
+                ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                 : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
             )}
           >
@@ -438,7 +438,7 @@ export function MetricsPage(): JSX.Element {
                       </td>
                       <td className="px-5 py-3.5 text-nms-text-dim text-xs">{fullName}</td>
                       <td className="px-5 py-3.5">
-                        <input
+                        <input aria-label="Metrics address"
                           type="text"
                           className={clsx('nms-input font-mono text-xs w-full', addrDirty && 'border-nms-amber/60 focus:border-nms-amber')}
                           value={edit.address}
@@ -447,7 +447,7 @@ export function MetricsPage(): JSX.Element {
                         />
                       </td>
                       <td className="px-5 py-3.5">
-                        <input
+                        <input aria-label="Metrics port"
                           type="number"
                           className={clsx('nms-input font-mono text-xs w-full', portDirty && 'border-nms-amber/60 focus:border-nms-amber')}
                           value={edit.port}
@@ -497,7 +497,7 @@ export function MetricsPage(): JSX.Element {
             Each target maps directly to a network function's metrics listen address and port.
             The rest of the structure is fixed.
           </p>
-          <textarea
+          <textarea aria-label="Prometheus scrape config"
             className={clsx(
               'w-full h-[480px] bg-nms-bg border rounded p-4 text-xs font-mono text-nms-text',
               'focus:outline-none focus:border-nms-accent/60 transition-colors resize-none leading-relaxed',

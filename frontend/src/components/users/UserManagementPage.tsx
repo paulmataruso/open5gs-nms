@@ -39,16 +39,20 @@ function PasswordStrengthMeter({ password }: { password: string }) {
   );
 }
 
-function PasswordInput({ value, onChange, placeholder, disabled }: {
+function PasswordInput({ value, onChange, placeholder, disabled, ariaLabel }: {
   value: string; onChange: (v: string) => void; placeholder?: string; disabled?: boolean;
+  // The visible <label> sits outside this component, so it cannot reach the
+  // inner input -- the caller passes the same text through instead.
+  ariaLabel?: string;
 }) {
   const [show, setShow] = useState(false);
   return (
     <div className="relative">
       <input type={show ? 'text' : 'password'} className="nms-input font-mono text-sm pr-9"
+        aria-label={ariaLabel}
         value={value} onChange={e => onChange(e.target.value)}
         placeholder={placeholder ?? '••••••••'} disabled={disabled} />
-      <button type="button" tabIndex={-1} onClick={() => setShow(s => !s)}
+      <button aria-label={show ? 'Hide password' : 'Show password'} type="button" tabIndex={-1} onClick={() => setShow(s => !s)}
         className="absolute right-2 top-1/2 -translate-y-1/2 text-nms-text-dim hover:text-nms-text transition-colors">
         {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
       </button>
@@ -95,17 +99,17 @@ function ChangePasswordModal({ user, onClose, onSaved }: { user: AuthUser; onClo
             <h2 className="text-base font-semibold font-display text-nms-text">Change Password</h2>
             <p className="text-xs text-nms-text-dim mt-0.5">User: <span className="font-mono text-nms-accent">{user.username}</span></p>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
         </div>
         <div className="space-y-4">
           <div>
             <label className="nms-label">New Password</label>
-            <PasswordInput value={password} onChange={setPassword} />
+            <PasswordInput ariaLabel="New Password" value={password} onChange={setPassword} />
             <PasswordStrengthMeter password={password} />
           </div>
           <div>
             <label className="nms-label">Confirm Password</label>
-            <PasswordInput value={confirm} onChange={setConfirm} placeholder="Repeat password" />
+            <PasswordInput ariaLabel="Confirm Password" value={confirm} onChange={setConfirm} placeholder="Repeat password" />
             {mismatch && <p className="text-xs text-nms-red mt-1">Passwords do not match</p>}
           </div>
         </div>
@@ -299,19 +303,19 @@ export function UserManagementPage(): JSX.Element {
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 items-start">
           <div>
             <label className="nms-label">Username</label>
-            <input type="text" className="nms-input font-mono text-sm"
+            <input aria-label="Username" type="text" className="nms-input font-mono text-sm"
               value={newUsername} onChange={e => setNewUsername(e.target.value.toLowerCase())}
               placeholder="username" disabled={adding}
               onKeyDown={e => e.key === 'Enter' && canAdd && handleAddUser()} />
           </div>
           <div>
             <label className="nms-label">Password</label>
-            <PasswordInput value={newPassword} onChange={setNewPassword} disabled={adding} />
+            <PasswordInput ariaLabel="Password" value={newPassword} onChange={setNewPassword} disabled={adding} />
             <PasswordStrengthMeter password={newPassword} />
           </div>
           <div>
             <label className="nms-label">Role</label>
-            <select className="nms-input" value={newRole} onChange={e => setNewRole(e.target.value as 'admin' | 'viewer')} disabled={adding}>
+            <select aria-label="Role" className="nms-input" value={newRole} onChange={e => setNewRole(e.target.value as 'admin' | 'viewer')} disabled={adding}>
               <option value="admin">Admin — full access</option>
               <option value="viewer">Viewer — read only</option>
             </select>

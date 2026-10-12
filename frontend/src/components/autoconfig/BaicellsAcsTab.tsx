@@ -30,7 +30,7 @@ function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const copyToClipboard = useCopyToClipboard();
   return (
-    <button
+    <button aria-label={copied ? 'Copied to clipboard' : 'Copy to clipboard'}
       onClick={async () => {
         const ok = await copyToClipboard(text);
         if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
@@ -479,7 +479,7 @@ const MmePoolTable: React.FC<{ rows: MmePoolEntry[]; onChange: (rows: MmePoolEnt
                   <tr key={r.index} className="border-t border-nms-border">
                     <td className="px-2 py-1 text-nms-text-dim font-mono">{r.index}</td>
                     <td className="px-1 py-1">
-                      <input
+                      <input aria-label="PLMN"
                         className={clsx('nms-input font-mono text-xs px-1.5 py-1 w-24', isDup && 'border-red-500/60 text-red-400')}
                         value={r.plmn}
                         placeholder="00101"
@@ -487,7 +487,7 @@ const MmePoolTable: React.FC<{ rows: MmePoolEntry[]; onChange: (rows: MmePoolEnt
                       />
                     </td>
                     <td className="px-1 py-1">
-                      <input
+                      <input aria-label="MME IP"
                         className={clsx('nms-input font-mono text-xs px-1.5 py-1 w-32', isDup && 'border-red-500/60 text-red-400')}
                         value={r.mmeIp}
                         placeholder="10.0.1.175"
@@ -893,15 +893,15 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
 
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
               <div><label className="nms-label">MCC</label>
-                <input className="nms-input font-mono" placeholder="999" value={form.mcc} onChange={set('mcc')} maxLength={3} /></div>
+                <input aria-label="MCC" className="nms-input font-mono" placeholder="999" value={form.mcc} onChange={set('mcc')} maxLength={3} /></div>
               <div><label className="nms-label">MNC</label>
-                <input className="nms-input font-mono" placeholder="70" value={form.mnc} onChange={set('mnc')} maxLength={3} /></div>
+                <input aria-label="MNC" className="nms-input font-mono" placeholder="70" value={form.mnc} onChange={set('mnc')} maxLength={3} /></div>
               <div><label className="nms-label">TAC</label>
-                <input className="nms-input font-mono" placeholder="1" type="number" min={1} value={form.tac} onChange={set('tac')} /></div>
+                <input aria-label="TAC" className="nms-input font-mono" placeholder="1" type="number" min={1} value={form.tac} onChange={set('tac')} /></div>
               <div><label className="nms-label">MME IP</label>
-                <input className="nms-input font-mono" placeholder="10.0.1.2" value={form.mmeIp} onChange={set('mmeIp')} /></div>
+                <input aria-label="MME IP" className="nms-input font-mono" placeholder="10.0.1.2" value={form.mmeIp} onChange={set('mmeIp')} /></div>
               <div><label className="nms-label">Band</label>
-                <select className="nms-input font-mono" value={form.band} onChange={e => {
+                <select aria-label="Band" className="nms-input font-mono" value={form.band} onChange={e => {
                   set('band')(e);
                   // Don't auto-apply preset on manual band change alone
                 }}>
@@ -920,7 +920,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                 </button>
               </div>
               <div><label className="nms-label">Bandwidth</label>
-                <select className="nms-input font-mono" value={form.bandwidthMhz} onChange={set('bandwidthMhz')}>
+                <select aria-label="Bandwidth" className="nms-input font-mono" value={form.bandwidthMhz} onChange={set('bandwidthMhz')}>
                   <option value="">Select…</option>
                   <option value="5">5 MHz</option>
                   <option value="10">10 MHz</option>
@@ -928,7 +928,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                   <option value="20">20 MHz</option>
                 </select></div>
               <div><label className="nms-label">EARFCN (DL = UL)</label>
-                <input className="nms-input font-mono" placeholder="56060" type="number" min={0} value={form.earfcn} onChange={set('earfcn')}
+                <input aria-label="EARFCN (DL = UL)" className="nms-input font-mono" placeholder="56060" type="number" min={0} value={form.earfcn} onChange={set('earfcn')}
                   disabled={form.sasEnableMode === '2'}
                   title={form.sasEnableMode === '2' ? 'EARFCN is managed by SAS in mode 2 — set via Preferred Frequency below' : undefined}
                 />
@@ -940,11 +940,11 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                 )}
               </div>
               <div><label className="nms-label">Cell ID</label>
-                <input className="nms-input font-mono" placeholder="256002" type="number" min={0} value={form.cellId} onChange={set('cellId')} /></div>
+                <input aria-label="Cell ID" className="nms-input font-mono" placeholder="256002" type="number" min={0} value={form.cellId} onChange={set('cellId')} /></div>
               <div><label className="nms-label">PCI</label>
-                <input className="nms-input font-mono" placeholder="462" type="number" min={0} max={503} value={form.pci} onChange={set('pci')} /></div>
+                <input aria-label="PCI" className="nms-input font-mono" placeholder="462" type="number" min={0} max={503} value={form.pci} onChange={set('pci')} /></div>
               <div><label className="nms-label">TX Power (dBm)</label>
-                <select className="nms-input font-mono" value={form.txPower} onChange={set('txPower')}>
+                <select aria-label="TX Power (dBm)" className="nms-input font-mono" value={form.txPower} onChange={set('txPower')}>
                   <option value="">Select…</option>
                   {[17,18,19,20,21,22,23,24].map(v => (
                     <option key={v} value={String(v)}>{v} dBm</option>
@@ -968,7 +968,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
               {/* Enable Mode */}
               <div className="mb-4">
                 <label className="nms-label">SAS Mode (enableMode)</label>
-                <select className="nms-input max-w-xs" value={form.sasEnableMode} onChange={set('sasEnableMode')}>
+                <select aria-label="SAS Mode (enableMode)" className="nms-input max-w-xs" value={form.sasEnableMode} onChange={set('sasEnableMode')}>
                   <option value="0">0 — Disabled</option>
                   <option value="1">1 — Baicells OMC as Domain Proxy</option>
                   <option value="2">2 — Direct SAS Protocol (recommended)</option>
@@ -985,30 +985,30 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                       <div>
                         <label className="nms-label">SAS Server URL</label>
-                        <input className="nms-input font-mono text-xs" value={form.sasServerUrl} onChange={set('sasServerUrl')} />
+                        <input aria-label="SAS Server URL" className="nms-input font-mono text-xs" value={form.sasServerUrl} onChange={set('sasServerUrl')} />
                       </div>
                       <div>
                         <label className="nms-label">User ID</label>
-                        <input className="nms-input font-mono" placeholder="256000" value={form.sasUserId} onChange={set('sasUserId')} />
+                        <input aria-label="User ID" className="nms-input font-mono" placeholder="256000" value={form.sasUserId} onChange={set('sasUserId')} />
                       </div>
                       <div>
                         <label className="nms-label">FCC ID</label>
-                        <input className="nms-input font-mono" placeholder="2AG32PBS3101S" value={form.sasFccId} onChange={set('sasFccId')} />
+                        <input aria-label="FCC ID" className="nms-input font-mono" placeholder="2AG32PBS3101S" value={form.sasFccId} onChange={set('sasFccId')} />
                       </div>
                       <div>
                         <label className="nms-label">Call Sign <span className="text-nms-text-dim">(optional)</span></label>
-                        <input className="nms-input font-mono" placeholder="256000" value={form.sasCallSign} onChange={set('sasCallSign')} />
+                        <input aria-label="Call Sign (optional)" className="nms-input font-mono" placeholder="256000" value={form.sasCallSign} onChange={set('sasCallSign')} />
                       </div>
                       <div>
                         <label className="nms-label">Group Type</label>
-                        <select className="nms-input font-mono" value={form.sasGroupType} onChange={set('sasGroupType')}>
+                        <select aria-label="Group Type" className="nms-input font-mono" value={form.sasGroupType} onChange={set('sasGroupType')}>
                           <option value="">— None —</option>
                           <option value="INTERFERENCE_COORDINATION">INTERFERENCE_COORDINATION</option>
                         </select>
                       </div>
                       <div>
                         <label className="nms-label">Group ID</label>
-                        <input className="nms-input font-mono" placeholder="baicells" value={form.sasGroupId} onChange={set('sasGroupId')} />
+                        <input aria-label="Group ID" className="nms-input font-mono" placeholder="baicells" value={form.sasGroupId} onChange={set('sasGroupId')} />
                       </div>
                     </div>
                   </div>
@@ -1019,20 +1019,20 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
                         <label className="nms-label">Registration Type</label>
-                        <select className="nms-input" value={form.sasRegistrationType} onChange={set('sasRegistrationType')}>
+                        <select aria-label="Registration Type" className="nms-input" value={form.sasRegistrationType} onChange={set('sasRegistrationType')}>
                           <option value="Single-step">Single-step</option>
                           <option value="Multi-step">Multi-step (CPI required)</option>
                         </select>
                       </div>
                       <div>
                         <label className="nms-label">EIRP Capability (dBm/10MHz)</label>
-                        <input className="nms-input font-mono" placeholder="23" type="number" min={-127} max={47}
+                        <input aria-label="EIRP Capability (dBm/10MHz)" className="nms-input font-mono" placeholder="23" type="number" min={-127} max={47}
                           value={form.sasEirpCapability} onChange={set('sasEirpCapability')} />
                         <p className="text-xs text-nms-text-dim mt-1">Reported to SAS at registration</p>
                       </div>
                       <div>
                         <label className="nms-label">Max EIRP (dBm/MHz)</label>
-                        <input className="nms-input font-mono" placeholder="20" type="number" min={0} max={37}
+                        <input aria-label="Max EIRP (dBm/MHz)" className="nms-input font-mono" placeholder="20" type="number" min={0} max={37}
                           value={form.sasMaxEIRP} onChange={set('sasMaxEIRP')} />
                         <p className="text-xs text-nms-text-dim mt-1">Cat A: 0-20, Cat B: 0-37</p>
                       </div>
@@ -1045,19 +1045,19 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                       <div>
                         <label className="nms-label">Req Low Frequency (MHz)</label>
-                        <input className="nms-input font-mono" placeholder="3550" type="number" min={3550} max={3700}
+                        <input aria-label="Req Low Frequency (MHz)" className="nms-input font-mono" placeholder="3550" type="number" min={3550} max={3700}
                           value={form.sasReqLowFrequency} onChange={set('sasReqLowFrequency')} />
                         <p className="text-xs text-nms-text-dim mt-1">Lower bound for spectrumInquiry</p>
                       </div>
                       <div>
                         <label className="nms-label">Req High Frequency (MHz)</label>
-                        <input className="nms-input font-mono" placeholder="3700" type="number" min={3550} max={3700}
+                        <input aria-label="Req High Frequency (MHz)" className="nms-input font-mono" placeholder="3700" type="number" min={3550} max={3700}
                           value={form.sasReqHighFrequency} onChange={set('sasReqHighFrequency')} />
                         <p className="text-xs text-nms-text-dim mt-1">Upper bound for spectrumInquiry</p>
                       </div>
                       <div>
                         <label className="nms-label">Preferred Frequency (Primary:Secondary)</label>
-                        <select className="nms-input font-mono" value={form.sasPreferredFrequency} onChange={handlePreferredFrequencyChange}>
+                        <select aria-label="Preferred Frequency (Primary:Secondary)" className="nms-input font-mono" value={form.sasPreferredFrequency} onChange={handlePreferredFrequencyChange}>
                           <option value="">— None —</option>
                           {earfcnOptions.map(({ earfcn, freqMhz }) => (
                             <option key={earfcn} value={`${freqMhz}:${freqMhz}`}>EARFCN {earfcn} — {freqMhz} MHz</option>
@@ -1067,7 +1067,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                       </div>
                       <div>
                         <label className="nms-label">Preferred Bandwidth</label>
-                        <select className="nms-input" value={form.sasPreferredBandwidth} onChange={set('sasPreferredBandwidth')}>
+                        <select aria-label="Preferred Bandwidth" className="nms-input" value={form.sasPreferredBandwidth} onChange={set('sasPreferredBandwidth')}>
                           <option value="n25">n25 — 5 MHz</option>
                           <option value="n50">n50 — 10 MHz</option>
                           <option value="n75">n75 — 15 MHz</option>
@@ -1076,12 +1076,12 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                       </div>
                       <div>
                         <label className="nms-label">Preferred Power (dBm)</label>
-                        <input className="nms-input font-mono" placeholder="20" type="number" min={17} max={43}
+                        <input aria-label="Preferred Power (dBm)" className="nms-input font-mono" placeholder="20" type="number" min={17} max={43}
                           value={form.sasPreferredPower} onChange={set('sasPreferredPower')} />
                       </div>
                       <div>
                         <label className="nms-label">Frequency Selection Logic</label>
-                        <select className="nms-input text-xs" value={form.sasFrequencySelectionLogic} onChange={set('sasFrequencySelectionLogic')}>
+                        <select aria-label="Frequency Selection Logic" className="nms-input text-xs" value={form.sasFrequencySelectionLogic} onChange={set('sasFrequencySelectionLogic')}>
                           <option value="Frequency,Bandwidth,Power">Freq → BW → Power</option>
                           <option value="Frequency,Power,Bandwidth">Freq → Power → BW</option>
                           <option value="Bandwidth,Frequency,Power">BW → Freq → Power</option>
@@ -1164,7 +1164,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                   <label className="text-[11px] text-nms-text-dim block mb-1">
                     MME Pool 1 List {mmePoolConfig.pool1Status && <span className="text-nms-text-dim">({mmePoolConfig.pool1Status === '1' ? 'Connected' : 'Not connected'})</span>}
                   </label>
-                  <input
+                  <input aria-label="MME Pool 1 List ( )"
                     className="nms-input font-mono text-xs px-1.5 py-1 w-full"
                     value={mmePoolConfig.pool1List}
                     placeholder="10.0.1.175"
@@ -1175,7 +1175,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
                   <label className="text-[11px] text-nms-text-dim block mb-1">
                     MME Pool 2 List {mmePoolConfig.pool2Status && <span className="text-nms-text-dim">({mmePoolConfig.pool2Status === '1' ? 'Connected' : 'Not connected'})</span>}
                   </label>
-                  <input
+                  <input aria-label="MME Pool 2 List ( )"
                     className="nms-input font-mono text-xs px-1.5 py-1 w-full"
                     value={mmePoolConfig.pool2List}
                     placeholder="(unset)"
@@ -1185,7 +1185,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
               </div>
               <div>
                 <label className="text-[11px] text-nms-text-dim block mb-1">IPsec Tunnel Map</label>
-                <input
+                <input aria-label="IPsec Tunnel Map"
                   className="nms-input font-mono text-xs px-1.5 py-1 w-full"
                   value={mmePoolConfig.ipsecTunnelMap}
                   placeholder="tunnel1:LTE_POOL_MME_LIST1"

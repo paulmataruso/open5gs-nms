@@ -77,22 +77,22 @@ function TargetFormModal({ initial, onClose, onSaved }: {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
           <div className="md:col-span-2">
             <label className="nms-label">Name</label>
-            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            <input aria-label="Name" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
               placeholder="Nokia AirScale — 10.0.2.214" className="nms-input text-xs mt-1" />
           </div>
           <div>
             <label className="nms-label flex items-center gap-1.5"><Network className="w-3 h-3" /> Host</label>
-            <input value={form.host} onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
+            <input aria-label="Host" value={form.host} onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
               placeholder="10.0.2.214" className="nms-input font-mono text-xs mt-1" />
           </div>
           <div>
             <label className="nms-label">Port</label>
-            <input type="number" value={form.port} onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value, 10) || 862 }))}
+            <input aria-label="Port" type="number" value={form.port} onChange={e => setForm(f => ({ ...f, port: parseInt(e.target.value, 10) || 862 }))}
               placeholder="862" className="nms-input font-mono text-xs mt-1" />
           </div>
           <div>
             <label className="nms-label">Protocol</label>
-            <select value={form.protocol} onChange={e => setForm(f => ({ ...f, protocol: e.target.value as TwampProtocol }))}
+            <select aria-label="Protocol" value={form.protocol} onChange={e => setForm(f => ({ ...f, protocol: e.target.value as TwampProtocol }))}
               className="nms-input text-xs mt-1">
               <option value="full">Full TWAMP-Control (TCP + UDP)</option>
               <option value="light">TWAMP-Light (UDP only, no handshake)</option>
@@ -104,7 +104,7 @@ function TargetFormModal({ initial, onClose, onSaved }: {
           {form.protocol === 'full' && (
             <div>
               <label className="nms-label">Mode</label>
-              <select value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value as TwampMode }))}
+              <select aria-label="Mode" value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value as TwampMode }))}
                 className="nms-input text-xs mt-1">
                 <option value="unauthenticated">Unauthenticated</option>
                 <option value="authenticated">Authenticated</option>
@@ -116,30 +116,30 @@ function TargetFormModal({ initial, onClose, onSaved }: {
             <>
               <div>
                 <label className="nms-label">Key ID</label>
-                <input value={form.keyId} onChange={e => setForm(f => ({ ...f, keyId: e.target.value }))}
+                <input aria-label="Key ID" value={form.keyId} onChange={e => setForm(f => ({ ...f, keyId: e.target.value }))}
                   className="nms-input font-mono text-xs mt-1" />
               </div>
               <div>
                 <label className="nms-label">Shared secret</label>
-                <input type="password" value={form.sharedSecret} onChange={e => setForm(f => ({ ...f, sharedSecret: e.target.value }))}
+                <input aria-label="Shared secret" type="password" value={form.sharedSecret} onChange={e => setForm(f => ({ ...f, sharedSecret: e.target.value }))}
                   className="nms-input font-mono text-xs mt-1" />
               </div>
             </>
           )}
           <div>
             <label className="nms-label">Packets per test</label>
-            <input type="number" value={form.packetCount} onChange={e => setForm(f => ({ ...f, packetCount: parseInt(e.target.value, 10) || 10 }))}
+            <input aria-label="Packets per test" type="number" value={form.packetCount} onChange={e => setForm(f => ({ ...f, packetCount: parseInt(e.target.value, 10) || 10 }))}
               className="nms-input font-mono text-xs mt-1" />
           </div>
           <div>
             <label className="nms-label flex items-center gap-1.5"><Network className="w-3 h-3" /> Bind IP <span className="text-nms-text-dim font-normal">(optional)</span></label>
-            <input value={form.bindIp} onChange={e => setForm(f => ({ ...f, bindIp: e.target.value }))}
+            <input aria-label="Bind IP (optional)" value={form.bindIp} onChange={e => setForm(f => ({ ...f, bindIp: e.target.value }))}
               placeholder="leave blank = OS picks" className="nms-input font-mono text-xs mt-1" />
             <p className="text-xs text-nms-text-dim mt-1">This host is multi-homed — set this if the default route doesn't reach the target's subnet</p>
           </div>
           <div>
             <label className="nms-label flex items-center gap-1.5"><Clock className="w-3 h-3" /> Poll interval (s)</label>
-            <input type="number" value={form.pollIntervalSeconds} onChange={e => setForm(f => ({ ...f, pollIntervalSeconds: parseInt(e.target.value, 10) || 60 }))}
+            <input aria-label="Poll interval (s)" type="number" value={form.pollIntervalSeconds} onChange={e => setForm(f => ({ ...f, pollIntervalSeconds: parseInt(e.target.value, 10) || 60 }))}
               className="nms-input font-mono text-xs mt-1" />
             <p className="text-xs text-nms-text-dim mt-1">How often the background monitor re-tests this target</p>
           </div>
@@ -400,13 +400,13 @@ function ServerSection({ onInstall, installActing, installStreamLog }: {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
           <div>
             <label className="nms-label flex items-center gap-1.5"><Network className="w-3 h-3" /> Listen IP</label>
-            <input value={listenIp} onChange={e => setListenIp(e.target.value)} placeholder="0.0.0.0"
+            <input aria-label="Listen IP" value={listenIp} onChange={e => setListenIp(e.target.value)} placeholder="0.0.0.0"
               className="nms-input font-mono text-xs mt-1" />
             <p className="text-xs text-nms-text-dim mt-1">This host is multi-homed — use a specific IP if you only want to accept tests on one interface (e.g. the RAN-facing one)</p>
           </div>
           <div>
             <label className="nms-label">Listen port</label>
-            <input type="number" value={listenPort} onChange={e => setListenPort(parseInt(e.target.value, 10) || 862)}
+            <input aria-label="Listen port" type="number" value={listenPort} onChange={e => setListenPort(parseInt(e.target.value, 10) || 862)}
               className="nms-input font-mono text-xs mt-1" />
           </div>
           <div className="md:col-span-2">
@@ -445,18 +445,18 @@ function ServerSection({ onInstall, installActing, installStreamLog }: {
             <>
               <div>
                 <label className="nms-label">Key ID</label>
-                <input value={secretKeyId} onChange={e => setSecretKeyId(e.target.value)} className="nms-input font-mono text-xs mt-1" />
+                <input aria-label="Key ID" value={secretKeyId} onChange={e => setSecretKeyId(e.target.value)} className="nms-input font-mono text-xs mt-1" />
               </div>
               <div>
                 <label className="nms-label">Shared secret {status?.currentConfig?.hasSecret && <span className="text-nms-text-dim font-normal">(already set — leave blank to keep it)</span>}</label>
-                <input type="password" value={secretValue} onChange={e => setSecretValue(e.target.value)} className="nms-input font-mono text-xs mt-1" />
+                <input aria-label="Shared secret (already set — leave blank to keep it)" type="password" value={secretValue} onChange={e => setSecretValue(e.target.value)} className="nms-input font-mono text-xs mt-1" />
               </div>
             </>
           )}
           {enableFull && (
           <div className="md:col-span-2">
             <label className="nms-label">Allowed test-receiver CIDRs (full protocol only) <span className="text-nms-text-dim font-normal">(optional)</span></label>
-            <input value={allowCidrs} onChange={e => setAllowCidrs(e.target.value)} placeholder="10.0.2.0/24, 172.16.0.0/16"
+            <input aria-label="Allowed test-receiver CIDRs (full protocol only) (optional)" value={allowCidrs} onChange={e => setAllowCidrs(e.target.value)} placeholder="10.0.2.0/24, 172.16.0.0/16"
               className="nms-input font-mono text-xs mt-1" />
             <p className="text-xs text-nms-text-dim mt-1">Restricts which source networks may run unauthenticated tests against this reflector — leave blank for the library's own default</p>
           </div>
@@ -865,7 +865,7 @@ function HistorySection() {
         <div className="flex items-end gap-2">
           <div>
             <label className="nms-label">History Retention (days, 1–365)</label>
-            <input
+            <input aria-label="History Retention (days, 1–365)"
               type="number" min={1} max={365}
               className="nms-input w-32 font-mono text-sm"
               value={retentionInput}
@@ -1256,22 +1256,22 @@ export function TwampPage({ onNavigate }: { onNavigate?: (tab: string) => void }
           <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
             <button onClick={() => setPageTab('client')}
               className={clsx('flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                pageTab === 'client' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
+                pageTab === 'client' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
               <Gauge className="w-4 h-4" /> Client (Targets)
             </button>
             <button onClick={() => setPageTab('server')}
               className={clsx('flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                pageTab === 'server' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
+                pageTab === 'server' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
               <Server className="w-4 h-4" /> Reflector (Server)
             </button>
             <button onClick={() => setPageTab('info')}
               className={clsx('flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                pageTab === 'info' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
+                pageTab === 'info' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
               <ListTree className="w-4 h-4" /> Info &amp; Stats
             </button>
             <button onClick={() => setPageTab('history')}
               className={clsx('flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                pageTab === 'history' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
+                pageTab === 'history' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
               <History className="w-4 h-4" /> History
             </button>
           </div>

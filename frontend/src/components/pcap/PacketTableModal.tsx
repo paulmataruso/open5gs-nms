@@ -87,13 +87,13 @@ export function PacketTableModal({ capture, presets, onClose }: {
       <div className="nms-card w-[95vw] max-w-[1600px] h-[92vh] flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold font-display">Capture: {capture.label}</h3>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
         </div>
 
         <div className="flex items-end gap-3 flex-wrap mb-3">
           <div>
             <label className="nms-label">Decode filter preset</label>
-            <select
+            <select aria-label="Decode filter preset"
               className="nms-input text-sm"
               value={presetId}
               disabled={useCustom}
@@ -107,7 +107,7 @@ export function PacketTableModal({ capture, presets, onClose }: {
             Custom
           </label>
           {useCustom && (
-            <input
+            <input aria-label="Custom"
               className="nms-input font-mono text-sm flex-1 min-w-[240px]"
               placeholder='e.g. sip || diameter'
               value={customFilter}
@@ -190,7 +190,7 @@ export function PacketTableModal({ capture, presets, onClose }: {
           <div className="flex-1 flex flex-col mt-3 min-h-0">
             <div className="flex items-center justify-between mb-1.5 shrink-0">
               <h4 className="text-sm font-semibold text-nms-text-dim uppercase tracking-wider">Frame {selectedFrame} details</h4>
-              <button onClick={() => setSelectedFrame(null)} className="text-nms-text-dim hover:text-nms-text">
+              <button aria-label="Close frame details" onClick={() => setSelectedFrame(null)} className="text-nms-text-dim hover:text-nms-text">
                 <X className="w-4 h-4" />
               </button>
             </div>

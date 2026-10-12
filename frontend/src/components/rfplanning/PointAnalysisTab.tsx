@@ -147,13 +147,13 @@ export function PointAnalysisTab() {
             <span className="px-2 py-0.5 text-[11px] text-nms-text-dim">Placing:</span>
             <button
               type="button" onClick={() => setPlacingMode('site')}
-              className={clsx('px-2 py-0.5 rounded text-[11px] font-medium', placingMode === 'site' ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text')}
+              className={clsx('px-2 py-0.5 rounded text-[11px] font-medium', placingMode === 'site' ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text')}
             >
               Site
             </button>
             <button
               type="button" onClick={() => setPlacingMode('target')}
-              className={clsx('px-2 py-0.5 rounded text-[11px] font-medium', placingMode === 'target' ? 'bg-nms-accent text-white' : 'text-nms-text-dim hover:text-nms-text')}
+              className={clsx('px-2 py-0.5 rounded text-[11px] font-medium', placingMode === 'target' ? 'bg-nms-accent text-nms-accent-fg' : 'text-nms-text-dim hover:text-nms-text')}
             >
               Target
             </button>

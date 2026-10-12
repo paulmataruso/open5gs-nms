@@ -118,11 +118,11 @@ function RadioTagCell({ ip, nickname, isAdmin, onSave }: {
   if (editing) {
     return (
       <div className="flex items-center gap-1 mt-0.5">
-        <input autoFocus className="nms-input text-xs py-0.5 px-1.5 h-6 font-mono w-32"
+        <input aria-label="Nickname" autoFocus className="nms-input text-xs py-0.5 px-1.5 h-6 font-mono w-32"
           value={value} onChange={e => setValue(e.target.value)} onKeyDown={handleKeyDown}
           onBlur={handleSave} placeholder="e.g. Site A gNB" maxLength={64} />
-        <button onClick={handleSave} className="text-nms-green hover:text-nms-green/80"><Check className="w-3 h-3" /></button>
-        <button onClick={() => { setValue(nickname || ''); setEditing(false); }} className="text-nms-text-dim hover:text-nms-red"><X className="w-3 h-3" /></button>
+        <button aria-label="Save nickname" onClick={handleSave} className="text-nms-green hover:text-nms-green/80"><Check className="w-3 h-3" /></button>
+        <button aria-label="Cancel editing nickname" onClick={() => { setValue(nickname || ''); setEditing(false); }} className="text-nms-text-dim hover:text-nms-red"><X className="w-3 h-3" /></button>
       </div>
     );
   }
@@ -159,11 +159,11 @@ function RadioBandTag({ ip, band, isAdmin, onSave }: {
   if (editing) {
     return (
       <div className="flex items-center gap-1">
-        <input autoFocus className="nms-input text-xs py-0.5 px-1.5 h-6 font-mono w-20"
+        <input aria-label="Band" autoFocus className="nms-input text-xs py-0.5 px-1.5 h-6 font-mono w-20"
           value={value} onChange={e => setValue(e.target.value)} onKeyDown={handleKeyDown}
           onBlur={handleSave} placeholder="e.g. B48" maxLength={32} />
-        <button onClick={handleSave} className="text-nms-green hover:text-nms-green/80"><Check className="w-3 h-3" /></button>
-        <button onClick={() => { setValue(band || ''); setEditing(false); }} className="text-nms-text-dim hover:text-nms-red"><X className="w-3 h-3" /></button>
+        <button aria-label="Save band" onClick={handleSave} className="text-nms-green hover:text-nms-green/80"><Check className="w-3 h-3" /></button>
+        <button aria-label="Cancel editing band" onClick={() => { setValue(band || ''); setEditing(false); }} className="text-nms-text-dim hover:text-nms-red"><X className="w-3 h-3" /></button>
       </div>
     );
   }
@@ -307,12 +307,12 @@ function RadioBlockButton({ ip, isBlocked, isAdmin, isSyntheticIp, deviceNoun, d
   const cls = 'flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors border';
   return isBlocked ? (
     <button onClick={() => onUnblock(ip)} title={`Restore ${blockedInterfaces} to this ${deviceNoun}`}
-      className={clsx(cls, 'animate-flash-red text-nms-red border-nms-red/40 hover:text-white hover:bg-nms-red')}>
+      className={clsx(cls, 'animate-flash-red text-nms-red border-nms-red/40 hover:text-white hover:bg-nms-red-strong')}>
       <ShieldOff className="w-2.5 h-2.5" />{compact ? 'Unblock' : `Unblock ${deviceNounCap}`}
     </button>
   ) : (
     <button onClick={() => onRequestBlock(ip)} title={`Block this ${deviceNoun}'s ${blockedInterfaces} paths to the core (nftables, this host only — the ${deviceNoun} itself is not touched)`}
-      className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red border-nms-red/40 hover:border-nms-red')}>
+      className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red-strong border-nms-red/40 hover:border-nms-red')}>
       <ShieldAlert className="w-2.5 h-2.5" />{compact ? 'Block' : `Block ${deviceNounCap}`}
     </button>
   );
@@ -494,7 +494,7 @@ function RadioListSplit({ radios, ues, generation, deviceLabel, radioTags, radio
     <div className="border border-nms-border rounded-md overflow-hidden flex" style={{ minHeight: '180px' }}>
       <div className="w-48 flex-shrink-0 border-r border-nms-border divide-y divide-nms-border overflow-y-auto max-h-96">
         {rows.map(({ radio, totalUeCount, isBlocked }, idx) => (
-          <button key={radio.ip + idx} onClick={() => setSelectedIp(radio.ip)}
+          <button aria-label={`Show details for radio ${radio.ip}`} key={radio.ip + idx} onClick={() => setSelectedIp(radio.ip)}
             className={clsx('w-full flex items-center gap-1.5 px-2.5 py-2 text-left transition-colors',
               (selected.radio.ip === radio.ip) ? 'bg-nms-accent/10' : 'hover:bg-nms-surface-2/50',
               isBlocked && 'animate-flash-red')}>
@@ -1450,7 +1450,7 @@ function IPPlumbingModal({ onClose, configs }: { onClose: () => void; configs: a
               <p className="text-xs text-nms-text-dim mt-0.5">Every IP used by Open5GS — what it does, and exactly what connects to what</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors p-1 rounded"><X className="w-5 h-5" /></button>
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors p-1 rounded"><X className="w-5 h-5" /></button>
         </div>
 
         {/* Tabs */}
@@ -1631,12 +1631,12 @@ function Gsm2GBlockButton({ bts, isAdmin, onRequestBlock, onUnblock }: {
   const cls = 'flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded transition-colors border flex-shrink-0';
   return blocked ? (
     <button onClick={(e) => { e.stopPropagation(); onUnblock(bts.id); }} title="Unlock this BTS at osmo-bsc — resumes broadcasting and accepting UEs"
-      className={clsx(cls, 'animate-flash-red text-nms-red border-nms-red/40 hover:text-white hover:bg-nms-red')}>
+      className={clsx(cls, 'animate-flash-red text-nms-red border-nms-red/40 hover:text-white hover:bg-nms-red-strong')}>
       <Unlock className="w-2.5 h-2.5" />Unblock
     </button>
   ) : (
     <button onClick={(e) => { e.stopPropagation(); onRequestBlock(bts); }} title="Administratively lock this BTS at osmo-bsc — drops camped UEs immediately and takes it off the air"
-      className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red border-nms-red/40 hover:border-nms-red')}>
+      className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red-strong border-nms-red/40 hover:border-nms-red')}>
       <Lock className="w-2.5 h-2.5" />Block
     </button>
   );
@@ -2240,12 +2240,12 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
         <div className="flex items-center gap-1.5 text-xs text-nms-text-dim shrink-0">
           <Filter className="w-3.5 h-3.5" /> Filter
         </div>
-        <select value={bandFilter} onChange={e => setBandFilter(e.target.value)}
+        <select aria-label="Filter by band" value={bandFilter} onChange={e => setBandFilter(e.target.value)}
           className="nms-input text-sm py-1.5 px-2.5 w-auto">
           <option value="">All bands</option>
           {bandOptions.map(b => <option key={b} value={b}>{b}</option>)}
         </select>
-        <input value={ipFilter} onChange={e => setIpFilter(e.target.value)}
+        <input aria-label="Filter by IP" value={ipFilter} onChange={e => setIpFilter(e.target.value)}
           placeholder="Filter by IP (e.g. 10.0.2)" className="nms-input text-sm py-1.5 px-2.5 w-48 font-mono" />
         {hasActiveFilter && (
           <button onClick={() => { setBandFilter(''); setIpFilter(''); }}
@@ -2403,7 +2403,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                           ) : (
                             <button
                               onClick={() => setPendingBlockUeImsi(ue.imsi)}
-                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-red hover:text-white hover:bg-nms-red border border-nms-red/40 hover:border-nms-red px-1.5 py-0.5 rounded transition-colors"
+                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-red hover:text-white hover:bg-nms-red-strong border border-nms-red/40 hover:border-nms-red px-1.5 py-0.5 rounded transition-colors"
                               title="Detach this UE now and block it from reconnecting until unblocked"
                             >
                               <UserX className="w-2.5 h-2.5" />Block UE

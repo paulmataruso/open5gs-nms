@@ -230,7 +230,7 @@ export function PcapPage(): JSX.Element {
                 </div>
                 {list.map(iface => (
                   <label key={iface.name} className="flex items-center gap-2 text-xs py-0.5 cursor-pointer">
-                    <input type="checkbox" checked={selectedIfaces.includes(iface.name)} onChange={() => toggleIface(iface.name)} />
+                    <input aria-label="Interfaces" type="checkbox" checked={selectedIfaces.includes(iface.name)} onChange={() => toggleIface(iface.name)} />
                     <span className="font-mono">{iface.name}</span>
                     {iface.ip && <span className="text-nms-text-dim">{iface.ip}</span>}
                     <span className={clsx('w-1.5 h-1.5 rounded-full', iface.state === 'up' ? 'bg-green-400' : 'bg-nms-text-dim/40')} />
@@ -249,7 +249,7 @@ export function PcapPage(): JSX.Element {
               ['gtpAll', 'All GTP Traffic'], ['custom', 'Custom BPF'],
             ] as [CaptureScopeMode, string][]).map(([mode, label2]) => (
               <label key={mode} className="flex items-center gap-1.5 cursor-pointer">
-                <input type="radio" name="scopeMode" checked={scopeMode === mode} onChange={() => setScopeMode(mode)} />
+                <input aria-label="Capture scope" type="radio" name="scopeMode" checked={scopeMode === mode} onChange={() => setScopeMode(mode)} />
                 {label2}
               </label>
             ))}
@@ -273,13 +273,13 @@ export function PcapPage(): JSX.Element {
           )}
 
           {scopeMode === 'functionType' && (
-            <select className="nms-input text-sm mt-2 max-w-xs" value={functionType} onChange={e => setFunctionType(e.target.value)}>
+            <select aria-label="Function type" className="nms-input text-sm mt-2 max-w-xs" value={functionType} onChange={e => setFunctionType(e.target.value)}>
               {FUNCTION_TYPES.map(ft => <option key={ft.id} value={ft.id}>{ft.label}</option>)}
             </select>
           )}
 
           {scopeMode === 'custom' && (
-            <input
+            <input aria-label="Custom BPF filter"
               className="nms-input font-mono text-sm mt-2 w-full"
               placeholder="e.g. host 127.0.0.5 and tcp port 7777"
               value={customBpf}
@@ -291,7 +291,7 @@ export function PcapPage(): JSX.Element {
         <div className="flex items-end gap-3 flex-wrap">
           <div className="flex-1 min-w-[200px]">
             <label className="nms-label">Label (optional)</label>
-            <input className="nms-input text-sm w-full" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. AMF registration debug" />
+            <input aria-label="Label (optional)" className="nms-input text-sm w-full" value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. AMF registration debug" />
           </div>
           <button onClick={handleStart} disabled={starting} className="nms-btn-primary flex items-center gap-2 text-sm">
             <Play className="w-4 h-4" /> {starting ? 'Starting…' : 'Start Capture'}

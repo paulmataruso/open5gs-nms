@@ -134,7 +134,7 @@ function ArfcnCalculator() {
             <div className="px-5 py-4 border-b border-nms-border flex-shrink-0 space-y-3">
               <div className="flex items-center gap-3 flex-wrap">
                 <label className="text-xs text-nms-text-dim whitespace-nowrap w-14">Band</label>
-                <select className="nms-input py-1 text-xs font-mono w-36"
+                <select aria-label="Band" className="nms-input py-1 text-xs font-mono w-36"
                   value={band} onChange={e => setBand(Number(e.target.value))}>
                   {Object.keys(NR_BAND_INFO).map(b => (
                     <option key={b} value={b}>n{b} — {NR_BAND_INFO[Number(b)].minFreq}–{NR_BAND_INFO[Number(b)].maxFreq} MHz</option>
@@ -149,7 +149,7 @@ function ArfcnCalculator() {
                       className={clsx(
                         'px-2.5 py-1 rounded text-xs font-mono transition-colors',
                         bw === b
-                          ? 'bg-nms-accent text-white'
+                          ? 'bg-nms-accent text-nms-accent-fg'
                           : 'bg-nms-surface border border-nms-border text-nms-text-dim hover:text-nms-text hover:border-nms-accent/50',
                       )}>
                       {b} MHz
@@ -288,7 +288,7 @@ function CopyBtn({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const copyToClipboard = useCopyToClipboard();
   return (
-    <button
+    <button aria-label={copied ? 'Copied to clipboard' : 'Copy to clipboard'}
       onClick={async () => {
         const ok = await copyToClipboard(text);
         if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
@@ -706,36 +706,36 @@ const NRRadioRow: React.FC<{
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div><label className="nms-label">MCC</label>
-                <input className="nms-input font-mono" placeholder="999" maxLength={3} value={form.mcc} onChange={e => set({ mcc: e.target.value })} /></div>
+                <input aria-label="MCC" className="nms-input font-mono" placeholder="999" maxLength={3} value={form.mcc} onChange={e => set({ mcc: e.target.value })} /></div>
               <div><label className="nms-label">MNC</label>
-                <input className="nms-input font-mono" placeholder="70" maxLength={3} value={form.mnc} onChange={e => set({ mnc: e.target.value })} /></div>
+                <input aria-label="MNC" className="nms-input font-mono" placeholder="70" maxLength={3} value={form.mnc} onChange={e => set({ mnc: e.target.value })} /></div>
               <div><label className="nms-label">TAC</label>
-                <input className="nms-input font-mono" placeholder="1" value={form.tac} onChange={e => set({ tac: e.target.value })} /></div>
+                <input aria-label="TAC" className="nms-input font-mono" placeholder="1" value={form.tac} onChange={e => set({ tac: e.target.value })} /></div>
               <div><label className="nms-label">gNB ID</label>
-                <input className="nms-input font-mono" placeholder="1" value={form.gnbId} onChange={e => set({ gnbId: e.target.value })} /></div>
+                <input aria-label="gNB ID" className="nms-input font-mono" placeholder="1" value={form.gnbId} onChange={e => set({ gnbId: e.target.value })} /></div>
             </div>
             <div className="grid grid-cols-2 gap-3 mt-3">
               <div><label className="nms-label">AMF IP (N2)</label>
-                <input className="nms-input font-mono" placeholder="10.0.1.155" value={form.amfIp} onChange={e => set({ amfIp: e.target.value })} /></div>
+                <input aria-label="AMF IP (N2)" className="nms-input font-mono" placeholder="10.0.1.155" value={form.amfIp} onChange={e => set({ amfIp: e.target.value })} /></div>
               <div><label className="nms-label">UPF IP (N3)</label>
-                <input className="nms-input font-mono" placeholder="10.0.1.156" value={form.upfIp} onChange={e => set({ upfIp: e.target.value })} /></div>
+                <input aria-label="UPF IP (N3)" className="nms-input font-mono" placeholder="10.0.1.156" value={form.upfIp} onChange={e => set({ upfIp: e.target.value })} /></div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
               <div>
                 <label className="nms-label">S-NSSAI SST <span className="text-nms-text-dim font-normal">(slice type)</span></label>
-                <input className="nms-input font-mono" placeholder="1" value={form.snssaiSst} onChange={e => set({ snssaiSst: e.target.value })} />
+                <input aria-label="S-NSSAI SST (slice type)" className="nms-input font-mono" placeholder="1" value={form.snssaiSst} onChange={e => set({ snssaiSst: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">S-NSSAI SD <span className="text-nms-text-dim font-normal">(hex)</span></label>
-                <input className="nms-input font-mono" placeholder="19cde1" maxLength={6} value={form.snssaiSd} onChange={e => set({ snssaiSd: e.target.value.toLowerCase() })} />
+                <input aria-label="S-NSSAI SD (hex)" className="nms-input font-mono" placeholder="19cde1" maxLength={6} value={form.snssaiSd} onChange={e => set({ snssaiSd: e.target.value.toLowerCase() })} />
               </div>
               <div>
                 <label className="nms-label">gNB CU Name</label>
-                <input className="nms-input font-mono" placeholder="CU1" value={form.gNBCUName} onChange={e => set({ gNBCUName: e.target.value })} />
+                <input aria-label="gNB CU Name" className="nms-input font-mono" placeholder="CU1" value={form.gNBCUName} onChange={e => set({ gNBCUName: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">Max UEs</label>
-                <input className="nms-input font-mono" placeholder="32" value={form.maxNumUes} onChange={e => set({ maxNumUes: e.target.value })} />
+                <input aria-label="Max UEs" className="nms-input font-mono" placeholder="32" value={form.maxNumUes} onChange={e => set({ maxNumUes: e.target.value })} />
               </div>
             </div>
             {plmn && (
@@ -758,7 +758,7 @@ const NRRadioRow: React.FC<{
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
                 <label className="nms-label">Center NR-ARFCN</label>
-                <input
+                <input aria-label="Center NR-ARFCN"
                   className={clsx(
                     'nms-input font-mono',
                     form.nrArfcn && !validateArfcn(form.nrArfcn, form.nrBandWidth, form.nrFreqBand).valid
@@ -771,7 +771,7 @@ const NRRadioRow: React.FC<{
               </div>
               <div>
                 <label className="nms-label">Channel BW <span className="text-nms-text-dim font-normal">(MHz)</span></label>
-                <select className="nms-input" value={form.nrBandWidth} onChange={e => set({ nrBandWidth: e.target.value })}>
+                <select aria-label="Channel BW (MHz)" className="nms-input" value={form.nrBandWidth} onChange={e => set({ nrBandWidth: e.target.value })}>
                   {[10,20,25,30,40,50,60,80,100].map(bw => (
                     <option key={bw} value={String(bw)}>{bw} MHz</option>
                   ))}
@@ -779,11 +779,11 @@ const NRRadioRow: React.FC<{
               </div>
               <div>
                 <label className="nms-label">NR Band</label>
-                <input className="nms-input font-mono" placeholder="48" value={form.nrFreqBand} onChange={e => set({ nrFreqBand: e.target.value })} />
+                <input aria-label="NR Band" className="nms-input font-mono" placeholder="48" value={form.nrFreqBand} onChange={e => set({ nrFreqBand: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">TX Power <span className="text-nms-text-dim font-normal">(dBm)</span></label>
-                <input className="nms-input font-mono" placeholder="21" value={form.txPwr} onChange={e => set({ txPwr: e.target.value })} />
+                <input aria-label="TX Power (dBm)" className="nms-input font-mono" placeholder="21" value={form.txPwr} onChange={e => set({ txPwr: e.target.value })} />
               </div>
             </div>
 
@@ -818,11 +818,11 @@ const NRRadioRow: React.FC<{
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
               <div>
                 <label className="nms-label">PCI</label>
-                <input className="nms-input font-mono" placeholder="1" value={form.nrPci} onChange={e => set({ nrPci: e.target.value })} />
+                <input aria-label="PCI" className="nms-input font-mono" placeholder="1" value={form.nrPci} onChange={e => set({ nrPci: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">PRACH Cfg Index</label>
-                <input className="nms-input font-mono" placeholder="154" value={form.prachCfgIdx} onChange={e => set({ prachCfgIdx: e.target.value })} />
+                <input aria-label="PRACH Cfg Index" className="nms-input font-mono" placeholder="154" value={form.prachCfgIdx} onChange={e => set({ prachCfgIdx: e.target.value })} />
               </div>
               <div className="flex items-end">
                 <label className="flex items-center gap-2 cursor-pointer group w-full pb-2">
@@ -842,7 +842,7 @@ const NRRadioRow: React.FC<{
             </p>
             <div className="mb-3">
               <label className="nms-label">Pattern Preset</label>
-              <select
+              <select aria-label="Pattern Preset"
                 className="nms-input"
                 value={form.tddPattern}
                 onChange={e => {
@@ -873,22 +873,22 @@ const NRRadioRow: React.FC<{
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div>
                 <label className="nms-label">DL Slots <span className="text-nms-text-dim font-normal">(numDlSlot)</span></label>
-                <input className="nms-input font-mono" placeholder="3" value={form.numDlSlot}
+                <input aria-label="DL Slots (numDlSlot)" className="nms-input font-mono" placeholder="3" value={form.numDlSlot}
                   onChange={e => set({ numDlSlot: e.target.value, tddPattern: 'custom', np2Pres: '0', numDlSlot2: '0', numUlSlot2: '0', numDlSymbolP2: '0', numUlSymbolP2: '0' })} />
               </div>
               <div>
                 <label className="nms-label">UL Slots <span className="text-nms-text-dim font-normal">(numUlSlot)</span></label>
-                <input className="nms-input font-mono" placeholder="2" value={form.numUlSlot}
+                <input aria-label="UL Slots (numUlSlot)" className="nms-input font-mono" placeholder="2" value={form.numUlSlot}
                   onChange={e => set({ numUlSlot: e.target.value, tddPattern: 'custom', np2Pres: '0', numDlSlot2: '0', numUlSlot2: '0', numDlSymbolP2: '0', numUlSymbolP2: '0' })} />
               </div>
               <div>
                 <label className="nms-label">DL Symbols <span className="text-nms-text-dim font-normal">(numDlSymbol)</span></label>
-                <input className="nms-input font-mono" placeholder="6" value={form.numDlSymbol}
+                <input aria-label="DL Symbols (numDlSymbol)" className="nms-input font-mono" placeholder="6" value={form.numDlSymbol}
                   onChange={e => set({ numDlSymbol: e.target.value, tddPattern: 'custom', np2Pres: '0', numDlSlot2: '0', numUlSlot2: '0', numDlSymbolP2: '0', numUlSymbolP2: '0' })} />
               </div>
               <div>
                 <label className="nms-label">UL Symbols <span className="text-nms-text-dim font-normal">(numUlSymbol)</span></label>
-                <input className="nms-input font-mono" placeholder="4" value={form.numUlSymbol}
+                <input aria-label="UL Symbols (numUlSymbol)" className="nms-input font-mono" placeholder="4" value={form.numUlSymbol}
                   onChange={e => set({ numUlSymbol: e.target.value, tddPattern: 'custom', np2Pres: '0', numDlSlot2: '0', numUlSlot2: '0', numDlSymbolP2: '0', numUlSymbolP2: '0' })} />
               </div>
             </div>
@@ -910,22 +910,22 @@ const NRRadioRow: React.FC<{
             {/* Row 1 — SAS deployment fields */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div><label className="nms-label">Category</label>
-                <select className="nms-input" value={form.sasCategory} onChange={e => set({ sasCategory: e.target.value })}>
+                <select aria-label="Category" className="nms-input" value={form.sasCategory} onChange={e => set({ sasCategory: e.target.value })}>
                   <option value="A">A — Indoor / low power</option>
                   <option value="B">B — Outdoor / high power</option>
                 </select></div>
               <div><label className="nms-label">Location</label>
-                <select className="nms-input" value={form.sasLocation} onChange={e => set({ sasLocation: e.target.value })}>
+                <select aria-label="Location" className="nms-input" value={form.sasLocation} onChange={e => set({ sasLocation: e.target.value })}>
                   <option value="indoor">Indoor</option>
                   <option value="outdoor">Outdoor</option>
                 </select></div>
               <div><label className="nms-label">Location Source</label>
-                <select className="nms-input" value={form.sasLocationSource} onChange={e => set({ sasLocationSource: e.target.value })}>
+                <select aria-label="Location Source" className="nms-input" value={form.sasLocationSource} onChange={e => set({ sasLocationSource: e.target.value })}>
                   <option value="0">Manual</option>
                   <option value="1">GPS</option>
                 </select></div>
               <div><label className="nms-label">Height Type</label>
-                <select className="nms-input" value={form.sasHeightType} onChange={e => set({ sasHeightType: e.target.value })}>
+                <select aria-label="Height Type" className="nms-input" value={form.sasHeightType} onChange={e => set({ sasHeightType: e.target.value })}>
                   <option value="AGL">AGL (Above Ground Level)</option>
                   <option value="AMSL">AMSL (Above Mean Sea Level)</option>
                 </select></div>
@@ -934,9 +934,9 @@ const NRRadioRow: React.FC<{
             {/* Row 2 — Lat/Lon + location button */}
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
               <div><label className="nms-label">Latitude (decimal degrees)</label>
-                <input className="nms-input font-mono" placeholder="41.570738" value={form.latitude} onChange={e => set({ latitude: e.target.value })} /></div>
+                <input aria-label="Latitude (decimal degrees)" className="nms-input font-mono" placeholder="41.570738" value={form.latitude} onChange={e => set({ latitude: e.target.value })} /></div>
               <div><label className="nms-label">Longitude (decimal degrees)</label>
-                <input className="nms-input font-mono" placeholder="-90.602715" value={form.longitude} onChange={e => set({ longitude: e.target.value })} /></div>
+                <input aria-label="Longitude (decimal degrees)" className="nms-input font-mono" placeholder="-90.602715" value={form.longitude} onChange={e => set({ longitude: e.target.value })} /></div>
               <div className="flex items-end">
                 <button onClick={useMyLocation} disabled={locating}
                   className="nms-btn border border-nms-accent/30 hover:border-nms-accent/60 text-nms-accent text-xs flex items-center gap-2 w-full justify-center">
@@ -951,14 +951,14 @@ const NRRadioRow: React.FC<{
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
               <div>
                 <label className="nms-label">SAS Server URL</label>
-                <input className="nms-input font-mono text-xs" value={form.sasUrl}
+                <input aria-label="SAS Server URL" className="nms-input font-mono text-xs" value={form.sasUrl}
                   onChange={e => set({ sasUrl: e.target.value })}
                   placeholder={DEFAULT_NR_SAS_URL} />
                 <p className="text-xs text-nms-text-dim mt-1">Port 8899 = NMS SAS proxy (accepts Host-less HTTP/1.1 from Sercomm NR)</p>
               </div>
               <div>
                 <label className="nms-label">ICG Group ID <span className="text-nms-text-dim font-normal">(groupParamGroupID)</span></label>
-                <input className="nms-input font-mono" value={form.sasIcgGroupId}
+                <input aria-label="ICG Group ID (groupParamGroupID)" className="nms-input font-mono" value={form.sasIcgGroupId}
                   onChange={e => set({ sasIcgGroupId: e.target.value })}
                   placeholder="Leave blank for no group" />
               </div>
@@ -968,23 +968,23 @@ const NRRadioRow: React.FC<{
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
               <div>
                 <label className="nms-label">Antenna Gain <span className="text-nms-text-dim font-normal">(dBi)</span></label>
-                <input className="nms-input font-mono" placeholder="6" value={form.antennaGain} onChange={e => set({ antennaGain: e.target.value })} />
+                <input aria-label="Antenna Gain (dBi)" className="nms-input font-mono" placeholder="6" value={form.antennaGain} onChange={e => set({ antennaGain: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">Azimuth <span className="text-nms-text-dim font-normal">(°)</span></label>
-                <input className="nms-input font-mono" placeholder="0" value={form.antennaAzimuth} onChange={e => set({ antennaAzimuth: e.target.value })} />
+                <input aria-label="Azimuth (°)" className="nms-input font-mono" placeholder="0" value={form.antennaAzimuth} onChange={e => set({ antennaAzimuth: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">Beamwidth <span className="text-nms-text-dim font-normal">(°)</span></label>
-                <input className="nms-input font-mono" placeholder="60" value={form.antennaBeamwidth} onChange={e => set({ antennaBeamwidth: e.target.value })} />
+                <input aria-label="Beamwidth (°)" className="nms-input font-mono" placeholder="60" value={form.antennaBeamwidth} onChange={e => set({ antennaBeamwidth: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">Downtilt <span className="text-nms-text-dim font-normal">(°)</span></label>
-                <input className="nms-input font-mono" placeholder="0" value={form.antennaDowntilt} onChange={e => set({ antennaDowntilt: e.target.value })} />
+                <input aria-label="Downtilt (°)" className="nms-input font-mono" placeholder="0" value={form.antennaDowntilt} onChange={e => set({ antennaDowntilt: e.target.value })} />
               </div>
               <div>
                 <label className="nms-label">Max TX Power <span className="text-nms-text-dim font-normal">(dBm)</span></label>
-                <input className="nms-input font-mono" placeholder="21" value={form.sasMaxTxPower} onChange={e => set({ sasMaxTxPower: e.target.value })} />
+                <input aria-label="Max TX Power (dBm)" className="nms-input font-mono" placeholder="21" value={form.sasMaxTxPower} onChange={e => set({ sasMaxTxPower: e.target.value })} />
               </div>
             </div>
 
@@ -996,7 +996,7 @@ const NRRadioRow: React.FC<{
                   const checked = form.bwAllowList.includes(bw);
                   return (
                     <label key={bw} className="flex items-center gap-2 cursor-pointer group">
-                      <input
+                      <input aria-label="SAS Bandwidth Allow List (bwAllowList — SAS requests largest available)"
                         type="checkbox"
                         checked={checked}
                         onChange={() => {
@@ -1044,7 +1044,7 @@ const NRRadioRow: React.FC<{
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="nms-label">Ciphering Algorithm <span className="text-nms-text-dim font-normal">(encAlg)</span></label>
-                <select className="nms-input" value={form.neaAlgorithm} onChange={e => set({ neaAlgorithm: e.target.value })}>
+                <select aria-label="Ciphering Algorithm (encAlg)" className="nms-input" value={form.neaAlgorithm} onChange={e => set({ neaAlgorithm: e.target.value })}>
                   <option value="NEA0">NEA0 — null cipher (not recommended)</option>
                   <option value="NEA1">NEA1 — SNOW 3G</option>
                   <option value="NEA2">NEA2 — AES CTR (required for iOS SA)</option>
@@ -1053,7 +1053,7 @@ const NRRadioRow: React.FC<{
               </div>
               <div>
                 <label className="nms-label">Integrity Algorithm <span className="text-nms-text-dim font-normal">(intAlg)</span></label>
-                <select className="nms-input" value={form.niaAlgorithm} onChange={e => set({ niaAlgorithm: e.target.value })}>
+                <select aria-label="Integrity Algorithm (intAlg)" className="nms-input" value={form.niaAlgorithm} onChange={e => set({ niaAlgorithm: e.target.value })}>
                   <option value="NIA1">NIA1 — SNOW 3G</option>
                   <option value="NIA2">NIA2 — AES CMAC (required for iOS SA)</option>
                   <option value="NIA3">NIA3 — ZUC</option>

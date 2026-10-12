@@ -452,18 +452,18 @@ function SetupTab({ status, refresh }: { status: SecGwStatus | null; refresh: ()
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
           <div>
             <label className="nms-label">Gateway IP</label>
-            <input className="nms-input" value={gatewayIp} onChange={e => setGatewayIp(e.target.value)} />
+            <input aria-label="Gateway IP" className="nms-input" value={gatewayIp} onChange={e => setGatewayIp(e.target.value)} />
           </div>
           <div>
             <label className="nms-label">Interface Mode</label>
-            <select className="nms-input" value={interfaceMode} onChange={e => setInterfaceMode(e.target.value as 'dummy' | 'existing')}>
+            <select aria-label="Interface Mode" className="nms-input" value={interfaceMode} onChange={e => setInterfaceMode(e.target.value as 'dummy' | 'existing')}>
               <option value="dummy">Create dummy interface</option>
               <option value="existing">Use existing IP</option>
             </select>
           </div>
           <div>
             <label className="nms-label">Virtual IP Pool (CIDR)</label>
-            <input className="nms-input font-mono text-xs" value={poolCidr} onChange={e => setPoolCidr(e.target.value)} placeholder="10.0.1.200/29" />
+            <input aria-label="Virtual IP Pool (CIDR)" className="nms-input font-mono text-xs" value={poolCidr} onChange={e => setPoolCidr(e.target.value)} placeholder="10.0.1.200/29" />
           </div>
         </div>
         <p className="text-xs text-nms-text-dim mb-3">
@@ -672,7 +672,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
       <div className="bg-nms-surface border border-nms-border rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-nms-border flex-shrink-0">
           <h2 className="text-base font-semibold text-nms-text">{isEdit ? `Edit Radio — ${radio!.name}` : `Add ${isNokia ? 'Nokia' : 'Baicells'} Radio`}</h2>
-          <button onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
+          <button aria-label="Close" onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -687,11 +687,11 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="nms-label">Name</label>
-              <input className="nms-input" value={name} onChange={e => setName(e.target.value)} placeholder={isNokia ? 'e.g. Nokia AirScale #1' : 'e.g. Baicells eNB #1'} />
+              <input aria-label="Name" className="nms-input" value={name} onChange={e => setName(e.target.value)} placeholder={isNokia ? 'e.g. Nokia AirScale #1' : 'e.g. Baicells eNB #1'} />
             </div>
             <div>
               <label className="nms-label">Radio Type</label>
-              <select className="nms-input" value={radioType} onChange={e => setRadioType(e.target.value as SecGwRadioType)}>
+              <select aria-label="Radio Type" className="nms-input" value={radioType} onChange={e => setRadioType(e.target.value as SecGwRadioType)}>
                 <option value="4g">4G (S1-MME + S1-U → MME / SGW-U)</option>
                 <option value="5g">5G (N2 + N3 → AMF / UPF)</option>
               </select>
@@ -701,7 +701,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
           {isNokia ? (
             <div>
               <label className="nms-label">Identifier (serial/MAC/note)</label>
-              <input className="nms-input" value={manualIdentifier} onChange={e => setManualIdentifier(e.target.value)} placeholder="Nokia AirScale radios aren't seen by GenieACS — enter one manually" />
+              <input aria-label="Identifier (serial/MAC/note)" className="nms-input" value={manualIdentifier} onChange={e => setManualIdentifier(e.target.value)} placeholder="Nokia AirScale radios aren't seen by GenieACS — enter one manually" />
             </div>
           ) : (
             <>
@@ -723,7 +723,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               {mode === 'genieacs' ? (
                 <div>
                   <label className="nms-label">Device</label>
-                  <select className="nms-input" value={genieacsDeviceId} onChange={e => setGenieacsDeviceId(e.target.value)}>
+                  <select aria-label="Device" className="nms-input" value={genieacsDeviceId} onChange={e => setGenieacsDeviceId(e.target.value)}>
                     <option value="">Select a device...</option>
                     {genieacsOptions.map(d => (
                       <option key={d.id} value={d.id}>{d.serial} ({d.ip || 'no IP yet'})</option>
@@ -736,7 +736,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               ) : (
                 <div>
                   <label className="nms-label">Identifier (serial/MAC/note)</label>
-                  <input className="nms-input" value={manualIdentifier} onChange={e => setManualIdentifier(e.target.value)} placeholder="Not yet provisioned in GenieACS" />
+                  <input aria-label="Identifier (serial/MAC/note)" className="nms-input" value={manualIdentifier} onChange={e => setManualIdentifier(e.target.value)} placeholder="Not yet provisioned in GenieACS" />
                 </div>
               )}
             </>
@@ -760,7 +760,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
 
           <div>
             <label className="nms-label">Additional Protected Destinations (optional)</label>
-            <input
+            <input aria-label="Additional Protected Destinations (optional)"
               className="nms-input font-mono text-xs"
               value={extraLocalCidrs}
               onChange={e => setExtraLocalCidrs(e.target.value)}
@@ -780,7 +780,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               {!isNokia && (
                 <div>
                   <label className="nms-label">Left / Right Auth</label>
-                  <select className="nms-input" value={authMode} onChange={e => setAuthMode(e.target.value as SecGwAuthMode)}>
+                  <select aria-label="Left / Right Auth" className="nms-input" value={authMode} onChange={e => setAuthMode(e.target.value as SecGwAuthMode)}>
                     <option value="cert">PubKey (Certificate)</option>
                     <option value="psk">PSK</option>
                   </select>
@@ -790,7 +790,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
                 <div>
                   <label className="nms-label">Secret Key (PSK)</label>
                   <div className="flex gap-1.5">
-                    <input className="nms-input font-mono text-xs" value={psk} onChange={e => setPsk(e.target.value)} />
+                    <input aria-label="Secret Key (PSK)" className="nms-input font-mono text-xs" value={psk} onChange={e => setPsk(e.target.value)} />
                     <button type="button" onClick={() => setPsk(isNokia ? generateNokiaPsk() : generateRandomPsk())} className="nms-btn-ghost px-2 shrink-0" title="Generate random">
                       <RefreshCw className="w-3.5 h-3.5" />
                     </button>
@@ -807,7 +807,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               {isNokia && (
                 <div>
                   <label className="nms-label">Local IP Address (radio's U/M/C-Plane IP)</label>
-                  <input className="nms-input font-mono text-xs" value={localIpAddress} onChange={e => setLocalIpAddress(e.target.value)} placeholder="10.0.2.xxx" />
+                  <input aria-label="Local IP Address (radio's U/M/C-Plane IP)" className="nms-input font-mono text-xs" value={localIpAddress} onChange={e => setLocalIpAddress(e.target.value)} placeholder="10.0.2.xxx" />
                 </div>
               )}
             </div>
@@ -815,19 +815,19 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
             <div className="grid grid-cols-3 gap-3 mb-3">
               <div>
                 <label className="nms-label">IKE {isNokia ? 'encryption method' : 'Encryption'}</label>
-                <select className="nms-input" value={ikeEncryption} onChange={e => setIkeEncryption(e.target.value as SecGwIkeEncryption)}>
+                <select aria-label="IKE" className="nms-input" value={ikeEncryption} onChange={e => setIkeEncryption(e.target.value as SecGwIkeEncryption)}>
                   {ikeEncOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <div>
                 <label className="nms-label">IKE {isNokia ? 'Authentication method' : 'Auth'}</label>
-                <select className="nms-input" value={ikeIntegrity} onChange={e => setIkeIntegrity(e.target.value as SecGwIkeIntegrity)}>
+                <select aria-label="IKE" className="nms-input" value={ikeIntegrity} onChange={e => setIkeIntegrity(e.target.value as SecGwIkeIntegrity)}>
                   {ikeIntOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <div>
                 <label className="nms-label">IKE DH Group</label>
-                <select className="nms-input" value={ikeDhGroup} onChange={e => setIkeDhGroup(e.target.value as SecGwDhGroup)}>
+                <select aria-label="IKE DH Group" className="nms-input" value={ikeDhGroup} onChange={e => setIkeDhGroup(e.target.value as SecGwDhGroup)}>
                   {ikeDhOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
@@ -836,20 +836,20 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="nms-label">ESP {isNokia ? 'encrytion method' : 'Encryption'}</label>
-                <select className="nms-input" value={espEncryption} onChange={e => setEspEncryption(e.target.value as SecGwEspEncryption)}>
+                <select aria-label="ESP" className="nms-input" value={espEncryption} onChange={e => setEspEncryption(e.target.value as SecGwEspEncryption)}>
                   {espEncOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <div>
                 <label className="nms-label">ESP {isNokia ? 'Authentication method' : 'Auth'}</label>
-                <select className="nms-input" value={espIntegrity} onChange={e => setEspIntegrity(e.target.value as SecGwEspIntegrity)}>
+                <select aria-label="ESP" className="nms-input" value={espIntegrity} onChange={e => setEspIntegrity(e.target.value as SecGwEspIntegrity)}>
                   {espIntOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               {!isNokia && (
                 <div>
                   <label className="nms-label">ESP DH Group</label>
-                  <select className="nms-input" value={espDhGroup} onChange={e => setEspDhGroup(e.target.value as SecGwDhGroup)}>
+                  <select aria-label="ESP DH Group" className="nms-input" value={espDhGroup} onChange={e => setEspDhGroup(e.target.value as SecGwDhGroup)}>
                     {ESP_DH_GROUP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
@@ -864,7 +864,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <label className="nms-label">IKE SA connection establishment mode</label>
-                  <select className="nms-input" value={ikeSaMode} onChange={e => setIkeSaMode(e.target.value as SecGwIkeSaMode)}>
+                  <select aria-label="IKE SA connection establishment mode" className="nms-input" value={ikeSaMode} onChange={e => setIkeSaMode(e.target.value as SecGwIkeSaMode)}>
                     <option value="initiator_responder">Initiator and responder</option>
                     <option value="responder">Responder</option>
                   </select>
@@ -883,7 +883,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
                 {pfsEnabled && (
                   <div>
                     <label className="nms-label">PFS DH Group</label>
-                    <select className="nms-input" value={pfsDhGroup} onChange={e => setPfsDhGroup(e.target.value as SecGwDhGroup)}>
+                    <select aria-label="PFS DH Group" className="nms-input" value={pfsDhGroup} onChange={e => setPfsDhGroup(e.target.value as SecGwDhGroup)}>
                       {NOKIA_PFS_DH_GROUP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   </div>
@@ -898,7 +898,7 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
                 {antiReplayEnabled && (
                   <div>
                     <label className="nms-label">anti replay window size</label>
-                    <select className="nms-input" value={antiReplayWindowSize} onChange={e => setAntiReplayWindowSize(Number(e.target.value))}>
+                    <select aria-label="anti replay window size" className="nms-input" value={antiReplayWindowSize} onChange={e => setAntiReplayWindowSize(Number(e.target.value))}>
                       <option value={64}>64</option>
                       <option value={28}>28</option>
                     </select>
@@ -909,15 +909,15 @@ function RadioFormModal({ vendor, radio, onClose, onSaved }: { vendor: SecGwRadi
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="nms-label">dead peer detection delay (10-360s)</label>
-                  <input type="number" min={10} max={360} className="nms-input" value={dpdDelaySeconds} onChange={e => setDpdDelaySeconds(Number(e.target.value))} />
+                  <input aria-label="dead peer detection delay (10-360s)" type="number" min={10} max={360} className="nms-input" value={dpdDelaySeconds} onChange={e => setDpdDelaySeconds(Number(e.target.value))} />
                 </div>
                 <div>
                   <label className="nms-label">IKE association max lifetime (3600-86400s)</label>
-                  <input type="number" min={3600} max={86400} className="nms-input" value={ikeSaLifetimeSeconds} onChange={e => setIkeSaLifetimeSeconds(Number(e.target.value))} />
+                  <input aria-label="IKE association max lifetime (3600-86400s)" type="number" min={3600} max={86400} className="nms-input" value={ikeSaLifetimeSeconds} onChange={e => setIkeSaLifetimeSeconds(Number(e.target.value))} />
                 </div>
                 <div>
                   <label className="nms-label">Security association max lifetime (300-86400s)</label>
-                  <input type="number" min={300} max={86400} className="nms-input" value={childSaLifetimeSeconds} onChange={e => setChildSaLifetimeSeconds(Number(e.target.value))} />
+                  <input aria-label="Security association max lifetime (300-86400s)" type="number" min={300} max={86400} className="nms-input" value={childSaLifetimeSeconds} onChange={e => setChildSaLifetimeSeconds(Number(e.target.value))} />
                 </div>
               </div>
             </div>
@@ -1424,7 +1424,7 @@ export function SecGWPage() {
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 tab === tabDef.id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >

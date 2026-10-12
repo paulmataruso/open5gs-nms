@@ -150,7 +150,7 @@ export const FullRestoreSelectionModal: React.FC<FullRestoreSelectionModalProps>
             )}
           </div>
           {phase !== 'running' && (
-            <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+            <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
               <X className="w-6 h-6" />
             </button>
           )}

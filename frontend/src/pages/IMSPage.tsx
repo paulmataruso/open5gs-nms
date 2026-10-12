@@ -40,7 +40,7 @@ function IpInput({ label, value, onChange, hint }: { label: string; value: strin
   return (
     <div>
       <label className="block text-xs text-nms-text-dim mb-1">{label}</label>
-      <input
+      <input aria-label={label}
         type="text"
         value={value}
         onChange={e => onChange(e.target.value)}
@@ -56,7 +56,7 @@ function PortInput({ label, value, onChange }: { label: string; value: number; o
   return (
     <div>
       <label className="block text-xs text-nms-text-dim mb-1">{label}</label>
-      <input
+      <input aria-label={label}
         type="number"
         value={value}
         onChange={e => onChange(parseInt(e.target.value) || 5060)}
@@ -282,13 +282,13 @@ function ConfigureCard({ status, onDone }: {
           </div>
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">RTP Port Min</label>
-            <input type="number" value={cfg.rtpPortMin}
+            <input aria-label="RTP Port Min" type="number" value={cfg.rtpPortMin}
               onChange={e => setCfg(c => ({ ...c, rtpPortMin: parseInt(e.target.value) || 20000 }))}
               className="nms-input w-full font-mono text-sm" min={1024} max={65534} />
           </div>
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">RTP Port Max</label>
-            <input type="number" value={cfg.rtpPortMax}
+            <input aria-label="RTP Port Max" type="number" value={cfg.rtpPortMax}
               onChange={e => setCfg(c => ({ ...c, rtpPortMax: parseInt(e.target.value) || 30000 }))}
               className="nms-input w-full font-mono text-sm" min={1025} max={65535} />
           </div>
@@ -312,12 +312,12 @@ function ConfigureCard({ status, onDone }: {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">Primary MCC <span className="text-nms-text-dim font-normal">(blank = auto)</span></label>
-            <input className="nms-input font-mono" placeholder="e.g. 999" maxLength={3}
+            <input aria-label="Primary MCC (blank = auto)" className="nms-input font-mono" placeholder="e.g. 999" maxLength={3}
               value={cfg.mcc ?? ''} onChange={e => setCfg(c => ({ ...c, mcc: e.target.value }))} />
           </div>
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">Primary MNC <span className="text-nms-text-dim font-normal">(blank = auto)</span></label>
-            <input className="nms-input font-mono" placeholder="e.g. 70" maxLength={3}
+            <input aria-label="Primary MNC (blank = auto)" className="nms-input font-mono" placeholder="e.g. 70" maxLength={3}
               value={cfg.mnc ?? ''} onChange={e => setCfg(c => ({ ...c, mnc: e.target.value }))} />
           </div>
         </div>
@@ -338,16 +338,16 @@ function ConfigureCard({ status, onDone }: {
           )}
           {(cfg.additionalPlmns ?? []).map((p, i) => (
             <div key={i} className="flex items-center gap-2">
-              <input className="nms-input font-mono w-24" placeholder="MCC" maxLength={3}
+              <input aria-label="MCC" className="nms-input font-mono w-24" placeholder="MCC" maxLength={3}
                 value={p.mcc} onChange={e => updatePlmn(i, 'mcc', e.target.value)} />
-              <input className="nms-input font-mono w-24" placeholder="MNC" maxLength={3}
+              <input aria-label="MNC" className="nms-input font-mono w-24" placeholder="MNC" maxLength={3}
                 value={p.mnc} onChange={e => updatePlmn(i, 'mnc', e.target.value)} />
               {p.mcc && p.mnc && (
                 <span className="text-xs font-mono text-nms-text-dim flex-1">
                   ims.mnc{p.mnc.padStart(3, '0')}.mcc{p.mcc}.3gppnetwork.org
                 </span>
               )}
-              <button onClick={() => removePlmn(i)} className="text-nms-text-dim hover:text-nms-red transition-colors">
+              <button aria-label="Remove PLMN" onClick={() => removePlmn(i)} className="text-nms-text-dim hover:text-nms-red transition-colors">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -476,7 +476,7 @@ function DnsRecordsCard() {
               <h2 className="text-lg font-semibold font-display text-nms-text flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-nms-accent" /> Edit Zone File
               </h2>
-              <button onClick={() => setEditorOpen(false)} className="text-nms-text-dim hover:text-nms-text transition-colors">
+              <button aria-label="Close" onClick={() => setEditorOpen(false)} className="text-nms-text-dim hover:text-nms-text transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -490,7 +490,7 @@ function DnsRecordsCard() {
               {editorLoading ? (
                 <p className="text-xs text-nms-text-dim">Loading…</p>
               ) : (
-                <textarea
+                <textarea aria-label="Config file contents"
                   value={editorContent}
                   onChange={e => setEditorContent(e.target.value)}
                   spellCheck={false}
@@ -724,7 +724,7 @@ function ConfigEditorTab() {
       <div className="w-52 shrink-0 bg-nms-bg border-r border-nms-border overflow-y-auto flex flex-col">
         <div className="flex items-center justify-between px-3 py-2 border-b border-nms-border shrink-0">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-nms-text-dim">Files</span>
-          <button onClick={loadManifest} disabled={manifestLoading} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Refresh config file list" onClick={loadManifest} disabled={manifestLoading} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <RefreshCw className={clsx('w-3 h-3', manifestLoading && 'animate-spin')} />
           </button>
         </div>
@@ -1369,7 +1369,7 @@ export function IMSPage() {
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 activeTab === tabDef.id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >

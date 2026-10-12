@@ -344,19 +344,19 @@ export const LogsPage: React.FC = () => {
           <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
             <button
               onClick={() => setPageTab('logs')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'logs' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'logs' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
             >
               <ScrollText className="w-4 h-4" /> Live Logs
             </button>
             <button
               onClick={() => setPageTab('audit')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'audit' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'audit' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
             >
               <FileText className="w-4 h-4" /> Audit Log
             </button>
             <button
               onClick={() => setPageTab('events')}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'events' ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-md text-sm font-medium transition-all ${pageTab === 'events' ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface'}`}
             >
               <Zap className="w-4 h-4" /> Major Events
             </button>
@@ -417,7 +417,7 @@ export const LogsPage: React.FC = () => {
               onClick={() => switchSource('open5gs')}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'open5gs'
-                  ? 'bg-nms-accent text-white'
+                  ? 'bg-nms-accent text-nms-accent-fg'
                   : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
               }`}
             >
@@ -428,7 +428,7 @@ export const LogsPage: React.FC = () => {
               onClick={() => switchSource('docker')}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'docker'
-                  ? 'bg-nms-accent text-white'
+                  ? 'bg-nms-accent text-nms-accent-fg'
                   : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
               }`}
             >
@@ -456,7 +456,7 @@ export const LogsPage: React.FC = () => {
               onClick={() => switchSource('genieacs', GENIEACS_SERVICES)}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'genieacs'
-                  ? 'bg-nms-accent text-white'
+                  ? 'bg-nms-accent text-nms-accent-fg'
                   : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
               }`}
             >
@@ -467,7 +467,7 @@ export const LogsPage: React.FC = () => {
               onClick={() => switchSource('frr', FRR_SERVICES)}
               className={`flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
                 logSource === 'frr'
-                  ? 'bg-nms-accent text-white'
+                  ? 'bg-nms-accent text-nms-accent-fg'
                   : 'bg-nms-bg text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-accent/50'
               }`}
             >
@@ -542,7 +542,7 @@ export const LogsPage: React.FC = () => {
             <div className="flex items-center gap-3 flex-wrap">
               <Radio className="w-4 h-4 text-purple-400 shrink-0" />
               <label className="text-xs text-nms-text-dim shrink-0">Filter by Radio:</label>
-              <select
+              <select aria-label="Filter by Radio:"
                 value={radioFilter}
                 onChange={e => setRadioFilter(e.target.value)}
                 className="bg-nms-bg border border-nms-border rounded px-2 py-1 text-xs text-nms-text min-w-[260px] focus:border-purple-400/60 focus:outline-none"
@@ -591,7 +591,7 @@ export const LogsPage: React.FC = () => {
               <div className="border border-amber-500/30 rounded bg-nms-bg p-3 space-y-2">
                 <div className="flex items-center gap-3 mb-2">
                   <span className="text-xs font-semibold text-amber-300">GenieACS Task Queue</span>
-                  <select
+                  <select aria-label="GenieACS device"
                     value={taskQueueDevice}
                     onChange={e => setTaskQueueDevice(e.target.value)}
                     className="bg-nms-surface border border-nms-border rounded px-2 py-0.5 text-xs text-nms-text min-w-[220px]"
@@ -656,7 +656,7 @@ export const LogsPage: React.FC = () => {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <label className="text-xs text-nms-text-dim">Max Lines:</label>
-              <select
+              <select aria-label="Max Lines:"
                 value={maxLines}
                 onChange={(e) => setMaxLines(parseInt(e.target.value))}
                 className="bg-nms-bg border border-nms-border rounded px-2 py-1 text-xs text-nms-text"

@@ -88,7 +88,7 @@ export const SpeedTestServerModal: React.FC<Props> = ({ onClose }) => {
             <Gauge className="w-5 h-5 text-nms-accent" />
             Speed Test Server
           </h2>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -164,7 +164,7 @@ export const SpeedTestServerModal: React.FC<Props> = ({ onClose }) => {
               <div className="space-y-3">
                 <div>
                   <label className="nms-label mb-1">Bind IP</label>
-                  <input
+                  <input aria-label="Bind IP"
                     type="text"
                     list="speedtest-bind-ips"
                     value={settings.bindIp}
@@ -187,7 +187,7 @@ export const SpeedTestServerModal: React.FC<Props> = ({ onClose }) => {
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="nms-label mb-1">HTTP Port</label>
-                    <input
+                    <input aria-label="HTTP Port"
                       type="number"
                       value={settings.httpPort}
                       onChange={e => setSettings(s => ({ ...s, httpPort: parseInt(e.target.value) || 0 }))}
@@ -207,7 +207,7 @@ export const SpeedTestServerModal: React.FC<Props> = ({ onClose }) => {
                       />
                       HTTPS Port
                     </label>
-                    <input
+                    <input aria-label="HTTPS Port"
                       type="number"
                       value={settings.httpsPort}
                       onChange={e => setSettings(s => ({ ...s, httpsPort: parseInt(e.target.value) || 0 }))}

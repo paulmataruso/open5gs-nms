@@ -75,7 +75,7 @@ export function Gsm2gSignalPage() {
 
       <div className="relative max-w-xs">
         <Search className="w-3.5 h-3.5 text-nms-text-dim absolute left-2.5 top-1/2 -translate-y-1/2" />
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search IMSI, nickname, MSISDN…" className="nms-input pl-8 text-xs" />
+        <input aria-label="Search subscribers" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search IMSI, nickname, MSISDN…" className="nms-input pl-8 text-xs" />
       </div>
 
       {filtered.length === 0 ? (

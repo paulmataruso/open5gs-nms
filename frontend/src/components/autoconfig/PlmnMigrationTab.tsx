@@ -206,7 +206,7 @@ export function PlmnMigrationTab(): JSX.Element {
         <div className="flex items-end gap-3 flex-wrap">
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">New MCC</label>
-            <input
+            <input aria-label="New MCC"
               className="nms-input font-mono text-sm w-28"
               placeholder="999"
               maxLength={3}
@@ -216,7 +216,7 @@ export function PlmnMigrationTab(): JSX.Element {
           </div>
           <div>
             <label className="block text-xs text-nms-text-dim mb-1">New MNC</label>
-            <input
+            <input aria-label="New MNC"
               className="nms-input font-mono text-sm w-28"
               placeholder="070"
               maxLength={3}
@@ -307,7 +307,7 @@ export function PlmnMigrationTab(): JSX.Element {
               Restores NF yaml, freeDiameter confs, BIND config, and IMS/VoWiFi state from a migration backup, then restarts every affected service.
             </p>
             <div className="flex items-center gap-3">
-              <select
+              <select aria-label="Migration backup"
                 className="nms-input font-mono text-xs"
                 value={selectedBackupId}
                 onChange={e => setSelectedBackupId(e.target.value)}

@@ -253,7 +253,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_address}>Address</LabelWithTooltip></label>
-            <input
+            <input aria-label="Address"
               className="nms-input font-mono text-xs"
               value={server.address}
               onChange={(e) => updateSepp({ sbi: { ...sepp.sbi, server: [{ ...server, address: e.target.value }] } })}
@@ -261,7 +261,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_port}>Port</LabelWithTooltip></label>
-            <input
+            <input aria-label="Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={server.port}
@@ -281,7 +281,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label">Sender FQDN (our SEPP identity)</label>
-            <input
+            <input aria-label="Sender FQDN (our SEPP identity)"
               className="nms-input font-mono text-xs"
               value={n32Server.sender}
               onChange={(e) => updateN32Server({ sender: e.target.value })}
@@ -290,7 +290,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-c Address</label>
-            <input
+            <input aria-label="N32-c Address"
               className="nms-input font-mono text-xs"
               value={n32Server.address || ''}
               onChange={(e) => updateN32Server({ address: e.target.value })}
@@ -298,7 +298,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-c Port</label>
-            <input
+            <input aria-label="N32-c Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={n32Server.port || 7777}
@@ -307,7 +307,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-f Address</label>
-            <input
+            <input aria-label="N32-f Address"
               className="nms-input font-mono text-xs"
               value={n32f.address || ''}
               onChange={(e) => updateN32f({ address: e.target.value })}
@@ -315,7 +315,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-f Port</label>
-            <input
+            <input aria-label="N32-f Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={n32f.port || 7777}
@@ -371,7 +371,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
             )}
             <div>
               <label className="nms-label">Visited SEPP's Public Certificate (paste PEM)</label>
-              <textarea
+              <textarea aria-label="Visited SEPP's Public Certificate (paste PEM)"
                 className="nms-input font-mono text-xs w-full h-24"
                 value={peerCertInput}
                 onChange={(e) => setPeerCertInput(e.target.value)}
@@ -394,7 +394,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label">Receiver FQDN (their SEPP identity)</label>
-            <input
+            <input aria-label="Receiver FQDN (their SEPP identity)"
               className="nms-input font-mono text-xs"
               value={peer.receiver}
               onChange={(e) => updatePeer({ receiver: e.target.value })}
@@ -403,7 +403,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-c URI</label>
-            <input
+            <input aria-label="N32-c URI"
               className="nms-input font-mono text-xs"
               value={peer.uri}
               onChange={(e) => updatePeer({ uri: e.target.value })}
@@ -412,7 +412,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-c Resolve IP (optional)</label>
-            <input
+            <input aria-label="N32-c Resolve IP (optional)"
               className="nms-input font-mono text-xs"
               value={peer.resolve || ''}
               onChange={(e) => updatePeer({ resolve: e.target.value || undefined })}
@@ -421,7 +421,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-f URI</label>
-            <input
+            <input aria-label="N32-f URI"
               className="nms-input font-mono text-xs"
               value={peer.n32f?.uri || ''}
               onChange={(e) => updatePeerN32f({ uri: e.target.value })}
@@ -430,7 +430,7 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label">N32-f Resolve IP (optional)</label>
-            <input
+            <input aria-label="N32-f Resolve IP (optional)"
               className="nms-input font-mono text-xs"
               value={peer.n32f?.resolve || ''}
               onChange={(e) => updatePeerN32f({ resolve: e.target.value || undefined })}
@@ -451,24 +451,24 @@ export function SeppEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4 mb-4">
           <div>
             <label className="nms-label">Visited SEPP FQDN Identity</label>
-            <input className="nms-input font-mono text-xs" value={vpFqdn} onChange={(e) => setVpFqdn(e.target.value)} />
+            <input aria-label="Visited SEPP FQDN Identity" className="nms-input font-mono text-xs" value={vpFqdn} onChange={(e) => setVpFqdn(e.target.value)} />
           </div>
           <div />
           <div>
             <label className="nms-label">Visited N32-c Address</label>
-            <input className="nms-input font-mono text-xs" value={vpAddress} onChange={(e) => setVpAddress(e.target.value)} />
+            <input aria-label="Visited N32-c Address" className="nms-input font-mono text-xs" value={vpAddress} onChange={(e) => setVpAddress(e.target.value)} />
           </div>
           <div>
             <label className="nms-label">Visited N32-c Port</label>
-            <input type="number" className="nms-input font-mono text-xs" value={vpPort} onChange={(e) => setVpPort(parseInt(e.target.value) || 7777)} />
+            <input aria-label="Visited N32-c Port" type="number" className="nms-input font-mono text-xs" value={vpPort} onChange={(e) => setVpPort(parseInt(e.target.value) || 7777)} />
           </div>
           <div>
             <label className="nms-label">Visited N32-f Address</label>
-            <input className="nms-input font-mono text-xs" value={vpN32fAddress} onChange={(e) => setVpN32fAddress(e.target.value)} />
+            <input aria-label="Visited N32-f Address" className="nms-input font-mono text-xs" value={vpN32fAddress} onChange={(e) => setVpN32fAddress(e.target.value)} />
           </div>
           <div>
             <label className="nms-label">Visited N32-f Port</label>
-            <input type="number" className="nms-input font-mono text-xs" value={vpN32fPort} onChange={(e) => setVpN32fPort(parseInt(e.target.value) || 7777)} />
+            <input aria-label="Visited N32-f Port" type="number" className="nms-input font-mono text-xs" value={vpN32fPort} onChange={(e) => setVpN32fPort(parseInt(e.target.value) || 7777)} />
           </div>
         </div>
         <button onClick={handleGenerateVisitedConfig} className="nms-btn-primary text-sm">Generate</button>

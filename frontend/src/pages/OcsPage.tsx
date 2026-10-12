@@ -227,7 +227,7 @@ function SetupTab({ status, refresh }: { status: OcsStatus | null; refresh: () =
         <div className="flex flex-wrap items-end gap-2">
           <div>
             <label className="text-xs text-nms-text-dim block mb-1">Default Product Offering ID</label>
-            <input
+            <input aria-label="Default Product Offering ID"
               value={defaultOfferId}
               onChange={e => setDefaultOfferId(e.target.value)}
               placeholder="e.g. prepaid-data-4g"
@@ -261,21 +261,21 @@ function SetupTab({ status, refresh }: { status: OcsStatus | null; refresh: () =
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">Diameter/HTTP bind IP</label>
-              <input value={bindIp} onChange={e => setBindIp(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="Diameter/HTTP bind IP" value={bindIp} onChange={e => setBindIp(e.target.value)} className="nms-input w-full font-mono" />
               <p className="text-xs text-nms-text-dim mt-1">Own dedicated loopback alias — OCS's own default (0.0.0.0) silently fails to bind against the other NFs' own freeDiameter listeners already sharing port 3868/3869.</p>
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">HTTP (REST + web GUI) port</label>
-              <input type="number" value={httpPort} onChange={e => setHttpPort(Number(e.target.value))} className="nms-input w-full" />
+              <input aria-label="HTTP (REST + web GUI) port" type="number" value={httpPort} onChange={e => setHttpPort(Number(e.target.value))} className="nms-input w-full" />
               <p className="text-xs text-nms-text-dim mt-1">OCS's own default (8080) collides with PyHSS's API when IMS is installed.</p>
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">Diameter Origin-Host</label>
-              <input value={originHost} onChange={e => setOriginHost(e.target.value)} placeholder="ocs.epc.mnc001.mcc001.3gppnetwork.org" className="nms-input w-full font-mono" />
+              <input aria-label="Diameter Origin-Host" value={originHost} onChange={e => setOriginHost(e.target.value)} placeholder="ocs.epc.mnc001.mcc001.3gppnetwork.org" className="nms-input w-full font-mono" />
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">Diameter Origin-Realm</label>
-              <input value={originRealm} onChange={e => setOriginRealm(e.target.value)} placeholder="epc.mnc001.mcc001.3gppnetwork.org" className="nms-input w-full font-mono" />
+              <input aria-label="Diameter Origin-Realm" value={originRealm} onChange={e => setOriginRealm(e.target.value)} placeholder="epc.mnc001.mcc001.3gppnetwork.org" className="nms-input w-full font-mono" />
               <p className="text-xs text-nms-text-dim mt-1">Must match what smf.conf's ConnectPeer expects, or the CEA handshake is rejected.</p>
             </div>
           </div>
@@ -329,7 +329,7 @@ function SetupTab({ status, refresh }: { status: OcsStatus | null; refresh: () =
             <div className="flex flex-wrap items-end gap-2">
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">Username</label>
-                <input
+                <input aria-label="Username"
                   value={ocsUsername}
                   onChange={e => setOcsUsername(e.target.value)}
                   placeholder="admin"
@@ -339,7 +339,7 @@ function SetupTab({ status, refresh }: { status: OcsStatus | null; refresh: () =
               </div>
               <div>
                 <label className="text-xs text-nms-text-dim block mb-1">Password</label>
-                <input
+                <input aria-label="Password"
                   type="password"
                   value={ocsPassword}
                   onChange={e => setOcsPassword(e.target.value)}
@@ -527,7 +527,7 @@ export function OcsPage() {
               onClick={() => setTab(tabDef.id)}
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                tab === tabDef.id ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+                tab === tabDef.id ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >
               {tabDef.icon}

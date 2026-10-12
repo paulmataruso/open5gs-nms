@@ -39,7 +39,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Database</h3>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.mongodb_uri}>MongoDB URI</LabelWithTooltip></label>
-            <input
+            <input aria-label="MongoDB URI"
               className="nms-input font-mono text-xs"
               value={fullYaml.db_uri || 'mongodb://localhost/open5gs'}
               onChange={(e) => onChange({ ...configs, pcf: { ...fullYaml, db_uri: e.target.value } })}
@@ -54,7 +54,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_address}>Address</LabelWithTooltip></label>
-            <input
+            <input aria-label="Address"
               className="nms-input font-mono text-xs"
               value={server.address}
               onChange={(e) => updatePcf({ sbi: { ...pcf.sbi, server: [{ ...server, address: e.target.value }] } })}
@@ -62,7 +62,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_port}>Port</LabelWithTooltip></label>
-            <input
+            <input aria-label="Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={server.port}
@@ -71,7 +71,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
-            <input
+            <input aria-label="Advertise (optional)"
               className="nms-input font-mono text-xs"
               value={server.advertise || ''}
               onChange={(e) => updatePcf({ sbi: { ...pcf.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}
@@ -92,7 +92,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_address}>Address</LabelWithTooltip></label>
-            <input
+            <input aria-label="Address"
               className="nms-input font-mono text-xs"
               value={pcf.metrics?.server?.[0]?.address || ''}
               onChange={(e) => updatePcf({ metrics: { server: [{ address: e.target.value, port: pcf.metrics?.server?.[0]?.port || 9090 }] } })}
@@ -100,7 +100,7 @@ export function PcfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_port}>Port</LabelWithTooltip></label>
-            <input
+            <input aria-label="Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={pcf.metrics?.server?.[0]?.port || 9090}

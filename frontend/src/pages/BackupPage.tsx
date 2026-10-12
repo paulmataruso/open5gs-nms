@@ -528,7 +528,7 @@ export const BackupPage: React.FC = () => {
               Upload a previously downloaded <code className="text-nms-accent">.tar.gz</code> backup file.
               You'll get to pick exactly which categories to restore before anything is overwritten.
             </p>
-            <input
+            <input aria-label="Upload backup archive"
               ref={fileInputRef}
               type="file"
               accept=".tar.gz"
@@ -569,7 +569,7 @@ export const BackupPage: React.FC = () => {
           {/* Radio selector */}
           <div>
             <label className="nms-label">Select Radio</label>
-            <select
+            <select aria-label="Select Radio"
               className="nms-input mb-3"
               value={selectedRadioId}
               onChange={e => handleSelectRadio(e.target.value)}
@@ -637,7 +637,7 @@ export const BackupPage: React.FC = () => {
             <label className="nms-label">
               <LabelWithTooltip tooltip={BACKUP_TOOLTIPS.config_backups_to_keep}>Config Backups to Keep</LabelWithTooltip>
             </label>
-            <input
+            <input aria-label="Config Backups to Keep"
               type="number"
               min="1"
               value={settings.configBackupsToKeep}
@@ -650,7 +650,7 @@ export const BackupPage: React.FC = () => {
             <label className="nms-label">
               <LabelWithTooltip tooltip={BACKUP_TOOLTIPS.mongo_backups_to_keep}>MongoDB Backups to Keep</LabelWithTooltip>
             </label>
-            <input
+            <input aria-label="MongoDB Backups to Keep"
               type="number"
               min="1"
               value={settings.mongoBackupsToKeep}

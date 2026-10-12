@@ -26,7 +26,7 @@ export function NumField({ label, value, onChange, unit, placeholder }: {
       <label className="block text-xs text-nms-text-dim mb-1">
         {label} {unit && <span className="text-nms-text-dim/70">({unit})</span>}
       </label>
-      <input
+      <input aria-label={unit ? `${label} (${unit})` : label}
         type="number"
         step="any"
         className="nms-input w-full"
@@ -44,7 +44,7 @@ export function SelectField({ label, value, onChange, options, disabled }: {
   return (
     <div>
       <label className="block text-xs text-nms-text-dim mb-1">{label}</label>
-      <select className="nms-input w-full disabled:opacity-50" value={value} disabled={disabled} onChange={e => onChange(e.target.value)}>
+      <select aria-label={label} className="nms-input w-full disabled:opacity-50" value={value} disabled={disabled} onChange={e => onChange(e.target.value)}>
         {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
     </div>

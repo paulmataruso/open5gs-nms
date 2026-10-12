@@ -73,7 +73,7 @@ function BandRow({ band, onChange, onDelete }: {
 
       {/* Label row */}
       <div className="flex items-center gap-2">
-        <input
+        <input aria-label="Band label"
           className="nms-input text-sm font-medium flex-1"
           placeholder="Label (e.g. Baicells Nova 436)"
           value={band.label}
@@ -106,17 +106,17 @@ function BandRow({ band, onChange, onDelete }: {
       <div className="grid grid-cols-3 gap-2">
         <div>
           <label className="nms-label text-xs">Low {unit}</label>
-          <input className="nms-input font-mono text-xs" type="number"
+          <input aria-label="Low" className="nms-input font-mono text-xs" type="number"
             value={dispLow} onChange={e => handleLow(e.target.value)} />
         </div>
         <div>
           <label className="nms-label text-xs">High {unit}</label>
-          <input className="nms-input font-mono text-xs" type="number"
+          <input aria-label="High" className="nms-input font-mono text-xs" type="number"
             value={dispHigh} onChange={e => handleHigh(e.target.value)} />
         </div>
         <div>
           <label className="nms-label text-xs">Max Grant BW (MHz)</label>
-          <input className="nms-input font-mono text-xs" type="number"
+          <input aria-label="Max Grant BW (MHz)" className="nms-input font-mono text-xs" type="number"
             value={band.maxBandwidthMhz}
             onChange={e => onChange({ ...band, maxBandwidthMhz: Number(e.target.value) })} />
         </div>
@@ -177,7 +177,7 @@ function EarfcnReferenceModal({ onClose }: { onClose: () => void }) {
               <p className="text-xs text-nms-text-dim">3GPP TS 36.101 — Band 48 (CBRS 3550–3700 MHz)</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors p-1 rounded-md hover:bg-nms-surface">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors p-1 rounded-md hover:bg-nms-surface">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -349,7 +349,7 @@ function EarfcnReference() {
           <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">EARFCN → Frequency</h3>
           <div>
             <label className="nms-label text-xs">EARFCN (Band 48 LTE)</label>
-            <input className="nms-input font-mono" type="number"
+            <input aria-label="EARFCN (Band 48 LTE)" className="nms-input font-mono" type="number"
               value={calcEarfcn}
               onChange={e => setCalcEarfcn(Number(e.target.value))}
               min={55240} max={56739} />
@@ -380,7 +380,7 @@ function EarfcnReference() {
           <h3 className="text-xs font-semibold text-purple-400 uppercase tracking-wider">NR-ARFCN → Frequency</h3>
           <div>
             <label className="nms-label text-xs">NR-ARFCN (n48 5G NR)</label>
-            <input className="nms-input font-mono" type="number"
+            <input aria-label="NR-ARFCN (n48 5G NR)" className="nms-input font-mono" type="number"
               value={calcNrIn}
               onChange={e => setCalcNrIn(Number(e.target.value))}
               min={620000} max={653333} />
@@ -411,7 +411,7 @@ function EarfcnReference() {
           <h3 className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Frequency → ARFCN</h3>
           <div>
             <label className="nms-label text-xs">Frequency (MHz)</label>
-            <input className="nms-input font-mono" type="number"
+            <input aria-label="Frequency (MHz)" className="nms-input font-mono" type="number"
               value={calcMhzIn}
               onChange={e => setCalcMhzIn(Number(e.target.value))}
               min={3550} max={3700} step={0.1} />
@@ -1066,13 +1066,13 @@ function CbsdPolicyEditor({ cbsd, bands, currentBandId, notes, isSaving, onSave 
           <div className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-80 bg-nms-bg border border-nms-border rounded-lg shadow-2xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-xs font-semibold text-nms-text truncate flex-1 mr-2">{cbsd.cbsdSerialNumber}</p>
-              <button onClick={() => setOpen(false)} className="text-nms-text-dim hover:text-nms-text">
+              <button aria-label="Close" onClick={() => setOpen(false)} className="text-nms-text-dim hover:text-nms-text">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
             <div>
               <label className="nms-label text-xs">Band Override</label>
-              <select className="nms-input font-mono text-xs" value={bandId} onChange={e => setBandId(e.target.value)}>
+              <select aria-label="Band Override" className="nms-input font-mono text-xs" value={bandId} onChange={e => setBandId(e.target.value)}>
                 <option value="">— Global default / group policy —</option>
                 {bands.map(b => (
                   <option key={b.id} value={b.id}>
@@ -1083,7 +1083,7 @@ function CbsdPolicyEditor({ cbsd, bands, currentBandId, notes, isSaving, onSave 
             </div>
             <div>
               <label className="nms-label text-xs">Notes (optional)</label>
-              <input className="nms-input text-xs" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Building A Sercomm" />
+              <input aria-label="Notes (optional)" className="nms-input text-xs" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. Building A Sercomm" />
             </div>
             <div className="flex gap-2">
               <button onClick={() => { onSave(bandId, note); setOpen(false); }} disabled={isSaving}
@@ -1220,7 +1220,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
   }
 
   const BandSelect = ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
-    <select className="nms-input font-mono text-xs" value={value} onChange={e => onChange(e.target.value)}>
+    <select aria-label="Band" className="nms-input font-mono text-xs" value={value} onChange={e => onChange(e.target.value)}>
       <option value="">— Global default —</option>
       {bands.map(b => (
         <option key={b.id} value={b.id}>
@@ -1300,7 +1300,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                   {/* Group name row */}
                   <div className="flex items-center gap-2">
                     {isManual ? (
-                      <input
+                      <input aria-label="Group name"
                         value={manualEntry._id}
                         onChange={e => setManualGroups(gs => gs.map(g => g._id === groupId ? { ...g, _id: e.target.value } : g))}
                         className="nms-input font-mono text-xs flex-1"
@@ -1370,7 +1370,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                     {!currentBandId && <p className="text-xs text-amber-400 mt-1">Using global default — select a band above and click Save to pin this group.</p>}
                     <SlotPreview bandId={currentBandId} memberCount={allMembers.length} />
                     <div className="mt-2">
-                      <input className="nms-input text-xs" placeholder="Notes (optional)" value={groupNotes[groupId] ?? ''}
+                      <input aria-label="Group notes" className="nms-input text-xs" placeholder="Notes (optional)" value={groupNotes[groupId] ?? ''}
                         onChange={e => setGroupNotes(n => ({ ...n, [groupId]: e.target.value }))} />
                     </div>
                     <label className="flex items-start gap-2 cursor-pointer group mt-2">
@@ -1541,7 +1541,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                           {displaySlots.map((slot, si) => (
                             <div key={si} className="flex items-center gap-2 px-2 py-1.5 rounded border border-nms-border bg-nms-surface-2 text-xs">
                               <span className="text-nms-text-dim w-16 shrink-0 font-mono">{si + 1}.</span>
-                              <input
+                              <input aria-label="Slot label"
                                 className="nms-input text-xs w-28 py-0.5"
                                 placeholder="Label"
                                 value={slot.label ?? ''}
@@ -1551,7 +1551,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                                   setGroupCustomSlots(s => ({ ...s, [groupId]: next }));
                                 }}
                               />
-                              <input
+                              <input aria-label="Slot low frequency (Hz)"
                                 className="nms-input font-mono text-xs w-32 py-0.5"
                                 type="number" placeholder="Low Hz"
                                 value={slot.low}
@@ -1562,7 +1562,7 @@ function BandPolicyTab({ config, cbsds }: { config: any; cbsds: any[] }) {
                                 }}
                               />
                               <span className="text-nms-text-dim">–</span>
-                              <input
+                              <input aria-label="Slot high frequency (Hz)"
                                 className="nms-input font-mono text-xs w-32 py-0.5"
                                 type="number" placeholder="High Hz"
                                 value={slot.high}
@@ -1930,7 +1930,7 @@ export function SASPage() {
                   <RefreshCw className={clsx('w-3.5 h-3.5', freqDebugLoading && 'animate-spin')} />
                   Refresh
                 </button>
-                <button onClick={() => setShowFreqDebug(false)} className="text-nms-text-dim hover:text-nms-text">
+                <button aria-label="Close" onClick={() => setShowFreqDebug(false)} className="text-nms-text-dim hover:text-nms-text">
                   <X className="w-4 h-4" />
                 </button>
               </div>
@@ -2083,7 +2083,7 @@ export function SASPage() {
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 tab === id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}>
               <Icon className="w-4 h-4" />
@@ -2440,22 +2440,22 @@ export function SASPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="nms-label">Max EIRP GAA (dBm/MHz)</label>
-                <input className="nms-input font-mono" type="number" value={cfgForm.maxEirpGAA}
+                <input aria-label="Max EIRP GAA (dBm/MHz)" className="nms-input font-mono" type="number" value={cfgForm.maxEirpGAA}
                   onChange={e => setCfgForm((f: any) => ({ ...f, maxEirpGAA: Number(e.target.value) }))} />
               </div>
               <div>
                 <label className="nms-label">Heartbeat Interval (sec)</label>
-                <input className="nms-input font-mono" type="number" value={cfgForm.heartbeatInterval}
+                <input aria-label="Heartbeat Interval (sec)" className="nms-input font-mono" type="number" value={cfgForm.heartbeatInterval}
                   onChange={e => setCfgForm((f: any) => ({ ...f, heartbeatInterval: Number(e.target.value) }))} />
               </div>
               <div>
                 <label className="nms-label">Grant Expire (hours)</label>
-                <input className="nms-input font-mono" type="number" value={cfgForm.grantExpireHours}
+                <input aria-label="Grant Expire (hours)" className="nms-input font-mono" type="number" value={cfgForm.grantExpireHours}
                   onChange={e => setCfgForm((f: any) => ({ ...f, grantExpireHours: Number(e.target.value) }))} />
               </div>
               <div>
                 <label className="nms-label">Default Max BW (MHz)</label>
-                <input className="nms-input font-mono" type="number" value={cfgForm.defaultGrantBandwidthMhz ?? 20}
+                <input aria-label="Default Max BW (MHz)" className="nms-input font-mono" type="number" value={cfgForm.defaultGrantBandwidthMhz ?? 20}
                   onChange={e => setCfgForm((f: any) => ({ ...f, defaultGrantBandwidthMhz: Number(e.target.value) }))} />
               </div>
             </div>
@@ -2645,22 +2645,22 @@ export function SASPage() {
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="nms-label">Root CN</label>
-                        <input className="nms-input font-mono text-xs" value={rootForm.cn}
+                        <input aria-label="Root CN" className="nms-input font-mono text-xs" value={rootForm.cn}
                           onChange={e => setRootForm(f => ({ ...f, cn: e.target.value }))} />
                       </div>
                       <div>
                         <label className="nms-label">Validity (days)</label>
-                        <input className="nms-input font-mono text-xs" type="number" value={rootForm.days}
+                        <input aria-label="Validity (days)" className="nms-input font-mono text-xs" type="number" value={rootForm.days}
                           onChange={e => setRootForm(f => ({ ...f, days: Number(e.target.value) }))} />
                       </div>
                       <div>
                         <label className="nms-label">New server cert CN</label>
-                        <input className="nms-input font-mono text-xs" value={rootForm.leafCn}
+                        <input aria-label="New server cert CN" className="nms-input font-mono text-xs" value={rootForm.leafCn}
                           onChange={e => setRootForm(f => ({ ...f, leafCn: e.target.value }))} />
                       </div>
                       <div className="col-span-2">
                         <label className="nms-label">New server cert SAN (comma-separated — IP:x.x.x.x, DNS:name)</label>
-                        <input className="nms-input font-mono text-xs" value={rootForm.leafSan}
+                        <input aria-label="New server cert SAN (comma-separated — IP:x.x.x.x, DNS:name)" className="nms-input font-mono text-xs" value={rootForm.leafSan}
                           onChange={e => setRootForm(f => ({ ...f, leafSan: e.target.value }))} />
                         {hostIps.length > 0 && (
                           <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
@@ -2673,7 +2673,7 @@ export function SASPage() {
                                   className={clsx(
                                     'text-xs font-mono px-2 py-0.5 rounded border transition-colors',
                                     active
-                                      ? 'bg-nms-accent text-white border-nms-accent'
+                                      ? 'bg-nms-accent text-nms-accent-fg border-nms-accent'
                                       : 'text-nms-text-dim border-nms-border hover:text-nms-text hover:border-nms-accent',
                                   )}>
                                   {ip}
@@ -2727,17 +2727,17 @@ export function SASPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="nms-label">Server CN</label>
-                    <input className="nms-input font-mono text-xs" value={leafForm.cn}
+                    <input aria-label="Server CN" className="nms-input font-mono text-xs" value={leafForm.cn}
                       onChange={e => setLeafForm(f => ({ ...f, cn: e.target.value }))} />
                   </div>
                   <div>
                     <label className="nms-label">Validity (days)</label>
-                    <input className="nms-input font-mono text-xs" type="number" value={leafForm.days}
+                    <input aria-label="Validity (days)" className="nms-input font-mono text-xs" type="number" value={leafForm.days}
                       onChange={e => setLeafForm(f => ({ ...f, days: Number(e.target.value) }))} />
                   </div>
                   <div className="col-span-2">
                     <label className="nms-label">Subject Alternative Names (comma-separated — IP:x.x.x.x, DNS:name)</label>
-                    <input className="nms-input font-mono text-xs" value={leafForm.san}
+                    <input aria-label="Subject Alternative Names (comma-separated — IP:x.x.x.x, DNS:name)" className="nms-input font-mono text-xs" value={leafForm.san}
                       onChange={e => setLeafForm(f => ({ ...f, san: e.target.value }))} />
                     {hostIps.length > 0 && (
                       <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
@@ -2750,7 +2750,7 @@ export function SASPage() {
                               className={clsx(
                                 'text-xs font-mono px-2 py-0.5 rounded border transition-colors',
                                 active
-                                  ? 'bg-nms-accent text-white border-nms-accent'
+                                  ? 'bg-nms-accent text-nms-accent-fg border-nms-accent'
                                   : 'text-nms-text-dim border-nms-border hover:text-nms-text hover:border-nms-accent',
                               )}>
                               {ip}

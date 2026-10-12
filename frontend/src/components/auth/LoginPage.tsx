@@ -45,7 +45,7 @@ export function LoginPage(): JSX.Element {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="nms-label">Username</label>
-              <input
+              <input aria-label="Username"
                 type="text"
                 className="nms-input font-mono text-sm"
                 value={username}
@@ -60,7 +60,7 @@ export function LoginPage(): JSX.Element {
 
             <div>
               <label className="nms-label">Password</label>
-              <input
+              <input aria-label="Password"
                 type="password"
                 className="nms-input font-mono text-sm"
                 value={password}

@@ -596,7 +596,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 <div className="flex items-center justify-center w-8 h-8 rounded bg-nms-accent/10 text-nms-accent font-semibold text-sm">
                   {idx + 1}
                 </div>
-                <select
+                <select aria-label="Integrity Protection Order (EIA)"
                   className="nms-input flex-1 font-mono text-sm"
                   value={alg}
                   onChange={(e) => {
@@ -646,7 +646,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 <div className="flex items-center justify-center w-8 h-8 rounded bg-nms-accent/10 text-nms-accent font-semibold text-sm">
                   {idx + 1}
                 </div>
-                <select
+                <select aria-label="Ciphering Order (EEA)"
                   className="nms-input flex-1 font-mono text-sm"
                   value={alg}
                   onChange={(e) => {

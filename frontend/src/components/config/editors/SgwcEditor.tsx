@@ -132,7 +132,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">GTP-C Server</h3>
         <div>
           <label className="nms-label">Address</label>
-          <input
+          <input aria-label="Address"
             className="nms-input font-mono text-sm"
             value={gtpcServer.address}
             onChange={e => updateSgwc({ gtpc: { ...sgwc.gtpc, server: [{ ...gtpcServer, address: e.target.value }] } })}
@@ -150,7 +150,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
         <div className="space-y-2">
           {pfcpServers.map((srv, i) => (
             <div key={i} className="flex items-center gap-2">
-              <input
+              <input aria-label="PFCP server address"
                 className="nms-input font-mono text-sm flex-1"
                 value={srv.address}
                 onChange={e => {
@@ -164,7 +164,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                 {isLoopback(srv.address) ? '🔵 loopback (local SGW-U)' : '🟢 routable (remote SGW-U)'}
               </span>
               {pfcpServers.length > 1 && i > 0 && (
-                <button
+                <button aria-label="Remove PFCP server"
                   onClick={() => updateSgwc({ pfcp: { ...sgwc.pfcp, server: pfcpServers.filter((_, idx) => idx !== i) } })}
                   className="text-nms-text-dim hover:text-red-400 transition-colors shrink-0"
                 >
@@ -307,7 +307,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                       </button>
                     )}
                     {!isLocal && (
-                      <button
+                      <button aria-label="Remove remote SGW-U"
                         onClick={() => {
                           if (confirm(`Remove Remote SGW-U (${client.address})?`)) removeRemoteSgwu(idx);
                         }}
@@ -322,7 +322,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                 {/* PFCP Address */}
                 <div>
                   <label className="nms-label">PFCP Address</label>
-                  <input
+                  <input aria-label="PFCP Address"
                     className="nms-input font-mono text-sm"
                     value={client.address}
                     onChange={e => updateSgwuClient(idx, { address: e.target.value })}
@@ -344,7 +344,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                     {/* TAC */}
                     <div>
                       <label className="nms-label">TAC <span className="text-nms-text-dim font-normal">(decimal, e.g. 1 or 3,5,8)</span></label>
-                      <input
+                      <input aria-label="TAC (decimal, e.g. 1 or 3,5,8)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.tac)}
                         onChange={e => {
@@ -363,7 +363,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                     {/* APN */}
                     <div>
                       <label className="nms-label">APN <span className="text-nms-text-dim font-normal">(e.g. internet or ims,internet)</span></label>
-                      <input
+                      <input aria-label="APN (e.g. internet or ims,internet)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.apn)}
                         onChange={e => {
@@ -382,7 +382,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                     {/* Cell ID */}
                     <div>
                       <label className="nms-label">Cell ID / e_cell_id <span className="text-nms-text-dim font-normal">(hex, 28-bit, e.g. 463 or 123456789,9413)</span></label>
-                      <input
+                      <input aria-label="Cell ID / e_cell_id (hex, 28-bit, e.g. 463 or 123456789,9413)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.e_cell_id)}
                         onChange={e => {

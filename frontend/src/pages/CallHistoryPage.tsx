@@ -256,7 +256,7 @@ export function CallHistoryPage() {
           <div className="flex items-end gap-4 flex-wrap">
             <div>
               <label className="nms-label">Retention (days)</label>
-              <input
+              <input aria-label="Retention (days)"
                 type="number"
                 min={1}
                 max={3650}
@@ -291,7 +291,7 @@ export function CallHistoryPage() {
         <TimeRangePicker value={timeRange} onChange={setTimeRange} align="left" />
         <div>
           <label className="nms-label">Source</label>
-          <select className="nms-input" value={sourceSystem} onChange={e => setSourceSystem(e.target.value)}>
+          <select aria-label="Source" className="nms-input" value={sourceSystem} onChange={e => setSourceSystem(e.target.value)}>
             <option value="">All sources</option>
             <option value="pstn">PSTN</option>
             <option value="2g">2G</option>
@@ -300,7 +300,7 @@ export function CallHistoryPage() {
         </div>
         <div className="flex-1 min-w-[200px]">
           <label className="nms-label">Subscriber IMSI</label>
-          <input className="nms-input font-mono" placeholder="Filter by IMSI" value={imsi} onChange={e => setImsi(e.target.value)} />
+          <input aria-label="Subscriber IMSI" className="nms-input font-mono" placeholder="Filter by IMSI" value={imsi} onChange={e => setImsi(e.target.value)} />
         </div>
         <button onClick={load} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-1.5" title="Refresh">
           <RefreshCw className={clsx('w-3 h-3', loading && 'animate-spin')} />
@@ -338,11 +338,11 @@ export function CallHistoryPage() {
         <div className="flex items-center justify-between px-4 py-3 border-t border-nms-border">
           <span className="text-xs text-nms-text-dim">{total} record{total !== 1 ? 's' : ''}</span>
           <div className="flex items-center gap-2">
-            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="nms-btn-ghost text-xs p-1.5 disabled:opacity-40">
+            <button aria-label="Previous page" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="nms-btn-ghost text-xs p-1.5 disabled:opacity-40">
               <ChevronLeft className="w-3.5 h-3.5" />
             </button>
             <span className="text-xs text-nms-text-dim">Page {page} of {totalPages}</span>
-            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="nms-btn-ghost text-xs p-1.5 disabled:opacity-40">
+            <button aria-label="Next page" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="nms-btn-ghost text-xs p-1.5 disabled:opacity-40">
               <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>

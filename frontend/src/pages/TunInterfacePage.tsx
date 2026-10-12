@@ -41,17 +41,17 @@ function TunModal({ mode, initial, suggestedName, onSave, onClose }: ModalProps)
         <div className="space-y-4">
           <div>
             <label className="nms-label">Interface Name</label>
-            <input className="nms-input font-mono" value={name} onChange={e => setName(e.target.value)} disabled={mode === 'edit'} placeholder="ogstun2" />
+            <input aria-label="Interface Name" className="nms-input font-mono" value={name} onChange={e => setName(e.target.value)} disabled={mode === 'edit'} placeholder="ogstun2" />
             <p className="text-xs text-nms-text-dim mt-1">Any valid Linux interface name — starts with a letter, max 15 chars, e.g. <span className="font-mono">ogstun2</span>, <span className="font-mono">upf-ims</span>, <span className="font-mono">tun_data</span></p>
           </div>
           <div>
             <label className="nms-label">Gateway IP Address</label>
-            <input className="nms-input font-mono" value={ip} onChange={e => setIp(e.target.value)} placeholder="10.46.0.1" />
+            <input aria-label="Gateway IP Address" className="nms-input font-mono" value={ip} onChange={e => setIp(e.target.value)} placeholder="10.46.0.1" />
             <p className="text-xs text-nms-text-dim mt-1">The IP assigned to the TUN interface — the gateway for the UE pool. Must match <span className="font-mono">gateway:</span> in your UPF session config.</p>
           </div>
           <div>
             <label className="nms-label">Prefix Length</label>
-            <input className="nms-input font-mono" type="number" min={1} max={32} value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="16" />
+            <input aria-label="Prefix Length" className="nms-input font-mono" type="number" min={1} max={32} value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="16" />
             <p className="text-xs text-nms-text-dim mt-1">e.g. <span className="font-mono">16</span> means UE pool is <span className="font-mono">{ip || '10.46.0.0'}/{prefix || '16'}</span></p>
           </div>
           <div className="p-3 rounded bg-blue-500/10 border border-blue-500/20 flex items-start gap-2">

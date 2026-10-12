@@ -31,7 +31,7 @@ export function FieldWithTooltip({
         {required && <span className="text-nms-red">*</span>}
         {tooltip && <TooltipTrigger content={tooltip} />}
       </label>
-      <input
+      <input aria-label={label}
         type={type}
         className={clsx('nms-input', mono && 'font-mono text-xs')}
         value={value}
@@ -70,7 +70,7 @@ export function SelectWithTooltip({
         {required && <span className="text-nms-red">*</span>}
         {tooltip && <TooltipTrigger content={tooltip} />}
       </label>
-      <select
+      <select aria-label={label}
         className="nms-input font-mono text-xs"
         value={value}
         onChange={(e) => onChange(e.target.value)}

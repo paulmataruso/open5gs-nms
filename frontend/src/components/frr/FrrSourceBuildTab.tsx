@@ -190,7 +190,7 @@ export function FrrSourceBuildTab() {
         <div className="flex items-end gap-3 flex-wrap">
           <div>
             <label className="text-xs text-nms-text-dim block mb-1">Target FRR tag</label>
-            <input
+            <input aria-label="Target FRR tag"
               value={targetTag}
               onChange={e => setTargetTag(e.target.value)}
               disabled={isRunning}

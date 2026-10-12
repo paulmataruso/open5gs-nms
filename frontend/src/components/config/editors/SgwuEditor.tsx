@@ -241,7 +241,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="nms-label">Address</label>
-                <input
+                <input aria-label="Address"
                   className="nms-input font-mono text-sm"
                   value={pfcpServer.address}
                   onChange={e => updateSgwu({ pfcp: { ...sgwu.pfcp, server: [{ ...pfcpServer, address: e.target.value }] } })}
@@ -250,7 +250,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               </div>
               <div>
                 <label className="nms-label">Port</label>
-                <input
+                <input aria-label="Port"
                   type="number"
                   className="nms-input font-mono text-sm"
                   value={pfcpServer.port ?? ''}
@@ -277,7 +277,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               Required for remote SGW-U deployments. Leave blank if SGW-C and SGW-U are on the same host
               and SGW-C is configured to dial SGW-U.
             </p>
-            <input
+            <input aria-label="SGW-C address to dial"
               className="nms-input font-mono text-sm"
               value={(sgwu.pfcp?.client?.sgwc?.[0]?.address) || ''}
               onChange={e => {
@@ -305,7 +305,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="nms-label">Address</label>
-                <input
+                <input aria-label="Address"
                   className="nms-input font-mono text-sm"
                   value={gtpuServer.address}
                   onChange={e => updateSgwu({ gtpu: { server: [{ ...gtpuServer, address: e.target.value }] } })}
@@ -320,7 +320,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               </div>
               <div>
                 <label className="nms-label">Port</label>
-                <input
+                <input aria-label="Port"
                   type="number"
                   className="nms-input font-mono text-sm"
                   value={gtpuServer.port ?? ''}
@@ -393,7 +393,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Site Identity</h4>
             <div>
               <label className="nms-label">Site Label (for filename only)</label>
-              <input
+              <input aria-label="Site Label (for filename only)"
                 className="nms-input text-sm"
                 value={remoteForm.label}
                 onChange={e => setRemote({ label: e.target.value })}
@@ -411,7 +411,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="nms-label">PFCP Address (Gxc)</label>
-                <input
+                <input aria-label="PFCP Address (Gxc)"
                   className="nms-input font-mono text-sm"
                   value={remoteForm.pfcpAddress}
                   onChange={e => setRemote({ pfcpAddress: e.target.value })}
@@ -428,7 +428,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               </div>
               <div>
                 <label className="nms-label">GTP-U Address (S1-U)</label>
-                <input
+                <input aria-label="GTP-U Address (S1-U)"
                   className="nms-input font-mono text-sm"
                   value={remoteForm.gtpuAddress}
                   onChange={e => setRemote({ gtpuAddress: e.target.value })}
@@ -456,7 +456,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             <div className="space-y-3">
               <div>
                 <label className="nms-label">TAC <span className="text-nms-text-dim font-normal">(decimal, e.g. 1 or 3,5,8)</span></label>
-                <input
+                <input aria-label="TAC (decimal, e.g. 1 or 3,5,8)"
                   className="nms-input font-mono text-sm"
                   value={remoteForm.tac}
                   onChange={e => setRemote({ tac: e.target.value, apn: '', eCellId: '' })}
@@ -466,7 +466,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               </div>
               <div>
                 <label className="nms-label">APN <span className="text-nms-text-dim font-normal">(e.g. internet or ims,internet)</span></label>
-                <input
+                <input aria-label="APN (e.g. internet or ims,internet)"
                   className="nms-input font-mono text-sm"
                   value={remoteForm.apn}
                   onChange={e => setRemote({ apn: e.target.value, tac: '', eCellId: '' })}
@@ -476,7 +476,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
               </div>
               <div>
                 <label className="nms-label">Cell ID / e_cell_id <span className="text-nms-text-dim font-normal">(hex, 28-bit, e.g. 463 or 123456789,9413)</span></label>
-                <input
+                <input aria-label="Cell ID / e_cell_id (hex, 28-bit, e.g. 463 or 123456789,9413)"
                   className="nms-input font-mono text-sm"
                   value={remoteForm.eCellId}
                   onChange={e => setRemote({ eCellId: e.target.value, tac: '', apn: '' })}
@@ -492,7 +492,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             <h4 className="text-sm font-semibold font-display text-nms-accent mb-3">Logging</h4>
             <div>
               <label className="nms-label">Log File Path</label>
-              <input
+              <input aria-label="Log File Path"
                 className="nms-input font-mono text-sm"
                 value={remoteForm.logPath}
                 onChange={e => setRemote({ logPath: e.target.value })}

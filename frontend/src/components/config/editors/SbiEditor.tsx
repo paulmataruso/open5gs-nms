@@ -22,7 +22,7 @@ function Field({
   return (
     <div>
       <label className="nms-label">{label}</label>
-      <input
+      <input aria-label={label}
         type={type}
         className="nms-input font-mono text-xs"
         value={value}

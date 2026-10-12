@@ -10,8 +10,26 @@
  * `--nms-green-rgb` / `--nms-red-rgb` / `--nms-amber-rgb` are deliberately the
  * same across every theme — they carry operational meaning (good/bad/warning)
  * in an NMS UI and shouldn't shift with the operator's cosmetic preference.
+ * `--nms-red-strong-rgb` is the same idea for a SOLID red fill carrying white
+ * text: white on --nms-red is only 3.76:1, so the RAN kill-switch hover state
+ * failed AA. Darkening just the fill (to red-700) gets white to 6.42:1 and
+ * keeps the universally-understood white-on-red danger convention, rather
+ * than flipping to dark text on red, which reads as a warning, not a danger.
  * ThemeContext sets data-theme on <html>; :root is the fallback/default
  * (Cyan Slate) so nothing breaks before JS applies a stored preference.
+ *
+ * `--nms-accent-fg-rgb` is the foreground for anything sitting ON --nms-accent
+ * (primary buttons, active tabs). It is each theme's own --nms-bg, not white:
+ * white-on-accent measured 2.15:1 (amber) to 4.23:1 (violet), failing WCAG AA
+ * in all five themes, and failing even the 3:1 large-text floor in three of
+ * them. Using the theme's dark bg instead gives 4.62:1 (violet) to 8.95:1
+ * (amber) while leaving the accent hues themselves untouched.
+ * `--nms-border-strong-rgb` is for INTERACTIVE boundaries (input/select/
+ * textarea), which WCAG 1.4.11 holds to 3:1. Plain --nms-border measures
+ * 1.32-1.53:1 against --nms-bg: fine for a decorative card edge (exempt),
+ * not for the edge of a control an operator has to find and click. Each value
+ * is the theme's own border hue lightened until it clears 3:1 -- same family,
+ * so the UI reads the same.
  */
 :root,
 [data-theme="cyan"] {
@@ -21,10 +39,13 @@
   --nms-border-rgb: 30 41 59;
   --nms-accent-rgb: 6 182 212;
   --nms-accent-dim-rgb: 8 145 178;
+  --nms-accent-fg-rgb: 10 14 26;
+  --nms-border-strong-rgb: 70 96 137;
   --nms-text-rgb: 226 232 240;
   --nms-text-dim-rgb: 148 163 184;
   --nms-green-rgb: 16 185 129;
   --nms-red-rgb: 239 68 68;
+  --nms-red-strong-rgb: 185 28 28;
   --nms-amber-rgb: 245 158 11;
 }
 
@@ -35,10 +56,13 @@
   --nms-border-rgb: 42 38 64;
   --nms-accent-rgb: 139 92 246;
   --nms-accent-dim-rgb: 124 58 237;
+  --nms-accent-fg-rgb: 11 10 26;
+  --nms-border-strong-rgb: 95 86 144;
   --nms-text-rgb: 237 233 254;
   --nms-text-dim-rgb: 162 155 196;
   --nms-green-rgb: 16 185 129;
   --nms-red-rgb: 239 68 68;
+  --nms-red-strong-rgb: 185 28 28;
   --nms-amber-rgb: 245 158 11;
 }
 
@@ -49,10 +73,13 @@
   --nms-border-rgb: 28 58 41;
   --nms-accent-rgb: 16 185 129;
   --nms-accent-dim-rgb: 5 150 105;
+  --nms-accent-fg-rgb: 6 18 12;
+  --nms-border-strong-rgb: 51 106 75;
   --nms-text-rgb: 209 250 229;
   --nms-text-dim-rgb: 134 169 150;
   --nms-green-rgb: 16 185 129;
   --nms-red-rgb: 239 68 68;
+  --nms-red-strong-rgb: 185 28 28;
   --nms-amber-rgb: 245 158 11;
 }
 
@@ -63,10 +90,13 @@
   --nms-border-rgb: 58 44 26;
   --nms-accent-rgb: 245 158 11;
   --nms-accent-dim-rgb: 217 119 6;
+  --nms-accent-fg-rgb: 18 14 8;
+  --nms-border-strong-rgb: 118 90 53;
   --nms-text-rgb: 254 243 199;
   --nms-text-dim-rgb: 184 163 126;
   --nms-green-rgb: 16 185 129;
   --nms-red-rgb: 239 68 68;
+  --nms-red-strong-rgb: 185 28 28;
   --nms-amber-rgb: 245 158 11;
 }
 
@@ -77,10 +107,13 @@
   --nms-border-rgb: 61 31 42;
   --nms-accent-rgb: 244 63 94;
   --nms-accent-dim-rgb: 225 29 72;
+  --nms-accent-fg-rgb: 18 7 10;
+  --nms-border-strong-rgb: 140 71 96;
   --nms-text-rgb: 255 228 230;
   --nms-text-dim-rgb: 185 141 149;
   --nms-green-rgb: 16 185 129;
   --nms-red-rgb: 239 68 68;
+  --nms-red-strong-rgb: 185 28 28;
   --nms-amber-rgb: 245 158 11;
 }
 
@@ -104,6 +137,65 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /*
+   * One keyboard-focus indicator for every interactive element in the app.
+   * Before this, `.nms-btn` defined no focus style at all and `focus-visible`
+   * appeared nowhere in the codebase, so ~870 buttons fell back to the user
+   * agent's default ring -- which on these dark surfaces is close to invisible.
+   *
+   * Three deliberate choices:
+   *  - `:focus-visible`, not `:focus`, so a mouse click never leaves a ring
+   *    stuck on a button (the reason people reach for `outline: none` and
+   *    break keyboard access in the first place).
+   *  - `:where()` keeps specificity at 0, so any component class can still
+   *    override it without an `!important` arms race.
+   *  - `outline-offset` puts the ring in the gap OUTSIDE the control, against
+   *    the page surface rather than the control's own fill. That is what keeps
+   *    it at 3:1 on an accent-filled primary button as well as on a flat one
+   *    (nms-text measures 14:1+ against every surface in every theme).
+   */
+  :where(button, a, [role='button'], [role='tab'], summary, [tabindex]):focus-visible {
+    outline: 2px solid rgb(var(--nms-text-rgb));
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  :where(input, select, textarea):focus-visible {
+    outline: 2px solid rgb(var(--nms-accent-rgb));
+    outline-offset: 1px;
+  }
+
+  /*
+   * Honor the OS "reduce motion" setting. The app ships 203 animate-* usages
+   * and 324 transitions, and `animate-flash-red` in particular is an infinite
+   * 1.2s pulse that runs for as long as any radio is blocked -- a persistent
+   * attention/vestibular trigger, not a one-shot flourish.
+   *
+   * Spinners are deliberately NOT frozen, only slowed: an `animate-spin` here
+   * is load-bearing feedback for real multi-minute operations (apt installs,
+   * source builds), and a motionless spinner reads as a hung UI. Slowing it
+   * keeps the "still working" signal while dropping the strobe.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+    .animate-spin {
+      animation-duration: 1.6s !important;
+      animation-iteration-count: infinite !important;
+    }
+    .animate-flash-red {
+      /* Hold the mid-pulse tint as a steady state: the alert still reads as
+         red without the 1.2s strobe. */
+      animation: none !important;
+      background-color: rgb(var(--nms-red-rgb) / 0.28) !important;
+    }
+  }
 }
 
 @layer components {
@@ -115,7 +207,8 @@
            disabled:opacity-50 disabled:cursor-not-allowed;
   }
   .nms-btn-primary {
-    @apply nms-btn bg-nms-accent text-white hover:bg-nms-accent-dim active:scale-[0.98];
+    @apply nms-btn bg-nms-accent text-nms-accent-fg hover:bg-nms-accent-dim
+           active:scale-[0.98];
   }
   .nms-btn-danger {
     @apply nms-btn bg-nms-red/20 text-nms-red border border-nms-red/30 
@@ -126,16 +219,29 @@
            hover:text-nms-text active:scale-[0.98];
   }
   .nms-input {
-    @apply w-full bg-nms-bg border border-nms-border rounded-md px-3 py-2 text-sm
-           text-nms-text placeholder-nms-text-dim/50 
-           focus:outline-none focus:ring-1 focus:ring-nms-accent focus:border-nms-accent
+    @apply w-full bg-nms-bg border border-nms-border-strong rounded-md px-3 py-2 text-sm
+           text-nms-text placeholder-nms-text-dim/50
+           focus:outline-none focus:ring-2 focus:ring-nms-accent focus:border-nms-accent
            transition-colors;
   }
   .nms-label {
     @apply block text-xs font-medium text-nms-text-dim uppercase tracking-wider mb-1;
   }
   .nms-checkbox {
-    @apply w-4 h-4 rounded border-nms-border bg-nms-bg accent-nms-accent cursor-pointer;
+    @apply w-4 h-4 rounded border-nms-border-strong bg-nms-bg accent-nms-accent
+           cursor-pointer;
+  }
+  /* Wrapper for any table that can outgrow its column. The app's existing
+     idiom was `rounded-lg overflow-hidden`, which clips an overflowing table
+     with no way to reach the clipped columns -- worse than no wrapper, because
+     the content is silently unreachable rather than merely awkward. Nesting a
+     horizontal scroller inside the rounded clipper keeps the corners AND makes
+     the overflow reachable. */
+  .nms-table-wrap {
+    @apply border border-nms-border rounded-lg overflow-hidden;
+  }
+  .nms-table-scroll {
+    @apply overflow-x-auto;
   }
   .status-dot {
     @apply w-2.5 h-2.5 rounded-full;

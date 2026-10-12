@@ -121,7 +121,7 @@ export function TopologyModal({ onClose, focus }: Props): JSX.Element {
               User plane traffic stays at the edge site — only control plane travels back to central.
             </p>
           </div>
-          <button
+          <button aria-label="Close"
             onClick={onClose}
             className="text-nms-text-dim hover:text-nms-text transition-colors p-1 rounded"
           >

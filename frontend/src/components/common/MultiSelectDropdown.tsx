@@ -69,7 +69,7 @@ export function MultiSelectDropdown({ label, options, selected, onChange, placeh
         <div className="absolute z-50 mt-1 w-72 max-h-80 flex flex-col bg-nms-surface border border-nms-border rounded-lg shadow-xl">
           <div className="p-2 border-b border-nms-border relative shrink-0">
             <Search className="w-3.5 h-3.5 absolute left-4 top-1/2 -translate-y-1/2 text-nms-text-dim" />
-            <input
+            <input aria-label={placeholder ?? `Search ${label.toLowerCase()}`}
               autoFocus
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -94,7 +94,7 @@ export function MultiSelectDropdown({ label, options, selected, onChange, placeh
                       'w-3.5 h-3.5 rounded border shrink-0 flex items-center justify-center',
                       isSelected ? 'bg-nms-accent border-nms-accent' : 'border-nms-border',
                     )}>
-                      {isSelected && <Check className="w-2.5 h-2.5 text-white" />}
+                      {isSelected && <Check className="w-2.5 h-2.5 text-nms-accent-fg" />}
                     </span>
                     <span className={clsx('truncate font-mono', isSelected ? 'text-nms-text' : 'text-nms-text-dim')}>
                       {opt.label}

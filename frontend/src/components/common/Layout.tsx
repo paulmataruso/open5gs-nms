@@ -102,7 +102,7 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
         <UserMenu collapsed={collapsed} />
 
         {/* Collapse toggle */}
-        <button
+        <button aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           onClick={() => setCollapsed(!collapsed)}
           className="flex items-center justify-center h-10 border-t border-nms-border text-nms-text-dim hover:text-nms-text transition-colors"
         >

@@ -97,15 +97,15 @@ function PlanModal({
         <h2 className="text-lg font-semibold font-display">{plan ? 'Edit Plan' : 'New Plan'}</h2>
         <div>
           <label className="text-xs text-nms-text-dim block mb-1">Plan name</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Standard" className="nms-input w-full" autoFocus />
+          <input aria-label="Plan name" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Standard" className="nms-input w-full" autoFocus />
         </div>
         <div>
           <label className="text-xs text-nms-text-dim block mb-1">Data cap (GB)</label>
-          <input type="number" min={0.1} step={0.1} value={dataCapGB} onChange={e => setDataCapGB(Number(e.target.value))} className="nms-input w-full" />
+          <input aria-label="Data cap (GB)" type="number" min={0.1} step={0.1} value={dataCapGB} onChange={e => setDataCapGB(Number(e.target.value))} className="nms-input w-full" />
         </div>
         <div>
           <label className="text-xs text-nms-text-dim block mb-1">Voice / airtime cap (minutes)</label>
-          <input type="number" min={1} step={1} value={voiceCapMinutes} onChange={e => setVoiceCapMinutes(Number(e.target.value))} className="nms-input w-full" />
+          <input aria-label="Voice / airtime cap (minutes)" type="number" min={1} step={1} value={voiceCapMinutes} onChange={e => setVoiceCapMinutes(Number(e.target.value))} className="nms-input w-full" />
         </div>
         {plan && (
           <p className="text-xs text-amber-400">

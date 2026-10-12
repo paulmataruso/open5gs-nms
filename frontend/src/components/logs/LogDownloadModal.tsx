@@ -128,7 +128,7 @@ export const LogDownloadModal: React.FC<Props> = ({
             <Download className="w-5 h-5 text-nms-accent" />
             Download Logs
           </h2>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -191,7 +191,7 @@ export const LogDownloadModal: React.FC<Props> = ({
                 {availableServices.map(svc => {
                   const selected = selectedServices.has(svc);
                   return (
-                    <button
+                    <button aria-label={`${selected ? 'Deselect' : 'Select'} ${svc} logs`}
                       key={svc}
                       onClick={() => toggleService(svc)}
                       className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors border font-mono ${
@@ -240,11 +240,11 @@ export const LogDownloadModal: React.FC<Props> = ({
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <label className="text-xs text-nms-text-dim mb-1 block">From</label>
-                          <input type="datetime-local" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="nms-input text-xs w-full" />
+                          <input aria-label="From" type="datetime-local" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="nms-input text-xs w-full" />
                         </div>
                         <div>
                           <label className="text-xs text-nms-text-dim mb-1 block">To</label>
-                          <input type="datetime-local" value={dateTo} onChange={e => setDateTo(e.target.value)} className="nms-input text-xs w-full" />
+                          <input aria-label="To" type="datetime-local" value={dateTo} onChange={e => setDateTo(e.target.value)} className="nms-input text-xs w-full" />
                         </div>
                       </div>
                     )}

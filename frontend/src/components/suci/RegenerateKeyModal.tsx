@@ -40,7 +40,7 @@ export function RegenerateKeyModal({ keyData, onClose }: RegenerateKeyModalProps
             <AlertTriangle className="w-5 h-5 text-amber-500" />
             <h3 className="text-lg font-semibold font-display">Regenerate SUCI Key</h3>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -88,7 +88,7 @@ export function RegenerateKeyModal({ keyData, onClose }: RegenerateKeyModalProps
             <label className="nms-label">
               Type <strong className="text-amber-500">REGENERATE</strong> to confirm:
             </label>
-            <input
+            <input aria-label="Type REGENERATE to confirm:"
               type="text"
               className="nms-input font-mono"
               value={confirmation}

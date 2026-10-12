@@ -46,7 +46,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_address}>Address</LabelWithTooltip></label>
-            <input
+            <input aria-label="Address"
               className="nms-input font-mono text-xs"
               value={server.address}
               onChange={(e) => updateNssf({ sbi: { ...nssf.sbi, server: [{ ...server, address: e.target.value }] } })}
@@ -54,7 +54,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_port}>Port</LabelWithTooltip></label>
-            <input
+            <input aria-label="Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={server.port}
@@ -63,7 +63,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.sbi_advertise}>Advertise (optional)</LabelWithTooltip></label>
-            <input
+            <input aria-label="Advertise (optional)"
               className="nms-input font-mono text-xs"
               value={server.advertise || ''}
               onChange={(e) => updateNssf({ sbi: { ...nssf.sbi, server: [{ ...server, advertise: e.target.value || undefined }] } })}
@@ -132,7 +132,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
               {/* URI */}
               <div className="mb-3">
                 <label className="nms-label">NRF URI</label>
-                <input
+                <input aria-label="NRF URI"
                   className="nms-input font-mono text-xs w-full"
                   value={nsi.uri || ''}
                   onChange={(e) => updateEntry(e.target.value, sst, sd)}
@@ -144,7 +144,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="nms-label">SST (Slice/Service Type)</label>
-                  <input
+                  <input aria-label="SST (Slice/Service Type)"
                     type="number"
                     className="nms-input font-mono text-xs"
                     value={sst}
@@ -156,7 +156,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
                 </div>
                 <div>
                   <label className="nms-label">SD (optional, 6 hex chars)</label>
-                  <input
+                  <input aria-label="SD (optional, 6 hex chars)"
                     className="nms-input font-mono text-xs"
                     value={sd}
                     onChange={(e) => {

@@ -138,7 +138,7 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         )}
         {(nrf.serving || []).map((s: any, i: number) => (
           <div key={i} className="relative grid grid-cols-2 gap-4 mb-2 pr-8">
-            <button
+            <button aria-label="Remove serving PLMN"
               onClick={() => updateNrf({ serving: nrf.serving.filter((_: any, idx: number) => idx !== i) })}
               className="absolute top-1/2 -translate-y-1/2 right-0 text-nms-text-dim hover:text-nms-red transition-colors"
             >
@@ -369,7 +369,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
           {amf.tai.map((t: any, i: number) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
               {amf.tai.length > 1 && (
-                <button
+                <button aria-label="Remove tracking area"
                   onClick={() => {
                     const updated = amf.tai.filter((_: any, idx: number) => idx !== i);
                     updateAmf({ tai: updated });
@@ -429,7 +429,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
           {amf.plmn_support.map((p: any, pi: number) => (
             <div key={pi} className="relative border border-nms-border rounded-lg p-4 mb-3 bg-nms-surface-2/20">
               {amf.plmn_support.length > 1 && (
-                <button
+                <button aria-label="Remove supported PLMN"
                   onClick={() => updateAmf({ plmn_support: amf.plmn_support.filter((_: any, idx: number) => idx !== pi) })}
                   className="absolute top-3 right-3 text-nms-text-dim hover:text-nms-red transition-colors"
                 >
@@ -465,7 +465,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               {(p.s_nssai || []).map((slice: any, si: number) => (
                 <div key={si} className="relative grid grid-cols-2 gap-3 mb-2 pl-3 border-l-2 border-nms-accent/20">
                   {(p.s_nssai || []).length > 1 && (
-                    <button
+                    <button aria-label="Remove network slice"
                       onClick={() => {
                         const updated = [...amf.plmn_support];
                         updated[pi] = { ...updated[pi], s_nssai: updated[pi].s_nssai.filter((_: any, idx: number) => idx !== si) };
@@ -510,7 +510,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
             {(amf.security?.integrity_order || ['NIA2', 'NIA1', 'NIA0']).map((alg: string, idx: number) => (
               <div key={idx} className="flex items-center gap-3 bg-nms-surface-2/50 rounded p-3 border border-nms-border">
                 <div className="flex items-center justify-center w-8 h-8 rounded bg-nms-accent/10 text-nms-accent font-semibold text-sm">{idx + 1}</div>
-                <select className="nms-input flex-1 font-mono text-sm" value={alg} onChange={(e) => {
+                <select aria-label="Integrity Protection Order (NIA)" className="nms-input flex-1 font-mono text-sm" value={alg} onChange={(e) => {
                   const updated = [...(amf.security?.integrity_order || [])];
                   updated[idx] = e.target.value;
                   updateAmf({ security: { ...amf.security, integrity_order: updated } });
@@ -521,7 +521,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   <option value="NIA3">NIA3 (ZUC)</option>
                 </select>
                 {(amf.security?.integrity_order || []).length > 1 && (
-                  <button onClick={() => {
+                  <button aria-label="Remove integrity algorithm" onClick={() => {
                     const updated = (amf.security?.integrity_order || []).filter((_: string, i: number) => i !== idx);
                     updateAmf({ security: { ...amf.security, integrity_order: updated } });
                   }} className="text-nms-text-dim hover:text-nms-red transition-colors"><X className="w-4 h-4" /></button>
@@ -536,7 +536,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
             {(amf.security?.ciphering_order || ['NEA0', 'NEA1', 'NEA2']).map((alg: string, idx: number) => (
               <div key={idx} className="flex items-center gap-3 bg-nms-surface-2/50 rounded p-3 border border-nms-border">
                 <div className="flex items-center justify-center w-8 h-8 rounded bg-nms-accent/10 text-nms-accent font-semibold text-sm">{idx + 1}</div>
-                <select className="nms-input flex-1 font-mono text-sm" value={alg} onChange={(e) => {
+                <select aria-label="Ciphering Order (NEA)" className="nms-input flex-1 font-mono text-sm" value={alg} onChange={(e) => {
                   const updated = [...(amf.security?.ciphering_order || [])];
                   updated[idx] = e.target.value;
                   updateAmf({ security: { ...amf.security, ciphering_order: updated } });
@@ -547,7 +547,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   <option value="NEA3">NEA3 (ZUC)</option>
                 </select>
                 {(amf.security?.ciphering_order || []).length > 1 && (
-                  <button onClick={() => {
+                  <button aria-label="Remove ciphering algorithm" onClick={() => {
                     const updated = (amf.security?.ciphering_order || []).filter((_: string, i: number) => i !== idx);
                     updateAmf({ security: { ...amf.security, ciphering_order: updated } });
                   }} className="text-nms-text-dim hover:text-nms-red transition-colors"><X className="w-4 h-4" /></button>

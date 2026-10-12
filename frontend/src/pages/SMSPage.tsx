@@ -202,7 +202,7 @@ function SmsConfigEditor() {
       <div className="w-52 shrink-0 bg-nms-bg border-r border-nms-border overflow-y-auto flex flex-col">
         <div className="flex items-center justify-between px-3 py-2 border-b border-nms-border shrink-0">
           <span className="text-[10px] font-semibold uppercase tracking-widest text-nms-text-dim">Files</span>
-          <button onClick={loadManifest} disabled={manifestLoading} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Refresh config file list" onClick={loadManifest} disabled={manifestLoading} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <RefreshCw className={clsx('w-3 h-3', manifestLoading && 'animate-spin')} />
           </button>
         </div>
@@ -396,7 +396,7 @@ function PageTabBar({ pageTab, setPageTab, activeDeliveryMode }: {
           return (
             <button key={id} onClick={() => setPageTab(id)}
               className={clsx('flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                isSelected ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
+                isSelected ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface')}>
               <Icon className="w-4 h-4" />
               {label}
               {isActiveSoftware && (
@@ -595,7 +595,7 @@ function OverviewTab({ setPageTab, imsStatus, loadImsStatus, modeActing, interva
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <input
+              <input aria-label="SMS worker interval (seconds)"
                 type="number"
                 min={1}
                 max={300}
@@ -983,7 +983,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
           {([['overview', 'Overview'], ['configs', 'Config Files']] as const).map(([key, label]) => (
             <button key={key} onClick={() => setActiveTab(key)}
               className={clsx('px-4 py-1.5 rounded-md text-sm font-medium transition-colors',
-                activeTab === key ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text')}>
+                activeTab === key ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text')}>
               {label}
             </button>
           ))}
@@ -1067,7 +1067,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
               <label className="nms-label flex items-center gap-1.5">
                 <Network className="w-3 h-3" /> OsmoMSC SGs bind IP
               </label>
-              <input
+              <input aria-label="OsmoMSC SGs bind IP"
                 value={cfg.mscBindIp}
                 onChange={e => setCfg(c => ({ ...c, mscBindIp: e.target.value }))}
                 placeholder="127.0.0.2"
@@ -1079,7 +1079,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
               <label className="nms-label flex items-center gap-1.5">
                 <Network className="w-3 h-3" /> OsmoHLR GSUP bind IP
               </label>
-              <input
+              <input aria-label="OsmoHLR GSUP bind IP"
                 value={cfg.hlrBindIp}
                 onChange={e => setCfg(c => ({ ...c, hlrBindIp: e.target.value }))}
                 placeholder="127.0.0.1"
@@ -1091,7 +1091,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
               <label className="nms-label flex items-center gap-1.5">
                 <Network className="w-3 h-3" /> MME local SGs IP <span className="text-nms-text-dim font-normal">(optional)</span>
               </label>
-              <input
+              <input aria-label="MME local SGs IP (optional)"
                 value={cfg.mmeLocalIp}
                 onChange={e => setCfg(c => ({ ...c, mmeLocalIp: e.target.value }))}
                 placeholder="leave blank = OS picks"
@@ -1165,7 +1165,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
             <div>
               <label className="nms-label">To (recipient MSISDN)</label>
-              <input
+              <input aria-label="To (recipient MSISDN)"
                 value={testTo}
                 onChange={e => setTestTo(e.target.value)}
                 placeholder="61487654321"
@@ -1174,7 +1174,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
             </div>
             <div>
               <label className="nms-label">From (sender MSISDN)</label>
-              <input
+              <input aria-label="From (sender MSISDN)"
                 value={testFrom}
                 onChange={e => setTestFrom(e.target.value)}
                 placeholder="61412341234"
@@ -1183,7 +1183,7 @@ function SmsSgsTab({ activeDeliveryMode }: { activeDeliveryMode?: SmsDeliveryMod
             </div>
             <div>
               <label className="nms-label">Message text</label>
-              <input
+              <input aria-label="Message text"
                 value={testText}
                 onChange={e => setTestText(e.target.value)}
                 maxLength={160}
@@ -1528,7 +1528,7 @@ function MmsTab({ onNavigate }: { onNavigate: (t: PageTab) => void }) {
               <label className="nms-label flex items-center gap-1.5">
                 <Network className="w-3 h-3" /> MM1 public IP
               </label>
-              <input
+              <input aria-label="MM1 public IP"
                 value={mm1PublicIp}
                 onChange={e => setMm1PublicIp(e.target.value)}
                 placeholder="10.0.1.178"
@@ -1586,7 +1586,7 @@ function MmsTab({ onNavigate }: { onNavigate: (t: PageTab) => void }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
             <div>
               <label className="nms-label">APN name</label>
-              <input
+              <input aria-label="APN name"
                 value={mobileconfigApn}
                 onChange={e => setMobileconfigApn(e.target.value)}
                 placeholder="internet"
@@ -1597,7 +1597,7 @@ function MmsTab({ onNavigate }: { onNavigate: (t: PageTab) => void }) {
               <label className="nms-label flex items-center gap-1.5">
                 <Network className="w-3 h-3" /> MMSC URL
               </label>
-              <input
+              <input aria-label="MMSC URL"
                 value={mobileconfigMmscUrl}
                 onChange={e => setMobileconfigMmscUrl(e.target.value)}
                 placeholder={`http://${mm1PublicIp || '10.0.1.178'}:8002/mms/retrieve`}

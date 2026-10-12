@@ -25,17 +25,20 @@ const CUSTOM_DNN = '__custom__';
 // DNNs) plus a literal "Custom" option that reveals the free-text input, so
 // an operator is never blocked from typing a DNN with no profile yet.
 function DnnSelect({
-  value, onChange, profiles, onProfileSelected,
+  value, onChange, profiles, onProfileSelected, ariaLabel = 'DNN/APN',
 }: {
   value: string;
   onChange: (name: string) => void;
   profiles: ApnProfileListEntry[];
   onProfileSelected?: (profile: ApnProfileListEntry) => void;
+  // The visible <label> is rendered by the caller, outside this component.
+  ariaLabel?: string;
 }): JSX.Element {
   if (profiles.length === 0) {
     return (
       <input
         className="nms-input font-mono text-sm w-full"
+        aria-label={ariaLabel}
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder="internet"
@@ -48,6 +51,7 @@ function DnnSelect({
     <div className="space-y-1.5">
       <select
         className="nms-input font-mono text-sm w-full"
+        aria-label={ariaLabel}
         value={selectValue}
         onChange={e => {
           if (e.target.value === CUSTOM_DNN) { onChange(''); return; }
@@ -64,6 +68,7 @@ function DnnSelect({
       {selectValue === CUSTOM_DNN && (
         <input
           className="nms-input font-mono text-sm w-full"
+          aria-label={`${ariaLabel} (custom)`}
           value={value}
           onChange={e => onChange(e.target.value)}
           placeholder="Enter DNN"
@@ -117,7 +122,7 @@ function InlineTextCell({
   if (editing) {
     return (
       <div className="flex items-center gap-1.5">
-        <input
+        <input aria-label={placeholder}
           autoFocus
           disabled={saving}
           className={clsx('nms-input text-xs py-1 px-1.5 h-7', mono && 'font-mono', widthClass ?? 'w-28')}
@@ -488,14 +493,14 @@ function FramedRoutesModal({ onClose }: { onClose: () => void }): JSX.Element {
               {rows.length} subnet{rows.length !== 1 ? 's' : ''} routed behind {routes.length} subscriber{routes.length !== 1 ? 's' : ''}
             </p>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-nms-text-dim" />
-          <input
+          <input aria-label="Search subscribers"
             className="nms-input pl-10"
             placeholder="Search IMSI, nickname, or subnet..."
             value={searchTerm}
@@ -589,14 +594,14 @@ function IPAssignmentsModal({ onClose }: { onClose: () => void }): JSX.Element {
               {assignments.length} subscriber{assignments.length !== 1 ? 's' : ''} with assigned IPs
             </p>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-5 h-5" />
           </button>
         </div>
 
         <div className="relative mb-4">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-nms-text-dim" />
-          <input 
+          <input aria-label="Search subscribers" 
             className="nms-input pl-10" 
             placeholder="Search IMSI or IP address..." 
             value={searchTerm}
@@ -703,14 +708,14 @@ function SubscriberPickerBox({ initialSelected, onConfirm, onCancel }: {
       <div className="bg-nms-surface border border-nms-border rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col">
         <div className="flex items-center justify-between px-5 py-4 border-b border-nms-border shrink-0">
           <h3 className="text-sm font-semibold text-nms-text">Select Subscribers <span className="text-nms-text-dim font-normal">({chosen.size} chosen)</span></h3>
-          <button onClick={onCancel} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onCancel} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
         <div className="p-3 border-b border-nms-border shrink-0 flex gap-2">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-nms-text-dim" />
-            <input
+            <input aria-label="Search subscribers"
               className="nms-input pl-8 text-sm"
               placeholder="Search IMSI, nickname, MSISDN, IP…"
               value={query}
@@ -882,7 +887,7 @@ function BulkToolsDialog({
         <div className="p-6">
           <div className="flex items-center justify-between mb-5">
             <h2 className="text-lg font-semibold font-display">Bulk Subscriber Tools</h2>
-            <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+            <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
               <X className="w-5 h-5" />
             </button>
           </div>
@@ -892,11 +897,11 @@ function BulkToolsDialog({
               {/* Scope */}
               <div className="flex rounded-lg border border-nms-border overflow-hidden text-sm">
                 <button type="button" onClick={() => setScope('all')}
-                  className={clsx('flex-1 px-3 py-1.5 transition-colors', scope === 'all' ? 'bg-nms-accent text-white' : 'bg-nms-surface-2 text-nms-text-dim hover:text-nms-text')}>
+                  className={clsx('flex-1 px-3 py-1.5 transition-colors', scope === 'all' ? 'bg-nms-accent text-nms-accent-fg' : 'bg-nms-surface-2 text-nms-text-dim hover:text-nms-text')}>
                   All subscribers ({totalSubscribers})
                 </button>
                 <button type="button" onClick={() => { setScope('selected'); setShowPicker(true); }}
-                  className={clsx('flex-1 px-3 py-1.5 transition-colors flex items-center justify-center gap-1.5', scope === 'selected' ? 'bg-nms-accent text-white' : 'bg-nms-surface-2 text-nms-text-dim hover:text-nms-text')}>
+                  className={clsx('flex-1 px-3 py-1.5 transition-colors flex items-center justify-center gap-1.5', scope === 'selected' ? 'bg-nms-accent text-nms-accent-fg' : 'bg-nms-surface-2 text-nms-text-dim hover:text-nms-text')}>
                   <Users className="w-3.5 h-3.5 shrink-0" />
                   {chosenImsis.size > 0 ? `${chosenImsis.size} selected` : 'Select subscribers…'}
                 </button>
@@ -936,7 +941,7 @@ function BulkToolsDialog({
                           </div>
                           <div>
                             <label className="nms-label">Type</label>
-                            <select className="nms-input" value={apnType} onChange={e => setApnType(Number(e.target.value))}>
+                            <select aria-label="Type" className="nms-input" value={apnType} onChange={e => setApnType(Number(e.target.value))}>
                               {SESSION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                             </select>
                           </div>
@@ -945,8 +950,8 @@ function BulkToolsDialog({
                           <div>
                             <label className="nms-label">AMBR Uplink</label>
                             <div className="flex gap-2">
-                              <input type="number" className="nms-input flex-1" min={1} value={ulValue} onChange={e => setUlValue(Number(e.target.value))} />
-                              <select className="nms-input w-20" value={ulUnit} onChange={e => setUlUnit(Number(e.target.value))}>
+                              <input aria-label="AMBR Uplink value" type="number" className="nms-input flex-1" min={1} value={ulValue} onChange={e => setUlValue(Number(e.target.value))} />
+                              <select aria-label="AMBR Uplink unit" className="nms-input w-20" value={ulUnit} onChange={e => setUlUnit(Number(e.target.value))}>
                                 {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                               </select>
                             </div>
@@ -954,8 +959,8 @@ function BulkToolsDialog({
                           <div>
                             <label className="nms-label">AMBR Downlink</label>
                             <div className="flex gap-2">
-                              <input type="number" className="nms-input flex-1" min={1} value={dlValue} onChange={e => setDlValue(Number(e.target.value))} />
-                              <select className="nms-input w-20" value={dlUnit} onChange={e => setDlUnit(Number(e.target.value))}>
+                              <input aria-label="AMBR Downlink value" type="number" className="nms-input flex-1" min={1} value={dlValue} onChange={e => setDlValue(Number(e.target.value))} />
+                              <select aria-label="AMBR Downlink unit" className="nms-input w-20" value={dlUnit} onChange={e => setDlUnit(Number(e.target.value))}>
                                 {AMBR_UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
                               </select>
                             </div>
@@ -963,7 +968,7 @@ function BulkToolsDialog({
                         </div>
                         <div>
                           <label className="nms-label">QoS Index (QCI)</label>
-                          <input type="number" className="nms-input w-24" min={1} max={9} value={qosIndex} onChange={e => setQosIndex(Number(e.target.value))} />
+                          <input aria-label="QoS Index (QCI)" type="number" className="nms-input w-24" min={1} max={9} value={qosIndex} onChange={e => setQosIndex(Number(e.target.value))} />
                         </div>
                       </div>
                     )}
@@ -974,11 +979,11 @@ function BulkToolsDialog({
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="nms-label">SST</label>
-                        <input type="number" className="nms-input" min={1} max={255} value={sst} onChange={e => setSst(Number(e.target.value))} />
+                        <input aria-label="SST" type="number" className="nms-input" min={1} max={255} value={sst} onChange={e => setSst(Number(e.target.value))} />
                       </div>
                       <div>
                         <label className="nms-label">SD <span className="text-nms-text-dim font-normal">(optional)</span></label>
-                        <input className="nms-input font-mono" value={sd} onChange={e => setSd(e.target.value)} placeholder="e.g. 000001" maxLength={6} />
+                        <input aria-label="SD (optional)" className="nms-input font-mono" value={sd} onChange={e => setSd(e.target.value)} placeholder="e.g. 000001" maxLength={6} />
                       </div>
                     </div>
                     <p className="text-xs text-nms-text-dim -mt-1.5">
@@ -1010,11 +1015,11 @@ function BulkToolsDialog({
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="nms-label">Start IP</label>
-                        <input value={startIp} onChange={e => setStartIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.45.0.2" spellCheck={false} />
+                        <input aria-label="Start IP" value={startIp} onChange={e => setStartIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.45.0.2" spellCheck={false} />
                       </div>
                       <div>
                         <label className="nms-label">End IP</label>
-                        <input value={endIp} onChange={e => setEndIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.45.255.254" spellCheck={false} />
+                        <input aria-label="End IP" value={endIp} onChange={e => setEndIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.45.255.254" spellCheck={false} />
                       </div>
                     </div>
                     <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -1032,11 +1037,11 @@ function BulkToolsDialog({
                             <div className="grid grid-cols-2 gap-3">
                               <div>
                                 <label className="nms-label">IMS Start IP</label>
-                                <input value={imsStartIp} onChange={e => setImsStartIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.46.0.1" spellCheck={false} />
+                                <input aria-label="IMS Start IP" value={imsStartIp} onChange={e => setImsStartIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.46.0.1" spellCheck={false} />
                               </div>
                               <div>
                                 <label className="nms-label">IMS End IP</label>
-                                <input value={imsEndIp} onChange={e => setImsEndIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.46.255.254" spellCheck={false} />
+                                <input aria-label="IMS End IP" value={imsEndIp} onChange={e => setImsEndIp(e.target.value.trim())} className="nms-input font-mono mt-1" placeholder="10.46.255.254" spellCheck={false} />
                               </div>
                             </div>
                             <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -1064,7 +1069,7 @@ function BulkToolsDialog({
                   <div className="p-3 space-y-3 border-t border-nms-border">
                     <div>
                       <label className="nms-label">Starting Number</label>
-                      <input
+                      <input aria-label="Starting Number"
                         value={startingNumber}
                         onChange={e => setStartingNumber(e.target.value.replace(/\D/g, ''))}
                         placeholder="15550000001"
@@ -1176,14 +1181,14 @@ function GroupModal({
           <h2 className="text-base font-semibold font-display">
             {initial ? 'Rename Group' : 'Create Group'}
           </h2>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-4 h-4" />
           </button>
         </div>
         <div className="p-5 space-y-4">
           <div>
             <label className="nms-label">Group Name</label>
-            <input
+            <input aria-label="Group Name"
               autoFocus
               className="nms-input mt-1"
               value={name}
@@ -1497,7 +1502,7 @@ function SIMGeneratorDialog({ onClose }: {
             <h3 className="text-lg font-semibold font-display">SIM Generator</h3>
             <p className="text-sm text-nms-text-dim mt-1">Generate SIM credentials</p>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -1508,7 +1513,7 @@ function SIMGeneratorDialog({ onClose }: {
             <div className="grid grid-cols-3 gap-4">
               <div>
                 <label className="nms-label">MCC (Mobile Country Code) *</label>
-                <select
+                <select aria-label="MCC (Mobile Country Code) *"
                   className="nms-input"
                   value={mccOption}
                   onChange={e => {
@@ -1523,7 +1528,7 @@ function SIMGeneratorDialog({ onClose }: {
                   ))}
                 </select>
                 {mccOption === 'custom' && (
-                  <input 
+                  <input aria-label="Custom MCC" 
                     className="nms-input font-mono mt-2" 
                     value={customMcc}
                     onChange={e => setCustomMcc(e.target.value.replace(/\D/g, '').slice(0, 3))}
@@ -1537,7 +1542,7 @@ function SIMGeneratorDialog({ onClose }: {
               </div>
               <div>
                 <label className="nms-label">MNC (Mobile Network Code) *</label>
-                <input 
+                <input aria-label="MNC (Mobile Network Code) *" 
                   className="nms-input font-mono" 
                   value={mnc}
                   onChange={e => setMnc(e.target.value.replace(/\D/g, '').slice(0, 3))}
@@ -1548,7 +1553,7 @@ function SIMGeneratorDialog({ onClose }: {
               </div>
               <div>
                 <label className="nms-label">Issuer Identifier</label>
-                <input 
+                <input aria-label="Issuer Identifier" 
                   className="nms-input font-mono" 
                   value={issuerCode}
                   onChange={e => setIssuerCode(e.target.value.replace(/\D/g, '').slice(0, 3))}
@@ -1561,7 +1566,7 @@ function SIMGeneratorDialog({ onClose }: {
             <div className="grid grid-cols-2 gap-4 mt-4">
               <div>
                 <label className="nms-label">Number of SIMs to Generate</label>
-                <input 
+                <input aria-label="Number of SIMs to Generate" 
                   className="nms-input font-mono" 
                   type="number"
                   value={count}
@@ -1603,7 +1608,7 @@ function SIMGeneratorDialog({ onClose }: {
               {sequentialImsi && (
                 <div className="ml-6">
                   <label className="nms-label">Starting MSIN (Subscriber Number)</label>
-                  <input 
+                  <input aria-label="Starting MSIN (Subscriber Number)" 
                     className="nms-input font-mono w-64" 
                     value={startingMsin}
                     onChange={e => setStartingMsin(e.target.value.replace(/\D/g, '').slice(0, 15 - mcc.length - mnc.length))}
@@ -1630,7 +1635,7 @@ function SIMGeneratorDialog({ onClose }: {
                 </label>
                 {useCustomAdm && (
                   <div>
-                    <input 
+                    <input aria-label="Custom ADM key" 
                       className="nms-input font-mono text-xs" 
                       value={customAdm}
                       onChange={e => setCustomAdm(e.target.value.replace(/[^0-9a-fA-F]/g, '').toLowerCase().slice(0, 16))}
@@ -1658,7 +1663,7 @@ function SIMGeneratorDialog({ onClose }: {
                 </label>
                 {useCustomPin && (
                   <div>
-                    <input 
+                    <input aria-label="Custom PIN" 
                       className="nms-input font-mono" 
                       value={customPin}
                       onChange={e => setCustomPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
@@ -1686,7 +1691,7 @@ function SIMGeneratorDialog({ onClose }: {
                 </label>
                 {useCustomPuk && (
                   <div>
-                    <input 
+                    <input aria-label="Custom PUK" 
                       className="nms-input font-mono" 
                       value={customPuk}
                       onChange={e => setCustomPuk(e.target.value.replace(/\D/g, '').slice(0, 8))}
@@ -1766,7 +1771,7 @@ function SIMGeneratorDialog({ onClose }: {
                   {suciProfile && (
                     <div>
                       <label className="nms-label">Home Network PKI</label>
-                      <select
+                      <select aria-label="Home Network PKI"
                         className="nms-input"
                         value={pkiId || ''}
                         onChange={e => setPkiId(parseInt(e.target.value) || null)}
@@ -1814,7 +1819,7 @@ function SIMGeneratorDialog({ onClose }: {
                   {/* Routing Indicator */}
                   <div>
                     <label className="nms-label">Routing Indicator</label>
-                    <input
+                    <input aria-label="Routing Indicator"
                       className="nms-input font-mono w-32"
                       value={routingIndicator}
                       onChange={e => setRoutingIndicator(e.target.value.replace(/[^0-9a-fA-F]/g, '').toLowerCase().slice(0, 4))}
@@ -2085,7 +2090,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
     <div className="nms-card border-nms-accent/30 animate-fade-in">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-semibold font-display">{isNew ? 'New Subscriber' : `Edit ${sub.imsi}`}</h3>
-        <button onClick={onCancel} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
+        <button aria-label="Close" onClick={onCancel} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
       </div>
 
       <div className="space-y-6">
@@ -2095,7 +2100,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <label className="nms-label">IMSI *</label>
-              <input
+              <input aria-label="IMSI *"
                 className="nms-input font-mono text-sm"
                 value={form.imsi}
                 onChange={e => setForm({...form, imsi: e.target.value})}
@@ -2109,7 +2114,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">Nickname</label>
-              <input 
+              <input aria-label="Nickname" 
                 className="nms-input text-sm" 
                 value={(form as any).nickname || ''}
                 onChange={e => setForm({...form, nickname: e.target.value || undefined} as any)} 
@@ -2118,7 +2123,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">ICCID</label>
-              <input 
+              <input aria-label="ICCID" 
                 className="nms-input font-mono text-sm" 
                 value={(form as any).iccid || ''}
                 onChange={e => setForm({...form, iccid: e.target.value || undefined} as any)} 
@@ -2128,7 +2133,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">MSISDN</label>
-              <input 
+              <input aria-label="MSISDN" 
                 className="nms-input font-mono text-sm" 
                 value={form.msisdn?.join(', ') || ''}
                 onChange={e => setForm({...form, msisdn: e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} 
@@ -2137,7 +2142,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">IMEISV (auto-generated on first attach)</label>
-              <input
+              <input aria-label="IMEISV (auto-generated on first attach)"
                 className="nms-input font-mono text-sm bg-nms-surface-2/50"
                 value={form.imeisv || 'Not yet attached'}
                 disabled
@@ -2147,7 +2152,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             {FEATURES.ocs && !isNew && (
               <div>
                 <label className="nms-label">Charging Plan</label>
-                <select
+                <select aria-label="Charging Plan"
                   className="nms-input text-sm"
                   value={currentPlan?._id ?? ''}
                   disabled={assigningPlan}
@@ -2189,7 +2194,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="nms-label">K (128-bit) *</label>
-              <input 
+              <input aria-label="K (128-bit) *" 
                 className="nms-input font-mono text-xs" 
                 value={form.security.k} 
                 onChange={e => setForm({...form, security:{...form.security, k:e.target.value}})} 
@@ -2199,7 +2204,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">OPc (128-bit) *</label>
-              <input 
+              <input aria-label="OPc (128-bit) *" 
                 className="nms-input font-mono text-xs" 
                 value={form.security.opc} 
                 onChange={e => setForm({...form, security:{...form.security, opc:e.target.value}})} 
@@ -2209,7 +2214,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">AMF *</label>
-              <input 
+              <input aria-label="AMF *" 
                 className="nms-input font-mono text-xs" 
                 value={form.security.amf} 
                 onChange={e => setForm({...form, security:{...form.security, amf:e.target.value}})} 
@@ -2226,7 +2231,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="nms-label">Status</label>
-              <select 
+              <select aria-label="Status" 
                 className="nms-input"
                 value={form.subscriber_status ?? 0}
                 onChange={e => setForm({...form, subscriber_status: parseInt(e.target.value)})}
@@ -2238,7 +2243,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">Network Access Mode</label>
-              <select 
+              <select aria-label="Network Access Mode" 
                 className="nms-input"
                 value={form.network_access_mode ?? 0}
                 onChange={e => setForm({...form, network_access_mode: parseInt(e.target.value)})}
@@ -2257,7 +2262,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="nms-label">Barring Bitmask</label>
-              <input 
+              <input aria-label="Barring Bitmask" 
                 type="number"
                 className="nms-input font-mono" 
                 value={form.operator_determined_barring ?? 0}
@@ -2270,7 +2275,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">RAU/TAU Timer (minutes)</label>
-              <input 
+              <input aria-label="RAU/TAU Timer (minutes)" 
                 type="number"
                 className="nms-input font-mono" 
                 value={form.subscribed_rau_tau_timer ?? 12}
@@ -2287,7 +2292,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="nms-label">Uplink (Gbps)</label>
-              <input 
+              <input aria-label="Uplink (Gbps)" 
                 className="nms-input font-mono" 
                 type="number" 
                 value={form.ambr.uplink.value}
@@ -2296,7 +2301,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">Downlink (Gbps)</label>
-              <input 
+              <input aria-label="Downlink (Gbps)" 
                 className="nms-input font-mono" 
                 type="number" 
                 value={form.ambr.downlink.value}
@@ -2315,7 +2320,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             <div className="grid grid-cols-3 gap-3 mb-4">
               <div>
                 <label className="nms-label">SST *</label>
-                <input 
+                <input aria-label="SST *" 
                   className="nms-input font-mono" 
                   type="number" 
                   value={sl.sst}
@@ -2330,7 +2335,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
               </div>
               <div>
                 <label className="nms-label">SD (hex)</label>
-                <input 
+                <input aria-label="SD (hex)" 
                   className="nms-input font-mono" 
                   value={sl.sd||''}
                   placeholder="Optional (6 hex chars)"
@@ -2389,7 +2394,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">Type *</label>
-                      <select
+                      <select aria-label="Type *"
                         className="nms-input"
                         value={sess.type}
                         onChange={e => updateSession(sliceIdx, sessIdx, { type: parseInt(e.target.value) })}
@@ -2401,7 +2406,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">5QI/QCI *</label>
-                      <input 
+                      <input aria-label="5QI/QCI *" 
                         className="nms-input font-mono"
                         type="number"
                         value={sess.qos.index}
@@ -2418,7 +2423,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                   <div className="grid grid-cols-3 gap-3 mb-3">
                     <div>
                       <label className="nms-label">ARP Priority (1-15) *</label>
-                      <input
+                      <input aria-label="ARP Priority (1-15) *"
                         className="nms-input font-mono"
                         type="number"
                         value={sess.qos.arp.priority_level}
@@ -2430,7 +2435,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">Capability *</label>
-                      <select
+                      <select aria-label="Capability *"
                         className="nms-input"
                         value={sess.qos.arp.pre_emption_capability}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2443,7 +2448,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">Vulnerability *</label>
-                      <select
+                      <select aria-label="Vulnerability *"
                         className="nms-input"
                         value={sess.qos.arp.pre_emption_vulnerability}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2461,7 +2466,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     <div>
                       <label className="nms-label">Session-AMBR Uplink *</label>
                       <div className="flex gap-1">
-                        <input
+                        <input aria-label="Session-AMBR Uplink value"
                           className="nms-input font-mono"
                           type="number" min={0}
                           value={sess.ambr.uplink.value}
@@ -2469,7 +2474,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                             ambr: { ...sess.ambr, uplink: { value: parseInt(e.target.value) || 0, unit: sess.ambr.uplink.unit } }
                           })}
                         />
-                        <select
+                        <select aria-label="Session-AMBR Uplink unit"
                           className="nms-input w-24 flex-shrink-0"
                           value={sess.ambr.uplink.unit}
                           onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2483,7 +2488,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     <div>
                       <label className="nms-label">Session-AMBR Downlink *</label>
                       <div className="flex gap-1">
-                        <input
+                        <input aria-label="Session-AMBR Downlink value"
                           className="nms-input font-mono"
                           type="number" min={0}
                           value={sess.ambr.downlink.value}
@@ -2491,7 +2496,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                             ambr: { ...sess.ambr, downlink: { value: parseInt(e.target.value) || 0, unit: sess.ambr.downlink.unit } }
                           })}
                         />
-                        <select
+                        <select aria-label="Session-AMBR Downlink unit"
                           className="nms-input w-24 flex-shrink-0"
                           value={sess.ambr.downlink.unit}
                           onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2508,7 +2513,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">UE IPv4 Address</label>
-                      <input
+                      <input aria-label="UE IPv4 Address"
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv4 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv4: e.target.value || undefined } })}
@@ -2526,7 +2531,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">UE IPv6 Address</label>
-                      <input
+                      <input aria-label="UE IPv6 Address"
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv6 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv6: e.target.value || undefined } })}
@@ -2539,7 +2544,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">SMF IPv4 Address</label>
-                      <input
+                      <input aria-label="SMF IPv4 Address"
                         className="nms-input font-mono text-sm"
                         value={sess.smf?.ipv4 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { smf: { ...sess.smf, ipv4: e.target.value || undefined } })}
@@ -2548,7 +2553,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">SMF IPv6 Address</label>
-                      <input
+                      <input aria-label="SMF IPv6 Address"
                         className="nms-input font-mono text-sm"
                         value={sess.smf?.ipv6 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { smf: { ...sess.smf, ipv6: e.target.value || undefined } })}
@@ -2565,7 +2570,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">Framed Routes IPv4</label>
-                      <input
+                      <input aria-label="Framed Routes IPv4"
                         className="nms-input font-mono text-sm"
                         value={sess.ipv4_framed_routes?.join(', ') || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2580,7 +2585,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">Framed Routes IPv6</label>
-                      <input
+                      <input aria-label="Framed Routes IPv6"
                         className="nms-input font-mono text-sm"
                         value={sess.ipv6_framed_routes?.join(', ') || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2664,7 +2669,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                         <div className="grid grid-cols-3 gap-2 mb-2">
                           <div>
                             <label className="nms-label">5QI/QCI</label>
-                            <input
+                            <input aria-label="5QI/QCI"
                               className="nms-input font-mono"
                               type="number" min={1} max={255}
                               value={rule.qos.index}
@@ -2675,7 +2680,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                           </div>
                           <div>
                             <label className="nms-label">ARP Priority</label>
-                            <input
+                            <input aria-label="ARP Priority"
                               className="nms-input font-mono"
                               type="number" min={1} max={15}
                               value={rule.qos.arp.priority_level}
@@ -2687,7 +2692,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                           <div className="grid grid-cols-2 gap-1">
                             <div>
                               <label className="nms-label">Capability</label>
-                              <select
+                              <select aria-label="Capability"
                                 className="nms-input"
                                 value={rule.qos.arp.pre_emption_capability}
                                 onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
@@ -2700,7 +2705,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                             </div>
                             <div>
                               <label className="nms-label">Vulnerability</label>
-                              <select
+                              <select aria-label="Vulnerability"
                                 className="nms-input"
                                 value={rule.qos.arp.pre_emption_vulnerability}
                                 onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
@@ -2717,7 +2722,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                           <div>
                             <label className="nms-label">MBR Uplink</label>
                             <div className="flex gap-1">
-                              <input
+                              <input aria-label="MBR Uplink value"
                                 className="nms-input font-mono"
                                 type="number" min={0}
                                 value={rule.qos.mbr.uplink.value}
@@ -2725,7 +2730,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                                   ...rule, qos: { ...rule.qos, mbr: { ...rule.qos.mbr, uplink: { value: parseInt(e.target.value) || 0, unit: rule.qos.mbr.uplink.unit } } }
                                 })}
                               />
-                              <select
+                              <select aria-label="MBR Uplink unit"
                                 className="nms-input w-20 flex-shrink-0"
                                 value={rule.qos.mbr.uplink.unit}
                                 onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
@@ -2739,7 +2744,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                           <div>
                             <label className="nms-label">MBR Downlink</label>
                             <div className="flex gap-1">
-                              <input
+                              <input aria-label="MBR Downlink value"
                                 className="nms-input font-mono"
                                 type="number" min={0}
                                 value={rule.qos.mbr.downlink.value}
@@ -2747,7 +2752,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                                   ...rule, qos: { ...rule.qos, mbr: { ...rule.qos.mbr, downlink: { value: parseInt(e.target.value) || 0, unit: rule.qos.mbr.downlink.unit } } }
                                 })}
                               />
-                              <select
+                              <select aria-label="MBR Downlink unit"
                                 className="nms-input w-20 flex-shrink-0"
                                 value={rule.qos.mbr.downlink.unit}
                                 onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
@@ -2763,7 +2768,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                           <div>
                             <label className="nms-label">GBR Uplink</label>
                             <div className="flex gap-1">
-                              <input
+                              <input aria-label="GBR Uplink value"
                                 className="nms-input font-mono"
                                 type="number" min={0}
                                 value={rule.qos.gbr.uplink.value}
@@ -2771,7 +2776,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                                   ...rule, qos: { ...rule.qos, gbr: { ...rule.qos.gbr, uplink: { value: parseInt(e.target.value) || 0, unit: rule.qos.gbr.uplink.unit } } }
                                 })}
                               />
-                              <select
+                              <select aria-label="GBR Uplink unit"
                                 className="nms-input w-20 flex-shrink-0"
                                 value={rule.qos.gbr.uplink.unit}
                                 onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
@@ -2785,7 +2790,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                           <div>
                             <label className="nms-label">GBR Downlink</label>
                             <div className="flex gap-1">
-                              <input
+                              <input aria-label="GBR Downlink value"
                                 className="nms-input font-mono"
                                 type="number" min={0}
                                 value={rule.qos.gbr.downlink.value}
@@ -2793,7 +2798,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                                   ...rule, qos: { ...rule.qos, gbr: { ...rule.qos.gbr, downlink: { value: parseInt(e.target.value) || 0, unit: rule.qos.gbr.downlink.unit } } }
                                 })}
                               />
-                              <select
+                              <select aria-label="GBR Downlink unit"
                                 className="nms-input w-20 flex-shrink-0"
                                 value={rule.qos.gbr.downlink.unit}
                                 onChange={e => updatePccRule(sliceIdx, sessIdx, ruleIdx, {
@@ -3104,7 +3109,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                 className="nms-btn-ghost flex items-center gap-1.5" title="Import subscribers from CSV">
                 <Upload className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">{importing ? 'Importing…' : 'Import CSV'}</span>
               </button>
-              <input ref={importRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
+              <input aria-label="Import subscribers from CSV" ref={importRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(f); }} />
             </>
           )}
@@ -3179,7 +3184,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-nms-text-dim" />
-        <input 
+        <input aria-label="Search subscribers" 
           className="nms-input pl-10" 
           placeholder="Search IMSI or MSISDN..." 
           value={si} 
@@ -3397,7 +3402,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
             <Trash2 className="w-3.5 h-3.5" />
             Delete selected
           </button>
-          <button onClick={clearSelection} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Clear selection" onClick={clearSelection} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -3452,7 +3457,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                     {!isViewer && <td className="w-10 px-3 py-2" />}
                     <td colSpan={9} className="px-3 py-2">
                       <div className="flex items-center gap-2">
-                        <button
+                        <button aria-label={collapsed ? 'Expand group' : 'Collapse group'}
                           onClick={() => setCollapsedGroups(prev => {
                             const next = new Set(prev);
                             next.has(group._id) ? next.delete(group._id) : next.add(group._id);
@@ -3512,7 +3517,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                 >
                   {!isViewer && (
                     <td className="w-10 px-3 py-3">
-                      <input
+                      <input aria-label="Select subscriber"
                         type="checkbox"
                         checked={isSelected}
                         onChange={() => toggleSelect(sub.imsi)}
@@ -3666,7 +3671,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                             <Unlink className="w-3.5 h-3.5" />
                           </button>
                         )}
-                        <button
+                        <button aria-label="Edit subscriber"
                           onClick={async () => {
                             try {
                               const s = await subscriberApi.get(sub.imsi);
@@ -3712,7 +3717,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                             <UserX className="w-4 h-4 inline" />
                           </button>
                         )}
-                        <button
+                        <button aria-label="Delete subscriber"
                           onClick={async () => {
                             if (!confirm(`Delete subscriber ${sub.imsi}?`)) return;
                             try {

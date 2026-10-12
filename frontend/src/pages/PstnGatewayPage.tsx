@@ -176,13 +176,13 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
             <div>
               <label className="nms-label">Extension</label>
-              <input value={newExtension} onChange={e => setNewExtension(e.target.value)}
+              <input aria-label="Extension" value={newExtension} onChange={e => setNewExtension(e.target.value)}
                 placeholder="1001" className="nms-input font-mono text-xs mt-1" />
               <p className="text-xs text-nms-text-dim mt-1">Any digits, any length — no "+" needed</p>
             </div>
             <div>
               <label className="nms-label">Subscriber</label>
-              <select value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
+              <select aria-label="Subscriber" value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
                 <option value="">Select subscriber…</option>
                 {subscribers.map(s => (
                   <option key={s.imsi} value={s.imsi}>
@@ -193,7 +193,7 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
             </div>
             <div>
               <label className="nms-label">Label <span className="text-nms-text-dim font-normal">(optional)</span></label>
-              <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+              <input aria-label="Label (optional)" value={newLabel} onChange={e => setNewLabel(e.target.value)}
                 placeholder="e.g. Test Phone A" className="nms-input text-xs mt-1" />
             </div>
             <div className="flex items-end">
@@ -232,7 +232,7 @@ function ExtensionsCard({ imsConfigured }: { imsConfigured: boolean }) {
                       </td>
                       <td className="px-3 py-2 text-nms-text-dim">{e.label ?? '—'}</td>
                       <td className="px-3 py-2 text-right">
-                        <button onClick={() => handleRemove(e.extension)} className="text-red-400 hover:text-red-300">
+                        <button aria-label="Delete extension" onClick={() => handleRemove(e.extension)} className="text-red-400 hover:text-red-300">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </td>
@@ -356,13 +356,13 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
             <div>
               <label className="nms-label">DID</label>
-              <input value={newDid} onChange={e => setNewDid(e.target.value)}
+              <input aria-label="DID" value={newDid} onChange={e => setNewDid(e.target.value)}
                 placeholder="15555551234" className="nms-input font-mono text-xs mt-1" />
               <p className="text-xs text-nms-text-dim mt-1">Any digits, any length — no "+" needed</p>
             </div>
             <div>
               <label className="nms-label">Subscriber</label>
-              <select value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
+              <select aria-label="Subscriber" value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
                 <option value="">Select subscriber…</option>
                 {subscribers.map(s => (
                   <option key={s.imsi} value={s.imsi}>
@@ -373,7 +373,7 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
             </div>
             <div>
               <label className="nms-label">Label <span className="text-nms-text-dim font-normal">(optional)</span></label>
-              <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+              <input aria-label="Label (optional)" value={newLabel} onChange={e => setNewLabel(e.target.value)}
                 placeholder="e.g. Main Office Line" className="nms-input text-xs mt-1" />
             </div>
             <div className="flex items-end">
@@ -406,11 +406,11 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
                   {mappings.map(m => editingDid === m.did ? (
                     <tr key={m.did} className="border-t border-nms-border bg-nms-accent/5">
                       <td className="px-3 py-1.5">
-                        <input autoFocus value={editDid} onChange={e => setEditDid(e.target.value)}
+                        <input aria-label="DID number" autoFocus value={editDid} onChange={e => setEditDid(e.target.value)}
                           className="nms-input font-mono text-xs py-1 px-1.5 h-7 w-28" />
                       </td>
                       <td className="px-3 py-1.5">
-                        <select value={editImsi} onChange={e => setEditImsi(e.target.value)} className="nms-input text-xs py-1 h-7">
+                        <select aria-label="Subscriber" value={editImsi} onChange={e => setEditImsi(e.target.value)} className="nms-input text-xs py-1 h-7">
                           {subscribers.map(s => (
                             <option key={s.imsi} value={s.imsi}>
                               {s.nickname ? `${s.nickname} (${s.imsi})` : s.imsi}{s.msisdn?.[0] ? ` — ${s.msisdn[0]}` : ''}
@@ -420,14 +420,14 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
                       </td>
                       <td className="px-3 py-1.5 text-nms-text-dim">—</td>
                       <td className="px-3 py-1.5">
-                        <input value={editLabel} onChange={e => setEditLabel(e.target.value)}
+                        <input aria-label="Label" value={editLabel} onChange={e => setEditLabel(e.target.value)}
                           className="nms-input text-xs py-1 px-1.5 h-7 w-full" placeholder="Label" />
                       </td>
                       <td className="px-3 py-1.5 text-right whitespace-nowrap">
-                        <button onClick={saveEdit} disabled={savingEdit || !editDid || !editImsi} className="text-nms-green hover:text-nms-green/80 disabled:opacity-50 mr-2">
+                        <button aria-label="Save changes" onClick={saveEdit} disabled={savingEdit || !editDid || !editImsi} className="text-nms-green hover:text-nms-green/80 disabled:opacity-50 mr-2">
                           <Check className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={cancelEdit} disabled={savingEdit} className="text-nms-text-dim hover:text-nms-text">
+                        <button aria-label="Cancel editing" onClick={cancelEdit} disabled={savingEdit} className="text-nms-text-dim hover:text-nms-text">
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </td>
@@ -443,11 +443,11 @@ function DidMappingsCard({ imsConfigured }: { imsConfigured: boolean }) {
                       <td className="px-3 py-2 text-nms-text-dim">{m.subscriberGsmEnabled ? '2G' : 'IMS (4G/5G)'}</td>
                       <td className="px-3 py-2 text-nms-text-dim">{m.label ?? '—'}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <button onClick={() => startEdit(m)} disabled={!!editingDid}
+                        <button aria-label="Edit DID mapping" onClick={() => startEdit(m)} disabled={!!editingDid}
                           className="text-nms-text-dim opacity-0 group-hover/row:opacity-100 hover:text-nms-accent transition-opacity mr-2 disabled:opacity-0">
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => handleRemove(m.did)} disabled={!!editingDid} className="text-red-400 hover:text-red-300 disabled:opacity-30">
+                        <button aria-label="Delete DID mapping" onClick={() => handleRemove(m.did)} disabled={!!editingDid} className="text-red-400 hover:text-red-300 disabled:opacity-30">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </td>
@@ -570,13 +570,13 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
             <div>
               <label className="nms-label">Caller ID</label>
-              <input value={newCallerId} onChange={e => setNewCallerId(e.target.value)}
+              <input aria-label="Caller ID" value={newCallerId} onChange={e => setNewCallerId(e.target.value)}
                 placeholder="16038022223" className="nms-input font-mono text-xs mt-1" />
               <p className="text-xs text-nms-text-dim mt-1">Any digits, any length — no "+" needed</p>
             </div>
             <div>
               <label className="nms-label">Subscriber</label>
-              <select value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
+              <select aria-label="Subscriber" value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
                 <option value="">Select subscriber…</option>
                 {subscribers.map(s => (
                   <option key={s.imsi} value={s.imsi}>
@@ -587,7 +587,7 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
             </div>
             <div>
               <label className="nms-label">Label <span className="text-nms-text-dim font-normal">(optional)</span></label>
-              <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+              <input aria-label="Label (optional)" value={newLabel} onChange={e => setNewLabel(e.target.value)}
                 placeholder="e.g. Main Office Line" className="nms-input text-xs mt-1" />
             </div>
             <div className="flex items-end">
@@ -619,11 +619,11 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
                   {entries.map(e => editingImsi === e.subscriberImsi ? (
                     <tr key={e.subscriberImsi} className="border-t border-nms-border bg-nms-accent/5">
                       <td className="px-3 py-1.5">
-                        <input autoFocus value={editCallerId} onChange={ev => setEditCallerId(ev.target.value)}
+                        <input aria-label="Caller ID" autoFocus value={editCallerId} onChange={ev => setEditCallerId(ev.target.value)}
                           className="nms-input font-mono text-xs py-1 px-1.5 h-7 w-28" />
                       </td>
                       <td className="px-3 py-1.5">
-                        <select value={editImsi} onChange={ev => setEditImsi(ev.target.value)} className="nms-input text-xs py-1 h-7">
+                        <select aria-label="Subscriber" value={editImsi} onChange={ev => setEditImsi(ev.target.value)} className="nms-input text-xs py-1 h-7">
                           {subscribers.map(s => (
                             <option key={s.imsi} value={s.imsi}>
                               {s.nickname ? `${s.nickname} (${s.imsi})` : s.imsi}{s.msisdn?.[0] ? ` — ${s.msisdn[0]}` : ''}
@@ -632,14 +632,14 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
                         </select>
                       </td>
                       <td className="px-3 py-1.5">
-                        <input value={editLabel} onChange={ev => setEditLabel(ev.target.value)}
+                        <input aria-label="Label" value={editLabel} onChange={ev => setEditLabel(ev.target.value)}
                           className="nms-input text-xs py-1 px-1.5 h-7 w-full" placeholder="Label" />
                       </td>
                       <td className="px-3 py-1.5 text-right whitespace-nowrap">
-                        <button onClick={saveEdit} disabled={savingEdit || !editCallerId || !editImsi} className="text-nms-green hover:text-nms-green/80 disabled:opacity-50 mr-2">
+                        <button aria-label="Save changes" onClick={saveEdit} disabled={savingEdit || !editCallerId || !editImsi} className="text-nms-green hover:text-nms-green/80 disabled:opacity-50 mr-2">
                           <Check className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={cancelEdit} disabled={savingEdit} className="text-nms-text-dim hover:text-nms-text">
+                        <button aria-label="Cancel editing" onClick={cancelEdit} disabled={savingEdit} className="text-nms-text-dim hover:text-nms-text">
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </td>
@@ -654,11 +654,11 @@ function OutboundCallerIdCard({ imsConfigured }: { imsConfigured: boolean }) {
                       </td>
                       <td className="px-3 py-2 text-nms-text-dim">{e.label ?? '—'}</td>
                       <td className="px-3 py-2 text-right whitespace-nowrap">
-                        <button onClick={() => startEdit(e)} disabled={!!editingImsi}
+                        <button aria-label="Edit caller ID mapping" onClick={() => startEdit(e)} disabled={!!editingImsi}
                           className="text-nms-text-dim opacity-0 group-hover/row:opacity-100 hover:text-nms-accent transition-opacity mr-2 disabled:opacity-0">
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => handleRemove(e.subscriberImsi)} disabled={!!editingImsi} className="text-red-400 hover:text-red-300 disabled:opacity-30">
+                        <button aria-label="Delete caller ID mapping" onClick={() => handleRemove(e.subscriberImsi)} disabled={!!editingImsi} className="text-red-400 hover:text-red-300 disabled:opacity-30">
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </td>
@@ -869,18 +869,18 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
         <div>
           <label className="nms-label">Bind IP</label>
-          <input value={bindIp} onChange={e => setBindIp(e.target.value)}
+          <input aria-label="Bind IP" value={bindIp} onChange={e => setBindIp(e.target.value)}
             placeholder="10.0.1.50" className="nms-input font-mono text-xs mt-1" />
           <p className="text-xs text-nms-text-dim mt-1">A real, non-loopback interface the provider can reach</p>
         </div>
         <div>
           <label className="nms-label">Bind port</label>
-          <input value={bindPort} onChange={e => setBindPort(e.target.value)}
+          <input aria-label="Bind port" value={bindPort} onChange={e => setBindPort(e.target.value)}
             placeholder="5060" className="nms-input font-mono text-xs mt-1" />
         </div>
         <div>
           <label className="nms-label">Interface mode</label>
-          <select value={interfaceMode} onChange={e => setInterfaceMode(e.target.value as 'dummy' | 'existing')} className="nms-input text-xs mt-1">
+          <select aria-label="Interface mode" value={interfaceMode} onChange={e => setInterfaceMode(e.target.value as 'dummy' | 'existing')} className="nms-input text-xs mt-1">
             <option value="dummy">Create dummy interface</option>
             <option value="existing">Use existing IP</option>
           </select>
@@ -888,23 +888,23 @@ function ExternalTrunkCard({ status, onChanged }: { status: PstnStatus | null; o
         </div>
         <div>
           <label className="nms-label">External media address <span className="text-nms-text-dim font-normal">(optional)</span></label>
-          <input value={externalMediaAddress} onChange={e => setExternalMediaAddress(e.target.value)}
+          <input aria-label="External media address (optional)" value={externalMediaAddress} onChange={e => setExternalMediaAddress(e.target.value)}
             placeholder="defaults to Bind IP" className="nms-input font-mono text-xs mt-1" />
           <p className="text-xs text-nms-text-dim mt-1">Only needed if this host is behind NAT relative to the provider</p>
         </div>
         <div>
           <label className="nms-label">Provider host</label>
-          <input value={providerHost} onChange={e => setProviderHost(e.target.value)}
+          <input aria-label="Provider host" value={providerHost} onChange={e => setProviderHost(e.target.value)}
             placeholder="sip.provider.example.com" className="nms-input font-mono text-xs mt-1" />
         </div>
         <div>
           <label className="nms-label">Provider port</label>
-          <input value={providerPort} onChange={e => setProviderPort(e.target.value)}
+          <input aria-label="Provider port" value={providerPort} onChange={e => setProviderPort(e.target.value)}
             placeholder="5060" className="nms-input font-mono text-xs mt-1" />
         </div>
         <div>
           <label className="nms-label">Provider CIDR <span className="text-nms-text-dim font-normal">(optional)</span></label>
-          <input value={providerCidr} onChange={e => setProviderCidr(e.target.value)}
+          <input aria-label="Provider CIDR (optional)" value={providerCidr} onChange={e => setProviderCidr(e.target.value)}
             placeholder="defaults to host/32" className="nms-input font-mono text-xs mt-1" />
           <p className="text-xs text-nms-text-dim mt-1">Widen to a real CIDR block if the provider sends from a range</p>
         </div>
@@ -989,13 +989,13 @@ function Gsm2gExtensionsCard() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
         <div>
           <label className="nms-label">Short code</label>
-          <input value={newExtension} onChange={e => setNewExtension(e.target.value)}
+          <input aria-label="Short code" value={newExtension} onChange={e => setNewExtension(e.target.value)}
             placeholder="10" className="nms-input font-mono text-xs mt-1" />
           <p className="text-xs text-nms-text-dim mt-1">Any digits, any length — no "+" needed</p>
         </div>
         <div>
           <label className="nms-label">Subscriber</label>
-          <select value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
+          <select aria-label="Subscriber" value={newImsi} onChange={e => setNewImsi(e.target.value)} className="nms-input text-xs mt-1">
             <option value="">Select subscriber…</option>
             {subscribers.map(s => (
               <option key={s.imsi} value={s.imsi}>
@@ -1006,7 +1006,7 @@ function Gsm2gExtensionsCard() {
         </div>
         <div>
           <label className="nms-label">Label <span className="text-nms-text-dim font-normal">(optional)</span></label>
-          <input value={newLabel} onChange={e => setNewLabel(e.target.value)}
+          <input aria-label="Label (optional)" value={newLabel} onChange={e => setNewLabel(e.target.value)}
             placeholder="e.g. Test Phone A" className="nms-input text-xs mt-1" />
         </div>
         <div className="flex items-end">
@@ -1049,7 +1049,7 @@ function Gsm2gExtensionsCard() {
                   </td>
                   <td className="px-3 py-2 text-nms-text-dim">{e.label ?? '—'}</td>
                   <td className="px-3 py-2 text-right">
-                    <button onClick={() => handleRemove(e.extension)} className="text-red-400 hover:text-red-300">
+                    <button aria-label="Delete extension" onClick={() => handleRemove(e.extension)} className="text-red-400 hover:text-red-300">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </td>
@@ -1334,7 +1334,7 @@ export function PstnGatewayPage({ onNavigate }: { onNavigate?: (tab: string) => 
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 tab === tabDef.id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >
@@ -1401,13 +1401,13 @@ export function PstnGatewayPage({ onNavigate }: { onNavigate?: (tab: string) => 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
                 <div>
                   <label className="nms-label">Asterisk trunk IP</label>
-                  <input value={asteriskIp} onChange={e => setAsteriskIp(e.target.value)}
+                  <input aria-label="Asterisk trunk IP" value={asteriskIp} onChange={e => setAsteriskIp(e.target.value)}
                     placeholder="127.0.1.4" className="nms-input font-mono text-xs mt-1" />
                   <p className="text-xs text-nms-text-dim mt-1">A dedicated loopback alias, following this project's per-component convention</p>
                 </div>
                 <div>
                   <label className="nms-label">Echo test number</label>
-                  <input value={echoTestNumber} onChange={e => setEchoTestNumber(e.target.value)}
+                  <input aria-label="Echo test number" value={echoTestNumber} onChange={e => setEchoTestNumber(e.target.value)}
                     placeholder="500" className="nms-input font-mono text-xs mt-1" />
                   <p className="text-xs text-nms-text-dim mt-1">Dial this from any IMS phone for a local Answer/Echo/Hangup test — no PSTN extension assignment needed</p>
                 </div>

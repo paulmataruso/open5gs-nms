@@ -98,7 +98,7 @@ export const SercommWebUIModal: React.FC<Props> = ({ ip, mac: initialMac = '', r
               <p className="text-xs text-nms-text-dim mt-0.5">One-time setup via SSH — only needed if WebUI is not already active</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
+          <button aria-label="Close" onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -109,7 +109,7 @@ export const SercommWebUIModal: React.FC<Props> = ({ ip, mac: initialMac = '', r
           {/* MAC address input */}
           <div>
             <label className="block text-xs font-semibold text-nms-text mb-1">MAC Address</label>
-            <input
+            <input aria-label="MAC Address"
               className="nms-input font-mono w-full"
               value={localMac}
               onChange={e => handleMacChange(e.target.value)}

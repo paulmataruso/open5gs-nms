@@ -37,7 +37,7 @@ export function PcrfEditor({ configs, onChange }: Props): JSX.Element {
           <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Database</h3>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.mongodb_uri}>MongoDB URI</LabelWithTooltip></label>
-            <input
+            <input aria-label="MongoDB URI"
               className="nms-input font-mono text-xs"
               value={fullYaml.db_uri || 'mongodb://localhost/open5gs'}
               onChange={(e) => onChange({ ...configs, pcrf: { ...fullYaml, db_uri: e.target.value } })}
@@ -51,7 +51,7 @@ export function PcrfEditor({ configs, onChange }: Props): JSX.Element {
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">FreeDiameter Configuration</h3>
         <div>
           <label className="nms-label">Config File Path</label>
-          <input
+          <input aria-label="Config File Path"
             className="nms-input font-mono text-xs"
             value={pcrf.freeDiameter || '/etc/freeDiameter/pcrf.conf'}
             onChange={(e) => updatePcrf({ freeDiameter: e.target.value })}
@@ -66,7 +66,7 @@ export function PcrfEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_address}>Address</LabelWithTooltip></label>
-            <input
+            <input aria-label="Address"
               className="nms-input font-mono text-xs"
               value={pcrf.metrics?.server?.[0]?.address || ''}
               onChange={(e) => updatePcrf({ metrics: { server: [{ address: e.target.value, port: pcrf.metrics?.server?.[0]?.port || 9090 }] } })}
@@ -74,7 +74,7 @@ export function PcrfEditor({ configs, onChange }: Props): JSX.Element {
           </div>
           <div>
             <label className="nms-label"><LabelWithTooltip tooltip={COMMON_TOOLTIPS.metrics_port}>Port</LabelWithTooltip></label>
-            <input
+            <input aria-label="Port"
               type="number"
               className="nms-input font-mono text-xs"
               value={pcrf.metrics?.server?.[0]?.port || 9090}

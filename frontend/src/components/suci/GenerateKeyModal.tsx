@@ -41,7 +41,7 @@ export function GenerateKeyModal({ onClose }: GenerateKeyModalProps): JSX.Elemen
             <Key className="w-5 h-5 text-nms-accent" />
             <h3 className="text-lg font-semibold font-display">Generate New SUCI Key</h3>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -54,7 +54,7 @@ export function GenerateKeyModal({ onClose }: GenerateKeyModalProps): JSX.Elemen
                 PKI ID (Home Network Public Key Identifier)
               </LabelWithTooltip>
             </label>
-            <input
+            <input aria-label="PKI ID (Home Network Public Key Identifier)"
               type="number"
               className="nms-input font-mono"
               value={id}

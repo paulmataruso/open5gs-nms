@@ -20,7 +20,7 @@ export function Field({
   return (
     <div>
       <label className="nms-label">{label}</label>
-      <input
+      <input aria-label={label}
         type={type}
         className={clsx('nms-input', mono && 'font-mono text-xs')}
         value={value}
@@ -45,7 +45,7 @@ export function Select({
   return (
     <div>
       <label className="nms-label">{label}</label>
-      <select
+      <select aria-label={label}
         className="nms-input font-mono text-xs"
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -203,7 +203,7 @@ export function SbiClientSection({
         {(mode === 'scp' || mode === 'both') && (
           <div>
             <label className="nms-label">SCP URI</label>
-            <input
+            <input aria-label="SCP URI"
               className="nms-input font-mono text-xs w-full"
               value={scpUri}
               onChange={(e) => handleScpChange(e.target.value)}
@@ -217,7 +217,7 @@ export function SbiClientSection({
         {(mode === 'nrf' || mode === 'both') && (
           <div>
             <label className="nms-label">NRF URI</label>
-            <input
+            <input aria-label="NRF URI"
               className="nms-input font-mono text-xs w-full"
               value={nrfUri}
               onChange={(e) => handleNrfChange(e.target.value)}

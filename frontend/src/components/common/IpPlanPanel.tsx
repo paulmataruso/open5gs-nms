@@ -161,7 +161,7 @@ export function IpPlanPanel({ onApplyComplete }: { onApplyComplete?: (run: IpPla
     return (
       <div key={e.service} className="grid grid-cols-1 md:grid-cols-[auto_1fr_1fr_1fr] gap-3 items-start py-2 border-b border-nms-border last:border-b-0">
         <div className="pt-1">
-          <input
+          <input aria-label="Apply proposed address"
             type="checkbox"
             disabled={applying}
             checked={!!checked[e.service]}
@@ -184,7 +184,7 @@ export function IpPlanPanel({ onApplyComplete }: { onApplyComplete?: (run: IpPla
           {e.current ? <span className="text-nms-text">{e.current}</span> : <span className="text-nms-text-dim">not configured</span>}
         </div>
         <div>
-          <input
+          <input aria-label="Proposed address"
             value={proposedValues[e.service] ?? ''}
             onChange={ev => setProposedValues(v => ({ ...v, [e.service]: ev.target.value }))}
             disabled={applying}

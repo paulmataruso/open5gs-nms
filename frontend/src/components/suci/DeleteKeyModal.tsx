@@ -37,7 +37,7 @@ export function DeleteKeyModal({ keyData, onClose }: DeleteKeyModalProps): JSX.E
             <Trash2 className="w-5 h-5 text-nms-red" />
             <h3 className="text-lg font-semibold font-display">Delete SUCI Key</h3>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text">
             <X className="w-5 h-5" />
           </button>
         </div>

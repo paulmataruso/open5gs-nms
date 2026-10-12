@@ -123,15 +123,15 @@ function SetupTab({ status, refresh }: { status: HnbgwStatus | null; refresh: ()
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">RNC-ID</label>
-              <input type="number" value={rncId} onChange={e => setRncId(Number(e.target.value))} className="nms-input w-full" />
+              <input aria-label="RNC-ID" type="number" value={rncId} onChange={e => setRncId(Number(e.target.value))} className="nms-input w-full" />
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">Iuh listen IP</label>
-              <input value={iuhLocalIp} onChange={e => setIuhLocalIp(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="Iuh listen IP" value={iuhLocalIp} onChange={e => setIuhLocalIp(e.target.value)} className="nms-input w-full font-mono" />
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">Iuh listen port</label>
-              <input type="number" value={iuhLocalPort} onChange={e => setIuhLocalPort(Number(e.target.value))} className="nms-input w-full" />
+              <input aria-label="Iuh listen port" type="number" value={iuhLocalPort} onChange={e => setIuhLocalPort(Number(e.target.value))} className="nms-input w-full" />
             </div>
           </div>
         </div>
@@ -145,15 +145,15 @@ function SetupTab({ status, refresh }: { status: HnbgwStatus | null; refresh: ()
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">This gateway's own point-code</label>
-              <input value={hnbgwPointCode} onChange={e => setHnbgwPointCode(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="This gateway's own point-code" value={hnbgwPointCode} onChange={e => setHnbgwPointCode(e.target.value)} className="nms-input w-full font-mono" />
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">MSC point-code (IuCS peer)</label>
-              <input value={mscPointCode} onChange={e => setMscPointCode(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="MSC point-code (IuCS peer)" value={mscPointCode} onChange={e => setMscPointCode(e.target.value)} className="nms-input w-full font-mono" />
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">SGSN point-code (IuPS peer)</label>
-              <input value={sgsnIuPsPointCode} onChange={e => setSgsnIuPsPointCode(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="SGSN point-code (IuPS peer)" value={sgsnIuPsPointCode} onChange={e => setSgsnIuPsPointCode(e.target.value)} className="nms-input w-full font-mono" />
             </div>
           </div>
         </div>
@@ -167,11 +167,11 @@ function SetupTab({ status, refresh }: { status: HnbgwStatus | null; refresh: ()
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">MGCP bind IP</label>
-              <input value={mgwBindIp} onChange={e => setMgwBindIp(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="MGCP bind IP" value={mgwBindIp} onChange={e => setMgwBindIp(e.target.value)} className="nms-input w-full font-mono" />
             </div>
             <div>
               <label className="text-xs text-nms-text-dim block mb-1">RTP bind IP</label>
-              <input value={mgwRtpBindIp} onChange={e => setMgwRtpBindIp(e.target.value)} className="nms-input w-full font-mono" />
+              <input aria-label="RTP bind IP" value={mgwRtpBindIp} onChange={e => setMgwRtpBindIp(e.target.value)} className="nms-input w-full font-mono" />
             </div>
           </div>
         </div>
@@ -473,7 +473,7 @@ export function HnbPage({ onNavigate }: { onNavigate?: (tab: string) => void }) 
               onClick={() => setTab(tabDef.id)}
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
-                tab === tabDef.id ? 'bg-nms-accent text-white shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+                tab === tabDef.id ? 'bg-nms-accent text-nms-accent-fg shadow-sm' : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >
               {tabDef.icon}

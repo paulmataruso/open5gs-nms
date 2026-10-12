@@ -43,7 +43,7 @@ export const CwmpScreenshotsModal: React.FC<Props> = ({ acsUrl, onClose }) => {
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
+          <button aria-label="Close" onClick={onClose} className="p-1 rounded hover:bg-nms-surface-2 text-nms-text-dim">
             <X className="w-5 h-5" />
           </button>
         </div>

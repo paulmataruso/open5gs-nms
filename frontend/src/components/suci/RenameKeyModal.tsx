@@ -61,7 +61,7 @@ export function RenameKeyModal({ keyData, onClose }: RenameKeyModalProps): JSX.E
               Change PKI ID
             </h2>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -86,7 +86,7 @@ export function RenameKeyModal({ keyData, onClose }: RenameKeyModalProps): JSX.E
           <label className="text-xs font-semibold text-nms-text uppercase tracking-wider">
             New PKI ID <span className="text-nms-accent">*</span>
           </label>
-          <input
+          <input aria-label="New PKI ID *"
             type="number"
             min={0}
             max={255}

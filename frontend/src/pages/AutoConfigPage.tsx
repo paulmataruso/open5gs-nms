@@ -283,7 +283,7 @@ export const AutoConfigPage: React.FC = () => {
             className={clsx(
               'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
               activeTab === tab.id
-                ? 'bg-nms-accent text-white shadow-sm'
+                ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                 : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
             )}
           >
@@ -341,16 +341,16 @@ export const AutoConfigPage: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.s1mme_ip}>S1-MME IP (MME ↔ eNodeB)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.0.1.175" value={config.s1mmeIP} onChange={(e) => setConfig({ ...config, s1mmeIP: e.target.value, s1mmeDev: '' })} className="nms-input font-mono" />
+                    <input aria-label="S1-MME IP (MME ↔ eNodeB)" type="text" placeholder="10.0.1.175" value={config.s1mmeIP} onChange={(e) => setConfig({ ...config, s1mmeIP: e.target.value, s1mmeDev: '' })} className="nms-input font-mono" />
                   </div>
                   <div>
                     <label className="nms-label">S1-MME Interface / dev (alternative to IP)</label>
-                    <input type="text" placeholder="eth0" value={config.s1mmeDev || ''} onChange={(e) => setConfig({ ...config, s1mmeDev: e.target.value, s1mmeIP: '' })} className="nms-input font-mono" />
+                    <input aria-label="S1-MME Interface / dev (alternative to IP)" type="text" placeholder="eth0" value={config.s1mmeDev || ''} onChange={(e) => setConfig({ ...config, s1mmeDev: e.target.value, s1mmeIP: '' })} className="nms-input font-mono" />
                     <p className="text-xs text-nms-text-dim mt-1">Bind to interface instead of IP. Leave blank to use IP.</p>
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.sgwu_gtpu_ip}>S1-U (SGW-U GTP-U)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.0.1.175" value={config.sgwuGtpIP} onChange={(e) => setConfig({ ...config, sgwuGtpIP: e.target.value })} className="nms-input font-mono" />
+                    <input aria-label="S1-U (SGW-U GTP-U)" type="text" placeholder="10.0.1.175" value={config.sgwuGtpIP} onChange={(e) => setConfig({ ...config, sgwuGtpIP: e.target.value })} className="nms-input font-mono" />
                   </div>
                 </div>
               </div>
@@ -359,16 +359,16 @@ export const AutoConfigPage: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.amf_ngap_ip}>NGAP IP (AMF ↔ gNodeB)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.0.1.175" value={config.amfNgapIP} onChange={(e) => setConfig({ ...config, amfNgapIP: e.target.value, amfNgapDev: '' })} className="nms-input font-mono" />
+                    <input aria-label="NGAP IP (AMF ↔ gNodeB)" type="text" placeholder="10.0.1.175" value={config.amfNgapIP} onChange={(e) => setConfig({ ...config, amfNgapIP: e.target.value, amfNgapDev: '' })} className="nms-input font-mono" />
                   </div>
                   <div>
                     <label className="nms-label">NGAP Interface / dev (alternative to IP)</label>
-                    <input type="text" placeholder="eth0" value={config.amfNgapDev || ''} onChange={(e) => setConfig({ ...config, amfNgapDev: e.target.value, amfNgapIP: '' })} className="nms-input font-mono" />
+                    <input aria-label="NGAP Interface / dev (alternative to IP)" type="text" placeholder="eth0" value={config.amfNgapDev || ''} onChange={(e) => setConfig({ ...config, amfNgapDev: e.target.value, amfNgapIP: '' })} className="nms-input font-mono" />
                     <p className="text-xs text-nms-text-dim mt-1">Bind to interface instead of IP. Leave blank to use IP.</p>
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.upf_gtpu_ip}>N3 (UPF GTP-U)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.0.1.155" value={config.upfGtpIP} onChange={(e) => setConfig({ ...config, upfGtpIP: e.target.value })} className="nms-input font-mono" />
+                    <input aria-label="N3 (UPF GTP-U)" type="text" placeholder="10.0.1.155" value={config.upfGtpIP} onChange={(e) => setConfig({ ...config, upfGtpIP: e.target.value })} className="nms-input font-mono" />
                   </div>
                 </div>
               </div>
@@ -428,7 +428,7 @@ export const AutoConfigPage: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="nms-label">SMF PFCP Address</label>
-                    <input
+                    <input aria-label="SMF PFCP Address"
                       type="text"
                       placeholder="10.0.1.155"
                       value={config.smfPfcpIP}
@@ -439,7 +439,7 @@ export const AutoConfigPage: React.FC = () => {
                   </div>
                   <div>
                     <label className="nms-label">Local UPF PFCP Address</label>
-                    <input
+                    <input aria-label="Local UPF PFCP Address"
                       type="text"
                       placeholder="10.0.1.157"
                       value={config.localUpfPfcpIP}
@@ -485,11 +485,11 @@ export const AutoConfigPage: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.session_pool_ipv4_subnet}>Subnet (CIDR)</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.45.0.0/16" value={config.sessionPoolIPv4Subnet} onChange={(e) => setConfig({ ...config, sessionPoolIPv4Subnet: e.target.value })} className="nms-input font-mono" />
+                    <input aria-label="Subnet (CIDR)" type="text" placeholder="10.45.0.0/16" value={config.sessionPoolIPv4Subnet} onChange={(e) => setConfig({ ...config, sessionPoolIPv4Subnet: e.target.value })} className="nms-input font-mono" />
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.session_pool_ipv4_gateway}>Gateway</LabelWithTooltip></label>
-                    <input type="text" placeholder="10.45.0.1" value={config.sessionPoolIPv4Gateway} onChange={(e) => setConfig({ ...config, sessionPoolIPv4Gateway: e.target.value })} className="nms-input font-mono" />
+                    <input aria-label="Gateway" type="text" placeholder="10.45.0.1" value={config.sessionPoolIPv4Gateway} onChange={(e) => setConfig({ ...config, sessionPoolIPv4Gateway: e.target.value })} className="nms-input font-mono" />
                   </div>
                 </div>
               </div>
@@ -498,7 +498,7 @@ export const AutoConfigPage: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.session_pool_ipv6_subnet}>Subnet (CIDR)</LabelWithTooltip></label>
-                    <input type="text" placeholder="2001:db8:cafe::/48" value={config.sessionPoolIPv6Subnet} onChange={(e) => setConfig({ ...config, sessionPoolIPv6Subnet: e.target.value })} className="nms-input font-mono" />
+                    <input aria-label="Subnet (CIDR)" type="text" placeholder="2001:db8:cafe::/48" value={config.sessionPoolIPv6Subnet} onChange={(e) => setConfig({ ...config, sessionPoolIPv6Subnet: e.target.value })} className="nms-input font-mono" />
                     {(() => {
                       const prefixLen = parseInt((config.sessionPoolIPv6Subnet || '').split('/')[1] || '', 10);
                       return Number.isFinite(prefixLen) && prefixLen >= 63 ? (
@@ -512,7 +512,7 @@ export const AutoConfigPage: React.FC = () => {
                   </div>
                   <div>
                     <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.session_pool_ipv6_gateway}>Gateway</LabelWithTooltip></label>
-                    <input type="text" placeholder="2001:db8:cafe::1" value={config.sessionPoolIPv6Gateway} onChange={(e) => setConfig({ ...config, sessionPoolIPv6Gateway: e.target.value })} className="nms-input font-mono" />
+                    <input aria-label="Gateway" type="text" placeholder="2001:db8:cafe::1" value={config.sessionPoolIPv6Gateway} onChange={(e) => setConfig({ ...config, sessionPoolIPv6Gateway: e.target.value })} className="nms-input font-mono" />
                   </div>
                 </div>
               </div>
@@ -535,7 +535,7 @@ export const AutoConfigPage: React.FC = () => {
               <>
                 <div className="mb-4">
                   <label className="nms-label"><LabelWithTooltip tooltip={AUTO_CONFIG_TOOLTIPS.nat_interface}>Tunnel Interface</LabelWithTooltip></label>
-                  <input type="text" value={config.natInterface || 'ogstun'} onChange={(e) => setConfig({ ...config, natInterface: e.target.value })} placeholder="ogstun" className="nms-input font-mono" />
+                  <input aria-label="Tunnel Interface" type="text" value={config.natInterface || 'ogstun'} onChange={(e) => setConfig({ ...config, natInterface: e.target.value })} placeholder="ogstun" className="nms-input font-mono" />
                 </div>
                 <div className="bg-nms-surface-2 border border-nms-border rounded-md p-4">
                   <h3 className="text-sm font-semibold text-nms-text mb-2">Commands that will be executed:</h3>

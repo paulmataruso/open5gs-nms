@@ -97,7 +97,7 @@ export function PysimJsonModal({ keys, onClose }: PysimJsonModalProps): JSX.Elem
               pySIM SUCI Config Generator
             </h2>
           </div>
-          <button onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
+          <button aria-label="Close" onClick={onClose} className="text-nms-text-dim hover:text-nms-text transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>

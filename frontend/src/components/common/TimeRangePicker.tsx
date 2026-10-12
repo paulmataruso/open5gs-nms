@@ -139,7 +139,7 @@ export function TimeRangePicker({ value, onChange, align = 'right' }: Props) {
             <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">Absolute time range</p>
             <div>
               <label className="nms-label">From</label>
-              <input
+              <input aria-label="From"
                 type="datetime-local"
                 className="nms-input font-mono text-xs"
                 value={customFrom}
@@ -148,7 +148,7 @@ export function TimeRangePicker({ value, onChange, align = 'right' }: Props) {
             </div>
             <div>
               <label className="nms-label">To</label>
-              <input
+              <input aria-label="To"
                 type="datetime-local"
                 className="nms-input font-mono text-xs"
                 value={customTo}

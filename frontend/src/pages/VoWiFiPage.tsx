@@ -245,15 +245,15 @@ function SetupTab({ status, refresh }: { status: VowifiStatus | null; refresh: (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
           <div>
             <label className="nms-label">ePDG IP</label>
-            <input className="nms-input" value={epdgIp} onChange={e => setEpdgIp(e.target.value)} />
+            <input aria-label="ePDG IP" className="nms-input" value={epdgIp} onChange={e => setEpdgIp(e.target.value)} />
           </div>
           <div>
             <label className="nms-label">AAA Listen IP (loopback)</label>
-            <input className="nms-input" value={aaaListenIp} onChange={e => setAaaListenIp(e.target.value)} />
+            <input aria-label="AAA Listen IP (loopback)" className="nms-input" value={aaaListenIp} onChange={e => setAaaListenIp(e.target.value)} />
           </div>
           <div>
             <label className="nms-label">Interface Mode</label>
-            <select className="nms-input" value={interfaceMode} onChange={e => setInterfaceMode(e.target.value as 'dummy' | 'existing')}>
+            <select aria-label="Interface Mode" className="nms-input" value={interfaceMode} onChange={e => setInterfaceMode(e.target.value as 'dummy' | 'existing')}>
               <option value="dummy">Create dummy interface</option>
               <option value="existing">Use existing IP</option>
             </select>
@@ -668,7 +668,7 @@ export function VoWiFiPage() {
               className={clsx(
                 'flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all',
                 tab === tabDef.id
-                  ? 'bg-nms-accent text-white shadow-sm'
+                  ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
                   : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
               )}
             >

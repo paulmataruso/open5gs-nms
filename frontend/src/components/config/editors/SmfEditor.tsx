@@ -299,7 +299,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
           {pfcpServers.map((srv, i) => (
             <div key={i} className="flex items-center gap-2">
               <div className="flex-1">
-                <input
+                <input aria-label="PFCP server address"
                   className="nms-input font-mono text-sm w-full"
                   value={srv.address}
                   onChange={(e) => {
@@ -314,7 +314,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                 {isLoopback(srv.address) ? '🔵 loopback (local UPF)' : '🟢 routable (remote UPF)'}
               </span>
               {pfcpServers.length > 1 && i > 0 && (
-                <button
+                <button aria-label="Remove PFCP server"
                   onClick={() => {
                     const updated = pfcpServers.filter((_, idx) => idx !== i);
                     updateSmf({ pfcp: { ...smf.pfcp, server: updated } });
@@ -523,7 +523,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         {/* PFCP Address */}
                         <div>
                         <label className="nms-label">PFCP Address</label>
-                        <input
+                        <input aria-label="PFCP Address"
                         className="nms-input font-mono text-sm"
                         value={client.address}
                         onChange={(e) => updateUpfClient(idx, { address: e.target.value })}
@@ -550,7 +550,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         Route by DNN/APN
                         <span className="text-nms-text-dim font-normal ml-1">(optional — comma-separated)</span>
                       </label>
-                      <input
+                      <input aria-label="Route by DNN/APN (optional — comma-separated)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.dnn)}
                         onChange={(e) => {
@@ -573,7 +573,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         Route by TAC
                         <span className="text-nms-text-dim font-normal ml-1">(optional — comma-separated, decimal)</span>
                       </label>
-                      <input
+                      <input aria-label="Route by TAC (optional — comma-separated, decimal)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.tac)}
                         onChange={(e) => {
@@ -593,7 +593,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         Route by eNodeB Cell ID (4G)
                         <span className="text-nms-text-dim font-normal ml-1">(optional — comma-separated, hex)</span>
                       </label>
-                      <input
+                      <input aria-label="Route by eNodeB Cell ID (4G) (optional — comma-separated, hex)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.e_cell_id)}
                         onChange={(e) => {
@@ -613,7 +613,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         Route by NR Cell ID (5G)
                         <span className="text-nms-text-dim font-normal ml-1">(optional — comma-separated, hex)</span>
                       </label>
-                      <input
+                      <input aria-label="Route by NR Cell ID (5G) (optional — comma-separated, hex)"
                         className="nms-input font-mono text-sm"
                         value={displayMultiValue(client.nr_cell_id)}
                         onChange={(e) => {
@@ -830,7 +830,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
           {nssai.map((slice: any, i: number) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-3">
               {nssai.length > 1 && (
-                <button
+                <button aria-label="Remove network slice"
                   onClick={() => updateNssai(nssai.filter((_: any, idx: number) => idx !== i))}
                   className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
                 >
@@ -888,7 +888,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                 <div className="space-y-1">
                   {(slice.dnn || []).map((dnn: string, di: number) => (
                     <div key={di} className="flex items-center gap-2">
-                      <input
+                      <input aria-label="DNN"
                         className="nms-input font-mono text-sm flex-1"
                         value={dnn}
                         placeholder="internet"
@@ -901,7 +901,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         }}
                       />
                       {(slice.dnn || []).length > 1 && (
-                        <button
+                        <button aria-label="Remove DNN"
                           onClick={() => {
                             const updated = [...nssai];
                             updated[i] = { ...updated[i], dnn: (updated[i].dnn || []).filter((_: string, idx: number) => idx !== di) };
