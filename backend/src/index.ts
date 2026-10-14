@@ -49,6 +49,7 @@ import { EsimGeneratorUseCase } from './application/use-cases/esim-generator';
 import { createEsimRouter } from './interfaces/rest/esim-controller';
 import { createFemtoRouter } from './interfaces/rest/femto-controller';
 import { createRfPlanningRouter } from './interfaces/rest/rf-planning-controller';
+import { createRfSimulationRouter } from './interfaces/rest/rf-simulation-controller';
 import { createRfPlanningProjectsRouter } from './interfaces/rest/rf-planning-projects-controller';
 import { createApnProfileRouter } from './interfaces/rest/apn-profile-controller';
 import { createRfPlanningReportsRouter } from './interfaces/rest/rf-planning-reports-controller';
@@ -663,6 +664,9 @@ async function main() {
   app.use('/api/esim', createEsimRouter(esimGeneratorUseCase, auditLogger, logger));
   app.use('/api/femto', createFemtoRouter(logger));
   app.use('/api/rf-planning', createRfPlanningRouter(logger));
+  // Simulate-driven workflow: ray tracing, radio quality, coverage gaps,
+  // azimuth optimisation, site ranking and measurement validation.
+  app.use('/api/rf-planning', createRfSimulationRouter(logger));
   app.use('/api/rf-planning/projects', createRfPlanningProjectsRouter(rfPlanningProjectRepo, logger));
   app.use('/api/rf-planning/projects', createRfPlanningReportsRouter(rfPlanningProjectRepo, logger));
   app.use('/api/apn-profiles', createApnProfileRouter(apnProfileUseCase, logger, auditLogger));
