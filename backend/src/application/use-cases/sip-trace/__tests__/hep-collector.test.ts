@@ -38,6 +38,24 @@ function hep(payload: string, protoType = HEP_PROTO_SIP): Buffer {
   return Buffer.concat([head, body]);
 }
 
+/**
+ * The same message as hep(), in the HEPv1 encoding siptrace actually emits by
+ * default (`hep_version` defaults to 1). The collector required HEP3 for a
+ * while, so every real message was counted as a parse failure and dropped
+ * while the UI still reported capture as running -- hence a collector-level
+ * test, not just a parser one.
+ */
+function hep1(payload: string): Buffer {
+  const h = Buffer.alloc(8);
+  h.writeUInt8(1, 0);            // hp_v
+  h.writeUInt8(16, 1);           // hp_l: 8 + two IPv4 addresses
+  h.writeUInt8(2, 2);            // hp_f: AF_INET
+  h.writeUInt8(17, 3);           // hp_p: UDP
+  h.writeUInt16BE(5060, 4);
+  h.writeUInt16BE(5100, 6);
+  return Buffer.concat([h, ip4('10.0.1.195'), ip4('10.0.1.178'), Buffer.from(payload, 'utf8')]);
+}
+
 const sip = (callId: string, method = 'INVITE') =>
   [`${method} sip:bob@ims.mnc001.mcc001.3gppnetwork.org SIP/2.0`,
    `From: <sip:alice@ims.mnc001.mcc001.3gppnetwork.org>;tag=1`,
@@ -143,12 +161,39 @@ describe('HepCollector over a real UDP socket', () => {
     expect(c.getStats().nonSipIgnored).toBe(1);
   });
 
+  it('stores a HEPv1 datagram, the format siptrace sends by default', async () => {
+    await send(hep1(sip('v1-call-1')), PORTS.pcscf);
+    await settle();
+    await c.stop();
+    expect(stub.inserted).toHaveLength(1);
+    expect(stub.inserted[0].callId).toBe('v1-call-1');
+    expect(stub.inserted[0].method).toBe('INVITE');
+    expect(stub.inserted[0].srcIp).toBe('10.0.1.195');
+    expect(c.getStats().dropped).toEqual({});
+  });
+
+  it('accepts both encodings on the same listener', async () => {
+    // A deployment can hold CSCFs configured either way, and a later
+    // `hep_version 3` in the templates must not need a collector change.
+    await send(hep1(sip('mixed-v1')), PORTS.pcscf);
+    await send(hep(sip('mixed-v3')), PORTS.pcscf);
+    await settle();
+    await c.stop();
+    expect(stub.inserted.map(d => d.callId).sort()).toEqual(['mixed-v1', 'mixed-v3']);
+  });
+
   it('counts a non-HEP datagram by reason without storing anything', async () => {
     await send(Buffer.from('GET / HTTP/1.1\r\n\r\n'));
     await settle();
     await c.stop();
     expect(stub.inserted).toHaveLength(0);
-    expect(c.getStats().dropped.bad_magic).toBe(1);
+    // `unsupported_version`, not `bad_magic`: the collector accepts both HEP
+    // encodings (siptrace emits v1 by default), so anything without the HEP3
+    // magic is read as a v1/v2 header, and 'G' is version 71. The point of
+    // this test is that a stray datagram is counted under some reason and
+    // never stored -- not which reason.
+    expect(c.getStats().dropped.unsupported_version).toBe(1);
+    expect(Object.values(c.getStats().dropped).reduce((a, b) => a + b, 0)).toBe(1);
   });
 
   it('keeps a message that has no Call-ID, under a synthetic id', async () => {

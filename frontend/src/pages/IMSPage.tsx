@@ -370,6 +370,90 @@ function ConfigureCard({ status, onDone }: {
 
 // ── DNS Records card ──────────────────────────────────────────────────────────
 
+// ── UE keepalive interval ────────────────────────────────────────────────────
+//
+// How often P-CSCF pings each registered contact (route[NATPING]). Worth a
+// setting rather than a constant because the two costs pull in opposite
+// directions and the right answer is deployment-specific: ping too rarely and
+// an idle TCP contact goes stale before its registration expires, so the next
+// INVITE fails on a connect timeout; ping too often and no handset ever
+// reaches RRC idle, which burns battery and holds radio resources for every
+// subscriber on the network.
+function KeepaliveCard({ status, onDone }: {
+  status: { natpingIntervalSeconds: number; natpingIntervalLimits?: { min: number; max: number; default: number } } | null;
+  onDone: () => void;
+}) {
+  const current = status?.natpingIntervalSeconds;
+  const limits = status?.natpingIntervalLimits ?? { min: 5, max: 300, default: 30 };
+  const [input, setInput] = useState('');
+  const [acting, setActing] = useState(false);
+
+  if (current === undefined) return null;
+
+  const apply = async () => {
+    const seconds = parseInt(input, 10);
+    if (!Number.isInteger(seconds) || seconds < limits.min || seconds > limits.max) {
+      toast.error(`Enter a whole number of seconds between ${limits.min} and ${limits.max}`);
+      return;
+    }
+    if (!window.confirm(
+      `Set the UE keepalive interval to ${seconds}s?\n\n`
+      + 'This restarts P-CSCF, which drops every registered handset\'s IPsec security '
+      + 'association. Each handset has to re-register before it can call again — '
+      + 'some do so within seconds, others need Airplane Mode toggled.',
+    )) return;
+    setActing(true);
+    try {
+      await imsApi.setNatpingInterval(seconds);
+      toast.success(`Keepalive interval set to ${seconds}s. P-CSCF restarted; handsets will re-register.`);
+      setInput('');
+      onDone();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? 'Failed to set keepalive interval');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  return (
+    <div className="nms-card">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-nms-text">UE keepalive interval</p>
+          <p className="text-xs text-nms-text-dim mt-0.5">
+            Currently <span className="font-mono">{current}s</span> — P-CSCF pings every registered
+            contact this often to stop idle connections going stale. Too frequent and a handset never
+            reaches RRC idle, costing battery and radio resources ({limits.min}–{limits.max}s, default {limits.default}s).
+          </p>
+          <p className="text-xs text-nms-amber mt-1 flex items-start gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            Applying this restarts P-CSCF and drops every handset's IPsec association — they must re-register.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <input
+            aria-label="UE keepalive interval in seconds"
+            type="number"
+            min={limits.min}
+            max={limits.max}
+            placeholder={String(current)}
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            className="w-20 text-sm px-2 py-1.5 rounded-lg border border-nms-border-strong bg-nms-surface-2 text-nms-text"
+          />
+          <button
+            onClick={() => void apply()}
+            disabled={acting || !input}
+            className="nms-btn-primary text-sm px-3 py-1.5"
+          >
+            {acting ? 'Applying…' : 'Set'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DnsRecordsCard() {
   const [expanded, setExpanded] = useState(false);
   const [records, setRecords] = useState<{ name: string; type: string; value: string }[]>([]);
@@ -1547,6 +1631,7 @@ export function IMSPage() {
             </div>
           )}
 
+          {s && s.installed && <KeepaliveCard status={s} onDone={() => load(true)} />}
           {s && s.installed && <DnsRecordsCard />}
           {s && s.installed && <ValidationCard />}
         </>

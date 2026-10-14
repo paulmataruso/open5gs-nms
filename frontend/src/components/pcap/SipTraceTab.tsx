@@ -1,12 +1,14 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import toast from 'react-hot-toast';
 import {
   AlertTriangle, Antenna, ChevronRight, Loader2, Play, RefreshCw, Search, Square,
 } from 'lucide-react';
 import {
-  CallSummary, SipTraceMessage, SipTraceSource, SipTraceStatus, sipTraceApi,
+  CallFlow, CallSummary, FlowHop, SipTraceMessage, SipTraceSource, SipTraceStatus, sipTraceApi,
 } from '../../api/sipTrace';
+import { CallFlowLadder } from './CallFlowLadder';
+import { FullCallsCard } from './FullCallsCard';
 import { activateOnKey } from '../../hooks/useKeyboardA11y';
 
 // ── SIP Capture ──────────────────────────────────────────────────────────────
@@ -36,129 +38,14 @@ const label = (m: SipTraceMessage): string =>
   m.method ?? `${m.statusCode ?? '?'} ${m.statusReason ?? ''}${m.cseqMethod ? ` (${m.cseqMethod})` : ''}`.trim();
 
 const peer = (ip: string, port: number) => `${ip}:${port}`;
+const fmtMs = (ms: number) => (ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`);
 const hhmmss = (iso: string) => new Date(iso).toLocaleTimeString();
-const ms = (a: string, b: string) => new Date(b).getTime() - new Date(a).getTime();
 
-// ── Ladder diagram ───────────────────────────────────────────────────────────
-//
-// Decorative in the accessibility sense: it carries no information the message
-// table below does not, and is marked role="img" with a summary label rather
-// than being made navigable. Screen-reader users get the table, which is the
-// better representation anyway.
-function LadderDiagram({ messages }: { messages: SipTraceMessage[] }): JSX.Element {
-  const peers = useMemo(() => {
-    const seen: string[] = [];
-    for (const m of messages) {
-      for (const p of [peer(m.srcIp, m.srcPort), peer(m.dstIp, m.dstPort)]) {
-        if (!seen.includes(p)) seen.push(p);
-      }
-    }
-    return seen;
-  }, [messages]);
-
-  if (peers.length < 2) {
-    return (
-      <p className="text-xs text-nms-text-dim py-4">
-        Not enough endpoint information in this dialog to draw a flow.
-      </p>
-    );
-  }
-
-  const colW = Math.max(150, Math.min(260, 1100 / peers.length));
-  const rowH = 46;
-  const padTop = 54;
-  const padLeft = 24;
-  const width = padLeft * 2 + colW * (peers.length - 1) + 180;
-  const height = padTop + rowH * messages.length + 20;
-  const x = (p: string) => padLeft + 90 + peers.indexOf(p) * colW;
-
-  return (
-    <div className="overflow-x-auto">
-      <svg
-        width={width}
-        height={height}
-        role="img"
-        aria-label={`Call flow: ${messages.length} messages between ${peers.length} endpoints. The same information is listed in the message table below.`}
-        style={{ minWidth: width }}
-      >
-        {/* lifelines */}
-        {peers.map(p => (
-          <g key={p}>
-            <text
-              x={x(p)} y={20} textAnchor="middle"
-              style={{ fill: 'rgb(var(--nms-text-rgb))', fontSize: 11, fontFamily: 'inherit' }}
-            >
-              {p.split(':')[0]}
-            </text>
-            <text
-              x={x(p)} y={34} textAnchor="middle"
-              style={{ fill: 'rgb(var(--nms-text-dim-rgb))', fontSize: 10, fontFamily: 'inherit' }}
-            >
-              :{p.split(':')[1]}
-            </text>
-            <line
-              x1={x(p)} y1={42} x2={x(p)} y2={height - 10}
-              style={{ stroke: 'rgb(var(--nms-border-strong-rgb))', strokeWidth: 1 }}
-            />
-          </g>
-        ))}
-
-        {messages.map((m, i) => {
-          const from = x(peer(m.srcIp, m.srcPort));
-          const to = x(peer(m.dstIp, m.dstPort));
-          const y = padTop + i * rowH + 14;
-          const rightward = to >= from;
-          const color = `rgb(var(${toneVar(m)}))`;
-          const selfCall = from === to;
-          return (
-            <g key={`${m.timestamp}-${m.seq}`}>
-              <text
-                x={8} y={y + 4}
-                style={{ fill: 'rgb(var(--nms-text-dim-rgb))', fontSize: 10, fontFamily: 'ui-monospace, monospace' }}
-              >
-                {i === 0 ? '0ms' : `+${ms(messages[0].timestamp, m.timestamp)}ms`}
-              </text>
-              {selfCall ? (
-                <path
-                  d={`M ${from} ${y} q 40 10 0 20`}
-                  fill="none"
-                  style={{ stroke: color, strokeWidth: 1.5 }}
-                />
-              ) : (
-                <line
-                  x1={from} y1={y} x2={to} y2={y}
-                  style={{ stroke: color, strokeWidth: 1.5 }}
-                />
-              )}
-              {!selfCall && (
-                <polygon
-                  points={rightward ? `${to},${y} ${to - 7},${y - 4} ${to - 7},${y + 4}` : `${to},${y} ${to + 7},${y - 4} ${to + 7},${y + 4}`}
-                  style={{ fill: color }}
-                />
-              )}
-              <text
-                x={selfCall ? from + 46 : (from + to) / 2}
-                y={y - 6}
-                textAnchor={selfCall ? 'start' : 'middle'}
-                style={{ fill: color, fontSize: 11, fontFamily: 'inherit', fontWeight: 500 }}
-              >
-                {label(m)}
-              </text>
-              <text
-                x={selfCall ? from + 46 : (from + to) / 2}
-                y={y + 14}
-                textAnchor={selfCall ? 'start' : 'middle'}
-                style={{ fill: 'rgb(var(--nms-text-dim-rgb))', fontSize: 9, fontFamily: 'inherit' }}
-              >
-                {SOURCE_LABEL[m.source]}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-    </div>
-  );
-}
+// The ladder itself lives in CallFlowLadder.tsx. The earlier version here was
+// a non-interactive SVG drawn straight from the raw rows: it repeated each
+// message once per CSCF that mirrored it, and nothing in it could be clicked.
+// It is superseded rather than kept beside the new one -- two near-identical
+// diagrams disagreeing about how many messages a call had is worse than one.
 
 // ── Status + control ─────────────────────────────────────────────────────────
 function StatusCard({
@@ -169,21 +56,26 @@ function StatusCard({
   busy: boolean;
   setBusy: (b: boolean) => void;
 }): JSX.Element {
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  // Which instances the last apply could not reach because siptrace is not
+  // loaded there. Kept in state rather than inferred from status, because the
+  // remedy (run an IMS Configure) is advice about an action the operator takes
+  // elsewhere, and it should stay on screen after the toast has gone.
+  const [notLoaded, setNotLoaded] = useState<string[]>([]);
 
   const enable = async () => {
     setBusy(true);
     try {
       const r = await sipTraceApi.enable();
       const failed = r.instances.filter(i => i.action === 'failed');
+      const missing = r.instances.filter(i => i.action === 'not-loaded').map(i => i.role);
+      setNotLoaded(missing);
       if (failed.length) {
         toast.error(`Tracing enabled with problems: ${failed.map(f => `${f.role} (${f.detail})`).join('; ')}`);
-      } else if (r.restarted) {
-        toast.success('SIP tracing enabled. CSCFs restarted — registered handsets must re-register before they can call.', { duration: 9000 });
+      } else if (r.needsConfigure) {
+        toast.error(`Capture is not loaded on ${missing.join(', ').toUpperCase()} — run Configure on the IMS page.`, { duration: 9000 });
       } else {
-        toast.success('SIP tracing enabled (no restart needed).');
+        toast.success('SIP tracing started. No restart, no effect on registrations.');
       }
-      setConfirmOpen(false);
       onChanged();
     } catch (err: any) {
       toast.error(err?.response?.data?.error ?? 'Failed to enable SIP tracing');
@@ -196,7 +88,8 @@ function StatusCard({
     setBusy(true);
     try {
       await sipTraceApi.disable();
-      toast.success('SIP tracing stopped. No restart was needed, so no registrations were affected.');
+      setNotLoaded([]);
+      toast.success('SIP tracing stopped. No restart, no effect on registrations.');
       onChanged();
     } catch (err: any) {
       toast.error(err?.response?.data?.error ?? 'Failed to disable SIP tracing');
@@ -208,6 +101,12 @@ function StatusCard({
   const c = status?.collector;
   const dropped = c ? Object.entries(c.dropped) : [];
 
+  // Show the "run Configure" advice whenever tracing is meant to be on but an
+  // instance has no module, not only in the moment after a click — otherwise
+  // the one actionable explanation for an empty trace disappears on refresh.
+  const unloadedNow = (status?.runtime ?? []).filter(r => !r.loaded).map(r => r.role);
+  const needsConfigure = notLoaded.length > 0 ? notLoaded : (status?.enabled ? unloadedNow : []);
+
   return (
     <div className="nms-card space-y-4">
       <div className="flex items-start justify-between flex-wrap gap-3">
@@ -218,6 +117,11 @@ function StatusCard({
           <p className="text-xs text-nms-text-dim mt-1 max-w-3xl">
             Mirrors every SIP message the CSCFs handle, taken from inside Kamailio rather than off the wire —
             so it sees the UE leg even though that traffic is inside IPsec, which a packet capture cannot.
+          </p>
+          <p className="text-xs text-nms-text-dim mt-1 max-w-3xl">
+            The capture module is loaded on all three CSCFs by IMS Configure and stays loaded, so starting and
+            stopping is instant and never restarts anything — no handset loses its IPsec security association,
+            and the setting survives an IMS restart.
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -236,36 +140,29 @@ function StatusCard({
               {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5" />} Stop tracing
             </button>
           ) : (
-            <button onClick={() => setConfirmOpen(true)} disabled={busy} className="nms-btn-primary text-xs flex items-center gap-1.5">
-              <Play className="w-3.5 h-3.5" /> Start tracing
+            <button onClick={enable} disabled={busy} className="nms-btn-primary text-xs flex items-center gap-1.5">
+              {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />} Start tracing
             </button>
           )}
         </div>
       </div>
 
-      {confirmOpen && !status?.enabled && (
+      {needsConfigure.length > 0 && (
         <div className="rounded-lg border border-nms-amber/40 bg-nms-amber/10 p-3 space-y-2">
           <p className="text-xs text-nms-amber font-semibold flex items-center gap-1.5">
-            <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Starting tracing restarts the three CSCFs
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            Capture is not loaded on {needsConfigure.join(', ').toUpperCase()}
           </p>
           <p className="text-xs text-nms-text">
-            Kamailio can only load the tracing module at startup, so each CSCF is restarted once.
-            Restarting P-CSCF <strong>drops every registered handset's IPsec security association</strong>:
-            affected phones will still look registered but cannot place or receive a call until they
-            re-register for real (toggle Airplane Mode, or restart the handset).
+            Those instances are running a config from before capture was loaded as standard, and Kamailio only
+            loads modules at startup. Run <strong>Configure</strong> on the IMS page once — it restarts the CSCFs
+            as it always has — and capture is then permanently available with no further restarts.
           </p>
           <p className="text-xs text-nms-text-dim">
-            Stopping tracing again later is free — it uses Kamailio's own runtime control and needs no restart.
+            Nothing was restarted for you: restarting P-CSCF drops every registered handset's IPsec security
+            association, so that is left to a deliberate Configure rather than done as a side effect of
+            opening a trace.
           </p>
-          <div className="flex items-center gap-2 pt-1">
-            <button onClick={enable} disabled={busy} className="nms-btn-primary text-xs flex items-center gap-1.5">
-              {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-              Restart the CSCFs and start tracing
-            </button>
-            <button onClick={() => setConfirmOpen(false)} disabled={busy} className="nms-btn-ghost text-xs">
-              Cancel
-            </button>
-          </div>
         </div>
       )}
 
@@ -311,8 +208,23 @@ function StatusCard({
                         <span className={l.bound ? 'text-nms-green' : 'text-nms-red'}>{l.bound ? 'yes' : 'no'}</span>
                       </td>
                       <td className="px-3 py-1.5">
-                        <span className={rt?.loaded ? 'text-nms-green' : 'text-nms-text-dim'}>
-                          {rt?.loaded ? (rt.status || 'yes') : 'no'}
+                        {/* Loaded is now the normal state on every instance, so "no"
+                            means a stale config rather than "tracing is just off".
+                            The module being loaded and tracing being on are two
+                            different things here, and siptrace's own RPC answers
+                            with the tracing state ("Enabled"/"Disabled") -- printing
+                            that raw under a "Module loaded" heading reads as though
+                            the MODULE were disabled, which is the one distinction
+                            this column exists to make. So say both. */}
+                        <span className={rt?.loaded ? 'text-nms-green' : 'text-nms-amber'}>
+                          {rt?.loaded ? 'yes' : 'no — run IMS Configure'}
+                          {rt?.loaded && (
+                            <span className="text-nms-text-dim">
+                              {rt.status === 'Enabled' ? ' — tracing on'
+                                : rt.status === 'Disabled' ? ' — tracing off'
+                                : rt.status ? ` — ${rt.status}` : ''}
+                            </span>
+                          )}
                         </span>
                       </td>
                       <td className="px-3 py-1.5 text-right font-mono text-nms-text-dim">
@@ -324,6 +236,30 @@ function StatusCard({
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* The one failure this page has to name out loud: the tap is working --
+          datagrams are arriving on the collector port -- but not one of them
+          could be turned into a message. A thin "dropped" line underneath the
+          stats is too quiet for that, because the rest of the page looks
+          entirely healthy (module loaded, tracing enabled, packets counting
+          up) while the capture stays empty. That is exactly how a HEP version
+          mismatch went unnoticed: siptrace defaults to HEPv1, the collector
+          briefly required HEPv3, and every real message landed in a drop
+          counter nobody was reading. */}
+      {c && c.packetsReceived > 0 && c.messagesStored === 0 && (
+        <div className="rounded-lg border border-nms-red/40 bg-nms-red/10 p-3 space-y-2">
+          <p className="text-xs text-nms-red font-semibold flex items-center gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            Receiving packets but storing none
+          </p>
+          <p className="text-xs text-nms-text">
+            The CSCFs are mirroring SIP to this collector — {c.packetsReceived.toLocaleString()} datagram
+            {c.packetsReceived === 1 ? '' : 's'} so far — but none could be decoded, so the capture below
+            stays empty. The tap is fine; the collector cannot read what is arriving.
+            {dropped.length > 0 && <> Reason{dropped.length === 1 ? '' : 's'}: <span className="font-mono">{dropped.map(([k, v]) => `${k} ×${v}`).join(', ')}</span>.</>}
+          </p>
         </div>
       )}
 
@@ -342,6 +278,76 @@ function StatusCard({
   );
 }
 
+// ── Detail for one selected hop ──────────────────────────────────────────────
+//
+// Opened by clicking an arrow in the ladder. Shows the parsed headers plus the
+// verbatim message -- and, when both the sending and the receiving CSCF
+// mirrored the same message, each tap's own copy. Those copies are normally
+// byte-identical; where they are NOT, that difference is itself the finding
+// (a proxy rewrote something in flight), so they are shown separately rather
+// than silently de-duplicated here.
+function HopDetail({
+  flow, hop, onClose,
+}: { flow: CallFlow; hop: FlowHop; onClose: () => void }): JSX.Element {
+  const ep = (id: string) => flow.endpoints.find(e => e.id === id);
+  const observations = hop.messageRefs.map(r => flow.messages[r]).filter(Boolean);
+  const identical = observations.length > 1
+    && observations.every(o => o.raw === observations[0].raw);
+
+  const facts: { k: string; v: string }[] = [
+    { k: 'Message', v: hop.label },
+    { k: 'From', v: `${ep(hop.from)?.label ?? hop.from}  (${hop.from})` },
+    { k: 'To', v: `${ep(hop.to)?.label ?? hop.to}  (${hop.to})` },
+    { k: 'Time', v: `${new Date(hop.timestamp).toLocaleTimeString()}  (${fmtMs(hop.offsetMs)} into the call)` },
+    { k: 'Since previous', v: fmtMs(hop.deltaMs) },
+    { k: 'CSeq', v: hop.cseqNumber !== undefined ? `${hop.cseqNumber} ${hop.cseqMethod ?? ''}`.trim() : '—' },
+    { k: 'Observed by', v: hop.sources.map(x => SOURCE_LABEL[x]).join(', ') },
+    { k: 'Call-ID', v: hop.callId },
+  ];
+  if (hop.retransmission) {
+    facts.splice(1, 0, { k: 'Retransmission', v: 'yes — identical bytes sent again' });
+  }
+
+  return (
+    <div className="rounded-lg border border-nms-accent/40 bg-nms-surface-2/40 p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-xs font-semibold" style={{ color: `rgb(var(--nms-accent-rgb))` }}>
+          {hop.label}
+          <span className="text-nms-text-dim font-normal">
+            {' '}· {ep(hop.from)?.label} → {ep(hop.to)?.label}
+          </span>
+        </h3>
+        <button onClick={onClose} className="nms-btn-ghost text-[11px] px-2 py-0.5 shrink-0">Close</button>
+      </div>
+
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+        {facts.map(f => (
+          <div key={f.k} className="flex gap-2 text-xs min-w-0">
+            <dt className="text-nms-text-dim shrink-0 w-28">{f.k}</dt>
+            <dd className="font-mono text-nms-text break-all min-w-0">{f.v}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {observations.map((o, i) => (
+        <div key={i} className="space-y-1">
+          {observations.length > 1 && (
+            <p className="text-[11px] text-nms-text-dim">
+              As captured by {SOURCE_LABEL[o.source]}
+              {i === 0 && identical && ' (all copies identical)'}
+            </p>
+          )}
+          {(i === 0 || !identical) && (
+            <pre className="text-[11px] font-mono text-nms-text whitespace-pre-wrap break-all max-h-96 overflow-y-auto bg-nms-bg/40 rounded p-2">
+              {o.raw}
+            </pre>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Main tab ─────────────────────────────────────────────────────────────────
 export function SipTraceTab(): JSX.Element {
   const [status, setStatus] = useState<SipTraceStatus | null>(null);
@@ -353,10 +359,21 @@ export function SipTraceTab(): JSX.Element {
   const [search, setSearch] = useState('');
   const [method, setMethod] = useState('');
   const [source, setSource] = useState<'' | SipTraceSource>('');
+  // Bumped whenever tracing is toggled, so the Calls card refetches too.
+  const [refreshKey, setRefreshKey] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<SipTraceMessage[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [rawOpen, setRawOpen] = useState<number | null>(null);
+  const [flow, setFlow] = useState<CallFlow | null>(null);
+  const [relatedIds, setRelatedIds] = useState<string[]>([]);
+  const [includeRelated, setIncludeRelated] = useState(false);
+  const [hop, setHop] = useState<FlowHop | null>(null);
+  const [rowsOpen, setRowsOpen] = useState(false);
+  // Selecting a call should land the operator ON the flow. The card renders
+  // below a potentially long list, so without this a click looks like it did
+  // nothing at all.
+  const flowRef = useRef<HTMLDivElement | null>(null);
 
   const pageSize = 25;
 
@@ -371,6 +388,10 @@ export function SipTraceTab(): JSX.Element {
         search: search || undefined,
         method: method || undefined,
         source: source || undefined,
+        // This card is deliberately the unfiltered view -- every dialog,
+        // keepalives and registrations included. Actual calls get their own
+        // card above, so neither view has to compromise for the other.
+        kind: 'all',
         page,
         pageSize,
       });
@@ -390,25 +411,58 @@ export function SipTraceTab(): JSX.Element {
     return () => clearInterval(t);
   }, [loadStatus]);
 
-  const openCall = async (callId: string) => {
+  const openCall = useCallback(async (callId: string, withRelated: boolean) => {
     setSelected(callId);
     setRawOpen(null);
+    setHop(null);
     setLoadingMessages(true);
     try {
-      setMessages(await sipTraceApi.getCallMessages(callId));
+      const r = await sipTraceApi.getCallFlow(callId, withRelated);
+      setFlow(r.flow);
+      // The flow response carries the rows it was built from, so the raw table
+      // below is always exactly what the ladder was derived from -- no second
+      // fetch that could disagree with it.
+      setMessages(r.flow.messages);
+      setRelatedIds(r.related);
     } catch (err: any) {
       toast.error(err?.response?.data?.error ?? 'Failed to load that dialog');
+      setFlow(null);
       setMessages([]);
+      setRelatedIds([]);
     } finally {
       setLoadingMessages(false);
+      // After paint, so the card exists to scroll to. Honours the global
+      // reduced-motion preference rather than always smooth-scrolling.
+      requestAnimationFrame(() => {
+        const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        flowRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+      });
     }
-  };
+  }, []);
+
+  // Re-fetch when the operator folds related dialogs in or out.
+  useEffect(() => {
+    if (selected) void openCall(selected, includeRelated);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeRelated]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <div className="space-y-6">
-      <StatusCard status={status} onChanged={() => { void loadStatus(); void loadCalls(); }} busy={busy} setBusy={setBusy} />
+      <StatusCard
+        status={status}
+        onChanged={() => { void loadStatus(); void loadCalls(); setRefreshKey(k => k + 1); }}
+        busy={busy}
+        setBusy={setBusy}
+      />
+
+      <FullCallsCard
+        onOpen={id => void openCall(id, includeRelated)}
+        selectedCallId={selected}
+        tracingEnabled={status?.enabled ?? false}
+        refreshKey={refreshKey}
+      />
 
       <div className="nms-card space-y-4">
         <div className="flex items-end justify-between flex-wrap gap-3">
@@ -481,8 +535,8 @@ export function SipTraceTab(): JSX.Element {
                     return (
                       <tr
                         key={c.callId}
-                        onClick={() => void openCall(c.callId)}
-                        onKeyDown={activateOnKey(() => void openCall(c.callId))}
+                        onClick={() => void openCall(c.callId, includeRelated)}
+                        onKeyDown={activateOnKey(() => void openCall(c.callId, includeRelated))}
                         tabIndex={0}
                         aria-selected={isSel}
                         className={clsx(
@@ -550,13 +604,48 @@ export function SipTraceTab(): JSX.Element {
       </div>
 
       {selected && (
-        <div className="nms-card space-y-4">
+        <div ref={flowRef} className="nms-card space-y-4 scroll-mt-4">
           <div className="flex items-start justify-between flex-wrap gap-2">
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-nms-accent">Call flow</h2>
-              <p className="text-xs text-nms-text-dim mt-1 font-mono break-all">{selected}</p>
+              <p className="text-xs text-nms-text-dim mt-1 font-mono break-all">
+                {(flow?.dialogs ?? [selected]).join('  +  ')}
+              </p>
+              {flow && (
+                <p className="text-xs text-nms-text-dim mt-1">
+                  {flow.hops.length} message{flow.hops.length === 1 ? '' : 's'} across{' '}
+                  {flow.endpoints.length} endpoint{flow.endpoints.length === 1 ? '' : 's'}
+                  {flow.mergedDuplicates > 0 && (
+                    <>
+                      {' · '}
+                      <span title="The same message is mirrored by both the sending and the receiving CSCF; those pairs are shown once.">
+                        {flow.mergedDuplicates} duplicate observation
+                        {flow.mergedDuplicates === 1 ? '' : 's'} merged
+                      </span>
+                    </>
+                  )}
+                </p>
+              )}
             </div>
-            <button onClick={() => setSelected(null)} className="nms-btn-ghost text-xs shrink-0">Close</button>
+            <div className="flex items-center gap-2 shrink-0">
+              {relatedIds.length > 0 && (
+                <label className="flex items-center gap-1.5 text-xs text-nms-text cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="nms-checkbox"
+                    checked={includeRelated}
+                    onChange={e => setIncludeRelated(e.target.checked)}
+                  />
+                  {/* A B2BUA (PSTN Gateway, Asterisk-2G, Cross-RAN) terminates one
+                      dialog and originates another, so one real call is genuinely
+                      two Call-IDs with no SIP-level link. Folding them in is the
+                      only way to see such a call end to end -- but the link is
+                      matched on shared party and time, so it is opt-in. */}
+                  Include {relatedIds.length} related dialog{relatedIds.length === 1 ? '' : 's'}
+                </label>
+              )}
+              <button onClick={() => setSelected(null)} className="nms-btn-ghost text-xs">Close</button>
+            </div>
           </div>
 
           {loadingMessages ? (
@@ -565,9 +654,41 @@ export function SipTraceTab(): JSX.Element {
             </p>
           ) : (
             <>
-              <LadderDiagram messages={messages} />
+              {flow && (
+                <CallFlowLadder
+                  flow={flow}
+                  selected={hop?.index ?? null}
+                  onSelect={h => setHop(prev => (prev?.index === h.index ? null : h))}
+                />
+              )}
 
-              <div className="nms-table-wrap">
+              {hop && flow && <HopDetail flow={flow} hop={hop} onClose={() => setHop(null)} />}
+              {!hop && flow && flow.hops.length > 0 && (
+                <p className="text-xs text-nms-text-dim">
+                  Select any message in the flow above to see its headers and full SIP body.
+                </p>
+              )}
+
+              <div>
+                <button
+                  onClick={() => setRowsOpen(o => !o)}
+                  aria-expanded={rowsOpen}
+                  className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2 py-1"
+                >
+                  <ChevronRight className={clsx('w-3 h-3 transition-transform', rowsOpen && 'rotate-90')} />
+                  {rowsOpen ? 'Hide' : 'Show'} all {messages.length} captured row
+                  {messages.length === 1 ? '' : 's'}
+                </button>
+                {/* Kept alongside the ladder, not replaced by it: the ladder shows
+                    one row per message on the wire, this shows every row actually
+                    stored -- including each CSCF's own copy of the same message.
+                    When the two disagree, this is the one that is literally true. */}
+                <p className="text-xs text-nms-text-dim mt-1">
+                  Every row as captured, including each CSCF's separate copy of the same message.
+                </p>
+              </div>
+
+              <div className={clsx('nms-table-wrap', !rowsOpen && 'hidden')}>
                 <div className="nms-table-scroll">
                   <table className="w-full text-xs">
                     <thead className="bg-nms-surface-2 text-nms-text-dim">

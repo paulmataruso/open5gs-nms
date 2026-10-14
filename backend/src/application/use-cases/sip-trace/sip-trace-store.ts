@@ -199,6 +199,19 @@ export interface CallListFilter {
   source?: SipTraceSource;
   page?: number;
   pageSize?: number;
+  /**
+   * 'calls' (the default) lists only dialogs that are an actual call -- ones
+   * containing an INVITE. Anything else here is a dialog in the SIP sense but
+   * not a call, and on a live IMS it outnumbers the calls heavily: P-CSCF
+   * sends I-CSCF an OPTIONS keepalive every few seconds forever, every
+   * handset re-REGISTERs on a timer, and SUBSCRIBE/NOTIFY runs continuously.
+   * Making that the default list buries the one thing an operator opened the
+   * page to find.
+   *
+   * 'all' is the unfiltered view, for when the question is about registration
+   * or messaging rather than a call.
+   */
+  kind?: 'calls' | 'all';
 }
 
 export async function listCalls(
@@ -241,6 +254,11 @@ export async function listCalls(
     },
   ];
   if (f.method) pipeline.push({ $match: { methods: f.method.toUpperCase() } });
+  // Applied after $group, because "is this dialog a call" is a property of the
+  // whole dialog, not of any one message: matching INVITE before grouping
+  // would return a dialog consisting only of its INVITE and drop the replies,
+  // the ACK and the BYE that make it a call worth looking at.
+  if ((f.kind ?? 'calls') === 'calls') pipeline.push({ $match: { methods: 'INVITE' } });
   pipeline.push({ $sort: { startTime: -1 } });
 
   const countAgg = await col(db)

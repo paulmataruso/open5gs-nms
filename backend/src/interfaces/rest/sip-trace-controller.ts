@@ -17,10 +17,12 @@ import {
   listCalls,
 } from '../../application/use-cases/sip-trace/sip-trace-store';
 import {
+  getCscfAddresses,
   getSipTracingEnabled,
   getSipTracingRuntime,
   setSipTracingEnabled,
 } from './ims-controller';
+import { buildCallFlow, findRelatedCallIds } from '../../application/use-cases/sip-trace/call-flow';
 
 // Retention lives in its own tiny file rather than the IMS state blob: it is a
 // property of this NMS's storage, not of the IMS deployment, and the collector
@@ -93,7 +95,7 @@ export function createSipTraceRouter(
         action: 'sip_trace_enable',
         user,
         target: 'ims-cscf',
-        details: `restarted=${report.restarted} ${report.instances.map(i => `${i.role}:${i.action}`).join(' ')}`,
+        details: `needsConfigure=${report.needsConfigure} ${report.instances.map(i => `${i.role}:${i.action}`).join(' ')}`,
         success: true,
       });
       res.json({ success: true, report });
@@ -128,6 +130,9 @@ export function createSipTraceRouter(
         search: q.search,
         method: q.method,
         source,
+        // Only 'all' widens it; anything else (including absent) lists calls,
+        // so a caller that has not thought about it gets the useful view.
+        kind: q.kind === 'all' ? 'all' : 'calls',
         page: q.page ? parseInt(q.page, 10) : undefined,
         pageSize: q.pageSize ? parseInt(q.pageSize, 10) : undefined,
       });
@@ -145,6 +150,36 @@ export function createSipTraceRouter(
         return;
       }
       res.json({ success: true, messages });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // The end-to-end ladder for a whole call. Separate from /messages, which
+  // stays a faithful dump of the raw rows -- both views are wanted: the flow
+  // to read the call, the raw list to audit what was actually captured.
+  //
+  // `related=1` pulls in other Call-IDs that look like the same real call, for
+  // the B2BUA case where one call genuinely is two dialogs (see call-flow.ts).
+  // Off by default: a heuristic merge should be asked for, not assumed.
+  router.get('/calls/:callId/flow', async (req: Request, res: Response) => {
+    try {
+      const callId = req.params.callId;
+      const ids = [callId];
+      if (String(req.query.related ?? '') === '1') {
+        ids.push(...(await findRelatedCallIds(db, callId)));
+      }
+      const batches = await Promise.all(ids.map(id => getCallMessages(db, id)));
+      const messages = batches.flat();
+      if (messages.length === 0) {
+        res.status(404).json({ success: false, error: 'No messages for that Call-ID (it may have aged out)' });
+        return;
+      }
+      const flow = buildCallFlow(messages, getCscfAddresses());
+      // Offered even when not requested, so the UI can say how many related
+      // dialogs exist without the operator having to guess and re-ask.
+      const related = await findRelatedCallIds(db, callId);
+      res.json({ success: true, flow, related, includedDialogs: ids });
     } catch (err) {
       res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }

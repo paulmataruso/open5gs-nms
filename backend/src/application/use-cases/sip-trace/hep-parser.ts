@@ -1,4 +1,4 @@
-// ── HEP (Homer Encapsulation Protocol) v3 parser ─────────────────────────────
+// ── HEP (Homer Encapsulation Protocol) parser: v1/v2 and v3 ─────────────────
 //
 // Kamailio's own `siptrace` module mirrors every SIP message it handles to a
 // HEP collector. That is the tap this module reads, rather than sniffing the
@@ -7,6 +7,18 @@
 // radio-facing interface sees ESP, not SIP. siptrace runs *inside* the proxy,
 // after decryption, so it sees the real messages -- and loses nothing to
 // capture buffer drops either.
+//
+// Two wire formats arrive here, because siptrace can emit either.
+//
+// `hep_version` defaults to **1**, not 3 (siptrace.c: `int hep_version = 1`,
+// and siptrace's own README says "Default value is 1"). Versions 1 and 2
+// share one fixed-layout binary header; version 3 is the TLV format Homer
+// uses today. Supporting both is what lets capture work on a CSCF whose
+// config does not set `hep_version` -- which is every CSCF this project
+// configures, since a modparam has to follow its own loadmodule and so
+// cannot live in the generated include. Reading v1 here, rather than adding
+// that modparam to the static templates, keeps turning capture on free of a
+// CSCF restart -- which is the entire point of the feature.
 //
 // Wire format (HEP3), all integers big-endian:
 //
@@ -22,6 +34,28 @@
 // vendor-specific chunk is skipped by its own declared length rather than
 // aborting the parse, so a capture agent that adds proprietary chunks stays
 // readable.
+//
+// Wire format (HEP1/HEP2) -- `struct hep_hdr` + `struct hep_iphdr`, taken
+// from siptrace_hep.c's own encoder rather than inferred:
+//
+//   hp_v             1 byte, 1 or 2
+//   hp_l             1 byte, header length INCLUDING the address pair
+//                    (16 for IPv4, 40 for IPv6) but NOT the v2 time header
+//   hp_f             1 byte, address family (2 AF_INET, 10 AF_INET6)
+//   hp_p             1 byte, IP protocol
+//   hp_sport         2 bytes, big-endian (htons)
+//   hp_dport         2 bytes, big-endian (htons)
+//   src/dst address  8 bytes (IPv4) or 32 bytes (IPv6), network order
+//   v2 only:         tv_sec 4 + tv_usec 4 + captid 2, all LITTLE-endian --
+//                    `to_le()` is a no-op on x86, so these are host order,
+//                    the one field group in HEP that is not big-endian
+//   payload          the rest of the datagram, raw SIP
+//
+// There is no payload-type and no capture-agent chunk in v1/v2: every v1/v2
+// datagram from siptrace is SIP by construction, and this project tells the
+// three CSCFs apart by which collector PORT received the packet (see
+// CAPTURE_PORTS in sip-trace-store.ts), not by a capture id, so nothing we
+// actually use is lost by the older format.
 
 /** Generic (vendor 0) HEP chunk type IDs we care about. */
 export const HEP_CHUNK = {
@@ -73,7 +107,9 @@ export class HepParseError extends Error {
       | 'length_mismatch'
       | 'truncated_chunk'
       | 'no_payload'
-      | 'compressed_payload',
+      | 'compressed_payload'
+      | 'unsupported_version'
+      | 'bad_header',
   ) {
     super(message);
     this.name = 'HepParseError';
@@ -103,9 +139,11 @@ function ipv6(buf: Buffer): string {
 export function parseHep3(buf: Buffer): HepPacket {
   if (buf.length < 6) throw new HepParseError(`datagram too short (${buf.length}B)`, 'too_short');
   if (buf.toString('ascii', 0, 4) !== 'HEP3') {
-    // A HEPv1/v2 agent would land here. siptrace defaults to v3 and the IMS
-    // templates do not override hep_version, so this means something else is
-    // sending to our port -- worth surfacing distinctly, not as "truncated".
+    // Reaching here means the datagram is not v3 at all. Callers should use
+    // parseHep(), which dispatches to the v1/v2 reader instead of failing --
+    // siptrace's own default is v1, so a non-v3 datagram is the common case,
+    // not the odd one. This function stays strict so a v3-specific test or
+    // caller gets a clear error rather than a silently mis-parsed packet.
     throw new HepParseError(
       `not a HEP3 datagram (first 4 bytes: ${buf.subarray(0, Math.min(4, buf.length)).toString('hex')})`,
       'bad_magic',
@@ -179,4 +217,108 @@ export function parseHep3(buf: Buffer): HepPacket {
   const timestamp = tsSec > 0 ? new Date(tsSec * 1000 + Math.floor(tsUsec / 1000)) : new Date();
 
   return { srcIp, srcPort, dstIp, dstPort, ipProto, payloadType, captureAgentId, timestamp, payload, correlationId };
+}
+
+/** Address families as they appear in `hp_f` (Linux values). */
+const HEP_AF_INET = 2;
+const HEP_AF_INET6 = 10;
+
+/** `sizeof(struct hep_hdr)`: hp_v, hp_l, hp_f, hp_p, hp_sport, hp_dport. */
+const HEP12_HDR = 8;
+/** tv_sec + tv_usec + captid, the v2-only time header. */
+const HEP12_TIME = 10;
+
+/**
+ * Parse one HEPv1 or HEPv2 datagram -- the format siptrace emits by default.
+ *
+ * Mirrors parseHep3's contract: same HepPacket out, same HepParseError codes,
+ * so the collector counts drops identically whichever format a CSCF sends.
+ */
+export function parseHep1or2(buf: Buffer): HepPacket {
+  if (buf.length < HEP12_HDR) throw new HepParseError(`datagram too short (${buf.length}B)`, 'too_short');
+
+  const version = buf.readUInt8(0);
+  if (version !== 1 && version !== 2) {
+    throw new HepParseError(`HEP version ${version} is not 1 or 2`, 'unsupported_version');
+  }
+
+  const hdrLen = buf.readUInt8(1);
+  const family = buf.readUInt8(2);
+  const ipProto = buf.readUInt8(3);
+  const srcPort = buf.readUInt16BE(4);
+  const dstPort = buf.readUInt16BE(6);
+
+  // hp_l is validated against the family rather than trusted, because it is
+  // the offset every later read depends on: a wrong value would silently slice
+  // the address pair out of the SIP text, which parses as a plausible-looking
+  // malformed message instead of an obvious error.
+  const addrLen = family === HEP_AF_INET ? 4 : family === HEP_AF_INET6 ? 16 : 0;
+  if (addrLen === 0) {
+    throw new HepParseError(`unknown address family ${family} in hp_f`, 'bad_header');
+  }
+  const expectedHdr = HEP12_HDR + addrLen * 2;
+  if (hdrLen !== expectedHdr) {
+    throw new HepParseError(
+      `hp_l is ${hdrLen}, expected ${expectedHdr} for family ${family}`,
+      'bad_header',
+    );
+  }
+  if (buf.length < expectedHdr) {
+    throw new HepParseError(`header declares ${expectedHdr}B, datagram is ${buf.length}B`, 'too_short');
+  }
+
+  const read = family === HEP_AF_INET ? ipv4 : ipv6;
+  const srcIp = read(buf.subarray(HEP12_HDR, HEP12_HDR + addrLen));
+  const dstIp = read(buf.subarray(HEP12_HDR + addrLen, HEP12_HDR + addrLen * 2));
+
+  let off = expectedHdr;
+  let timestamp = new Date();
+  if (version === 2) {
+    if (buf.length < off + HEP12_TIME) {
+      throw new HepParseError(`v2 time header runs past end of ${buf.length}B datagram`, 'too_short');
+    }
+    // Little-endian: see the `to_le()` note in this file's header.
+    const tvSec = buf.readUInt32LE(off);
+    const tvUsec = buf.readUInt32LE(off + 4);
+    if (tvSec > 0) timestamp = new Date(tvSec * 1000 + Math.floor(tvUsec / 1000));
+    off += HEP12_TIME;
+    // `struct hep_timehdr` is 10 bytes of fields but sizeof() rounds it to 12
+    // on any normal alignment, and siptrace memcpy's sizeof() -- so the two
+    // trailing padding bytes are on the wire. They are always zero, and SIP
+    // never starts with NUL, so skipping them here reads both layouts without
+    // having to guess which compiler built the sender.
+    while (off < buf.length && buf[off] === 0 && off < expectedHdr + HEP12_TIME + 2) off++;
+  }
+
+  if (off >= buf.length) {
+    throw new HepParseError('no payload after HEP header', 'no_payload');
+  }
+
+  return {
+    srcIp,
+    srcPort,
+    dstIp,
+    dstPort,
+    ipProto,
+    // v1/v2 carry no payload-type field; siptrace only ever sends SIP on it.
+    payloadType: HEP_PROTO_SIP,
+    // No capture-agent field either (v2's captid is the closest thing, and is
+    // 0 unless hep_capture_id is set). The listening port identifies the CSCF.
+    captureAgentId: 0,
+    timestamp,
+    payload: buf.toString('utf8', off),
+  };
+}
+
+/**
+ * Parse one HEP datagram of any version siptrace can emit.
+ *
+ * This is what the collector calls: the version is a property of the sender's
+ * config, not something we get to choose, and on this project it is v1 by
+ * default. Dispatching on the magic rather than on configuration means a CSCF
+ * that later gains `hep_version 3` keeps working with no collector change.
+ */
+export function parseHep(buf: Buffer): HepPacket {
+  if (buf.length >= 4 && buf.toString('ascii', 0, 4) === 'HEP3') return parseHep3(buf);
+  return parseHep1or2(buf);
 }

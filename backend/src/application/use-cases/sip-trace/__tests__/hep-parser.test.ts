@@ -1,4 +1,11 @@
-import { parseHep3, HepParseError, HEP_CHUNK, HEP_PROTO_SIP } from '../hep-parser';
+import {
+  parseHep,
+  parseHep1or2,
+  parseHep3,
+  HepParseError,
+  HEP_CHUNK,
+  HEP_PROTO_SIP,
+} from '../hep-parser';
 
 // Build real HEP3 datagrams byte by byte rather than asserting against a
 // hand-written hex blob, so the fixtures stay readable and a format mistake
@@ -167,5 +174,163 @@ describe('parseHep3', () => {
       const pkt = hep3([chunk(HEP_CHUNK.PAYLOAD_COMPRESSED, Buffer.from([0x1f, 0x8b]))]);
       expect(codeOf(pkt)).toBe('compressed_payload');
     });
+  });
+});
+
+// ── HEPv1 / HEPv2 ───────────────────────────────────────────────────────────
+//
+// These matter more than their simplicity suggests: siptrace's `hep_version`
+// defaults to 1, so v1 -- not v3 -- is what the CSCFs on this deployment
+// actually send. The collector required v3 for a while, which meant every
+// real captured message was counted as `bad_magic` and silently discarded
+// while the UI reported capture as running.
+
+/** Build a HEPv1/v2 datagram the way siptrace_hep.c lays one out. */
+function hep12(opts: {
+  version?: number;
+  family?: number;
+  proto?: number;
+  srcIp?: string;
+  dstIp?: string;
+  srcPort?: number;
+  dstPort?: number;
+  /** Override hp_l, to prove it is validated rather than trusted. */
+  hdrLen?: number;
+  /** v2 only. */
+  tvSec?: number;
+  tvUsec?: number;
+  /** v2 only: 12 is what sizeof(struct hep_timehdr) rounds to, 10 is the raw fields. */
+  timeHdrBytes?: 10 | 12;
+  payload?: string;
+}): Buffer {
+  const version = opts.version ?? 1;
+  const family = opts.family ?? 2;
+  const addr = family === 10 ? 16 : 4;
+  const head = Buffer.alloc(8);
+  head.writeUInt8(version, 0);
+  head.writeUInt8(opts.hdrLen ?? 8 + addr * 2, 1);
+  head.writeUInt8(family, 2);
+  head.writeUInt8(opts.proto ?? 17, 3);
+  head.writeUInt16BE(opts.srcPort ?? 5060, 4);
+  head.writeUInt16BE(opts.dstPort ?? 4060, 6);
+  const parts = [head, ip4(opts.srcIp ?? '10.0.1.178'), ip4(opts.dstIp ?? '127.0.1.1')];
+  if (version === 2) {
+    const t = Buffer.alloc(opts.timeHdrBytes ?? 12);
+    t.writeUInt32LE(opts.tvSec ?? 1760000000, 0);   // little-endian: see to_le()
+    t.writeUInt32LE(opts.tvUsec ?? 250000, 4);
+    t.writeUInt16LE(0, 8);
+    parts.push(t);
+  }
+  parts.push(Buffer.from(opts.payload ?? SIP, 'utf8'));
+  return Buffer.concat(parts);
+}
+
+describe('parseHep1or2', () => {
+  it('reads every field from a v1 IPv4 datagram', () => {
+    const p = parseHep1or2(hep12({}));
+    expect(p.srcIp).toBe('10.0.1.178');
+    expect(p.dstIp).toBe('127.0.1.1');
+    expect(p.srcPort).toBe(5060);
+    expect(p.dstPort).toBe(4060);
+    expect(p.ipProto).toBe(17);
+    expect(p.payload).toBe(SIP);
+  });
+
+  it('reports v1/v2 payloads as SIP, since the format carries no type field', () => {
+    // The collector drops anything that is not SIP, so a v1 packet defaulting
+    // to 0 here would be discarded as "non-SIP" on arrival.
+    expect(parseHep1or2(hep12({})).payloadType).toBe(HEP_PROTO_SIP);
+  });
+
+  it('parses the exact header a live I-CSCF put on the wire', () => {
+    // Captured from this deployment with tcpdump: 01 10 02 11 | 13c4 0fdc |
+    // 10.0.1.178 | 127.0.1.1. Pinned as bytes so a future "tidy-up" of the
+    // offsets has to break this test rather than silently break capture.
+    const wire = Buffer.concat([
+      Buffer.from('01100211', 'hex'),
+      Buffer.from('13c40fdc', 'hex'),
+      Buffer.from('0a0001b2', 'hex'),
+      Buffer.from('7f000101', 'hex'),
+      Buffer.from(SIP, 'utf8'),
+    ]);
+    const p = parseHep1or2(wire);
+    expect(p.srcIp).toBe('10.0.1.178');
+    expect(p.srcPort).toBe(5060);
+    expect(p.dstIp).toBe('127.0.1.1');
+    expect(p.dstPort).toBe(4060);
+    expect(p.payload).toBe(SIP);
+  });
+
+  it('reads a v2 little-endian timestamp', () => {
+    const p = parseHep1or2(hep12({ version: 2, tvSec: 1760000000, tvUsec: 250000 }));
+    expect(p.timestamp.getTime()).toBe(1760000000 * 1000 + 250);
+    expect(p.payload).toBe(SIP);
+  });
+
+  it('skips the two padding bytes sizeof(hep_timehdr) adds, and copes without them', () => {
+    expect(parseHep1or2(hep12({ version: 2, timeHdrBytes: 12 })).payload).toBe(SIP);
+    expect(parseHep1or2(hep12({ version: 2, timeHdrBytes: 10 })).payload).toBe(SIP);
+  });
+
+  it('dates a v1 message to arrival, having no timestamp of its own', () => {
+    const before = Date.now();
+    const p = parseHep1or2(hep12({}));
+    expect(p.timestamp.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it('parses an IPv6 v1 datagram', () => {
+    const v6 = Buffer.alloc(8);
+    v6.writeUInt8(1, 0);
+    v6.writeUInt8(8 + 32, 1);
+    v6.writeUInt8(10, 2);
+    v6.writeUInt8(17, 3);
+    v6.writeUInt16BE(5060, 4);
+    v6.writeUInt16BE(4060, 6);
+    const a = Buffer.alloc(16); a.writeUInt16BE(0xfd00, 0); a.writeUInt16BE(1, 14);
+    const b = Buffer.alloc(16); b.writeUInt16BE(0xfd00, 0); b.writeUInt16BE(2, 14);
+    const p = parseHep1or2(Buffer.concat([v6, a, b, Buffer.from(SIP, 'utf8')]));
+    expect(p.srcIp).toContain('fd00');
+    expect(p.payload).toBe(SIP);
+  });
+
+  it('rejects an hp_l that disagrees with the address family', () => {
+    // Trusting it would slice the address pair into the SIP text, which parses
+    // as a merely-malformed message instead of an obvious error.
+    const err = (() => { try { parseHep1or2(hep12({ hdrLen: 40 })); } catch (e) { return e; } })();
+    expect(err).toBeInstanceOf(HepParseError);
+    expect((err as HepParseError).code).toBe('bad_header');
+  });
+
+  it('rejects an unknown address family', () => {
+    const err = (() => { try { parseHep1or2(hep12({ family: 99 })); } catch (e) { return e; } })();
+    expect((err as HepParseError).code).toBe('bad_header');
+  });
+
+  it('rejects a version it does not implement', () => {
+    const err = (() => { try { parseHep1or2(hep12({ version: 4 })); } catch (e) { return e; } })();
+    expect((err as HepParseError).code).toBe('unsupported_version');
+  });
+
+  it('rejects a datagram with a header but no payload', () => {
+    const err = (() => { try { parseHep1or2(hep12({ payload: '' })); } catch (e) { return e; } })();
+    expect((err as HepParseError).code).toBe('no_payload');
+  });
+});
+
+describe('parseHep', () => {
+  it('dispatches on the magic, not on configuration', () => {
+    expect(parseHep(fullPacket()).payload).toBe(SIP);        // v3 TLV
+    expect(parseHep(hep12({}).subarray(0)).payload).toBe(SIP); // v1 fixed header
+    expect(parseHep(hep12({ version: 2 })).payload).toBe(SIP);
+  });
+
+  it('keeps the v3 reader strict, so a v1 packet is not mis-parsed as v3', () => {
+    const err = (() => { try { parseHep3(hep12({})); } catch (e) { return e; } })();
+    expect((err as HepParseError).code).toBe('bad_magic');
+  });
+
+  it('still reports a genuinely unrecognisable datagram rather than guessing', () => {
+    const err = (() => { try { parseHep(Buffer.from('nonsense', 'utf8')); } catch (e) { return e; } })();
+    expect(err).toBeInstanceOf(HepParseError);
   });
 });

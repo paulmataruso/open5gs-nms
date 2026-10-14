@@ -1,6 +1,6 @@
 import * as dgram from 'dgram';
 import { Db } from 'mongodb';
-import { HepParseError, parseHep3, HEP_PROTO_SIP } from './hep-parser';
+import { HepParseError, parseHep, HEP_PROTO_SIP } from './hep-parser';
 import { insertMessages, toDocument, SipTraceDocument, SipTraceSource, CAPTURE_PORTS } from './sip-trace-store';
 import pino from 'pino';
 
@@ -166,7 +166,12 @@ export class HepCollector {
     this.stats.packetsBySource[source] = (this.stats.packetsBySource[source] ?? 0) + 1;
     this.stats.lastPacketAt = new Date();
     try {
-      const pkt = parseHep3(buf);
+      // parseHep, not parseHep3: siptrace's `hep_version` defaults to 1 and
+      // the CSCF templates cannot set it (a modparam must follow its own
+      // loadmodule, and the generated include is imported above it), so the
+      // datagrams this collector actually receives are v1. Requiring v3 here
+      // is what made every captured message land in the bad_magic counter.
+      const pkt = parseHep(buf);
       // siptrace only sends SIP, but a shared HEP port could receive RTCP or
       // log payloads from another agent; count those rather than storing them
       // as if they were SIP.

@@ -5,12 +5,18 @@ import { CAPTURE_PORTS } from '../sip-trace-store';
 // Static wiring guard, same idea as dns-boot-gate-wiring.test.ts.
 //
 // scscfIncludeCfg() regenerates the WHOLE include, and four separate setters
-// call it. If a new caller forgets sipTracePort, flipping an unrelated toggle
+// call it. If a new caller forgets `sipTracing`, flipping an unrelated toggle
 // (SMS delivery mode, voice charging, CDR accounting) silently rewrites the
-// config with CAPTURE_NODE dropped -- tracing stops, state still claims it is
-// on, and nothing fails loudly. ims-controller.ts's own comments warn about
-// exactly this class of bug for the other three toggles; this makes it a test
-// rather than a comment.
+// config without CAPTURE_TRACE_ON -- capture then dies at the next restart of
+// that CSCF while state still claims it is on, and nothing fails loudly.
+// ims-controller.ts's own comments warn about exactly this class of bug for
+// the other three toggles; this makes it a test rather than a comment.
+//
+// The suite also pins the two properties the restart-free design rests on:
+// CAPTURE_NODE (the loadmodule switch) must be UNCONDITIONAL, and nothing in
+// the toggle may restart a service. Losing either one brings back a P-CSCF
+// restart -- and with it every registered handset's IPsec SA -- as the price
+// of looking at a call flow.
 
 const SRC = path.resolve(__dirname, '../../../..');
 const IMS = fs.readFileSync(path.join(SRC, 'interfaces/rest/ims-controller.ts'), 'utf-8');
@@ -48,34 +54,118 @@ function callArgs(src: string, fn: string): string[] {
 
 describe('SIP tracing config wiring', () => {
   it.each(['pcscfIncludeCfg', 'icscfIncludeCfg', 'scscfIncludeCfg'])(
-    '%s accepts a sipTracePort parameter',
+    '%s accepts a sipTracing parameter',
     fn => {
-      const sig = new RegExp(`function ${fn}\\(p: \\{[^)]*sipTracePort\\?: number`);
+      const sig = new RegExp(`function ${fn}\\(p: \\{[^)]*sipTracing\\?: boolean`);
       expect(IMS_CODE).toMatch(sig);
     },
   );
 
-  it.each(['pcscfIncludeCfg', 'icscfIncludeCfg', 'scscfIncludeCfg'])(
-    '%s emits the CAPTURE_NODE define from that parameter',
-    fn => {
-      const body = IMS_CODE.slice(IMS_CODE.indexOf(`function ${fn}(`));
-      const end = body.indexOf('\n}');
-      expect(body.slice(0, end)).toMatch(/captureNodeDefine\(p\.sipTracePort/);
-    },
-  );
+  it.each([
+    ['pcscfIncludeCfg', 'pcscf'],
+    ['icscfIncludeCfg', 'icscf'],
+    ['scscfIncludeCfg', 'scscf'],
+  ])('%s emits the capture defines for its own instance', (fn, role) => {
+    // Each generator must name its OWN role: passing another instance's would
+    // point two CSCFs at one collector port and mislabel every message's
+    // source, which the parser cannot detect afterwards.
+    const body = IMS_CODE.slice(IMS_CODE.indexOf(`function ${fn}(`));
+    const end = body.indexOf('\n}');
+    expect(body.slice(0, end)).toMatch(
+      new RegExp(`captureNodeDefine\\('${role}', p\\.sipTracing === true\\)`),
+    );
+  });
 
-  it('every scscfIncludeCfg call site passes sipTracePort', () => {
+  it('every scscfIncludeCfg call site passes sipTracing', () => {
     // The whole point of this suite: four setters regenerate this one file.
     const calls = callArgs(IMS_CODE, 'scscfIncludeCfg');
     expect(calls.length).toBeGreaterThanOrEqual(4);
-    const missing = calls.filter(c => !c.includes('sipTracePort'));
+    const missing = calls.filter(c => !c.includes('sipTracing'));
     expect(missing).toEqual([]);
   });
 
-  it.each(['pcscfIncludeCfg', 'icscfIncludeCfg'])('every %s call site passes sipTracePort', fn => {
+  it.each(['pcscfIncludeCfg', 'icscfIncludeCfg'])('every %s call site passes sipTracing', fn => {
     const calls = callArgs(IMS_CODE, fn);
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    expect(calls.filter(c => !c.includes('sipTracePort'))).toEqual([]);
+    expect(calls.filter(c => !c.includes('sipTracing'))).toEqual([]);
+  });
+
+  it('CAPTURE_NODE does not depend on tracing being on, so siptrace stays loaded', () => {
+    // The module can only be loaded at startup. If this define went back to
+    // tracking the on/off state, enabling capture would need a CSCF restart,
+    // and restarting P-CSCF drops every registered UE's IPsec SA.
+    const fn = IMS_CODE.slice(
+      IMS_CODE.indexOf('function captureNodeDefine'),
+      IMS_CODE.indexOf('export function pcscfIncludeCfg'),
+    );
+    expect(fn).toMatch(/#!define CAPTURE_NODE/);
+    // the on/off state rides on its own define, not on CAPTURE_NODE's presence
+    expect(fn).toMatch(/traceOn \? '#!define CAPTURE_TRACE_ON/);
+    // exactly ONE early return, and only for the old-template fallback below
+    expect(fn.match(/return '';/g) ?? []).toHaveLength(1);
+    expect(fn).toMatch(/if \(!traceOn && !templateHandlesCaptureTraceOn\(instance\)\) return '';/);
+  });
+
+  it.each([
+    ['kamailio_pcscf/kamailio_pcscf.cfg'],
+    ['kamailio_icscf/kamailio_icscf.cfg'],
+    ['kamailio_scscf/kamailio_scscf.cfg'],
+  ])('%s starts tracing off unless CAPTURE_TRACE_ON is defined', rel => {
+    // A template hardcoding `trace_on 1` would make merely loading the module
+    // start duplicating every SIP message to a port nobody asked for.
+    const cfg = fs.readFileSync(path.join(SRC, 'config/ims-templates', rel), 'utf-8');
+    expect(cfg).toMatch(/#!ifdef CAPTURE_TRACE_ON\nmodparam\("siptrace", "trace_on", 1\)\n#!else\nmodparam\("siptrace", "trace_on", 0\)\n#!endif/);
+    expect(cfg).toMatch(/modparam\("siptrace", "trace_to_database", 0\)/);
+  });
+
+  it.each([
+    ['kamailio_pcscf/kamailio_pcscf.cfg'],
+    ['kamailio_icscf/kamailio_icscf.cfg'],
+    ['kamailio_scscf/kamailio_scscf.cfg'],
+  ])('%s traces the whole transaction, not just the one message', rel => {
+    // The bug this pins, found live 2026-10-13: siptrace's default mode is
+    // "message", so a bare sip_trace() mirrors the single message in hand and
+    // NO replies. The capture then contains requests and not one 100/180/200,
+    // which is not a call flow at all -- and it looks like a working feature,
+    // because messages are being stored.
+    //
+    // Worse, the mode was order-dependent: sip_trace() with no argument picks
+    // transaction mode only if `msg->flags & trace_flag` is already set, and
+    // the template called sip_trace() BEFORE setflag(FLT_CAPTURE). Stating the
+    // mode explicitly removes the dependency on line order entirely.
+    const cfg = fs.readFileSync(path.join(SRC, 'config/ims-templates', rel), 'utf-8');
+    expect(cfg).toMatch(/sip_trace_mode\("t"\);/);
+    // No bare sip_trace() anywhere -- that is the call that silently means
+    // "message mode" unless a flag happens to have been set first.
+    expect(cfg).not.toMatch(/\bsip_trace\(\)\s*;/);
+    // Belt and braces: the flag still precedes the trace call, so even the
+    // implicit path would choose transaction mode.
+    const flag = cfg.indexOf('setflag(FLT_CAPTURE);');
+    const trace = cfg.indexOf('sip_trace_mode("t");');
+    expect(flag).toBeGreaterThan(-1);
+    expect(trace).toBeGreaterThan(flag);
+  });
+
+  it('lists calls, not every SIP dialog, unless explicitly asked for all', () => {
+    // Measured on this deployment the day the flow view shipped: 187 captured
+    // dialogs, of which 1 was a call -- 184 were P-CSCF->I-CSCF OPTIONS
+    // keepalives and 2 were CANCEL fragments. Defaulting to the unfiltered
+    // list puts the one thing the page is open for on page 8.
+    const store = fs.readFileSync(
+      path.join(SRC, 'application/use-cases/sip-trace/sip-trace-store.ts'), 'utf-8');
+    expect(store).toMatch(/if \(\(f\.kind \?\? 'calls'\) === 'calls'\) pipeline\.push\(\{ \$match: \{ methods: 'INVITE' \} \}\)/);
+
+    // After $group, not before: matching INVITE on raw messages would return a
+    // dialog holding only its INVITE, losing the replies, ACK and BYE.
+    const group = store.indexOf('$group');
+    const kindMatch = store.indexOf("(f.kind ?? 'calls') === 'calls'");
+    expect(group).toBeGreaterThan(-1);
+    expect(kindMatch).toBeGreaterThan(group);
+
+    // Only an explicit 'all' widens it, so a caller that never considered the
+    // question still gets the useful view.
+    const ctl = fs.readFileSync(path.join(SRC, 'interfaces/rest/sip-trace-controller.ts'), 'utf-8');
+    expect(ctl).toMatch(/kind: q\.kind === 'all' \? 'all' : 'calls'/);
   });
 
   it('every scscfIncludeCfg call site still preserves the three pre-existing toggles', () => {
@@ -88,11 +178,47 @@ describe('SIP tracing config wiring', () => {
     }
   });
 
+  it('falls back to the old define meaning against a template that predates CAPTURE_TRACE_ON', () => {
+    // An old template reads CAPTURE_NODE itself as "trace" (it hardcodes
+    // trace_on 1), so emitting it while tracing is off would start a capture
+    // nobody asked for at that CSCF's next restart, with the UI still
+    // reporting tracing off.
+    const fn = IMS_CODE.slice(
+      IMS_CODE.indexOf('function templateHandlesCaptureTraceOn'),
+      IMS_CODE.indexOf('export function pcscfIncludeCfg'),
+    );
+    expect(fn).toMatch(/includes\('CAPTURE_TRACE_ON'\)/);
+    // a missing file is a fresh install, where Configure is about to write the
+    // current template -- it must not be read as "old template"
+    expect(fn).toMatch(/catch \{\s*return true;/);
+    expect(fn).toMatch(/if \(!traceOn && !templateHandlesCaptureTraceOn\(instance\)\) return '';/);
+  });
+
+  it('Configure deploys the static templates BEFORE generating the includes', () => {
+    // The includes are written to match what the deployed template
+    // understands, so reading the outgoing template and then replacing it
+    // leaves the two disagreeing until the next Configure.
+    //
+    // Deliberately against the RAW source, not IMS_CODE: code() strips block
+    // comments with a non-greedy /*...*/ and this file has more `*/` than
+    // `/*` (several live inside string literals and regexes), so the stripped
+    // copy loses whole regions -- including this loop. The two strings matched
+    // below are statements, which cannot appear in a comment.
+    const cfgStart = IMS.indexOf('export async function configureIms');
+    expect(cfgStart).toBeGreaterThan(-1);
+    const body = IMS.slice(cfgStart);
+    const deploy = body.indexOf('for (const entry of IMS_STATIC_TEMPLATES) {');
+    const include = body.indexOf('pcscfIncludeCfg({');
+    expect(deploy).toBeGreaterThan(-1);
+    expect(include).toBeGreaterThan(-1);
+    expect(deploy).toBeLessThan(include);
+  });
+
   it('the capture define is driven off CAPTURE_PORTS, not a second hardcoded list', () => {
     // A duplicated port list is how the config and the collector would drift
     // apart and silently mislabel every message's source instance.
     expect(IMS_CODE).toMatch(/import \{ CAPTURE_PORTS \} from '\.\.\/\.\.\/application\/use-cases\/sip-trace\/sip-trace-store'/);
-    expect(IMS_CODE).toMatch(/return enabled \? CAPTURE_PORTS\[instance\] : undefined/);
+    expect(IMS_CODE).toMatch(/CAPTURE_PORTS\[instance\]/);
     for (const port of Object.values(CAPTURE_PORTS)) {
       // the literal port numbers must NOT appear in ims-controller
       expect(IMS_CODE).not.toMatch(new RegExp(`sip:127\\.0\\.0\\.1:${port}`));
@@ -109,19 +235,42 @@ describe('SIP tracing config wiring', () => {
     expect(IMS_CODE).toMatch(/prevSaved\?\.sipTracingEnabled === true\) sipTracingEnabled = true/);
   });
 
-  it('Configure never enables tracing on its own', () => {
-    // Enabling restarts P-CSCF, which drops every UE's IPsec SA. A Configure
-    // run must never do that as a side effect.
+  it('Configure loads the module but never starts tracing on its own', () => {
+    // Configure makes capture *available*; it does not begin duplicating
+    // every SIP message on an operator's behalf.
     expect(IMS_CODE).toMatch(/let sipTracingEnabled = false;/);
   });
 
-  it('disabling uses the RPC and does NOT restart anything', () => {
+  it('neither direction of the toggle restarts anything', () => {
+    // The entire reason siptrace is loaded unconditionally. A restart here
+    // would drop every registered UE's IPsec SA (CLAUDE.md gotcha) as the
+    // price of starting a capture.
     const fnStart = IMS_CODE.indexOf('export async function setSipTracingEnabled');
     expect(fnStart).toBeGreaterThan(-1);
     const body = IMS_CODE.slice(fnStart, IMS_CODE.indexOf('export function getSipTracingEnabled'));
-    const disableBranch = body.slice(body.indexOf('if (!enabled)'), body.indexOf('return report;'));
-    expect(disableBranch).toMatch(/siptraceRpc\(inst\.ctl, 'off'\)/);
-    expect(disableBranch).not.toMatch(/systemctl/);
+    expect(body).toMatch(/siptraceRpc\(inst\.ctl, 'off'\)/);
+    expect(body).toMatch(/siptraceRpc\(inst\.ctl, 'on'\)/);
+    expect(body).not.toMatch(/systemctl/);
+    expect(body).not.toMatch(/restart/);
+  });
+
+  it('an instance with no module loaded is reported, not restarted', () => {
+    const body = IMS_CODE.slice(
+      IMS_CODE.indexOf('export async function setSipTracingEnabled'),
+      IMS_CODE.indexOf('export function getSipTracingEnabled'),
+    );
+    expect(body).toMatch(/needsConfigure = true/);
+    expect(body).toMatch(/action: 'not-loaded'/);
+  });
+
+  it('SIP_TRACE_INSTANCES carries no systemd unit names', () => {
+    // Nothing needs them any more, and having them to hand is how a restart
+    // path quietly grows back.
+    const list = IMS_CODE.slice(
+      IMS_CODE.indexOf('const SIP_TRACE_INSTANCES'),
+      IMS_CODE.indexOf('export interface SipTracingApplyReport'),
+    );
+    expect(list).not.toMatch(/kamailio-(pcscf|icscf|scscf)/);
   });
 
   it('treats a kamcmd "command not found" body as a failed probe, not a success', () => {
@@ -144,11 +293,10 @@ describe('SIP tracing config wiring', () => {
     expect(fn).not.toMatch(/String\(\(await nsenter/);
   });
 
-  it('restarts the least disruptive instances before P-CSCF', () => {
-    // P-CSCF last, so an earlier failure does not cost UE tunnels for nothing.
+  it('covers all three CSCFs', () => {
     const list = IMS_CODE.slice(IMS_CODE.indexOf('const SIP_TRACE_INSTANCES'));
-    const order = ['scscf', 'icscf', 'pcscf'].map(r => list.indexOf(`role: '${r}' as const`));
-    expect(order.every(i => i > -1)).toBe(true);
-    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    for (const r of ['scscf', 'icscf', 'pcscf']) {
+      expect(list).toContain(`role: '${r}' as const`);
+    }
   });
 });

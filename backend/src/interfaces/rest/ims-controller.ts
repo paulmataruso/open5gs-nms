@@ -45,6 +45,26 @@ const HOST_PCRF_FD_CONF        = '/proc/1/root/etc/freeDiameter/pcrf.conf';
 const HOST_UPF_YAML            = '/proc/1/root/etc/open5gs/upf.yaml';
 const HOST_IMS_STATE           = '/proc/1/root/etc/open5gs/.ims-config.json';
 
+/**
+ * How often P-CSCF pings each registered contact (route[NATPING]).
+ *
+ * 30s, not the 5s this was hardcoded to: 5s is shorter than any RRC
+ * inactivity timer, so it held every registered UE permanently out of idle --
+ * observed from the RAN side as a handset staying active all day, costing
+ * battery and radio resources for every subscriber. The ping is still
+ * required (without it an idle TCP contact goes stale before its registration
+ * expires and the next INVITE fails on a connect timeout), so this trades a
+ * still-generous refresh rate against letting a handset sleep between pings.
+ *
+ * The floor is 5s because that was the previous behaviour and someone chasing
+ * a stale-contact problem should be able to get back to it. The ceiling is
+ * 300s: a contact pinged less often than that is barely protected within a
+ * typical registration lifetime, which defeats the point.
+ */
+export const DEFAULT_NATPING_INTERVAL_SECONDS = 30;
+export const MIN_NATPING_INTERVAL_SECONDS = 5;
+export const MAX_NATPING_INTERVAL_SECONDS = 300;
+
 // Cheap, safe-default reader for the SMS/MMS dashboard's exporter — same
 // shape as sms-controller.ts's own getMscMnccMode() (never throws, defaults
 // to the base mode when the file/field is missing rather than treating a
@@ -127,7 +147,7 @@ const IMS_STATIC_TEMPLATES: ReadonlyArray<{
   dest: string;
   tokens?: readonly string[];
 }> = [
-  { template: 'kamailio_pcscf/kamailio_pcscf.cfg',  dest: `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`, tokens: ['RTPENGINE_IP'] },
+  { template: 'kamailio_pcscf/kamailio_pcscf.cfg',  dest: `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`, tokens: ['RTPENGINE_IP', 'NATPING_INTERVAL'] },
   { template: 'kamailio_pcscf/route/mo.cfg',        dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/mo.cfg` },
   { template: 'kamailio_pcscf/route/mt.cfg',        dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/mt.cfg` },
   { template: 'kamailio_pcscf/route/register.cfg',  dest: `${HOST_KAMAILIO_PCSCF_DIR}/route/register.cfg` },
@@ -136,6 +156,39 @@ const IMS_STATIC_TEMPLATES: ReadonlyArray<{
   { template: 'kamailio_scscf/kamailio_scscf.cfg',  dest: `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg` },
   { template: 'kamailio_scscf/CxDataType_Rel7.xsd', dest: `${HOST_KAMAILIO_SCSCF_DIR}/CxDataType_Rel7.xsd` },
 ];
+
+/**
+ * Every value a token-bearing template needs, all from saved Configure state
+ * so a template is always rendered exactly as it was deployed.
+ *
+ * Centralised deliberately: the RTPENGINE_IP token was handled by three
+ * separate hardcoded checks (the token list, the deploy loop and the staleness
+ * renderer), and a second token added the same way is how one of them gets
+ * missed. Missing it in the deploy loop is caught loudly by
+ * deployImsTemplate()'s leftover-token guard; missing it in the staleness
+ * renderer is silent and reports every deployment as permanently stale.
+ */
+export interface ImsTemplateTokenValues {
+  RTPENGINE_IP?: string;
+  NATPING_INTERVAL?: string;
+}
+
+/**
+ * Substitutions for one template, or null if a value it needs is unknown --
+ * which means the caller cannot render it and should skip rather than guess.
+ */
+function imsTemplateSubstitutions(
+  tokens: readonly string[] | undefined,
+  values: ImsTemplateTokenValues,
+): Record<string, string> | null {
+  const out: Record<string, string> = {};
+  for (const token of tokens ?? []) {
+    const value = values[token as keyof ImsTemplateTokenValues];
+    if (value === undefined || value === '') return null;
+    out[token] = value;
+  }
+  return out;
+}
 
 export interface ImsTemplateStaleness {
   /** Host paths whose live content differs from what this build would deploy. */
@@ -166,20 +219,30 @@ export interface ImsTemplateStaleness {
  * be compared meaningfully, so they are skipped rather than reported as false
  * positives.
  */
-export function checkImsTemplateStaleness(rtpEngineIp?: string): ImsTemplateStaleness {
+export function checkImsTemplateStaleness(
+  rtpEngineIp?: string,
+  natpingIntervalSeconds: number = DEFAULT_NATPING_INTERVAL_SECONDS,
+): ImsTemplateStaleness {
   const stale: string[] = [];
   const missing: string[] = [];
   let checked = 0;
+  const values: ImsTemplateTokenValues = {
+    RTPENGINE_IP: rtpEngineIp,
+    NATPING_INTERVAL: String(natpingIntervalSeconds),
+  };
 
   for (const entry of IMS_STATIC_TEMPLATES) {
-    if (entry.tokens?.includes('RTPENGINE_IP') && !rtpEngineIp) continue;
+    const subs = imsTemplateSubstitutions(entry.tokens, values);
+    if (!subs) continue;   // a token's value is unknown — cannot compare meaningfully
     let expected: string;
     try {
       expected = fs.readFileSync(path.join(IMS_TEMPLATES_DIR, entry.template), 'utf-8');
     } catch {
       continue; // Template not bundled in this build — nothing to compare against.
     }
-    if (rtpEngineIp) expected = expected.split('__RTPENGINE_IP__').join(rtpEngineIp);
+    for (const [token, value] of Object.entries(subs)) {
+      expected = expected.split(`__${token}__`).join(value);
+    }
     checked++;
     let live: string;
     try {
@@ -431,34 +494,90 @@ const HEP_COLLECTOR_BIND = '127.0.0.1';
 // The stock IMS templates already carry complete capture support behind
 // `#!ifdef CAPTURE_NODE`: the siptrace loadmodule, its modparams
 // (duplicate_uri/hep_mode_on/trace_to_database/trace_flag) and a sip_trace()
-// call in route[REQINIT]. Defining CAPTURE_NODE is the whole switch -- there
-// is deliberately no custom Kamailio config here.
+// call in route[REQINIT]. There is deliberately no custom Kamailio config
+// here.
 //
-// Its value becomes siptrace's duplicate_uri, so each instance is pointed at
-// its OWN collector port. That is not cosmetic: the template never sets
-// hep_capture_id, and we cannot add that modparam (a modparam must follow its
-// loadmodule, and this generated include is imported near the top of the
+// CAPTURE_NODE is defined UNCONDITIONALLY, so siptrace is loaded on every CSCF
+// from the first Configure onward whether or not anyone is capturing. Kamailio
+// only loads modules at startup, and restarting P-CSCF wipes every registered
+// UE's IPsec SA (CLAUDE.md gotcha) -- so if the module were only loaded when
+// capture is switched on, capturing would cost a real outage window for every
+// handset on the network, which is not a price an operator can pay to look at
+// a call flow. Loading it up front moves that cost into the restart Configure
+// already performs, and from then on capture is a runtime RPC.
+//
+// What varies is CAPTURE_TRACE_ON, which the template turns into
+// `trace_on 1|0`: the module's startup state. Off is genuinely free --
+// sip_trace() returns immediately on a clear trace_on_flag, and with
+// trace_to_database 0 siptrace never binds a database module (both verified in
+// siptrace.c, not assumed; the second matters because this host's MariaDB
+// connection ceiling has been hit for real once already).
+//
+// CAPTURE_NODE's value becomes siptrace's duplicate_uri, so each instance is
+// pointed at its OWN collector port. That is not cosmetic: the template never
+// sets hep_capture_id, and we cannot add that modparam (a modparam must follow
+// its loadmodule, and this generated include is imported near the top of the
 // file, long before siptrace loads). Without a per-instance port, all three
 // CSCFs would arrive indistinguishable. See CAPTURE_PORTS in
 // sip-trace-store.ts.
-// Resolves the collector port for one instance, or undefined when tracing is
-// off. Centralised so a new scscfIncludeCfg() caller cannot invent a different
-// rule -- a wiring test asserts every call site passes this through.
-function sipTracePortFor(enabled: boolean, instance: 'pcscf' | 'icscf' | 'scscf'): number | undefined {
-  return enabled ? CAPTURE_PORTS[instance] : undefined;
+
+type CscfRole = 'pcscf' | 'icscf' | 'scscf';
+const CSCF_LABEL: Record<CscfRole, string> = { pcscf: 'P-CSCF', icscf: 'I-CSCF', scscf: 'S-CSCF' };
+
+const CSCF_MAIN_CFG: Record<CscfRole, string> = {
+  pcscf: `${HOST_KAMAILIO_PCSCF_DIR}/kamailio_pcscf.cfg`,
+  icscf: `${HOST_KAMAILIO_ICSCF_DIR}/kamailio_icscf.cfg`,
+  scscf: `${HOST_KAMAILIO_SCSCF_DIR}/kamailio_scscf.cfg`,
+};
+
+/**
+ * Does this instance's DEPLOYED main cfg understand CAPTURE_TRACE_ON?
+ *
+ * A template from before that define existed hardcodes `trace_on 1` inside its
+ * `#!ifdef CAPTURE_NODE` block, so for that template CAPTURE_NODE's presence
+ * is itself the on/off switch. The templates only reach the host through
+ * Configure (CLAUDE.md's static-template-staleness gotcha), so a deployment
+ * can genuinely be running the old one while this build writes the includes.
+ *
+ * A missing file means a fresh install where Configure is about to write the
+ * current template, so it counts as current.
+ */
+function templateHandlesCaptureTraceOn(instance: CscfRole): boolean {
+  try {
+    return fs.readFileSync(CSCF_MAIN_CFG[instance], 'utf-8').includes('CAPTURE_TRACE_ON');
+  } catch {
+    return true;
+  }
 }
 
-function captureNodeDefine(port: number | undefined, instance: string): string {
-  if (!port) return '';
+// Takes the instance rather than a port so a new include-generating call site
+// cannot invent its own port mapping; a wiring test additionally asserts every
+// call site passes `sipTracing` through, because four separate setters
+// regenerate scscf.cfg and any one of them dropping it would silently turn
+// capture off at that CSCF's next restart.
+function captureNodeDefine(instance: CscfRole, traceOn: boolean): string {
+  // Against an old template, emitting CAPTURE_NODE while tracing is OFF would
+  // make this CSCF start tracing at its next restart -- that template reads
+  // the define as "trace" -- while the NMS goes on reporting tracing off. A
+  // capture nobody asked for, quietly filling a trace store the UI shows as
+  // idle, is worse than not having the module resident yet. So until Configure
+  // replaces the template, fall back to the old meaning: the define appears
+  // only while tracing is wanted. Reachable today, not hypothetical: three
+  // unrelated toggles (SMS mode, voice charging, CDR accounting) restart
+  // S-CSCF on their own.
+  if (!traceOn && !templateHandlesCaptureTraceOn(instance)) return '';
   return `
 // NMS SIP tracing -- mirrors every SIP message this instance handles to the
-// NMS HEP collector on its own dedicated port (${instance}). Removing this
-// define disables tracing entirely; nothing else in this file references it.
-#!define CAPTURE_NODE "sip:${HEP_COLLECTOR_BIND}:${port}"
-`;
+// NMS HEP collector on its own dedicated port (${CSCF_LABEL[instance]}).
+// siptrace is deliberately loaded even when nobody is capturing, so capture
+// can be switched on and off over its own RPC without restarting this
+// instance. CAPTURE_TRACE_ON below is the only thing that decides whether
+// tracing is running; it is absent while capture is off.
+#!define CAPTURE_NODE "sip:${HEP_COLLECTOR_BIND}:${CAPTURE_PORTS[instance]}"
+${traceOn ? '#!define CAPTURE_TRACE_ON\n' : ''}`;
 }
 
-export function pcscfIncludeCfg(p: { pcscfIp: string; pcscfPort: number; imsDomain: string; epcDomain: string; additionalDomains?: string[]; http2N5Available: boolean; sipTracePort?: number }): string {
+export function pcscfIncludeCfg(p: { pcscfIp: string; pcscfPort: number; imsDomain: string; epcDomain: string; additionalDomains?: string[]; http2N5Available: boolean; sipTracing?: boolean }): string {
   const extraAliases = (p.additionalDomains ?? []).map(d => `alias=pcscf.${d}`).join('\n');
   return `# Open5GS NMS — P-CSCF include (generated by Configure)
 listen=udp:${p.pcscfIp}:${p.pcscfPort}
@@ -550,10 +669,10 @@ ${p.http2N5Available ? '#!define WITH_N5' : '##!define WITH_N5 // undefined: Kam
 #!define WITH_IMS_HDR_CACHE
 #!define WITH_PING_UDP
 #!define WITH_PING_TCP
-${captureNodeDefine(p.sipTracePort, 'P-CSCF')}`;
+${captureNodeDefine('pcscf', p.sipTracing === true)}`;
 }
 
-function icscfIncludeCfg(p: { icscfIp: string; icscfPort: number; imsDomain: string; additionalDomains?: string[]; sipTracePort?: number }): string {
+function icscfIncludeCfg(p: { icscfIp: string; icscfPort: number; imsDomain: string; additionalDomains?: string[]; sipTracing?: boolean }): string {
   const extraAliases = (p.additionalDomains ?? []).map(d => `alias=${d}`).join('\n');
   return `# Open5GS NMS — I-CSCF include (generated by Configure)
 listen=udp:${p.icscfIp}:${p.icscfPort}
@@ -567,7 +686,7 @@ ${extraAliases}
 #!substdef "/UE_REGISTRATION_EXPIRES/7200/g"
 #!define DB_URL "mysql://icscf:heslo@127.0.0.1/icscf"
 #!define WITH_TCP
-${captureNodeDefine(p.sipTracePort, 'I-CSCF')}`;
+${captureNodeDefine('icscf', p.sipTracing === true)}`;
 }
 
 // P-CSCF's kamailio_pcscf.cfg dispatcher module routes to this list — currently
@@ -578,7 +697,7 @@ function pcscfDispatcherList(icscfIp: string, icscfPort: number): string {
   return `1 sip:${icscfIp}:${icscfPort}\n`;
 }
 
-function scscfIncludeCfg(p: { scscfIp: string; scscfPort: number; imsDomain: string; additionalDomains?: string[]; blockImsSms?: boolean; routeSmsToVectorcore?: { ip: string; port: number }; voiceCharging?: { ocsOriginHost: string }; cdrAccounting?: boolean ; sipTracePort?: number }): string {
+function scscfIncludeCfg(p: { scscfIp: string; scscfPort: number; imsDomain: string; additionalDomains?: string[]; blockImsSms?: boolean; routeSmsToVectorcore?: { ip: string; port: number }; voiceCharging?: { ocsOriginHost: string }; cdrAccounting?: boolean ; sipTracing?: boolean }): string {
   const extraAliases = (p.additionalDomains ?? []).map(d => `alias=scscf.${d}`).join('\n');
   // BLOCK_IMS_SMS gates the hard-reject rule in the static kamailio_scscf.cfg
   // template (search for BLOCK_IMS_SMS there) — the "SMS delivery mode"
@@ -663,7 +782,7 @@ ${extraAliases}
 #!substdef "/UE_REGISTRATION_EXPIRES/7200/g"
 #!define WITH_TCP
 #!define WITH_AUTH
-${blockImsSms}${routeSmsToVectorcore}${voiceCharging}${cdrAccounting}${captureNodeDefine(p.sipTracePort, 'S-CSCF')}`;
+${blockImsSms}${routeSmsToVectorcore}${voiceCharging}${cdrAccounting}${captureNodeDefine('scscf', p.sipTracing === true)}`;
 }
 
 // ── Diameter XML templates ────────────────────────────────────────────────────
@@ -2970,6 +3089,34 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     }
   }
 
+  // 0. Main Kamailio routing-script configs (P/I/S-CSCF) + P-CSCF's route/*.cfg
+  // fragments. These are the large, proven-working routing scripts that the
+  // generated pcscf.cfg/icscf.cfg/scscf.cfg get import_file'd into — deployed
+  // from the bundled templates every Configure run, same as everything else
+  // here, so they can't silently go missing on a fresh install the way they
+  // did before this was wired up (2026-07-17 incident: these were never
+  // written by either /install or /configure — only ever placed once, by hand,
+  // on one dev host — so every OTHER host's P/I/S-CSCF units referenced a main
+  // cfg file that never existed).
+  // Driven off IMS_STATIC_TEMPLATES so this and checkImsTemplateStaleness()
+  // can never disagree about which files are template-owned.
+  //
+  // Deliberately BEFORE the generated includes below, not after: those
+  // includes are written against what the template understands
+  // (templateHandlesCaptureTraceOn), so the template has to be the current one
+  // by the time they are generated. With the old order, the first Configure on
+  // an existing deployment read the outgoing template and wrote an include to
+  // match it, then replaced that template — leaving the two disagreeing until
+  // the NEXT Configure. deployImsTemplate() creates its own destination
+  // directories, so nothing below is depended on here.
+  for (const entry of IMS_STATIC_TEMPLATES) {
+    deployImsTemplate(entry.template, entry.dest,
+      imsTemplateSubstitutions(entry.tokens, {
+        RTPENGINE_IP: rtpEngineIp,
+        NATPING_INTERVAL: String(getNatpingIntervalSeconds()),
+      }) ?? {});
+  }
+
   // 1. P-CSCF include config + Diameter XML
   const epcDomain = deriveEpcDomain(mcc, mnc);
   const { fqdn: pcrfFqdn, port: pcrfPort } = readPcrfFreeDiameterInfo();
@@ -2977,7 +3124,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   fs.mkdirSync(HOST_KAMAILIO_PCSCF_DIR, { recursive: true });
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.cfg`,
     pcscfIncludeCfg({ pcscfIp, pcscfPort, imsDomain, epcDomain, additionalDomains, http2N5Available,
-      sipTracePort: sipTracePortFor(sipTracingEnabled, 'pcscf') }), 'utf-8');
+      sipTracing: sipTracingEnabled }), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.xml`,
     pcscfDiameterXml({ pcscfIp, imsDomain, pcrfFqdn, pcrfPort }), 'utf-8');
 
@@ -2985,7 +3132,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   fs.mkdirSync(HOST_KAMAILIO_ICSCF_DIR, { recursive: true });
   fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.cfg`,
     icscfIncludeCfg({ icscfIp, icscfPort, imsDomain, additionalDomains,
-      sipTracePort: sipTracePortFor(sipTracingEnabled, 'icscf') }), 'utf-8');
+      sipTracing: sipTracingEnabled }), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.xml`,
     icscfDiameterXml({ icscfIp, imsDomain }), 'utf-8');
 
@@ -2998,7 +3145,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
       routeSmsToVectorcore: smsDeliveryMode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
       cdrAccounting: cdrAccountingEnabled,
-      sipTracePort: sipTracePortFor(sipTracingEnabled, 'scscf'),
+      sipTracing: sipTracingEnabled,
     }), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.xml`,
     scscfDiameterXml({
@@ -3023,21 +3170,8 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     `[rtpengine]\ninterface = ${rtpEngineIp}\nlisten-ng = ${rtpEngineIp}:2223\ntos = 184\nport-min = ${rtpPortMin}\nport-max = ${rtpPortMax}\nlog-level = 5\n`,
     'utf-8');
 
-  // 4b. Main Kamailio routing-script configs (P/I/S-CSCF) + P-CSCF's route/*.cfg
-  // fragments + dispatcher lists. These are the large, proven-working routing
-  // scripts that pcscf.cfg/icscf.cfg/scscf.cfg (written above) get import_file'd
-  // into — deployed from the bundled templates every Configure run, same as
-  // everything else here, so they can't silently go missing on a fresh install
-  // the way they did before this was wired up (2026-07-17 incident: these were
-  // never written by either /install or /configure — only ever placed once, by
-  // hand, on one dev host — so every OTHER host's P/I/S-CSCF units referenced a
-  // main cfg file that never existed).
-  // Driven off IMS_STATIC_TEMPLATES so this and checkImsTemplateStaleness()
-  // can never disagree about which files are template-owned.
-  for (const entry of IMS_STATIC_TEMPLATES) {
-    deployImsTemplate(entry.template, entry.dest,
-      entry.tokens?.includes('RTPENGINE_IP') ? { RTPENGINE_IP: rtpEngineIp } : {});
-  }
+  // 4b. Dispatcher lists. The routing scripts themselves are deployed in
+  // step 0 above; these two files are generated, not template-verbatim.
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/dispatcher.list`, pcscfDispatcherList(icscfIp, icscfPort), 'utf-8');
   // dispatcher.list is a file BOTH this module and pstn-controller.ts write
   // to — PSTN Gateway owns the real dispatcher entry once configured (see
@@ -3310,7 +3444,7 @@ export async function setSmsDeliveryMode(mode: 'sgs' | 'ims' | 'vectorcore'): Pr
       blockImsSms: mode === 'sgs',
       routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
       cdrAccounting: cdrAccountingEnabled,
-      sipTracePort: sipTracePortFor(state.sipTracingEnabled === true, 'scscf'),
+      sipTracing: state.sipTracingEnabled === true,
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
     }), 'utf-8');
   await nsenter('systemctl', ['restart', 'kamailio-scscf']);
@@ -3376,7 +3510,7 @@ export async function setVoiceChargingEnabled(enabled: boolean): Promise<void> {
       routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
       cdrAccounting: cdrAccountingEnabled,
-      sipTracePort: sipTracePortFor(state.sipTracingEnabled === true, 'scscf'),
+      sipTracing: state.sipTracingEnabled === true,
     }), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.xml`,
     scscfDiameterXml({
@@ -3424,7 +3558,7 @@ export async function setCdrAccountingEnabled(enabled: boolean): Promise<void> {
       routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
       cdrAccounting: enabled,
-      sipTracePort: sipTracePortFor(state.sipTracingEnabled === true, 'scscf'),
+      sipTracing: state.sipTracingEnabled === true,
     }), 'utf-8');
   await nsenter('systemctl', ['restart', 'kamailio-scscf']);
 
@@ -3434,37 +3568,42 @@ export async function setCdrAccountingEnabled(enabled: boolean): Promise<void> {
 
 // ── SIP tracing (HEP) toggle ─────────────────────────────────────────────────
 //
-// Asymmetric on purpose, because the two directions cost very different things:
+// Both directions are a pure runtime RPC (`siptrace.status on|off`) against
+// each already-running CSCF. Nothing here ever restarts a service.
 //
-//   Enabling  needs siptrace.so actually loaded, and Kamailio only loads
-//             modules at startup -- so the first enable restarts each CSCF.
-//             Restarting kamailio-pcscf WIPES EVERY REGISTERED UE's IPsec SA
-//             (see CLAUDE.md's gotcha on this): affected handsets keep showing
-//             as registered while having no working tunnel, and must
-//             re-register for real before they can call. That is why this is
-//             never switched on implicitly by Configure.
-//   Disabling uses siptrace's own RPC (`siptrace.status off`) to stop tracing
-//             in the running process, then rewrites the config so it stays off
-//             across a future restart. No restart, so no SA loss -- turning
-//             tracing back off is free.
+// That is the whole point of loading siptrace unconditionally at Configure
+// (see captureNodeDefine above). Kamailio only loads modules at startup, so an
+// on-demand load would mean restarting kamailio-pcscf, which WIPES EVERY
+// REGISTERED UE's IPsec SA (CLAUDE.md gotcha): affected handsets keep showing
+// as registered while having no working tunnel, and cannot call until they
+// re-register for real. Looking at a call flow must not cost that, so the
+// module is always resident and only its trace_on flag moves.
 //
-// A re-enable after that is also free: the module is still loaded, so the RPC
-// alone suffices and we skip the restart. The returned report says per instance
-// which path was taken, so the UI never has to guess whether it cost a restart.
+// The one case that still cannot be served by an RPC is an instance whose live
+// kamailio_*.cfg predates this -- siptrace genuinely is not loaded there. That
+// is reported as `not-loaded` with needsConfigure set, and the operator runs
+// an IMS Configure (which restarts the CSCFs as it always has, on their
+// schedule). It is deliberately NOT turned into a restart from here: a
+// surprise restart is exactly what this change exists to remove.
 
+// No systemd unit names here on purpose: nothing in this feature restarts a
+// CSCF any more, and keeping them to hand is how that quietly comes back.
 const SIP_TRACE_INSTANCES = [
-  // S-CSCF and I-CSCF first: restarting them is harmless, so if something
-  // fails we have not already dropped the UE tunnels for nothing.
-  { role: 'scscf' as const, unit: 'kamailio-scscf', ctl: '/run/kamailio_scscf/kamailio_ctl' },
-  { role: 'icscf' as const, unit: 'kamailio-icscf', ctl: '/run/kamailio_icscf/kamailio_ctl' },
-  { role: 'pcscf' as const, unit: 'kamailio-pcscf', ctl: '/run/kamailio_pcscf/kamailio_ctl' },
+  { role: 'scscf' as const, ctl: '/run/kamailio_scscf/kamailio_ctl' },
+  { role: 'icscf' as const, ctl: '/run/kamailio_icscf/kamailio_ctl' },
+  { role: 'pcscf' as const, ctl: '/run/kamailio_pcscf/kamailio_ctl' },
 ];
 
 export interface SipTracingApplyReport {
   enabled: boolean;
-  instances: { role: string; action: 'rpc' | 'restarted' | 'failed'; detail?: string }[];
-  /** True if any instance needed a restart -- i.e. UE IPsec SAs were dropped. */
-  restarted: boolean;
+  instances: { role: string; action: 'rpc' | 'not-loaded' | 'failed'; detail?: string }[];
+  /**
+   * True when at least one instance does not have siptrace loaded, so the
+   * requested state could not be applied there. Only ever set while ENABLING:
+   * a missing module means tracing is already off, which is what disabling
+   * asked for. The fix is an IMS Configure, never a restart from here.
+   */
+  needsConfigure: boolean;
 }
 
 /**
@@ -3510,13 +3649,13 @@ function writeCscfIncludes(state: any, enabled: boolean, http2N5Available: boole
     pcscfIncludeCfg({
       pcscfIp: c.pcscfIp, pcscfPort: c.pcscfPort, imsDomain, epcDomain, additionalDomains,
       http2N5Available,
-      sipTracePort: sipTracePortFor(enabled, 'pcscf'),
+      sipTracing: enabled,
     }), 'utf-8');
 
   fs.writeFileSync(`${HOST_KAMAILIO_ICSCF_DIR}/icscf.cfg`,
     icscfIncludeCfg({
       icscfIp: c.icscfIp, icscfPort: c.icscfPort, imsDomain, additionalDomains,
-      sipTracePort: sipTracePortFor(enabled, 'icscf'),
+      sipTracing: enabled,
     }), 'utf-8');
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
@@ -3526,7 +3665,7 @@ function writeCscfIncludes(state: any, enabled: boolean, http2N5Available: boole
       routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
       cdrAccounting: state.cdrAccountingEnabled === true,
-      sipTracePort: sipTracePortFor(enabled, 'scscf'),
+      sipTracing: enabled,
     }), 'utf-8');
 }
 
@@ -3537,7 +3676,7 @@ export async function setSipTracingEnabled(enabled: boolean): Promise<SipTracing
   const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
   const http2N5Available = await isKamailioHttp2Capable();
 
-  const report: SipTracingApplyReport = { enabled, instances: [], restarted: false };
+  const report: SipTracingApplyReport = { enabled, instances: [], needsConfigure: false };
 
   if (!enabled) {
     // Stop tracing live first, then persist "off" to config. Doing it in this
@@ -3548,10 +3687,11 @@ export async function setSipTracingEnabled(enabled: boolean): Promise<SipTracing
       const r = await siptraceRpc(inst.ctl, 'off');
       report.instances.push({
         role: inst.role,
-        action: r.ok ? 'rpc' : 'failed',
-        // Not loaded at all is the expected state when tracing was never on,
-        // so it is reported as information rather than as an error.
-        detail: r.ok ? r.out || 'tracing stopped' : `RPC unavailable (module likely not loaded): ${r.out}`,
+        // Not loaded at all already satisfies "off", so it is reported as
+        // information rather than as a failure, and does not set
+        // needsConfigure -- there is nothing for a Configure to fix here.
+        action: r.ok ? 'rpc' : 'not-loaded',
+        detail: r.ok ? r.out || 'tracing stopped' : `siptrace not loaded, so tracing is already off (${r.out})`,
       });
     }
     writeCscfIncludes(state, false, http2N5Available);
@@ -3560,34 +3700,24 @@ export async function setSipTracingEnabled(enabled: boolean): Promise<SipTracing
     return report;
   }
 
-  // Enabling: config first, so a restart picks it up.
+  // Persist first, so the choice survives a later restart of any CSCF
+  // (CAPTURE_TRACE_ON brings tracing back up on its own).
   writeCscfIncludes(state, true, http2N5Available);
 
   for (const inst of SIP_TRACE_INSTANCES) {
     const probe = await siptraceRpc(inst.ctl, 'on');
     if (probe.ok) {
-      // Module already loaded from an earlier enable -- no restart needed, so
-      // no IPsec SA loss.
       report.instances.push({ role: inst.role, action: 'rpc', detail: probe.out || 'tracing started' });
       continue;
     }
-    try {
-      await nsenter('systemctl', ['restart', inst.unit]);
-      report.restarted = true;
-      report.instances.push({
-        role: inst.role,
-        action: 'restarted',
-        detail: inst.role === 'pcscf'
-          ? 'restarted to load siptrace — every registered UE must re-register before it can call'
-          : 'restarted to load siptrace',
-      });
-    } catch (err) {
-      report.instances.push({
-        role: inst.role,
-        action: 'failed',
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    }
+    // No module in this process: its live main cfg predates unconditional
+    // CAPTURE_NODE. Say so plainly and leave the service alone.
+    report.needsConfigure = true;
+    report.instances.push({
+      role: inst.role,
+      action: 'not-loaded',
+      detail: `siptrace is not loaded — run Configure on the IMS page to load it (${probe.out})`,
+    });
   }
 
   state.sipTracingEnabled = true;
@@ -3605,6 +3735,22 @@ export function getSipTracingEnabled(): boolean {
 }
 
 /** Per-instance live tracing state, straight from siptrace's own RPC. */
+/**
+ * The three CSCF addresses, for labelling a captured call flow by role
+ * instead of by bare IP. Read from the live IMS state on each call rather
+ * than cached: a re-Configure can move any of them (the IP Plan tool exists
+ * precisely to do that), and a stale label on a trace is worse than none,
+ * because it names the wrong node with full confidence.
+ */
+export function getCscfAddresses(): { pcscfIp?: string; icscfIp?: string; scscfIp?: string } {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')).config ?? {};
+    return { pcscfIp: cfg.pcscfIp, icscfIp: cfg.icscfIp, scscfIp: cfg.scscfIp };
+  } catch {
+    return {};
+  }
+}
+
 export async function getSipTracingRuntime(): Promise<{ role: string; loaded: boolean; status: string }[]> {
   return Promise.all(
     SIP_TRACE_INSTANCES.map(async inst => {
@@ -3620,6 +3766,66 @@ export async function getSipTracingRuntime(): Promise<{ role: string; loaded: bo
 // DB polling. Deliberately lightweight, same shape as setSmsDeliveryMode()
 // above: only regenerates kamailio_smsc.cfg (the interval is baked into the
 // modparam there, not the include file) and restarts kamailio-smsc.
+/**
+ * The configured keepalive interval, or the default on a deployment that
+ * predates this setting.
+ */
+export function getNatpingIntervalSeconds(): number {
+  try {
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    const v = Number(state.natpingIntervalSeconds);
+    if (Number.isInteger(v) && v >= MIN_NATPING_INTERVAL_SECONDS && v <= MAX_NATPING_INTERVAL_SECONDS) {
+      return v;
+    }
+  } catch { /* fall through to the default */ }
+  return DEFAULT_NATPING_INTERVAL_SECONDS;
+}
+
+/**
+ * Change how often P-CSCF pings registered contacts.
+ *
+ * Unavoidably restarts kamailio-pcscf: the interval is an rtimer modparam, so
+ * it is read once at startup and there is no RPC for it. That restart drops
+ * every registered UE's IPsec SA (see CLAUDE.md) and the handsets have to
+ * re-register, so this is deliberately a considered setting with that cost
+ * stated in the UI, not a live slider.
+ *
+ * The whole static template is redeployed through deployImsTemplate() rather
+ * than patched in place, because the file carries __RTPENGINE_IP__ too and a
+ * hand-rolled rewrite is exactly what once left that token literal and broke
+ * RTP for every call.
+ */
+export async function setNatpingIntervalSeconds(seconds: number): Promise<void> {
+  if (!Number.isInteger(seconds)
+      || seconds < MIN_NATPING_INTERVAL_SECONDS
+      || seconds > MAX_NATPING_INTERVAL_SECONDS) {
+    throw new Error(
+      `Keepalive interval must be an integer between ${MIN_NATPING_INTERVAL_SECONDS} and ${MAX_NATPING_INTERVAL_SECONDS} seconds`,
+    );
+  }
+  if (!fs.existsSync(HOST_IMS_STATE)) {
+    throw new Error('IMS is not configured yet — configure IMS first');
+  }
+  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const rtpEngineIp = state.config?.rtpEngineIp;
+  if (!rtpEngineIp) {
+    throw new Error('Saved IMS state has no rtpEngineIp — run Configure on the IMS page first');
+  }
+
+  const entry = IMS_STATIC_TEMPLATES.find(e => e.template === 'kamailio_pcscf/kamailio_pcscf.cfg');
+  if (!entry) throw new Error('P-CSCF template missing from IMS_STATIC_TEMPLATES');
+  deployImsTemplate(entry.template, entry.dest,
+    imsTemplateSubstitutions(entry.tokens, {
+      RTPENGINE_IP: rtpEngineIp,
+      NATPING_INTERVAL: String(seconds),
+    }) ?? {});
+
+  await nsenter('systemctl', ['restart', 'kamailio-pcscf']);
+
+  state.natpingIntervalSeconds = seconds;
+  fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
+}
+
 export async function setSmsWorkerInterval(seconds: number): Promise<void> {
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
     throw new Error('Interval must be an integer between 1 and 300 seconds');
@@ -4715,7 +4921,7 @@ export async function getImsStaleness(): Promise<ImsStalenessResult> {
     } catch { /* corrupt */ }
   }
   const templates = installed
-    ? checkImsTemplateStaleness(rtpEngineIp)
+    ? checkImsTemplateStaleness(rtpEngineIp, getNatpingIntervalSeconds())
     : { stale: [], missing: [], checked: 0 };
 
   return {
@@ -4828,7 +5034,7 @@ export function createImsRouter(
       // outages that came from a deployed template silently differing from the
       // one in the build. Also surfaces the compiled-module patch state, which
       // had a verification function with no callers at all until now.
-      const templates = checkImsTemplateStaleness(currentConfig?.rtpEngineIp);
+      const templates = checkImsTemplateStaleness(currentConfig?.rtpEngineIp, getNatpingIntervalSeconds());
       const modulePatches = installed
         ? await verifyKamailioImsModulesPatch().catch(() => undefined)
         : undefined;
@@ -4929,6 +5135,12 @@ export function createImsRouter(
         modulePatches,
         smsDeliveryMode,
         smsWorkerIntervalSeconds,
+        natpingIntervalSeconds: getNatpingIntervalSeconds(),
+        natpingIntervalLimits: {
+          min: MIN_NATPING_INTERVAL_SECONDS,
+          max: MAX_NATPING_INTERVAL_SECONDS,
+          default: DEFAULT_NATPING_INTERVAL_SECONDS,
+        },
         voiceChargingEnabled,
         ocsAvailable,
         cdrAccountingEnabled,
@@ -4995,6 +5207,32 @@ export function createImsRouter(
     } catch (err) {
       await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
       logger.error({ err: String(err) }, 'ims sms-worker-interval error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // POST /api/ims/natping-interval — body: { seconds: number (5-300) }.
+  // How often P-CSCF pings each registered contact (route[NATPING]). The
+  // interval is an rtimer modparam, so applying it restarts kamailio-pcscf,
+  // which drops every registered UE's IPsec SA — stated in the UI, and the
+  // reason this is a considered setting rather than a live control.
+  router.post('/natping-interval', requireAdmin, async (req: Request, res: Response) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    const { seconds } = req.body as { seconds?: number };
+    if (typeof seconds !== 'number' || !Number.isInteger(seconds)
+        || seconds < MIN_NATPING_INTERVAL_SECONDS || seconds > MAX_NATPING_INTERVAL_SECONDS) {
+      return res.status(400).json({
+        success: false,
+        error: `seconds must be an integer between ${MIN_NATPING_INTERVAL_SECONDS} and ${MAX_NATPING_INTERVAL_SECONDS}`,
+      });
+    }
+    try {
+      await setNatpingIntervalSeconds(seconds);
+      await auditLogger.log({ action: 'ims_configure', user, details: `natping_interval_seconds=${seconds}`, success: true });
+      res.json({ success: true, seconds });
+    } catch (err) {
+      await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
+      logger.error({ err: String(err) }, 'ims natping-interval error');
       res.status(500).json({ success: false, error: String(err) });
     }
   });
