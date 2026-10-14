@@ -8,6 +8,113 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.71] - 2026-10-14
+
+### Added — RF Planning covers a whole coverage study, not a set of calculators
+
+- Drop radios on the map, set their parameters, press Simulate. Buildings,
+  heatmap, optimisation, gap analysis and the PDF all hang off that one line
+  and are optional.
+- Rays are traced across each sector's beam in 25 m steps and charge a wall
+  loss every time they cross a building footprint, so a dark street shows
+  *why* it is dark — each segment carries its own wall loss, line-of-sight
+  state and the building that blocked it.
+- A continuous best-server coverage heatmap answers "how good is it here",
+  where the rays answer "why". Both read the same propagation code, so they
+  cannot disagree about identical geometry.
+- Standard 3-sector and 4-sector sites: panels sharing a mast move together,
+  and the inspector separates mast-level settings (position, height, channel)
+  from per-sector ones (azimuth, beamwidth, tilt, power).
+- 3GPP TR 38.901 UMa propagation, building entry loss, RSRP/SINR/RSRQ/RSSI,
+  coverage-gap ranking, demand-weighted azimuth optimisation, measurement
+  validation against spatially separated folds, and OpenStreetMap building
+  import.
+- Selecting a propagation model now states up front when it does not cover the
+  scenario. At CBRS 3.6 GHz, Hata, COST-231 and Walfisch-Ikegami are all out
+  of their published frequency range and reject the input rather than
+  extrapolating — which previously produced a technically successful run with
+  an empty map and no stated reason.
+- The plan exports as a PDF, including the coverage raster.
+
+### Added — pick the antenna instead of typing four numbers
+
+- Sectors can be set from a library of real, orderable panels — Baicells,
+  Alpha Wireless, KP Performance and CommScope — each listing its published
+  gain, horizontal and vertical beamwidth, front-to-back ratio, ports and
+  polarization, with a link to the specification it came from.
+- Selecting a panel applies its whole pattern at once. Gain and the two
+  beamwidths are tied together by the antenna's aperture, so mixing one
+  panel's beamwidth with an unrelated gain describes an antenna nobody makes.
+- Where a vendor does not publish a vertical beamwidth, the figure is derived
+  from the gain and azimuth width and labelled as derived, rather than being
+  presented as measured.
+- A custom option takes a full specification by hand for anything not listed.
+- Editing a pattern field by hand switches the sector to Custom, so the
+  inspector never names a specific panel while describing a different pattern.
+- Electrical downtilt is now separate from mechanical downtilt — one comes off
+  the spec sheet, the other is an installation decision — and a warning
+  appears if the chosen panel is not specified for the sector's frequency.
+
+### Fixed — sector azimuth can be rotated in both directions
+
+- The azimuth sweep could only be dragged clockwise: a sector pointing north
+  sat at the end of its range. The slider now runs from −180° to +180° either
+  side of north, the typed value accepts negatives, and rotate arrows turn the
+  panel past north in either direction without stopping.
+
+### Fixed — sector coverage no longer looks like it has gaps
+
+- A panel's rated beamwidth is its half-power width, and drawing only that left
+  55° of apparent emptiness between the sectors of a standard three-sector
+  site. The coverage was never missing — at the crossover each neighbouring
+  sector is about 10 dB down and still serving. The map now also draws the
+  −10 dB contour, where adjacent sectors genuinely overlap, so the picture
+  matches what the simulation computes.
+
+### Fixed — the coverage heatmap is smooth instead of banded
+
+- Signal values were being snapped to one of five colours, which drew hard
+  edges at −80/−90/−100/−110 dBm that propagation does not have. Colours now
+  blend continuously between the same boundaries, so the heatmap looks like the
+  continuous field it is measuring. The five discrete bands remain available
+  for reading a single pass/fail boundary off.
+
+### Fixed — the PDF export failed with HTTP 413 on larger plans
+
+- The report was uploading every traced ray's geometry, which the PDF never
+  uses, and exceeded the request size limit on any plan with a large radius or
+  a high ray count. It now sends only what the document prints.
+
+### Added — SIP call flows can be read end to end
+
+- A new Full Calls list shows just real calls by calling and called number,
+  separate from the Dialogs list, which continues to show every captured
+  dialog including registrations and keepalives.
+- Selecting a call opens a single ladder diagram for the whole call rather than
+  one fragment per message, and every arrow on it opens that message in full.
+
+### Fixed — SIP capture stored nothing, then stored only half a call
+
+- Capture reported itself as running while storing no messages: Kamailio emits
+  HEP version 1 by default and the collector only accepted version 3. Both are
+  now read.
+- Captures then contained requests but no responses — no 100, 180 or 200
+  anywhere — because the tap was being asked for a single message rather than a
+  whole transaction. It now captures replies and onward hops.
+
+### Changed — the UE keepalive interval is a setting, and defaults to 30s
+
+- The IMS keepalive pinged every registered handset every 5 seconds, which is
+  shorter than any radio inactivity timer and so held every UE permanently out
+  of idle — reported from the radio side as a handset staying active all day.
+  The default is now 30 seconds and the interval is configurable from 5 to 300
+  seconds on the IMS page.
+- Applying it restarts P-CSCF, which drops every registered handset's IPsec
+  association and requires them to re-register. The page states this before
+  applying.
+
+---
+
 ## [v2.0-beta_0.70] - 2026-10-12
 
 ### Changed — accessibility and interface pass across the whole web interface

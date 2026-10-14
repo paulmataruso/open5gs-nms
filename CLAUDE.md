@@ -718,7 +718,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | GenieACS radio provisioning | stable | `genieacs-controller.ts` | `AutoConfigPage.tsx`, `FemtoConfigTab.tsx` |
 | Traffic History (aggregate + per-subscriber) | stable | `subscriber-ip-accounting.ts`, `prometheus-metrics.ts`, `traffic-history-controller.ts` | `TrafficHistoryPage.tsx` |
 | Security Gateway (SecGW) | alpha — real IPsec tunnels confirmed live for both radio vendors simultaneously: 3 Baicells eNBs (IKEv2 Configuration Payload/virtual-IP based) and 1 Nokia AirScale (static tunnel endpoints + traffic selectors, no CP) — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME, 2026-08-14). See architectural pattern #15 for why Baicells and Nokia are configured completely differently. `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in). | `secgw-controller.ts`, `secgw-build.ts` | `SecGWPage.tsx` |
-| RF Planning | **alpha, actively being built out** — deterministic LTE link-budget/site-geometry engine (Phase 1 of a planned multi-phase tool, see memory: `rf_planning_tool_phase1_plan`); expect incomplete phases and possible breaking changes between releases. `ENABLE_RF_PLANNING_MODULE` defaults **disabled** (opt-in). | `rf-planning-controller.ts`, `rf-planning-projects-controller.ts`, `rf-planning-reports-controller.ts` | `RfPlanningPage.tsx` |
+| RF Planning | **beta — rewritten 2026-10-13 to A.T.O.M feature parity, in our own design.** Workflow is deliberately one line: **drop radios on the map -> enter parameters -> Simulate**; everything else is progressive disclosure. The headline addition is **deterministic segmented ray tracing** (`ray-trace.ts`): rays are cast across the sector beam and marched in 25 m steps, charging per-wall penetration loss at every building footprint crossing, emitting colour-coded segments that carry their own evidence (wall loss, LOS state, obstructing building id) so the map answers *why* a street is dark rather than only *that* it is. Ten capabilities were added to the pre-existing ~4,100-LOC engine (which already had more propagation models than A.T.O.M: FSPL, Hata, Walfisch-Ikegami, close-in/UMi, log-distance, ITM/Longley-Rice, diffraction, Fresnel, earth curvature, terrain/landcover): **`uma-model.ts`** (3GPP TR 38.901 UMa, the model A.T.O.M used), **`building-index.ts`** (grid-indexed footprints, segment intersection, and height-aware LOS/NLOS that reports `unknown` when blockage rests only on an assumed height), **`radio-quality.ts`** (RSRP/SINR/RSRQ/RSSI), **`building-entry.ts`** (TR 38.901 O2I), **`coverage-gap.ts`**, **`network-optimize.ts`** (demand-weighted azimuth coordinate descent + Pareto frontier + marginal-gain site ranking), **`measurement-validation.ts`** (MAE/RMSE/bias on **spatially blocked** folds, never a random split, plus a holdout-checked calibration offset), and **`osm-buildings.ts`** (Overpass footprint import with demand scoring). **Two corrections to what A.T.O.M did, both load-bearing**: its NR resource-block table hardcoded 120 kHz SCS (FR2/mmWave), which is the wrong radio for CBRS n48 — ours takes SCS explicitly and defaults 5G to 30 kHz (51 RB at 20 MHz, not 66 at 100 MHz, a ~6 dB RSSI error); and its demand table scored OSM `building=yes` at zero, which is the most common tag in suburban mapping and made demand-driven optimisation inert on real data (measured: a sector facing 10 real buildings reported totalDemand 0). Model reference, including every formula and the parity checklist: **`docs/rf-planning-model-reference.md`**. Uses raw `leaflet` only — **never add `react-leaflet`**, which is Hippocratic-2.1 and conflicts with this project's AGPL-3.0 licence. **Extended 2026-10-13 (same day) with the heatmap, multi-sector sites, model selection, a context inspector and a PDF report.** (1) **Coverage heatmap** (`coverage-heatmap.ts`) is the continuous best-server raster the ray tracer deliberately is not — the raster answers "how good is it here", the rays answer "why", and both share `receivedPowerAtPoint()` so they cannot disagree about identical geometry. The grid is row-major with **row 0 at the NORTH edge** so the client blits it straight into an `ImageData`; there is a test asserting that ordering using the antenna pattern as a compass, because a vertically mirrored raster is a completely plausible-looking bug. Rendering interpolates bilinearly between real samples but **never across a `null`**. (2) **Standard 3-sector and 4-sector site placement**: sectors sharing a `siteId` are one mast, so moving the site moves every panel, and the inspector splits **site-level** fields (position, height, channel, technology) from **sector-level** ones (azimuth, beamwidth, tilt, power). Getting that boundary wrong is what makes a sectored editor painful — per-sector height silently drifts, per-site azimuth makes a sectored site impossible. Defaults are what actually gets ordered: 3×65° on 120° spacing, 4×45° on 90°. (3) **Context inspector** — selecting a site marker, a sector wedge or a building footprint switches the right-hand panel to that thing. It is docked beside the map, never floating over it, so the geometry stays visible while being edited. The building context is also the only home for the O2I entry-loss calculation, since entry loss only means anything against a specific building. (4) **Model selection** (`propagation-select.ts`) is the single synchronous dispatcher for both the rays and the raster; `site-signal.ts`'s async `computeBasePathLossDb()` delegates to it and keeps only its ITM branch, so the dispatch stays single-sourced. ITM is deliberately not offered (profile-shaped, meaningless without per-point terrain). **The load-bearing fact: at CBRS 3.6 GHz, Hata (0.15–1.5 GHz), COST-231 (1.5–2.0) and Walfisch-Ikegami (0.8–2.0) are all out of band, and they HARD-REJECT out-of-range inputs rather than extrapolating** — so selecting one used to mean a technically-successful run with an empty map and no stated reason. `modelApplicability()` now gates the run up front, quotes the real published range, and names the models that do cover the scenario. A radius below a model's minimum is blocking; above its maximum is only a warning. Suggestions are computed by a separate non-recursive helper — recursing into `modelApplicability()` blows the stack as soon as two models are mutually inapplicable, which is the normal case here. (5) **PDF report** (`rf-simulation-report.ts`, `POST /report.pdf`) renders the current workspace including the coverage raster, which the CLIENT supplies as a PNG — the older projects report's own header comment flags its missing map as a known fidelity gap, and this closes it without adding native `canvas` or a headless browser to the image. Two pdfkit traps are handled explicitly: a positional `doc.text(str, x, y)` leaves the text cursor parked in that column, so every block writer re-asserts the margin (otherwise later prose renders inside a ~100 pt gutter on the right), and each table cell is height-clamped so an over-long value ellipsises instead of wrapping the row. Legacy `/link-budget`, `/point-analysis`, `/coverage-grid`, `/interference-grid` and the projects/reports store are retained and still regression-tested; saved projects load into the new workspace via `ProjectBar.tsx` as single-sector sites (the stored schema has no multi-sector concept, and guessing which saved sites share a mast from their coordinates would let one radio's edits silently move another). `ENABLE_RF_PLANNING_MODULE` gates visibility. | `rf-planning-controller.ts`, `rf-simulation-controller.ts`, `domain/rf/*` | `RfPlanningPage.tsx`, `components/rfplanning/{PlanningMap,RadioEditor,ProjectBar}.tsx` |
 | UE Signal Monitoring | **new, community-contributed** (PR #32) — per-UE RSRP/RSRQ/SINR/BLER/MCS/CQI/throughput correlated with subscriber identity (IMSI/ICCID/MSISDN), 7-day SQLite history, AES-256-GCM encrypted radio credentials, admin-triggered downlink wake for idle UEs. **Baicells-native connector only** — other vendors need the generic JSON connector, which requires the radio to already expose its own metrics in that shape, so it is not a drop-in for every vendor. `ENABLE_UE_SIGNAL_MODULE` defaults **enabled** (set to `false` to hide it — this is a visibility gate, not an install/uninstall lifecycle like most other opt-in modules). | `radio-signal-controller.ts` | `RadioSignalPage.tsx` |
 | 2G GSM (Osmocom) | **alpha** — real GSM radio access (osmo-bsc/osmo-bts) layered on the osmo-hlr/osmo-msc/osmo-stp that SMS-over-SGs already runs, on real nanoBTS hardware confirmed on-air. CS attach/ciphering, GPRS/EDGE data, and 2G↔4G SMS (via VectorCore SMSC, its own separate module) are **stable**. Real voice calling is **alpha**: osmo-msc's own built-in call handler can complete signaling (ring/answer) but never implements `MNCC_RTP_CREATE` (confirmed live 2026-09-13, upstream Osmocom limitation, not fixable here) — no audio ever flows in Internal mode. Real 2G↔2G audio needs External mode routed through **Asterisk-2G**, a second, fully isolated Asterisk instance (own config tree, own systemd unit, own loopback IP `127.0.1.7` — never touches the separate Asterisk instance PSTN Gateway owns) whose only job is looping a call back through osmo-sip-connector so the second phone gets paged. One button (GSM page's "2G Voice" tab, gated on `ENABLE_ASTERISK_2G_MODULE`, defaults **disabled**) installs, configures, wires the SIP tab's remote peer, and switches MNCC to External automatically. `ENABLE_GSM_MODULE` defaults **disabled** (opt-in) — real radio (and, for a real BTS, actual spectrum transmission) is a bigger blast radius than a broken lab feature. If a real call ever fails at TCH assignment (osmo-bsc logs "Assignment Failure"/"NACK on IPACC CRCX"), it is NOT necessarily a hardware issue — see architectural pattern #16's tail and memory `gsm_2g_osmocom_module_progress.md`: a real `codec-support`/AMR config mismatch caused exactly this, confirmed live 2026-09-15, and had been misdiagnosed as unfixable hardware the day before. | `gsm-controller.ts`, `asterisk-2g-controller.ts`, `osmo-sip-connector-build.ts` | `GsmPage.tsx` |
 | 3G UMTS (OsmoHNBGW) | **alpha** — Home NodeB Gateway bridging a 3G femtocell's Iuh interface to the existing osmo-msc (IuCS) and osmo-sgsn (IuPS) over the already-running osmo-stp. `osmo-hnbgw` isn't an apt package on this host — built from source, pinned to tag `1.3.0` (NOT the `1.9.0` every other daemon here uses — its own version numbering is independent, and `1.9.0` needs a newer `libosmocore` than this host has; confirmed live 2026-09-13 via a real scratch build). Adds a new `cs7`/IuPS point-code block into the 2G module's own `osmo-sgsn.cfg` via ownership-merge (never a blind overwrite — see `vty-config-ownership.ts`), and a third, dedicated OsmoMGW instance (own config/systemd unit/loopback `127.0.1.8`, reusing the already-installed `osmo-mgw` binary). `osmo-stp.cfg`/`osmo-msc.cfg` need **zero changes** — confirmed live from both HNBGW's and MSC's own logs (STP's existing dynamic-ASP-registration + MSC's existing SCCP link both already handle it). Subscriber credentials need no new provisioning either — reuses the 2G module's own `gsmEnabled` flag and its `auc_3g` MILENAGE row (confirmed via OsmoHLR's own manual: the same row serves both 2G and full UMTS AKA). A software test HNB, **OsmoHNodeB** (tag `0.1.0`, same source-build pattern, needs its own dedicated GTP-U bind `127.0.1.9` — its default collides fatally with Open5GS's own UPF), deployable from the module's own page, proved a full live HNBAP registration end-to-end before any real hardware was touched. Real hardware target: an ip.access nano3G — unlike 2G's OML, Iuh/HNBAP has no remote-provisioning push, so a real HNB self-registers once pointed at this gateway's IP on its own local config, rather than being discovered/pushed-to from this NMS. `ENABLE_HNBGW_MODULE` defaults **disabled** (opt-in). | `hnbgw-controller.ts`, `osmo-hnbgw-build.ts`, `osmo-hnodeb-build.ts` | `HnbPage.tsx`, RAN page's "3G UMTS" section |
@@ -992,6 +992,191 @@ Full detail on any of these: `docs/features.md`.
   applied by hand, or needs to go through the real install/configure flow
   instead. Grep the freshly-deployed file for `__[A-Z_]*__` as a cheap,
   reliable check before trusting a manual redeploy.
+- **A single-FILE Docker bind mount pins to the file's inode, so rewriting that
+  file on the host does not reach the container — and `nginx -t` will happily
+  report "syntax is ok" for config the running nginx is not using.** Confirmed
+  live 2026-10-13: `nginx/nginx.conf` is bind-mounted as
+  `/etc/nginx/conf.d/nms.conf`, and the ATOM rollback had rewritten that file
+  (new inode, 67563394 on the host vs 67954293 still mounted in the container).
+  The container therefore kept serving the **pre-rollback** config for hours,
+  complete with `location ~ ^/api/atom/dataset/`, `^/api/atom/engine/` and
+  `|atom` in the streaming-install regex, all proxying to an engine that no
+  longer existed. Nothing requested those paths so nothing broke, which is
+  exactly why it went unnoticed — and the rollback had been reported as
+  complete on the strength of the repo and the systemd unit alone. Worse, a
+  newly-added location block simply never took effect, and `nginx -s reload`
+  cannot fix it: reload re-reads the same stale inode.
+  **Detection**: compare inodes across the boundary, not contents —
+  `stat -c %i nginx/nginx.conf` against
+  `docker compose exec nginx stat -c %i /etc/nginx/conf.d/nms.conf`. A
+  size/mtime mismatch is the same signal (the live copy here was 14171 bytes
+  against the repo's 13276).
+  **Fix**: `docker compose up -d --force-recreate nginx`, which re-binds to the
+  current inode. **Prevention**: an in-place rewrite that preserves the inode
+  (`sed -i` without `--follow-symlinks` does NOT — it writes a temp file and
+  renames; Python `open(p,'w')` truncating in place DOES) keeps the mount
+  valid, but the reliable habit is to recreate the container after editing any
+  single-file bind mount rather than trusting that the edit propagated. Mounting
+  the parent DIRECTORY instead of the file avoids the whole class of problem,
+  since directory mounts resolve names per lookup rather than pinning an inode.
+  This applies to every single-file mount in `docker-compose.yml`, not just
+  nginx's.
+
+- **A diagnostic feature must not make "load a Kamailio module" the
+  operator's problem — Kamailio only loads modules at startup, so an
+  on-demand load means restarting a CSCF, and restarting `kamailio-pcscf`
+  drops every registered UE's IPsec SA.** The SIP capture feature
+  (Packet Capture page's SIP Tracing tab) originally defined
+  `CAPTURE_NODE` only while capture was switched on, which made the first
+  enable restart all three CSCFs — i.e. looking at a call flow cost a real
+  registration outage for every handset on the network, which no operator
+  will accept, so in practice the feature was unusable. Fixed 2026-10-13:
+  `captureNodeDefine()` in `ims-controller.ts` now emits `CAPTURE_NODE`
+  **unconditionally**, so `siptrace.so` is resident on every CSCF from the
+  first Configure onward, and a separate `CAPTURE_TRACE_ON` define (which
+  the three `kamailio_*.cfg` templates turn into `trace_on 1|0`) carries
+  the actual on/off state. Starting loaded-but-off is cheap,
+  verified in siptrace's own source rather than assumed: `sip_trace()`
+  returns immediately on a clear `trace_on_flag`, and with
+  `trace_to_database 0` the module never binds a database module at all
+  (which matters on this host — see the `max_connections` entry below).
+  **Correction, same day — an earlier version of this entry said "genuinely
+  free", which overclaimed.** Transaction-mode tracing (next entry) calls
+  `trace_transaction()` BEFORE the `trace_is_off()` check, so while capture is
+  switched off each request still costs one small shm allocation and three tm
+  callback registrations. The callbacks and `sip_trace()` both short-circuit
+  on the trace_on flag, so nothing is emitted, no socket is written and no
+  database is touched — but it is not nothing. That cost is inherent to
+  capturing replies at all: any mode that can see a response has to register
+  for it before the response exists. If it ever matters on a busier
+  deployment, the lever is to gate the trace call on a shared, RPC-settable
+  variable (`$shv(...)` + `pv.shvSet`), NOT to go back to message mode, which
+  cannot see replies at all.
+  Toggling is then purely `siptrace.status on|off` over `kamcmd`, in both
+  directions, and the persisted define means the choice survives any later
+  restart. `setSipTracingEnabled()` contains no `systemctl` at all and
+  `SIP_TRACE_INSTANCES` deliberately no longer carries unit names; an
+  instance whose live config predates this reports `not-loaded` +
+  `needsConfigure` and the UI points at Configure rather than restarting
+  anything itself. A wiring test pins all of this
+  (`sip-trace-wiring.test.ts`). **The general rule: if a feature needs a
+  Kamailio module that isn't loaded, add it to the Configure-time config
+  so the cost lands in the restart Configure already performs — never
+  restart a CSCF as a side effect of someone opening a diagnostic view.**
+  Nested `#!ifdef`/`#!else` inside an outer `#!ifdef` is supported by
+  Kamailio's preprocessor (verified against the real 6.0.8 binary), which
+  is what lets the template choose a `trace_on` value without the
+  generated include having to supply one.
+
+- **Kamailio's `siptrace` module emits HEP version **1** by default, not
+  v3 — and a HEP collector that requires the `HEP3` magic silently counts
+  every real message as a parse failure while the UI reports capture as
+  running.** Found live 2026-10-13, immediately after the first IMS Configure
+  that loaded `siptrace.so`: all three CSCFs reported `siptrace.status` as
+  `Enabled`, HEP datagrams were confirmed arriving at the collector with
+  tcpdump, and `nms_sip_trace` stayed at zero documents. Root cause read from
+  the real source, not guessed — `siptrace.c` declares `int hep_version = 1`
+  and the module's own README says "Default value is 1"; v1/v2 route to
+  `trace_send_hep2_duplicate()`, a fixed-layout binary header with no `HEP3`
+  magic, so `hep-parser.ts`'s `parseHep3()` rejected all of it as `bad_magic`.
+  Invisible because the collector deliberately counts parse failures rather
+  than logging them (correct — a misdirected sender would otherwise flood the
+  log), so the only symptom was an empty capture. **Detection signature**: HEP
+  packets visible on the collector port via tcpdump while `messagesStored`
+  stays 0; dump the first four payload bytes (`tcpdump -X`) — `01 10 02 11`
+  is a v1 IPv4/UDP header, `HEP3` is v3. **Fixed in the collector, not the
+  templates, deliberately**: `hep_version` is a modparam, so it must follow
+  its own `loadmodule` and cannot live in the generated include — setting it
+  would mean editing the three static `kamailio_*.cfg` templates, which only
+  reach the host through a full Configure, i.e. another CSCF restart and
+  another dropped IPsec SA for every handset. `hep-parser.ts` now has
+  `parseHep1or2()` plus a `parseHep()` dispatcher that switches on the magic,
+  and the collector calls that; v1 loses nothing this project uses (its only
+  absent fields are the payload-type and capture-agent ids — capture is SIP
+  by construction here, and the three CSCFs are told apart by which collector
+  PORT received the packet, per `CAPTURE_PORTS`, never by a capture id). Two
+  real layout traps are handled and pinned by tests: v2's time header is
+  **little-endian** while every other HEP field is big-endian (`to_le()` is a
+  no-op on x86), and `sizeof(struct hep_timehdr)` rounds 10 bytes of fields
+  up to 12, so two zero padding bytes are on the wire — skipped by ignoring
+  leading NULs rather than by guessing the sender's compiler. A CSCF that
+  later gains `hep_version 3` keeps working with no collector change. The
+  regression test pins the exact 16 header bytes a live I-CSCF put on the
+  wire. **General rule: when a capture/telemetry feature stores nothing,
+  confirm the format on the wire before trusting the sender's documented
+  default — and prefer widening our own parser over changing a config that
+  costs a restart to deploy.**
+
+- **`siptrace`'s default tracing mode is "message", so a bare `sip_trace()`
+  mirrors the one message in hand and NOT a single reply — and which mode you
+  get silently depends on the ORDER of two lines in the config.** Found live
+  2026-10-13 on the first real call captured after the HEP fix above: 33
+  messages stored, every one of them a request (INVITE/PRACK/ACK/BYE/CANCEL),
+  zero `100`/`180`/`200` anywhere. A capture with no responses is not a call
+  flow at all, and it presents as a *working* feature because messages are
+  being stored and counted. Mechanism, from `siptrace.c` rather than guessed:
+  `sip_trace()` with no mode argument resolves the mode as
+  `(msg->flags & trace_flag) ? SIPTRACE_TRANSACTION : SIPTRACE_MESSAGE`, and
+  only TRANSACTION/DIALOG call `trace_transaction()`, which is what registers
+  the `TMCB_REQUEST_SENT`/`TMCB_RESPONSE_IN`/`TMCB_RESPONSE_SENT` callbacks
+  that capture onward hops and replies. The three CSCF templates called
+  `sip_trace();` and only *then* `setflag(FLT_CAPTURE);` — so at the moment of
+  the call the flag was not yet set, message mode was chosen, and the
+  configured `trace_flag` modparam had no effect whatsoever. **Fixed** by
+  using the explicit `sip_trace_mode("t")` (exported with 1 param, ANY_ROUTE —
+  verified present in the deployed `.so`) with `setflag` ahead of it, so the
+  behaviour no longer depends on line order at all. Pinned by
+  `sip-trace-wiring.test.ts`, which now rejects a bare `sip_trace()` in any of
+  the three templates. Dialog mode (`"d"`) is deliberately NOT used: it needs
+  the `dialog` module, which this deployment does not load (same constraint
+  that kept `acc`'s `cdr_enable` out — see the Call History entry).
+  **This is a config-logic change, so unlike the on/off toggle it only reaches
+  the host through a Configure and its CSCF restart.** **General rule: when a
+  capture looks thin rather than empty, check what the tap was asked to
+  capture before suspecting the transport — and prefer a library's explicit
+  mode argument over its flag-dependent default, because the default's
+  behaviour can hinge on statement order that reads as irrelevant.**
+
+- **A network-initiated SIP keepalive every 5s holds every registered UE
+  permanently out of RRC idle — a real, operator-visible cost that was never
+  weighed against the bug the keepalive was added to fix.** Reported from the
+  RAN side 2026-10-13: a handset "staying active all day". Cause confirmed
+  live, not guessed: `route[NATPING]` in `kamailio_pcscf.cfg`, driven by
+  `modparam("rtimer", "timer", "name=NATPING;interval=5;...")`, fires a
+  `uac_req_send()` OPTIONS at **every registered contact every 5 seconds** —
+  measured on this host at 3 contacts / 36 pings per minute. 5s is shorter
+  than any RRC inactivity timer, so no UE can ever reach idle: battery and
+  radio resources burned for every subscriber, continuously. The keepalive
+  itself is NOT the mistake — it exists because of the 2026-09-29 fix
+  documented in `pcscfIncludeCfg()` (the natping htables were populated at
+  REGISTER but `route[NATPING]` was gated behind an undefined `WITH_NATPING`,
+  so idle TCP contacts went stale before their registration `Expires` and the
+  next INVITE failed on a ~3s connect timeout). The mistake was the hardcoded
+  *rate*, chosen to sit safely under an unknown TCP idle timeout rather than
+  measured against one. **Fixed** by making it a setting: the template now
+  carries `interval=__NATPING_INTERVAL__`, the NMS default is **30s**
+  (range 5–300, with 5 kept reachable so the previous behaviour is one step
+  away), and the IMS page exposes it. Applying it necessarily restarts
+  kamailio-pcscf — an rtimer interval is a modparam read once at startup, with
+  no RPC — so the UI states plainly that every handset's IPsec SA is dropped
+  and they must re-register; that cost is why it is a considered setting and
+  not a live slider. **Two traps worth knowing if you touch this again**:
+  (1) the P-CSCF template now bears TWO tokens, and `RTPENGINE_IP` had been
+  handled by three separate hardcoded checks (token list, deploy loop,
+  staleness renderer) — now one shared `imsTemplateSubstitutions()`, because
+  missing the new token in the DEPLOY path fails loudly via
+  `deployImsTemplate()`'s leftover-token guard, but missing it in
+  `checkImsTemplateStaleness()` is SILENT and makes every deployment report
+  permanently stale forever; (2) the setter redeploys the whole template
+  through `deployImsTemplate()` rather than patching the one line, because
+  this is the same file whose hand-rolled redeploy once left
+  `__RTPENGINE_IP__` literal and broke RTP on every call. Pinned by
+  `ims-natping-wiring.test.ts`, which rejects a hardcoded NATPING interval
+  outright. **General rule: a periodic network-initiated poll aimed at UEs is
+  a RAN power decision as much as a SIP one — pick the interval against the
+  idle timer you are actually fighting, and make it configurable rather than
+  guessing a safe-looking constant.**
+
 - **This host's MySQL/MariaDB `max_connections` (151, the compiled-in
   default) was genuinely too low for this deployment's own steady-state
   load** — confirmed live 2026-10-02 (`Max_used_connections` peaked at
