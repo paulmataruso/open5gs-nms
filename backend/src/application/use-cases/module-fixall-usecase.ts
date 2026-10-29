@@ -44,7 +44,7 @@ import {
 // The core-17 NF "Apply Config" flow has no staleness concept at all and is
 // out of scope here — see CLAUDE.md.
 
-export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp';
+export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp' | 'sasbench';
 
 // `kamailio` runs FIRST, deliberately: its rebuild stops and restarts all four
 // Kamailio services and swaps the compiled modules, so anything that configures
@@ -53,7 +53,7 @@ export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 
 // time, not at build time), so running ims after kamailio is also what actually
 // re-enables VoNR following a rebuild — the gap verifyAndFinish() currently has
 // to tell the operator about in prose.
-const MODULE_ORDER: ModuleId[] = ['kamailio', 'ims', 'mms', 'vectorcoreSmsc', 'pstn', 'vowifi', 'secgw', 'twamp'];
+const MODULE_ORDER: ModuleId[] = ['kamailio', 'ims', 'mms', 'vectorcoreSmsc', 'pstn', 'vowifi', 'secgw', 'twamp', 'sasbench'];
 
 const MODULE_LABELS: Record<ModuleId, string> = {
   ims: 'IMS / VoLTE',
@@ -64,6 +64,7 @@ const MODULE_LABELS: Record<ModuleId, string> = {
   secgw: 'Security Gateway (SecGW)',
   twamp: 'TWAMP',
   kamailio: 'Kamailio (IMS core modules)',
+  sasbench: 'CBRS SAS (SASBench)',
 };
 
 // MMS/VectorCore SMSC/PSTN all hard-require IMS installed+configured (their
@@ -93,6 +94,19 @@ export interface ModuleStaleStatus {
   // the UI can name them instead of saying "version mismatch".
   staleTemplates?: string[];
   missingTemplates?: string[];
+  /**
+   * Shell commands the operator runs to clear this themselves, for a module
+   * that cannot be auto-fixed. Kept as separate strings rather than folded
+   * into `blockedReason` prose so the UI can render them as copyable code
+   * instead of a paragraph with commands buried in it.
+   */
+  fixCommands?: string[];
+  /**
+   * Overrides the "Install out of date" badge. A module whose software is
+   * absent entirely is not out of date, and saying so sends the operator
+   * looking for an update that does not apply.
+   */
+  installBadgeLabel?: string;
 }
 
 export interface FixAllModuleResult {
@@ -149,6 +163,7 @@ export class ModuleFixAllUseCase {
       Promise.resolve(this.getVowifiStatus()),
       Promise.resolve(this.getSecgwStatus()),
       Promise.resolve(this.getTwampStatus()),
+      this.getSasbenchStatus(),
     ]);
     const statuses: ModuleStaleStatus[] = [];
     for (const r of settled) {
@@ -260,6 +275,79 @@ export class ModuleFixAllUseCase {
       installStale: client.installStale, configStale: server.configStale,
       installedWithVersion: client.installedWithVersion, configuredWithVersion: server.configuredWithVersion,
       canAutoFix: true,
+    };
+  }
+
+  /**
+   * SASBench is a separate repository, so unlike every other module here the
+   * thing that can be missing is a CHECKOUT ON THE HOST, not a package or a
+   * generated config. This is the upgrade path that bites: a deployment that
+   * predates SASBench pulls this release and SASBENCH_DIR does not exist.
+   *
+   * It is deliberately NOT auto-fixable. Cloning a proprietary third-party
+   * repository and building a container image from it is a deliberate
+   * operator action, not something a "Fix All" button should do on their
+   * behalf — and the clone can need credentials or a proxy that only they
+   * have. So this reports, names the exact commands, and stops.
+   *
+   * Returning null when the directory is a usable git checkout keeps this
+   * silent on every healthy deployment, including one running SASBench from a
+   * non-git directory on purpose (that case is the SAS page's own
+   * `managed: false`, which is a different, non-blocking statement).
+   */
+  private async getSasbenchStatus(): Promise<ModuleStaleStatus | null> {
+    const dir = process.env.SASBENCH_DIR || '/opt/sasbench';
+    const quoted = JSON.stringify(dir);
+
+    // One host call, so a slow/odd mount cannot cost three round trips.
+    // Printing a token per condition rather than relying on exit codes keeps
+    // "missing" distinguishable from "present but not a git checkout".
+    const probe = await this.hostExecutor.executeCommand(
+      'sh',
+      ['-c', `if [ ! -d ${quoted} ]; then echo MISSING; elif [ ! -d ${quoted}/.git ]; then echo NOGIT; else echo OK; fi`],
+      15000,
+      { expectedFailure: true },
+    );
+    const verdict = (probe.stdout || '').trim().split('\n').pop() || '';
+
+    if (verdict === 'OK') return null;
+    // Anything else (including an unreadable path or a failed probe) is not a
+    // confident "broken" — say nothing rather than nag about a state we could
+    // not establish.
+    if (verdict !== 'MISSING' && verdict !== 'NOGIT') return null;
+
+    const missing = verdict === 'MISSING';
+    const clone = `sudo git clone https://github.com/paulmataruso/SASBench.git ${dir}`;
+
+    if (missing) {
+      return {
+        moduleId: 'sasbench', label: MODULE_LABELS.sasbench,
+        installStale: true, configStale: false,
+        canAutoFix: false,
+        installBadgeLabel: 'Not installed',
+        blockedReason:
+          `${dir} does not exist, so the CBRS SAS is not running — no radio can register, hold a `
+          + 'grant or heartbeat. This NMS does not implement a SAS: SASBench is a separate '
+          + 'repository, cloned on the host rather than bundled here. Run these on the host, then '
+          + 'reload this page.',
+        fixCommands: [
+          clone,
+          'echo "COMPOSE_PROFILES=sas" >> .env   # if not already set',
+          'docker compose up -d sasbench',
+        ],
+      };
+    }
+
+    return {
+      moduleId: 'sasbench', label: MODULE_LABELS.sasbench,
+      installStale: true, configStale: false,
+      canAutoFix: false,
+      installBadgeLabel: 'Not a git checkout',
+      blockedReason:
+        `${dir} exists but has no git history, so the NMS cannot tell you when SASBench falls `
+        + "behind upstream and the SAS page's Update button has nothing to pull from. The SAS "
+        + 'itself still runs. Replace the directory with a real clone to get update tracking.',
+      fixCommands: [clone],
     };
   }
 
@@ -485,6 +573,16 @@ export class ModuleFixAllUseCase {
         result.error = r.error;
         return result;
       }
+      // Never auto-fixed: getSasbenchStatus() reports canAutoFix: false, so
+      // this exists to keep the switch exhaustive and to leave a clear reason
+      // in the run log if a Fix All reaches it anyway.
+      case 'sasbench': {
+        result.skipped = true;
+        result.skipReason = status.blockedReason
+          ?? 'SASBench must be cloned on the host by hand — see the SAS page.';
+        return result;
+      }
+
       case 'twamp': {
         if (status.installStale) {
           result.ranInstall = true;

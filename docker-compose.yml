@@ -108,6 +108,22 @@ services:
       # variable by name so the password is never returned to the browser.
       - BAICELLS_RADIO_PASSWORD=${BAICELLS_RADIO_PASSWORD:-}
       - RADIO_CREDENTIALS_KEY=${RADIO_CREDENTIALS_KEY:-}
+      # SASBench — the backend reads its REST API server-side, so no SAS
+      # credential is ever handed to the browser. These MUST be passed through:
+      # without them the backend silently falls back to admin/admin and
+      # 127.0.0.1:8094, so setting SAS_ADMIN_PASSWORD in .env (which
+      # .env.example tells you to do) would authenticate SASBench's own admin
+      # account while leaving the NMS on the default — every SAS read then 401s
+      # and the SAS page and dashboard card report the SAS as unreachable while
+      # it is in fact running perfectly.
+      #
+      # SASBENCH_DIR is here because the update flow reads that checkout's git
+      # state; it is a HOST path, used via nsenter, not a path in this
+      # container.
+      - SASBENCH_UI_PORT=${SASBENCH_UI_PORT:-8094}
+      - SASBENCH_USER=${SASBENCH_USER:-admin}
+      - SAS_ADMIN_PASSWORD=${SAS_ADMIN_PASSWORD:-admin}
+      - SASBENCH_DIR=${SASBENCH_DIR:-/opt/sasbench}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s
@@ -358,6 +374,26 @@ services:
   # that path before the first `docker compose up` — see INSTALL.md.
   # ─────────────────────────────────────────────────────────
   sasbench:
+    # Behind a profile so a missing SASBENCH_DIR cannot take the stack down.
+    #
+    # This service's build context is a checkout OUTSIDE this repository, and
+    # Compose resolves every build context before it starts anything: if the
+    # directory is absent, `docker compose up -d` fails in the build phase and
+    # NOT ONE service starts — verified, including the containers that have
+    # nothing to do with the SAS. That turns a `git pull` on a deployment
+    # predating SASBench into a total outage with no UI left to explain it.
+    #
+    # With the profile, a plain `up -d` skips this service and the rest of the
+    # stack comes up normally; the NMS then detects the missing checkout and
+    # tells the operator what to do (module-fixall-usecase.ts's sasbench
+    # entry). Set COMPOSE_PROFILES=sas in .env to run it — .env.example ships
+    # that way, so a fresh install gets the SAS with no extra step, while an
+    # existing .env without the line is protected by default.
+    #
+    # Naming a service explicitly auto-enables its profile, so the NMS's own
+    # update flow (`docker compose build sasbench` / `up -d sasbench` in
+    # sas-controller.ts) keeps working whether or not the profile is active.
+    profiles: ["sas"]
     build:
       context: ${SASBENCH_DIR:-/opt/sasbench}
     image: sasbench:latest

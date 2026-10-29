@@ -13,10 +13,17 @@ implements a SAS; [SASBench](https://github.com/paulmataruso/SASBench) does, as
 its own repository and its own container. Three things have to happen before the
 stack comes back up, and the first one will stop it dead if it is skipped:
 
-1. **Clone SASBench to `SASBENCH_DIR`** (default `/opt/sasbench`). It is the
-   `sasbench` service's Docker build context, and Compose resolves build
-   contexts before starting anything — a missing directory fails the build and
-   with it the whole stack, not just the SAS.
+1. **Clone SASBench to `SASBENCH_DIR`** (default `/opt/sasbench`) and add
+   `COMPOSE_PROFILES=sas` to `.env`. The service is behind a Compose profile
+   precisely so that this is not a trap: Compose resolves every build context
+   before it starts anything, so without the profile a missing checkout fails
+   the build and **not one service starts**, including the containers with
+   nothing to do with the SAS. With it, a plain `up -d` skips the SAS, the rest
+   of the stack comes up, and the NMS detects the missing checkout and shows
+   you the commands in the same card it uses for anything needing
+   reconfiguration. An existing `.env` has no `COMPOSE_PROFILES` line, so an
+   upgrade is protected by default; `.env.example` ships it set, so a fresh
+   install needs nothing extra.
 2. **`docker compose up -d --force-recreate nginx`.** nginx used to terminate
    SAS TLS on 8443 and that vhost is now gone from the repo, but `nginx.conf` is
    a single-file bind mount, so the running container stays pinned to the
@@ -29,6 +36,11 @@ stack comes back up, and the first one will stop it dead if it is skipped:
    nginx `:8888/sas/` path gets a 404 and silently never registers, holds a
    grant or heartbeats.
 
+The NMS no longer relies on you reading any of this: a missing or
+non-git `SASBENCH_DIR` is reported in the reconfigure card with the exact
+commands to clear it, and the SAS page's own Update button refuses rather than
+guessing when the checkout is dirty, ahead of upstream, or unreachable.
+
 nginx must not be placed in front of any of those three ports: SASBench reads
 each radio's source address straight off the socket and has no
 `X-Forwarded-For` handling, so proxying it makes every radio look like it came
@@ -40,6 +52,52 @@ module's `sas_*` MongoDB collections are left behind inert. Full step-by-step,
 including the inode check that proves nginx actually swapped configs:
 INSTALL.md's "Upgrading an Existing Deployment".
 
+
+### Fixed — setting `SAS_ADMIN_PASSWORD` would have broken the SAS page
+
+`docker-compose.yml` passed the `backend` service no SAS variable at all, so
+the backend fell back to its own defaults of `admin`/`admin` against
+`127.0.0.1:8094`. Those defaults happen to match a stock SASBench, which is why
+nothing looked wrong — but an operator who followed `.env.example` and set
+`SAS_ADMIN_PASSWORD` would have changed SASBench's admin account while leaving
+the NMS on the default. Every SAS read then returns 401 and the SAS page and
+dashboard card report the SAS as unreachable while it is in fact running
+perfectly, which is about the worst possible failure shape: a correct
+configuration change silently breaking the monitoring of a healthy subsystem.
+`SASBENCH_UI_PORT`, `SASBENCH_USER`, `SAS_ADMIN_PASSWORD` and `SASBENCH_DIR`
+are now passed through.
+
+### Added — the NMS tells you when SASBench is not installed
+
+A missing or non-git `SASBENCH_DIR` now appears in the same card the NMS
+already uses for anything needing reconfiguration, with the exact commands to
+clear it, rather than only in a release note. It is deliberately not
+auto-fixable: cloning a third-party repository and building a container image
+from it is an operator decision, and the clone can need credentials or a proxy
+that only they have. A healthy checkout reports nothing.
+
+This pairs with putting the `sasbench` service behind a Compose profile. The
+two together are what make a `git pull` onto a pre-SASBench deployment safe:
+the stack comes up without the SAS instead of failing to come up at all, and
+then says what is missing.
+
+Also in the reconfigure card: a module whose software is absent now says so,
+instead of "Install out of date" — which sent operators looking for an update
+that did not apply.
+
+### Added — regression coverage for the SAS proxy
+
+The old suite tested 36 routes of the home-grown SAS and was deleted with it,
+leaving the replacement untested. The new one covers the five reads and the
+update-tracking route, and pins three things that would otherwise regress
+quietly: that `/status` degrades rather than erroring when SASBench is down
+(the dashboard card depends on it), that occupancy stays the union of grants
+and never the sum of their widths, and that a plain `/version` read does not
+touch the git remote. It also asserts the NMS exposes **no** SAS-CBSD protocol
+endpoint, since radios must reach SASBench directly.
+
+`POST /api/sas/update` is excluded even under `--include-disruptive`: applying
+an update recreates the container, so every live radio misses a heartbeat.
 
 ### Added — Band occupancy on the SAS page, and fuller SAS cards
 

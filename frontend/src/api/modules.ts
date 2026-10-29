@@ -5,7 +5,7 @@ const api = axios.create({ baseURL: '/api/modules', withCredentials: true });
 // Mirrors backend/src/application/use-cases/module-fixall-usecase.ts's exported
 // types — duplicated here rather than shared, matching this codebase's existing
 // frontend/backend type-duplication convention (no shared-types package exists).
-export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp';
+export type ModuleId = 'kamailio' | 'ims' | 'mms' | 'vectorcoreSmsc' | 'pstn' | 'vowifi' | 'secgw' | 'twamp' | 'sasbench';
 
 export interface ModuleStaleStatus {
   moduleId: ModuleId;
@@ -16,6 +16,10 @@ export interface ModuleStaleStatus {
   configuredWithVersion?: string | number;
   canAutoFix: boolean;
   blockedReason?: string;
+  /** Commands the operator runs themselves, for a module Fix All cannot touch. */
+  fixCommands?: string[];
+  /** Replaces the "Install out of date" badge — absent software is not stale. */
+  installBadgeLabel?: string;
 }
 
 export interface FixAllModuleResult {

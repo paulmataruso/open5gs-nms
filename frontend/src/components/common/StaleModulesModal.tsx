@@ -32,6 +32,10 @@ const FEATURE_FLAG_BY_MODULE: Record<ModuleId, boolean> = {
   vowifi: FEATURES.vowifi,
   secgw: FEATURES.secgw,
   twamp: FEATURES.twamp,
+  // The CBRS SAS has no ENABLE_* flag — it is not an optional module, so this
+  // is always eligible to show. It only ever appears when SASBENCH_DIR is
+  // genuinely missing or is not a git checkout.
+  sasbench: true,
 };
 
 const POLL_MS = 1500;
@@ -44,11 +48,21 @@ function ModuleRow({ m }: { m: ModuleStaleStatus }) {
         {m.blockedReason && (
           <div className="text-xs text-amber-400 mt-0.5">{m.blockedReason}</div>
         )}
+        {/* Commands for a module Fix All cannot clear. Rendered as code rather
+            than folded into the prose above so they can be read and copied
+            without picking them out of a sentence. */}
+        {m.fixCommands && m.fixCommands.length > 0 && (
+          <div className="nms-table-scroll mt-1.5">
+            <pre className="text-[11px] font-mono text-nms-text bg-nms-surface-2 border border-nms-border rounded px-2 py-1.5 whitespace-pre">
+              {m.fixCommands.join('\n')}
+            </pre>
+          </div>
+        )}
       </div>
       <div className="flex gap-1.5 shrink-0">
         {m.installStale && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            Install out of date
+            {m.installBadgeLabel ?? 'Install out of date'}
           </span>
         )}
         {m.configStale && (

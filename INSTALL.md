@@ -301,10 +301,15 @@ itself from the SAS page — pull, rebuild the image, recreate the container. A
 directory with no git history still runs, but the SAS page reports that it
 cannot be updated from here.
 
-Set `SASBENCH_DIR` in `.env` if you put it somewhere else. SASBench binds the
-SAS-CBSD protocol ports itself — `SAS_HTTP_PORT` (8899) and `SAS_HTTPS_PORT`
-(8443) — plus its own admin UI and REST API on `SASBENCH_UI_PORT` (8094).
-nginx is not involved in the SAS path at all.
+Set `SASBENCH_DIR` in `.env` if you put it somewhere else, and leave
+`COMPOSE_PROFILES=sas` as `.env.example` ships it — that profile is what runs
+the service, and the SAS does not start without it. (It is profiled so that a
+missing checkout skips the SAS instead of failing the whole stack's build; the
+NMS then says so on its own next start.)
+
+SASBench binds the SAS-CBSD protocol ports itself — `SAS_HTTP_PORT` (8899) and
+`SAS_HTTPS_PORT` (8443) — plus its own admin UI and REST API on
+`SASBENCH_UI_PORT` (8094). nginx is not involved in the SAS path at all.
 
 Point each radio's SAS server URL at one of those two ports. SASBench builds
 its own PKI on first start; a radio that verifies the SAS server certificate
@@ -480,21 +485,40 @@ Pulling this release onto a host that ran the NMS's own built-in SAS module is
 which is a separate repository and a separate container. Do these three steps
 before `docker compose up`, in this order.
 
-### 1. Clone SASBench first — the stack will not start without it
+### 1. Clone SASBench and turn its Compose profile on
 
 The `sasbench` service's Docker build context is `SASBENCH_DIR`
-(default `/opt/sasbench`). Compose resolves every build context before it starts
-anything, so if that directory does not exist the build fails and **the whole
-stack fails to come up** — not just the SAS. Clone it before bringing the stack
-back:
+(default `/opt/sasbench`) — a checkout outside this repository, because
+SASBench is a separate, proprietary project and this one is AGPL-3.0.
+
+**The stack is safe to bring up before you do this.** The service sits behind a
+Compose profile, so a plain `docker compose up -d` skips it and everything else
+starts normally; the NMS then detects the missing checkout on its next load and
+tells you, in the same card it uses for anything needing reconfiguration. That
+guard exists because Compose resolves every build context *before* it starts
+anything: without the profile, a missing directory fails the build and not one
+service starts, including the containers that have nothing to do with the SAS.
+
+To actually run the SAS:
 
 ```bash
 sudo git clone https://github.com/paulmataruso/SASBench.git /opt/sasbench
+echo "COMPOSE_PROFILES=sas" >> .env
+docker compose up -d sasbench
 ```
 
 Use `git clone`, not an archive: the NMS reads this checkout's git state to
 report how far behind upstream it is, and the SAS page's Update button applies
 the update from it.
+
+`COMPOSE_PROFILES=sas` is what activates the service. It ships set in
+`.env.example`, so a fresh install needs nothing extra — but an existing `.env`
+predates the line, which is exactly what keeps an upgrade from failing. Without
+it the SAS stays off and the NMS keeps reminding you.
+
+Naming a service explicitly auto-enables its profile, so
+`docker compose build sasbench` and `docker compose up -d sasbench` work either
+way — including the SAS page's own Update button, which runs exactly those.
 
 ### 2. Recreate nginx so it releases port 8443
 
