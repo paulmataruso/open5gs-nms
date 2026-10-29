@@ -1,7 +1,7 @@
 // General 3GPP TS 36.101 Table 5.7.3-1 EARFCN<->frequency relationship,
 // seeded only with the bands already confirmed live elsewhere in this repo
 // (frontend/src/components/autoconfig/BaicellsAcsTab.tsx lines 212-292, and
-// a 4th private duplicate in backend/src/domain/sas/sas-service.ts).
+// a 4th private duplicate in the NMS's own former SAS service, now deleted).
 // Deliberately does NOT ship additional bands (1, 2, 3, 4, 5, 7, ...) from
 // memory — those must be transcribed directly from the real 3GPP spec text
 // before being added as data, not guessed, per this project's own

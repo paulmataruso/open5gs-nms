@@ -163,28 +163,6 @@ const RECHECKS = {
     }
     return findings;
   },
-  async sas(client, results) {
-    const findings = [];
-    const lifecycleCase = results.find(r => r.name.startsWith('CBSD protocol lifecycle'));
-    if (lifecycleCase?.status === 'pass' && lifecycleCase.evidence?.cbsdId) {
-      const res = await client.get('/api/sas/admin/cbsds');
-      if (res.data?.cbsds?.some(c => c.cbsdId === lifecycleCase.evidence.cbsdId)) {
-        findings.push(`SAS lifecycle test reported pass (deleted CBSD ${lifecycleCase.evidence.cbsdId}), but it still exists in the live list.`);
-      }
-      const policyRes = await client.get('/api/sas/admin/policies/cbsds');
-      if (policyRes.data?.policies?.some(p => p._id === '#2345CBSDTEST01:AH193701274.NR')) {
-        findings.push('SAS lifecycle test reported pass, but the test CBSD\'s band policy override is still present.');
-      }
-    }
-    const pauseCase = results.find(r => r.name.includes('/admin/pause'));
-    if (pauseCase?.status === 'pass') {
-      const statusRes = await client.get('/api/sas/admin/status');
-      if (statusRes.data?.paused !== false) {
-        findings.push(`pause/resume test reported pass, but SAS is currently paused=${statusRes.data?.paused} — real radios may be unable to maintain their grants right now.`);
-      }
-    }
-    return findings;
-  },
   async ['apn-profile'](client, results) {
     const findings = [];
     const lifecycleCase = results.find(r => r.name.startsWith('full profile lifecycle'));

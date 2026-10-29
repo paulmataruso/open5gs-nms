@@ -694,7 +694,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     per-file helpers — that's exactly the pattern that hid this bug for as
     long as it went unnoticed.
 
-## Feature inventory (as of v2.0-beta_0.64, 2026-09-30)
+## Feature inventory (as of v2.0-beta_0.71, 2026-10-14)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
@@ -714,11 +714,11 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
 | FRR source build + crash-guard patch | stable | `frr-source-build.ts`, `frr-source-build-controller.ts` | `FrrSourceBuildTab.tsx` |
 | Sercomm NR provisioning | stable | `sercomm-nr-controller.ts` | `SercommNRTab.tsx` |
 | UE Validation (UERANSIM 5G + srsRAN 4G) | stable | `validation-controller.ts` | `ValidationPage.tsx` |
-| CBRS SAS server | stable — has a real, deliberately-scoped WINNF-TS-0016 Category B `installationParam` validation gap: `registration()` hard-exempts exactly ONE named radio identity (`fccId=#2345CBSDTEST01`/`serial=AH193701274.NR`, a `CATEGORY_B_TEST_EXEMPT_*` constant pair) from the missing-lat/long/height/heightType rejection, per explicit user instruction on this being a test harness — every other Category B registration still gets the real rejection. Don't widen this without the same explicit direction. See memory: `sas_pki_and_nokia_grant_investigation` for the full arc — that same radio (Nokia AirScale 5G) still, as of 2026-09-28, has never sent a single `/grant` despite this and every other fix tried; unresolved. | `sas-service.ts`, `sas-controller.ts` | `SASPage.tsx` |
+| CBRS SAS (SASBench) | **external** — the NMS does not implement a SAS. SASBench runs as its own container (`sasbench` in docker-compose) and binds the SAS-CBSD protocol ports DIRECTLY: `SAS_HTTP_PORT` (8899) and `SAS_HTTPS_PORT` (8443), with its admin UI + REST API on `SASBENCH_UI_PORT` (8094 — not SASBench's own default of 8080, which PyHSS already holds). **nginx is deliberately NOT in the SAS path** — no `location /sas/`, no TLS termination, no proxy. Do not re-add one: it would hide every radio's real source address from SASBench, which reads `req.socket.remoteAddress` and has no `X-Forwarded-For` handling. SASBench's build context lives OUTSIDE this repo (`SASBENCH_DIR`, default `/opt/sasbench`) and must stay there — it is proprietary and this project is AGPL-3.0, so its source must never be vendored in. `SAS_PROFILE` must stay `lab`: `winnforum` sets `tlsClientAuth=require` (no radio here has a SASBench-issued client cert) and `acceptVersionlessPaths=false` (two Baicells send a malformed `/v1.2//heartbeat` double-slash path that only the versionless fallback accepts) — either drops live radios instantly. SASBench matches the protocol path **unanchored** (`/\/(v\d+\.\d+)\/([A-Za-z]+)\/?$/`), so a radio URL carrying a `/sas/` prefix works unchanged. The NMS reads only SASBench's REST API (`/api/v1`, HTTP Basic server-side) to render a read-only status page and the dashboard card. **The one thing the NMS owns is SASBench's own software**: `SASBENCH_DIR` must be a real `git clone` of `https://github.com/paulmataruso/SASBench.git`, because `GET /api/sas/version` reads that checkout's git state to report how far behind upstream it is, and `POST /api/sas/update` applies it (`git merge --ff-only` -> `docker compose build sasbench` -> `up -d`, streamed, admin-only, then waits on SASBench's own `/health` before calling it done). A `SASBENCH_DIR` with no git history reports `managed: false` — which the UI must show as its own state, never as "up to date". Three guards are deliberate and should not be removed: `/version` only contacts the git remote when asked or when the cached refs are over 30 min old (the SAS page polls every 15 s, so an unconditional fetch would hammer GitHub); the update refuses outright on a dirty tree or local commits rather than discarding them; and it is never automatic, because recreating the container drops the SAS listeners and every live radio misses a heartbeat. `/api/sas/update` is in nginx's streaming-timeout regex location (pattern #5) — a real build runs well past the generic 120 s `/api/` read timeout. **Band occupancy is derived by the NMS, deliberately NOT taken from SASBench's `authorizedMHz`**: that field sums every live grant's width, so on GAA — where the SAS authorizes overlapping grants by design, because nothing is protected — it routinely exceeds the band itself (measured live 2026-10-28: 9 grants totalling **200 MHz** inside a **150 MHz** band). `occupancyOf()` in `sas-controller.ts` therefore merges the real grant ranges and reports the **union** (94 MHz distinct, 63%), the **peak overlap depth** (4 grants on the busiest frequency — the reading that actually predicts co-channel contention) and the **largest free run** (30 MHz). Do not "fix" the page to show `authorizedMHz` as occupancy; it answers "how much did we hand out", not "how much of the band is in use". Both numbers are shown, labelled apart. The band plan on the SAS page is a recreation of SASBench's own, fed from the same `GET /api/v1/spectrum` through `GET /api/sas/spectrum`, so the two views cannot disagree about one band. Its per-radio colours are literal hex — a deliberate, commented exception to the no-hardcoded-hex rule below, because a radio must keep its colour when the operator switches theme or the chart and its legend stop agreeing; all five themes are dark, so one palette works everywhere (same reasoning as `SubscriberPage`'s `GROUP_COLORS`). | `sas-controller.ts` (a ~100-line read-only proxy) | `SASPage.tsx` |
 | GenieACS radio provisioning | stable | `genieacs-controller.ts` | `AutoConfigPage.tsx`, `FemtoConfigTab.tsx` |
 | Traffic History (aggregate + per-subscriber) | stable | `subscriber-ip-accounting.ts`, `prometheus-metrics.ts`, `traffic-history-controller.ts` | `TrafficHistoryPage.tsx` |
 | Security Gateway (SecGW) | alpha — real IPsec tunnels confirmed live for both radio vendors simultaneously: 3 Baicells eNBs (IKEv2 Configuration Payload/virtual-IP based) and 1 Nokia AirScale (static tunnel endpoints + traffic selectors, no CP) — real S1AP/GTP-U traffic verified flowing through the tunnel via packet capture (ESP wrapper + decrypted SCTP heartbeat to MME, 2026-08-14). See architectural pattern #15 for why Baicells and Nokia are configured completely differently. `ENABLE_SECGW_MODULE` defaults **disabled** (opt-in). | `secgw-controller.ts`, `secgw-build.ts` | `SecGWPage.tsx` |
-| RF Planning | **beta — rewritten 2026-10-13 to A.T.O.M feature parity, in our own design.** Workflow is deliberately one line: **drop radios on the map -> enter parameters -> Simulate**; everything else is progressive disclosure. The headline addition is **deterministic segmented ray tracing** (`ray-trace.ts`): rays are cast across the sector beam and marched in 25 m steps, charging per-wall penetration loss at every building footprint crossing, emitting colour-coded segments that carry their own evidence (wall loss, LOS state, obstructing building id) so the map answers *why* a street is dark rather than only *that* it is. Ten capabilities were added to the pre-existing ~4,100-LOC engine (which already had more propagation models than A.T.O.M: FSPL, Hata, Walfisch-Ikegami, close-in/UMi, log-distance, ITM/Longley-Rice, diffraction, Fresnel, earth curvature, terrain/landcover): **`uma-model.ts`** (3GPP TR 38.901 UMa, the model A.T.O.M used), **`building-index.ts`** (grid-indexed footprints, segment intersection, and height-aware LOS/NLOS that reports `unknown` when blockage rests only on an assumed height), **`radio-quality.ts`** (RSRP/SINR/RSRQ/RSSI), **`building-entry.ts`** (TR 38.901 O2I), **`coverage-gap.ts`**, **`network-optimize.ts`** (demand-weighted azimuth coordinate descent + Pareto frontier + marginal-gain site ranking), **`measurement-validation.ts`** (MAE/RMSE/bias on **spatially blocked** folds, never a random split, plus a holdout-checked calibration offset), and **`osm-buildings.ts`** (Overpass footprint import with demand scoring). **Two corrections to what A.T.O.M did, both load-bearing**: its NR resource-block table hardcoded 120 kHz SCS (FR2/mmWave), which is the wrong radio for CBRS n48 — ours takes SCS explicitly and defaults 5G to 30 kHz (51 RB at 20 MHz, not 66 at 100 MHz, a ~6 dB RSSI error); and its demand table scored OSM `building=yes` at zero, which is the most common tag in suburban mapping and made demand-driven optimisation inert on real data (measured: a sector facing 10 real buildings reported totalDemand 0). Model reference, including every formula and the parity checklist: **`docs/rf-planning-model-reference.md`**. Uses raw `leaflet` only — **never add `react-leaflet`**, which is Hippocratic-2.1 and conflicts with this project's AGPL-3.0 licence. **Extended 2026-10-13 (same day) with the heatmap, multi-sector sites, model selection, a context inspector and a PDF report.** (1) **Coverage heatmap** (`coverage-heatmap.ts`) is the continuous best-server raster the ray tracer deliberately is not — the raster answers "how good is it here", the rays answer "why", and both share `receivedPowerAtPoint()` so they cannot disagree about identical geometry. The grid is row-major with **row 0 at the NORTH edge** so the client blits it straight into an `ImageData`; there is a test asserting that ordering using the antenna pattern as a compass, because a vertically mirrored raster is a completely plausible-looking bug. Rendering interpolates bilinearly between real samples but **never across a `null`**. (2) **Standard 3-sector and 4-sector site placement**: sectors sharing a `siteId` are one mast, so moving the site moves every panel, and the inspector splits **site-level** fields (position, height, channel, technology) from **sector-level** ones (azimuth, beamwidth, tilt, power). Getting that boundary wrong is what makes a sectored editor painful — per-sector height silently drifts, per-site azimuth makes a sectored site impossible. Defaults are what actually gets ordered: 3×65° on 120° spacing, 4×45° on 90°. (3) **Context inspector** — selecting a site marker, a sector wedge or a building footprint switches the right-hand panel to that thing. It is docked beside the map, never floating over it, so the geometry stays visible while being edited. The building context is also the only home for the O2I entry-loss calculation, since entry loss only means anything against a specific building. (4) **Model selection** (`propagation-select.ts`) is the single synchronous dispatcher for both the rays and the raster; `site-signal.ts`'s async `computeBasePathLossDb()` delegates to it and keeps only its ITM branch, so the dispatch stays single-sourced. ITM is deliberately not offered (profile-shaped, meaningless without per-point terrain). **The load-bearing fact: at CBRS 3.6 GHz, Hata (0.15–1.5 GHz), COST-231 (1.5–2.0) and Walfisch-Ikegami (0.8–2.0) are all out of band, and they HARD-REJECT out-of-range inputs rather than extrapolating** — so selecting one used to mean a technically-successful run with an empty map and no stated reason. `modelApplicability()` now gates the run up front, quotes the real published range, and names the models that do cover the scenario. A radius below a model's minimum is blocking; above its maximum is only a warning. Suggestions are computed by a separate non-recursive helper — recursing into `modelApplicability()` blows the stack as soon as two models are mutually inapplicable, which is the normal case here. (5) **PDF report** (`rf-simulation-report.ts`, `POST /report.pdf`) renders the current workspace including the coverage raster, which the CLIENT supplies as a PNG — the older projects report's own header comment flags its missing map as a known fidelity gap, and this closes it without adding native `canvas` or a headless browser to the image. Two pdfkit traps are handled explicitly: a positional `doc.text(str, x, y)` leaves the text cursor parked in that column, so every block writer re-asserts the margin (otherwise later prose renders inside a ~100 pt gutter on the right), and each table cell is height-clamped so an over-long value ellipsises instead of wrapping the row. Legacy `/link-budget`, `/point-analysis`, `/coverage-grid`, `/interference-grid` and the projects/reports store are retained and still regression-tested; saved projects load into the new workspace via `ProjectBar.tsx` as single-sector sites (the stored schema has no multi-sector concept, and guessing which saved sites share a mast from their coordinates would let one radio's edits silently move another). `ENABLE_RF_PLANNING_MODULE` gates visibility. | `rf-planning-controller.ts`, `rf-simulation-controller.ts`, `domain/rf/*` | `RfPlanningPage.tsx`, `components/rfplanning/{PlanningMap,RadioEditor,ProjectBar}.tsx` |
+| RF Planning | **beta — rewritten 2026-10-13 to A.T.O.M feature parity, in our own design.** Workflow is deliberately one line: **drop radios on the map -> enter parameters -> Simulate**; everything else is progressive disclosure. The headline addition is **deterministic segmented ray tracing** (`ray-trace.ts`): rays are cast across the sector beam and marched in 25 m steps, charging per-wall penetration loss at every building footprint crossing, emitting colour-coded segments that carry their own evidence (wall loss, LOS state, obstructing building id) so the map answers *why* a street is dark rather than only *that* it is. Ten capabilities were added to the pre-existing ~4,100-LOC engine (which already had more propagation models than A.T.O.M: FSPL, Hata, Walfisch-Ikegami, close-in/UMi, log-distance, ITM/Longley-Rice, diffraction, Fresnel, earth curvature, terrain/landcover): **`uma-model.ts`** (3GPP TR 38.901 UMa, the model A.T.O.M used), **`building-index.ts`** (grid-indexed footprints, segment intersection, and height-aware LOS/NLOS that reports `unknown` when blockage rests only on an assumed height), **`radio-quality.ts`** (RSRP/SINR/RSRQ/RSSI), **`building-entry.ts`** (TR 38.901 O2I), **`coverage-gap.ts`**, **`network-optimize.ts`** (demand-weighted azimuth coordinate descent + Pareto frontier + marginal-gain site ranking), **`measurement-validation.ts`** (MAE/RMSE/bias on **spatially blocked** folds, never a random split, plus a holdout-checked calibration offset), and **`osm-buildings.ts`** (Overpass footprint import with demand scoring). **Two corrections to what A.T.O.M did, both load-bearing**: its NR resource-block table hardcoded 120 kHz SCS (FR2/mmWave), which is the wrong radio for CBRS n48 — ours takes SCS explicitly and defaults 5G to 30 kHz (51 RB at 20 MHz, not 66 at 100 MHz, a ~6 dB RSSI error); and its demand table scored OSM `building=yes` at zero, which is the most common tag in suburban mapping and made demand-driven optimisation inert on real data (measured: a sector facing 10 real buildings reported totalDemand 0). Model reference, including every formula and the parity checklist: **`docs/rf-planning-model-reference.md`**. Uses raw `leaflet` only — **never add `react-leaflet`**, which is Hippocratic-2.1 and conflicts with this project's AGPL-3.0 licence. **Extended 2026-10-13 (same day) with the heatmap, multi-sector sites, model selection, a context inspector and a PDF report.** (1) **Coverage heatmap** (`coverage-heatmap.ts`) is the continuous best-server raster the ray tracer deliberately is not — the raster answers "how good is it here", the rays answer "why", and both share `receivedPowerAtPoint()` so they cannot disagree about identical geometry. The grid is row-major with **row 0 at the NORTH edge** so the client blits it straight into an `ImageData`; there is a test asserting that ordering using the antenna pattern as a compass, because a vertically mirrored raster is a completely plausible-looking bug. Rendering interpolates bilinearly between real samples but **never across a `null`**. (2) **Standard 3-sector and 4-sector site placement**: sectors sharing a `siteId` are one mast, so moving the site moves every panel, and the inspector splits **site-level** fields (position, height, channel, technology) from **sector-level** ones (azimuth, beamwidth, tilt, power). Getting that boundary wrong is what makes a sectored editor painful — per-sector height silently drifts, per-site azimuth makes a sectored site impossible. Defaults are what actually gets ordered: 3×65° on 120° spacing, 4×45° on 90°. (3) **Context inspector** — selecting a site marker, a sector wedge or a building footprint switches the right-hand panel to that thing. It is docked beside the map, never floating over it, so the geometry stays visible while being edited. The building context is also the only home for the O2I entry-loss calculation, since entry loss only means anything against a specific building. (4) **Model selection** (`propagation-select.ts`) is the single synchronous dispatcher for both the rays and the raster; `site-signal.ts`'s async `computeBasePathLossDb()` delegates to it and keeps only its ITM branch, so the dispatch stays single-sourced. ITM is deliberately not offered (profile-shaped, meaningless without per-point terrain). **The load-bearing fact: at CBRS 3.6 GHz, Hata (0.15–1.5 GHz), COST-231 (1.5–2.0) and Walfisch-Ikegami (0.8–2.0) are all out of band, and they HARD-REJECT out-of-range inputs rather than extrapolating** — so selecting one used to mean a technically-successful run with an empty map and no stated reason. `modelApplicability()` now gates the run up front, quotes the real published range, and names the models that do cover the scenario. A radius below a model's minimum is blocking; above its maximum is only a warning. Suggestions are computed by a separate non-recursive helper — recursing into `modelApplicability()` blows the stack as soon as two models are mutually inapplicable, which is the normal case here. (5) **PDF report** (`rf-simulation-report.ts`, `POST /report.pdf`) renders the current workspace including the coverage raster, which the CLIENT supplies as a PNG — the older projects report's own header comment flags its missing map as a known fidelity gap, and this closes it without adding native `canvas` or a headless browser to the image. Two pdfkit traps are handled explicitly: a positional `doc.text(str, x, y)` leaves the text cursor parked in that column, so every block writer re-asserts the margin (otherwise later prose renders inside a ~100 pt gutter on the right), and each table cell is height-clamped so an over-long value ellipsises instead of wrapping the row. Legacy `/link-budget`, `/point-analysis`, `/coverage-grid`, `/interference-grid` and the projects/reports store are retained and still regression-tested; saved projects load into the new workspace via `ProjectBar.tsx` as single-sector sites (the stored schema has no multi-sector concept, and guessing which saved sites share a mast from their coordinates would let one radio's edits silently move another). `ENABLE_RF_PLANNING_MODULE` gates visibility. **Extended 2026-10-14 with a served antenna-model catalogue, plus four user-reported presentation fixes.** (6) **Antenna selection** (`antenna-catalog.ts`, `GET /antennas`) — a sector's pattern is picked from a real orderable panel (Baicells Nova430i, Alpha Wireless AW3161, four KP Performance panels, CommScope HBX-6516DS-VTM, plus three explicitly-labelled Generic patterns), each carrying the URL its figures were read from, with a Custom option taking a full spec sheet by hand. **Served rather than bundled in the frontend deliberately**: the numbers the inspector shows, the numbers the engine simulates with and the numbers the tests assert on then cannot drift apart — a duplicated list diverges on the first edit and nothing fails. Three rules in there are load-bearing and should not be undone: selecting a panel applies its **whole** pattern at once, because gain and the two beamwidths are tied by the aperture (`G ≈ 32400/(H·V)`) and mixing one panel's beamwidth with an unrelated gain describes an antenna nobody makes; a vertical beamwidth the vendor does not publish is DERIVED from that relation and **flagged `verticalDerived`**, never shown as measured (it sets how fast the pattern falls away below the horizon, so a wrong value quietly changes every close-in result while the far field still looks right); and hand-editing any pattern field drops the sector to Custom, so the inspector never names a specific panel while describing a different pattern. A test checks every *published* vertical beamwidth against its own aperture, which is what catches a transcription slip (6.9 typed as 69) that is otherwise invisible in the UI. **Panels whose numbers could not be sourced are deliberately absent** — don't add one without a link. Electrical and mechanical downtilt are separate fields (spec sheet vs install decision) summed in `profileFor()`, since the engine wants total tilt. (7) **Azimuth sweeps both ways.** The slider ran 0–359, so a sector pointing north sat on its endpoint and could only be rotated clockwise. Now signed −180…+180 either side of north, with a normalising typed field and wrapping rotate controls. (8) **Sector wedges no longer imply holes the engine does not have.** Drawing only the 3 dB wedge left 55° of apparent emptiness between the sectors of a standard 3×65° site on 120° spacing. **The engine never had a gap there**: at the 60° crossover each neighbour is 10.2 dB down and still serving, and the −10 dB width of a 65° panel is `2·65·√(10/12) ≈ 119°` — which is *why* that spacing is paired with that panel. The map now also draws the −10 dB contour (`patternWidthDeg()`, which inverts the engine's own roll-off so it can never imply a shape the simulation does not produce), non-interactive because it overlaps its neighbours by design and would otherwise make sector selection ambiguous at the seam. (9) **The heatmap is coloured continuously, not in five steps.** Values were already interpolated bilinearly between real samples; the hard edges at −80/−90/−100/−110 came purely from snapping that smooth number to a band colour, drawing contour lines propagation does not have. Blending happens in **Oklab** — mixing this palette channel-wise in sRGB runs green→amber through khaki and red→purple through brown. Bands stay selectable, since they genuinely read faster for one pass/fail boundary. | `rf-planning-controller.ts`, `rf-simulation-controller.ts`, `domain/rf/*` | `RfPlanningPage.tsx`, `components/rfplanning/{PlanningMap,RadioEditor,SiteEditor,BuildingInspector,ModelPicker,ProjectBar,heatmapRaster}.tsx` |
 | UE Signal Monitoring | **new, community-contributed** (PR #32) — per-UE RSRP/RSRQ/SINR/BLER/MCS/CQI/throughput correlated with subscriber identity (IMSI/ICCID/MSISDN), 7-day SQLite history, AES-256-GCM encrypted radio credentials, admin-triggered downlink wake for idle UEs. **Baicells-native connector only** — other vendors need the generic JSON connector, which requires the radio to already expose its own metrics in that shape, so it is not a drop-in for every vendor. `ENABLE_UE_SIGNAL_MODULE` defaults **enabled** (set to `false` to hide it — this is a visibility gate, not an install/uninstall lifecycle like most other opt-in modules). | `radio-signal-controller.ts` | `RadioSignalPage.tsx` |
 | 2G GSM (Osmocom) | **alpha** — real GSM radio access (osmo-bsc/osmo-bts) layered on the osmo-hlr/osmo-msc/osmo-stp that SMS-over-SGs already runs, on real nanoBTS hardware confirmed on-air. CS attach/ciphering, GPRS/EDGE data, and 2G↔4G SMS (via VectorCore SMSC, its own separate module) are **stable**. Real voice calling is **alpha**: osmo-msc's own built-in call handler can complete signaling (ring/answer) but never implements `MNCC_RTP_CREATE` (confirmed live 2026-09-13, upstream Osmocom limitation, not fixable here) — no audio ever flows in Internal mode. Real 2G↔2G audio needs External mode routed through **Asterisk-2G**, a second, fully isolated Asterisk instance (own config tree, own systemd unit, own loopback IP `127.0.1.7` — never touches the separate Asterisk instance PSTN Gateway owns) whose only job is looping a call back through osmo-sip-connector so the second phone gets paged. One button (GSM page's "2G Voice" tab, gated on `ENABLE_ASTERISK_2G_MODULE`, defaults **disabled**) installs, configures, wires the SIP tab's remote peer, and switches MNCC to External automatically. `ENABLE_GSM_MODULE` defaults **disabled** (opt-in) — real radio (and, for a real BTS, actual spectrum transmission) is a bigger blast radius than a broken lab feature. If a real call ever fails at TCH assignment (osmo-bsc logs "Assignment Failure"/"NACK on IPACC CRCX"), it is NOT necessarily a hardware issue — see architectural pattern #16's tail and memory `gsm_2g_osmocom_module_progress.md`: a real `codec-support`/AMR config mismatch caused exactly this, confirmed live 2026-09-15, and had been misdiagnosed as unfixable hardware the day before. | `gsm-controller.ts`, `asterisk-2g-controller.ts`, `osmo-sip-connector-build.ts` | `GsmPage.tsx` |
 | 3G UMTS (OsmoHNBGW) | **alpha** — Home NodeB Gateway bridging a 3G femtocell's Iuh interface to the existing osmo-msc (IuCS) and osmo-sgsn (IuPS) over the already-running osmo-stp. `osmo-hnbgw` isn't an apt package on this host — built from source, pinned to tag `1.3.0` (NOT the `1.9.0` every other daemon here uses — its own version numbering is independent, and `1.9.0` needs a newer `libosmocore` than this host has; confirmed live 2026-09-13 via a real scratch build). Adds a new `cs7`/IuPS point-code block into the 2G module's own `osmo-sgsn.cfg` via ownership-merge (never a blind overwrite — see `vty-config-ownership.ts`), and a third, dedicated OsmoMGW instance (own config/systemd unit/loopback `127.0.1.8`, reusing the already-installed `osmo-mgw` binary). `osmo-stp.cfg`/`osmo-msc.cfg` need **zero changes** — confirmed live from both HNBGW's and MSC's own logs (STP's existing dynamic-ASP-registration + MSC's existing SCCP link both already handle it). Subscriber credentials need no new provisioning either — reuses the 2G module's own `gsmEnabled` flag and its `auc_3g` MILENAGE row (confirmed via OsmoHLR's own manual: the same row serves both 2G and full UMTS AKA). A software test HNB, **OsmoHNodeB** (tag `0.1.0`, same source-build pattern, needs its own dedicated GTP-U bind `127.0.1.9` — its default collides fatally with Open5GS's own UPF), deployable from the module's own page, proved a full live HNBAP registration end-to-end before any real hardware was touched. Real hardware target: an ip.access nano3G — unlike 2G's OML, Iuh/HNBAP has no remote-provisioning push, so a real HNB self-registers once pointed at this gateway's IP on its own local config, rather than being discovered/pushed-to from this NMS. `ENABLE_HNBGW_MODULE` defaults **disabled** (opt-in). | `hnbgw-controller.ts`, `osmo-hnbgw-build.ts`, `osmo-hnodeb-build.ts` | `HnbPage.tsx`, RAN page's "3G UMTS" section |
@@ -749,37 +749,31 @@ Full detail on any of these: `docs/features.md`.
 - **SAS bands**: Baicells B48 CBRS (group `baicells`, 3550–3700 MHz, 20 MHz slots),
   Sercomm B48 CBRS (group `SC_Group`, 3616–3655 MHz). Sercomm FCC IDs start `P27-`.
 - **Backend port** 3001, **frontend** 8081 internally / nginx on 80 + 8888 externally,
-  **SAS HTTPS** 8443, **Sercomm factory-default ACS relay** 443 (DNS-hijack trick, needs
-  `acs.crt`/`acs.key` with `CN=acs.sc.sercomm.com` — see gotcha below).
+  **Sercomm factory-default ACS relay** 443 (DNS-hijack trick, needs `acs.crt`/`acs.key`
+  with `CN=acs.sc.sercomm.com` — see gotcha below).
+- **SAS ports belong to SASBench, not nginx**: 8899 SAS HTTP, 8443 SAS HTTPS/mTLS,
+  8094 its admin UI + REST API. All three are bound by the `sasbench` container
+  directly (`network_mode: host`). nginx serves no SAS path at all.
 - **Version**: `backend/package.json`/`frontend/package.json` version should match
   `CHANGELOG.md`'s top entry — keep them in sync when bumping.
 
 ## Known-fixed gotchas worth knowing about (so you don't reintroduce them)
 
-- **nginx needs two self-signed certs to start at all** (`nginx/setup-sas-cert.sh`,
-  run by the `cert-init` Docker service): the SAS cert pair and
-  `acs.crt`/`acs.key` (must be `CN=acs.sc.sercomm.com` — hardcoded in `nginx.conf`'s
-  `server_name`). Missing either one means nginx fails to start entirely (it loads
-  every `conf.d/` server block up front) — found on a genuinely fresh install where
-  only the `sas.crt` generator existed; `acs.crt` had only ever been created manually
-  on the original dev host and nobody noticed the script never made it.
-  **The SAS side is a real two-tier PKI now, not a single flat self-signed
-  cert** (changed live 2026-09-27): `sas.crt`/`sas.key`/`sas.pem` is a proper
-  root CA (`basicConstraints=CA:TRUE`) — this is what a radio's own "install
-  CBRS vendor chain" flow should be pointed at (downloadable at
-  `/sas-cert/sas.crt` or `.pem`, same bytes, two extensions since some
-  radios' upload UIs validate on extension). `sas-leaf.crt`/`sas-leaf.key`
-  is the actual TLS server identity nginx presents (signed BY that root,
-  not self-signed); `sas-fullchain.crt` (leaf+root concatenated) is what
-  `nginx.conf`'s `ssl_certificate` directive actually references. Root
-  cause: Nokia AirScale's own CBRS Cert Management rejected the old flat
-  self-signed leaf outright ("Invalid trust chain - intermediate CA or root
-  CA of EE/RA is missing") since it had no `CA:TRUE` marker for firmware to
-  recognize as a real trust anchor — confirmed live, and confirmed the
-  rebuild didn't break already-connected radios (Baicells/Sercomm kept
-  heartbeating successfully through the nginx restart that deployed it).
-  If you ever touch these files again: `sas.crt` is the root now, not a
-  leaf — don't hand it to nginx's own `ssl_certificate` directive directly.
+- **nginx needs one self-signed cert to start at all** (`nginx/setup-nginx-certs.sh`,
+  run by the `cert-init` Docker service): `acs.crt`/`acs.key`, which must be
+  `CN=acs.sc.sercomm.com` (hardcoded in `nginx.conf`'s `server_name`). Missing
+  it means nginx fails to start entirely — it loads every `conf.d/` server
+  block up front.
+  **The SAS half of this is gone as of 2026-10-27.** The script used to also
+  build a two-tier SAS PKI (`sas.crt` root CA + `sas-leaf.*` + `sas-fullchain.crt`)
+  for an nginx `listen 8443` vhost that terminated TLS for the SAS and served
+  the root CA at `/sas-cert/`. That whole vhost was deleted when the home-grown
+  SAS module was replaced by SASBench, which binds 8443 itself and builds and
+  manages its own PKI inside its `sas-data` volume. nginx now holds no SAS
+  certificate at all. A radio that needs a trust anchor gets it from SASBench
+  (`GET /api/v1/trust-bundle`, or its Certificates page) — **not** from
+  `/sas-cert/`, which no longer exists. Leftover `sas*.crt`/`sas*.key` files in
+  `nginx/certs/` are dead and referenced by nothing.
 - **`.gitignore` must exclude runtime data**: `mongo_docker/`, `hlr.db*`, `sms.db`,
   `backend/radio-backups/` — these contain real subscriber keys/PII and are NOT
   meant to be committed. Already fixed once (2026-07-16) after nearly being swept
@@ -1067,6 +1061,45 @@ Full detail on any of these: `docs/features.md`.
   Kamailio's preprocessor (verified against the real 6.0.8 binary), which
   is what lets the template choose a `trace_on` value without the
   generated include having to supply one.
+  **Correction 2026-10-19 — tracing now defaults ON, and the reason it did
+  not is a cautionary tale about a stale comment outliving the thing it
+  described.** `configureIms()` had `let sipTracingEnabled = false` behind a
+  comment asserting that "enabling it costs a restart of all three CSCFs,
+  and a P-CSCF restart wipes every registered UE's IPsec SA." That comment
+  predated the unconditional-`CAPTURE_NODE` change directly above it and was
+  simply false by the time anyone read it — but it was load-bearing twice
+  over: it kept the default off, and a wiring test *pinned* the default with
+  its own reasoning ("Configure makes capture available; it does not begin
+  duplicating every SIP message on an operator's behalf"). So the stale cost
+  was never re-weighed; it was asserted in a comment, enforced by a test, and
+  repeated in this file. Measured directly instead: `siptrace.status on`
+  against all three already-running CSCFs took them `Disabled` → `Enabled`
+  with HEP datagrams arriving at the collector within seconds and all three
+  units' `ActiveEnterTimestamp` **byte-identical** before and after. Enabling
+  costs no restart, so defaulting off bought nothing and only guaranteed that
+  an operator's first look at a real call was empty. The privacy/storage half
+  of that test's reasoning is answered separately by keepalive suppression,
+  which removed 68% of what always-on used to store. The default is now `true`
+  and it is an explicit **opt-out** (`prevSaved?.sipTracingEnabled === false`)
+  that persists across Configure — polarity matters, since matching `=== true`
+  would pin any deployment predating the flag to off forever.
+  **A real latent desync was found in the same place**: `configureIms()`
+  persisted `voiceChargingEnabled` and `cdrAccountingEnabled` into
+  `.ims-config.json` but **omitted `sipTracingEnabled`**, while still reading
+  it back at the top of the next run. So a Configure carried the flag into the
+  generated includes — the CSCFs genuinely came up with `CAPTURE_TRACE_ON` and
+  genuinely were tracing — and then dropped the key, leaving
+  `getSipTracingEnabled()` reporting `false` while all three CSCFs filled the
+  store, and leaving the next Configure with no key to carry. It also silently
+  defeated the four other setters that regenerate `scscf.cfg`
+  (`sipTracing: state.sipTracingEnabled === true` reads a key that is not
+  there), which is the exact failure the existing wiring test's comment warned
+  about while only ever checking that the *parameter* was passed, never that
+  its value could be true. Both are now pinned, and the persistence test was
+  mutation-checked (removing the key fails it) rather than trusted.
+  **General rule: a comment stating a cost is not evidence of that cost, and a
+  test that pins a default inherits whatever reasoning the comment had — when
+  a default looks over-cautious, re-measure the cost before defending it.**
 
 - **Kamailio's `siptrace` module emits HEP version **1** by default, not
   v3 — and a HEP collector that requires the `HEP3` magic silently counts
@@ -1177,6 +1210,34 @@ Full detail on any of these: `docs/features.md`.
   idle timer you are actually fighting, and make it configurable rather than
   guessing a safe-looking constant.**
 
+- **A client that POSTs a whole result object for the server to throw most of
+  away eventually exceeds nginx's body cap — and nginx's own 413 is an HTML
+  page, so the error reaches the browser with nothing in it to act on.** Found
+  live 2026-10-14: RF Planning's PDF export sent `cells` straight from the
+  simulate result, which carries **every traced ray's GeoJSON geometry** (a
+  LineString plus eleven properties per segment), while
+  `rf-simulation-report.ts` reads only `cellId`/`name`/`azimuthDeg` and seven
+  stats fields per cell. On a plan with a large radius or a high ray count that
+  crossed the 10m `client_max_body_size` on `/api/`, and because nginx answers
+  with its own HTML error page the client's `response.json()` parse failed and
+  fell through to a bare `HTTP 413` — no reason, nothing to diagnose from. The
+  temptation is to raise the limit; **the fix is to stop sending it**, since
+  none of it was ever read. The payload is now projected to exactly the fields
+  the document prints, and `ReportRequest`'s types were narrowed to those
+  shapes (`ReportCell`/`ReportQualityEntry`/`ReportGapSummary`, mirroring
+  `ReportInput` field for field) so the compiler refuses a payload carrying
+  anything the consumer cannot use — which is the part that stops it
+  regressing the next time a field is added to a result. **Two general rules.**
+  (1) When a request body is built from a result object, project it to the
+  consumer's own shape and let the types enforce that; passing the whole result
+  is how an upload silently grows with an unrelated feature. (2) When
+  diagnosing a 4xx/5xx that reports no reason, check whether the response was
+  even JSON before trusting the client's error text — a reverse-proxy-generated
+  error never carries the application's error envelope, so any client that only
+  parses JSON will report a status code and nothing else. Worth remembering for
+  the streaming-install endpoints too, which already have their own
+  `proxy_read_timeout` location for a related reason.
+
 - **This host's MySQL/MariaDB `max_connections` (151, the compiled-in
   default) was genuinely too low for this deployment's own steady-state
   load** — confirmed live 2026-10-02 (`Max_used_connections` peaked at
@@ -1189,6 +1250,183 @@ Full detail on any of these: `docs/features.md`.
   `/etc/mysql/mariadb.conf.d/50-server.cnf` (`max_connections = 300`,
   with a comment explaining why) — if this project adds more DB-backed
   services, watch `Threads_connected` vs this ceiling again.
+
+- **`asymmetric_rtp_codec=yes` is a real one-way-audio cause, not harmless
+  B2BUA hardening — and PJSIP's `codec_prefs_*_answer` options are genuinely
+  INERT in Asterisk 20.6 even though the parser accepts them and `pjsip show
+  endpoint` echoes them back.** Confirmed live 2026-10-19 chasing a PSTN→UE
+  one-way audio report (UE→PSTN was fine). The media path was entirely healthy
+  — rtpengine `confirmed`/`kernelized`, `endpoint` == `advertised endpoint`,
+  errors 0, packet counts matching hop for hop — but on the wire **the UE
+  transmitted payload type 116 (AMR-WB) while Asterisk transmitted PT 118
+  (AMR-NB) on the same leg.** Both streams were well-formed and the PT→codec
+  mapping was *consistent* between the UE's offer and Asterisk's answer, so
+  nothing was malformed; a real IMS handset configures ONE decoder at session
+  setup per 3GPP, so it silently discarded a second codec it never selected.
+  Root cause: `[scscf_trunk]` carried `asymmetric_rtp_codec=yes`, which
+  literally means "allow the sending and receiving codec to differ on this
+  leg". Fixed with `asymmetric_rtp_codec=no` on that endpoint only
+  (`pjsip_pstn.conf` + its generator in `pstn-controller.ts`) — chan_pjsip's
+  read path then sets the channel write format to match the media it actually
+  receives, so receiving AMR-WB forces Asterisk to transmit AMR-WB. Verified:
+  downlink flipped 118→116 and the bridge went from `external_trunk Receive
+  3486 / scscf_trunk Transmit 895` (full-rate ulaw in, a quarter of it back
+  out) to a clean `562 in / 562 out`, zero loss, user-confirmed two-way audio.
+  **Three things worth carrying forward.** (1) The pre-existing config comment
+  kept `yes` as "a real, correct setting for this deployment" while recording
+  in the same breath that it fixed nothing — it was in fact the bug. Don't
+  trust a "left in place as correct" note with no confirming measurement
+  behind it. (2) A whole fix attempt was burned on
+  `codec_prefs_outgoing_answer=...,keep:first` first: it deployed, the live
+  endpoint read it back verbatim, and the answer still carried
+  `m=audio <p> RTP/AVP 116 118 110` on a real call. So that family's
+  "reserved for future functionality" help text IS accurate for the
+  **answer**-side knobs, even though it is demonstrably stale on
+  `codec_prefs_outgoing_offer`, which this project already relies on — which
+  is exactly what makes the boilerplate easy to wave away. A setting the
+  parser accepts is not a setting that does anything; verify on the wire.
+  (3) Preferred this over dropping `allow=amr` (pattern #16's proven
+  mechanism) because this handset offers no ulaw/alaw, so a narrowband-only
+  device would have had no common codec at all and the call would fail
+  outright rather than sound wrong — `asymmetric_rtp_codec` changes only which
+  format Asterisk SENDS and narrows nothing. If you do reach for either lever,
+  **check the translation path first**: Asterisk has no native AMR encoder (it
+  comes from `codec_amr.so`), so `core show translation` must actually show
+  `ulaw -> amrwb` or both options are dead ends. `external_trunk` (ulaw/alaw
+  only) and `asterisk2g_trunk` (gsm-only, pattern #16) deliberately keep
+  `yes` — there is nothing to mismatch on either.
+
+- **Two facts about this deployment's SIP trace that should shape any future
+  capture work: 68% of everything stored is OPTIONS keepalives, and a B2BUA's
+  far leg is structurally invisible to a CSCF tap.** Both measured live
+  2026-10-19 while building Call Debug (scoped capture), both contradicting a
+  plausible first design.
+  (1) **Keepalives dominate.** `fromUser == 'dispatcher'` was 5,763 of 8,465
+  documents, and because every single ping is its own dialog, ~5,790 of 5,840
+  distinct Call-IDs. Two unrelated senders produce them forever: S-CSCF's
+  dispatcher pinging Asterisk, and P-CSCF's `route[NATPING]` OPTIONS to every
+  registered contact on its rtimer interval. `sip-trace-store.ts` had already
+  noticed the symptom and papered over it at READ time with the `kind:'calls'`
+  default; suppressing the WRITE (`call-scope.ts`'s `isKeepalive`, on by
+  default, counted in `keepalivesIgnored`, reversible from the UI) is strictly
+  better because it also stops them consuming the store and its TTL budget.
+  **If a capture/trace feature ever looks "bloated" here, measure what is
+  actually in it before designing a filter — the answer was one predicate, not
+  a state machine.**
+  (2) **The PSTN far leg is not in the trace and cannot be.** A whole UE→PSTN
+  call is ONE Call-ID in `nms_sip_trace`: P/I/S-CSCF are proxies and Asterisk
+  is the dialog endpoint for that leg, so Asterisk's own replies carry the UE's
+  Call-ID (observed as `127.0.1.4 -> 127.0.1.2` messages inside it). The
+  B2BUA's second dialog (Asterisk→`external_trunk`) has its own Call-ID and
+  never traverses a CSCF, so no HEP tap ever receives it — verified: ZERO
+  Asterisk-originated Call-IDs exist anywhere in the store. This kills the
+  obvious "latch the Call-ID to follow the call across both legs" design twice
+  over: where it would help, plain From/To matching already works (both legs
+  carry the same two numbers); where a different Call-ID exists, nothing in
+  that dialog was ever seen, so there is nothing to latch from. **A packet
+  capture is therefore not a supplement to the SIP trace for PSTN calls — it
+  is the only view of the far leg**, which is why Call Debug pairs the two and
+  fails closed if the pcap will not start.
+  Three smaller things worth not rediscovering. `fromUser`/`toUser` are
+  non-null in 8,465/8,465 documents, so a party filter need not handle a
+  missing party — but it MUST fail open on an UNPARSEABLE message, because
+  `sip-message-parser.ts` and `sip-trace-store.ts` both explicitly keep those
+  on the grounds that a malformed message is often the thing being hunted, and
+  a party filter would silently reverse that decision. `sipUser()` returns
+  `127.0.1.1:4060` for the user-less URI in every dispatcher keepalive, so any
+  digits-only normalisation must require the WHOLE user part to be digits or
+  that becomes `1270114060` and is eligible to suffix-match a real 10-digit
+  MSISDN. And IMSIs share that field with MSISDNs (`001010000053555` beside
+  `15550000001`), so a suffix match needs a length-delta cap (4) as well as a
+  minimum length (7) or a 7-digit entry reaches an unrelated 15-digit IMSI.
+  Registration also uses the IMSI-form IMPU while dialling uses the MSISDN —
+  210 messages of REGISTER/401/200 separated the two forms — so resolve a
+  typed number to its subscriber and match BOTH identities, or a scoped
+  session silently excludes the registration context that explains most "the
+  call never arrived" reports.
+
+- **A UE holds two sessions here and only the `ims` one carries SIP or RTP —
+  scoping a protocol-less packet capture to the wrong one records the
+  subscriber's entire data session.** Verified on every live subscriber
+  record: `internet` → `10.45.0.70` (pool `10.45.0.0/16`), `ims` →
+  `10.46.0.70` (pool `10.46.0.0/24`), both from `smf.yaml`'s own session list.
+  `ActiveUE.sessions` returns both, so "the UE's IP" is ambiguous and the
+  obvious choice is the wrong one. Call Debug resolves the `ims`-APN address
+  specifically, falls back to the IMS POOL when a subscriber has no static
+  address, and reports the excluded data address in the UI so the omission is
+  visible rather than silent. Two related BPF points, both verified against
+  the real `tcpdump` compiler: a Call Debug scope must build **host-only**
+  clauses, never reuse `buildNfDescriptors()`'s `(host X and <proto> port N)`
+  shape — the IMS descriptor carries only `rtpPortMin`, one port out of a
+  10,000-port media range, so media would be ~entirely missed and Diameter not
+  captured at all; and an **external** party needs the real egress interface
+  discovered from the routing table (`ip route get <peer>` → `ens18` here,
+  which `lo` + `ogstun*` excludes) plus the PROVIDER's address rather than
+  this host's own trunk bind address, since the provider IP is the packet's
+  destination and is never source-NATed away on egress.
+
+- **A SIP dialog's last captured message is NOT the end of the call — SIP goes
+  completely silent for the whole conversation, so "last message minus first
+  message" is the SETUP time.** Reported live 2026-10-19: an operator on a real
+  3-minute call saw the Calls list say **5 seconds**. Nothing was wrong with the
+  call — Asterisk's own `core show channels` read `00:02:54` for the same
+  channel at the same moment. The call list aggregated `endTime: { $last:
+  '$timestamp' }`, and for a call in progress the last message is the ACK, so
+  the column reported INVITE→ACK forever no matter how long the call ran. Worse
+  than a cosmetic error, because it describes a call that dropped on answer —
+  exactly the fault an operator would then go hunting.
+  **Fixed** by giving the summary `answerTime` (the 2xx to the INVITE) and
+  `terminatedAt` (absent while the call is up), via a pure, exported
+  `dialogLifecycle()` so the rules are testable without a database. Talk time
+  is now measured **answer → hangup**, which also removed a smaller standing
+  error on completed calls: the old span included however long the phone rang
+  (measured on one real call, 223.2s reported for 218.0s of conversation). The
+  UI counts up live from the answer while a call is still up, and re-polls
+  quietly every 10s so the counter actually STOPS when the BYE lands.
+  Four rules in `dialogLifecycle()` are load-bearing. (1) "Answered" keys on
+  `cseqMethod === 'INVITE'`, because a response carries no method of its own
+  and a 200 to a REGISTER or an in-dialog OPTIONS keepalive would otherwise
+  read as a pickup. (2) Only a **BYE** ends an established dialog: once
+  answered, a `>=300` response to an INVITE is a failed RE-INVITE mid-call (a
+  declined hold, a codec renegotiation) and stopping the timer there would
+  under-report a call that is still up. (3) A rejection or CANCEL terminates
+  only an **unanswered** call. (4) Take the FIRST 2xx, since the 200 appears
+  several times as it is relayed hop by hop. **General rule: for anything
+  measured from a protocol trace, ask what the protocol does during the thing
+  being measured — a silent protocol makes "last event" a measure of setup, not
+  of duration.**
+
+- **Cross-RAN Calling forwarded the other side's short codes but NOT its ECHO
+  TEST number, and because the PSTN dialplan has an outbound catch-all now, the
+  unmatched code was dialled at the real provider.** Confirmed live 2026-10-19:
+  dialling Asterisk-2G's echo test (`600`) from a 4G/5G handset returned
+  `603 Decline` — three attempts, two different handsets. `600` had no exact
+  match in `pstn-internal`, fell through to the outbound `_X.` block, and was
+  dialled as `PJSIP/600@external_trunk`; the provider declined a three-digit
+  number that is not a phone number, and that 603 reached the handset looking
+  like the echo test had rejected the call. `getAsterisk2gEchoTestNumber()` was
+  already imported on the PSTN side — but only to guard COLLISIONS, so that
+  side knew the number existed and still had no route to it.
+  **The asymmetry is why only one direction broke**: Asterisk-2G's `_X.`
+  catch-all points at `pstn_trunk`, so 2G→`500` (PSTN's own echo test) reaches
+  PSTN's dialplan and works *by accident*; PSTN's catch-all points at the real
+  provider, so the mirror case leaks off-network. The two echo tests are
+  different numbers and easy to conflate — **PSTN's is `500`
+  (`DEFAULT_ECHO_TEST_NUMBER`), Asterisk-2G's is `600`** — and Asterisk's own
+  stock `extensions.conf` also ships a sample `exten => 600` in `[demo]`, a
+  context the IMS trunk never enters, which is a convincing red herring.
+  **What made this possible** is a stale comment: `setCrossRanCalling()`
+  claimed "this file has no catch-all at all", which stopped being true when
+  the external SIP trunk feature added the outbound `_X.` block. The design
+  reasoning "a missing exact match simply fails to route" was then safe when
+  written and wrong when read — a missing short code is now dialled at the
+  outside world. Both the routing and that comment are corrected, with
+  `withGsm2gEchoTest()`/`dropLocallyOwnedCodes()` extracted as pure, tested
+  functions (local digits always win, so a forwarded code can never emit a
+  duplicate `exten` that Asterisk would silently resolve to the first copy).
+  **General rule: when a dialplan gains a catch-all, every "unmatched is
+  harmless" assumption written before it becomes a route to somewhere real —
+  re-read the comments that justified leaving a gap.**
 
 ## User / workflow conventions
 
@@ -1224,6 +1462,20 @@ Full detail on any of these: `docs/features.md`.
   wrong. Full rationale and a per-page shape breakdown: PROJECT_STATE.md's
   Engineering Decision Log, "centered pill-style tab nav + header-mounted
   service control" entry.
+- **Unused card surface means the grid columns are unbalanced, not that the
+  cards need padding.** CSS grid defaults to `align-items: stretch`, so every
+  column fills the row's tallest natural height — which is what lines the
+  bottom edges up, and also what leaves a band of empty surface inside any
+  card shorter than its neighbours. The fix is to regroup the content so each
+  column's natural height lands close to its siblings; `flex-1` on a
+  multi-card column's LAST card, and `flex flex-col` + a `flex-1 flex flex-col
+  justify-between` last section on a single stretched card, only absorb a small
+  remainder. If a column is genuinely much shorter and there is nothing real to
+  put in it, give the row `items-start` and accept a ragged bottom edge — empty
+  page background below a card reads as layout, empty card surface inside one
+  reads as a bug. Worked example: the dashboard's second row (2026-10-28), where
+  merging the two SAS cards into one and moving the UE counts up a column
+  brought all four columns within ~20px of each other.
 - **Theme tokens and accessibility baseline (standard as of 2026-10-12 — every
   new page, panel, modal and control).** The frontend was audited and fixed
   against WCAG 2.2 AA in one pass; the whole point of that pass is lost if new
@@ -1300,6 +1552,12 @@ Full detail on any of these: `docs/features.md`.
 - `docs/troubleshooting.md` — diagnostic playbooks, including the DNS/BIND9 NF
   crash-loop one.
 - `docs/frr-eigrpd-crash-guard-patch.md` — the FRR patch, full writeup.
+- `docs/style-guide.md` — the frontend design system, written to be portable to
+  another project: the five theme token blocks, the Tailwind config that wires
+  them up, the component classes, the base layer, the page/card/table patterns,
+  the accessibility baseline with its contrast measurements, and the
+  anti-patterns. It is the long form of the two UI conventions below; keep the
+  two in step.
 - `docs/api-reference.md` — REST API reference, GenieACS NBI patterns.
 - `docs/requirements.md` — system/software prerequisites, port table.
 - `CHANGELOG.md` — dated, detailed entries for everything shipped.

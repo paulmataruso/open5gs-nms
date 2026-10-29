@@ -510,7 +510,7 @@ Stream logs from Open5GS services, Docker containers, GenieACS, and FRR in real-
 - Stream logs from NMS Docker containers (backend, frontend, nginx)
 - Uses `docker logs -f --timestamps` for real-time streaming
 - Automatic container discovery
-- A "SAS Logs" quick-select jumps to Docker mode, selects the backend container, and filters to just SAS protocol lines
+- A "SAS Logs" quick-select jumps to Docker mode and filters to SAS lines. The SAS protocol itself now runs in the `sasbench` container, so its wire log lives in SASBench's own Messages page rather than the backend's log stream.
 
 **GenieACS:**
 - Streams the `genieacs-cwmp-access` and `genieacs-nbi-access` logs
@@ -659,7 +659,7 @@ found. Twelve independently selectable categories:
 
 | Category | Contents |
 |---|---|
-| Subscribers & SAS | `mongodump --db open5gs` — subscribers (APNs/IPs/security keys), SAS grants/CBSDs, subscriber groups, APN profiles, RF Planning projects, TWAMP targets/history, users, audit log |
+| Subscribers | `mongodump --db open5gs` — subscribers (APNs/IPs/security keys), subscriber groups, APN profiles, RF Planning projects, TWAMP targets/history, users, audit log. SAS data is **not** here: SASBench keeps its own SQLite database in the `sas-data` Docker volume, backed up separately. |
 | Core NF Configs | All 17 core NF YAML files (`/etc/open5gs/*.yaml`, including `sepp1.yaml`) |
 | SUCI Keys | 5G-AKA home-network private/public keys (`/etc/open5gs/hnet`) — irreplaceable, not regenerable |
 | SecGW Certificates | Security Gateway's own CA and every issued per-radio IPsec certificate/key — irreplaceable, not regenerable by re-running Configure |
@@ -707,7 +707,7 @@ backup came from doesn't need either step.
 - Includes exact file permissions
 
 **MongoDB Backups:**
-- `open5gs` database only (subscribers, SAS, groups, APN profiles, RF Planning, TWAMP, users, audit log)
+- `open5gs` database only (subscribers, groups, APN profiles, RF Planning, TWAMP, users, audit log). SAS state lives in SASBench's own `sas-data` volume, not in Mongo.
 - Stored in `/etc/open5gs/backups/mongodb/YYYY-MM-DD-HHMM/`
 - Uses mongodump/mongorestore
 

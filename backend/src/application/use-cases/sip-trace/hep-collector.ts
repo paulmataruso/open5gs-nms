@@ -2,6 +2,7 @@ import * as dgram from 'dgram';
 import { Db } from 'mongodb';
 import { HepParseError, parseHep, HEP_PROTO_SIP } from './hep-parser';
 import { insertMessages, toDocument, SipTraceDocument, SipTraceSource, CAPTURE_PORTS } from './sip-trace-store';
+import { CallScopeFilter, decideScope } from './call-scope';
 import pino from 'pino';
 
 // ── HEP collector ────────────────────────────────────────────────────────────
@@ -52,6 +53,24 @@ export interface HepCollectorStats {
   messagesStored: number;
   /** Non-SIP HEP payloads (e.g. RTCP) -- received and deliberately ignored. */
   nonSipIgnored: number;
+  /**
+   * OPTIONS keepalives suppressed before storage. Counted rather than silent
+   * because it is by far the largest number here -- 68% of this deployment's
+   * whole store when it was measured -- and an operator who sees the Dialogs
+   * list get quieter deserves to know exactly what stopped being kept.
+   */
+  keepalivesIgnored: number;
+  /** Messages dropped because a Call Debug session scoped them out. */
+  scopeFiltered: number;
+  /**
+   * Unparseable messages stored even though a session was scoping. Non-zero
+   * here is interesting on its own: a malformed message is frequently the
+   * thing being hunted, and this is the counter proving one was not silently
+   * filtered away.
+   */
+  unparsedKept: number;
+  /** The Call Debug session currently scoping the write path, if any. */
+  activeSessionId: string | null;
   dropped: Record<string, number>;
   queueDepth: number;
   queueOverflowDrops: number;
@@ -66,6 +85,15 @@ export class HepCollector {
   private timer: NodeJS.Timeout | null = null;
   private seq = 0;
   private flushing = false;
+  /**
+   * In-process, deliberately. Exactly one backend runs (docker-compose), and a
+   * second process could not bind these ports anyway -- the sockets use
+   * SO_REUSEADDR, not SO_REUSEPORT. The durable copy lives in the session
+   * document, and startup reconciliation is what covers a crash mid-session;
+   * see call-debug-session.ts.
+   */
+  private scopeFilter: CallScopeFilter | null = null;
+  private storeKeepalives = false;
 
   private stats: HepCollectorStats = {
     running: false,
@@ -76,6 +104,10 @@ export class HepCollector {
     packetsBySource: {},
     messagesStored: 0,
     nonSipIgnored: 0,
+    keepalivesIgnored: 0,
+    scopeFiltered: 0,
+    unparsedKept: 0,
+    activeSessionId: null,
     dropped: {},
     queueDepth: 0,
     queueOverflowDrops: 0,
@@ -92,6 +124,25 @@ export class HepCollector {
   ) {
     this.stats.bind = bind;
     this.stats.listeners = bindings.map(b => ({ ...b, bound: false }));
+  }
+
+  /** Scope the WRITE path to one Call Debug session. */
+  setScopeFilter(filter: CallScopeFilter | null): void {
+    this.scopeFilter = filter;
+    this.stats.activeSessionId = filter?.sessionId ?? null;
+  }
+
+  getScopeFilter(): CallScopeFilter | null {
+    return this.scopeFilter;
+  }
+
+  /** Opt keepalives back in, for when the keepalive itself is the bug. */
+  setStoreKeepalives(on: boolean): void {
+    this.storeKeepalives = on;
+  }
+
+  getStoreKeepalives(): boolean {
+    return this.storeKeepalives;
   }
 
   getStats(): HepCollectorStats {
@@ -179,11 +230,27 @@ export class HepCollector {
         this.stats.nonSipIgnored++;
         return;
       }
+      // Parse first, then decide: the decision needs From/To and the CSeq
+      // method, which only exist after parsing. Parsing a message we then drop
+      // is cheap next to the Mongo write and the TTL budget it would consume.
+      const doc = toDocument(pkt, this.seq, source);
+      const verdict = decideScope(doc, this.scopeFilter, this.storeKeepalives);
+      if (!verdict.store) {
+        if (verdict.reason === 'keepalive') this.stats.keepalivesIgnored++;
+        else this.stats.scopeFiltered++;
+        return;
+      }
+      if (verdict.reason === 'unparseable' && this.scopeFilter) this.stats.unparsedKept++;
+      // Overflow is checked AFTER the scope decision so a scoped session's own
+      // messages are not dropped to make room for traffic we were never going
+      // to keep.
       if (this.queue.length >= MAX_QUEUE) {
         this.stats.queueOverflowDrops++;
         return;
       }
-      this.queue.push(toDocument(pkt, this.seq++, source));
+      this.seq++;
+      if (verdict.store && verdict.sessionId) doc.sessionId = verdict.sessionId;
+      this.queue.push(doc);
       if (this.queue.length >= FLUSH_AT_COUNT) void this.flush();
     } catch (err) {
       const code = err instanceof HepParseError ? err.code : 'unknown';

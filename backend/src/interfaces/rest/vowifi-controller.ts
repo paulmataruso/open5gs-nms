@@ -455,7 +455,7 @@ function aaaConfigFile(opts: {
 
 // Self-signed CA + ePDG certificate, generated idempotently (only if missing) —
 // exact copy-paste procedure from the vendor's own README, using this project's
-// existing nginx/setup-sas-cert.sh self-signed-cert pattern as the model for
+// existing nginx/setup-nginx-certs.sh self-signed-cert pattern as the model for
 // "generate once, regenerate only if missing". Real UEs will NOT trust this
 // self-signed CA by default — same trust tier as this project's existing
 // self-signed SAS/ACS certs (already accepted by real Sercomm/Baicells radios in

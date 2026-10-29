@@ -30,8 +30,13 @@ const OUTCOME: Record<number, string> = {
   603: 'Declined',
 };
 
-function outcome(status?: number): { text: string; tone: 'ok' | 'warn' | 'bad' | 'dim' } {
-  if (status === undefined) return { text: 'In progress', tone: 'dim' };
+function outcome(c: CallSummary): { text: string; tone: 'ok' | 'warn' | 'bad' | 'dim' } {
+  // Answered with no BYE yet: the call is UP. This used to read "Answered"
+  // beside a frozen 5-second duration, which described a call that had
+  // already ended -- the opposite of what was happening.
+  if (c.answerTime && !c.terminatedAt) return { text: 'In progress', tone: 'ok' };
+  const status = c.lastStatus;
+  if (status === undefined) return { text: 'Ringing', tone: 'dim' };
   const text = OUTCOME[status] ?? String(status);
   if (status < 200) return { text, tone: 'dim' };
   if (status < 300) return { text, tone: 'ok' };
@@ -39,11 +44,52 @@ function outcome(status?: number): { text: string; tone: 'ok' | 'warn' | 'bad' |
   return { text, tone: 'bad' };
 }
 
-function duration(startIso: string, endIso: string): string {
-  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s`;
+function fmtSpan(ms: number): string {
+  if (ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return m < 60 ? `${m}m${ss}s` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m${ss}`;
+}
+
+/**
+ * How long the call lasted -- counting up while it is still up.
+ *
+ * Deliberately NOT last-message-minus-first-message, which is what this
+ * column used to show. SIP goes completely silent for the duration of a
+ * conversation, so on a live call the last message is the ACK and that
+ * subtraction yields the SETUP time: a real 3-minute call reported as 5
+ * seconds. Talk time is measured from the ANSWER, not from the INVITE, so
+ * however long it rang is not counted as conversation.
+ */
+function callDuration(c: CallSummary): { text: string; live: boolean; title: string } {
+  if (c.answerTime) {
+    const from = new Date(c.answerTime).getTime();
+    if (c.terminatedAt) {
+      return {
+        text: fmtSpan(new Date(c.terminatedAt).getTime() - from),
+        live: false,
+        title: 'Total call length, from answer to hangup.',
+      };
+    }
+    return {
+      text: fmtSpan(Date.now() - from),
+      live: true,
+      title: 'Call in progress — counting up from the answer. No BYE has been captured yet.',
+    };
+  }
+  // Never answered, so there is no call length to report. What there is, is
+  // how long it rang -- which is the useful number for a call that failed.
+  const from = new Date(c.startTime).getTime();
+  const to = c.terminatedAt ? new Date(c.terminatedAt).getTime() : Date.now();
+  return {
+    text: `${fmtSpan(to - from)} ringing`,
+    live: !c.terminatedAt,
+    title: c.terminatedAt
+      ? 'Never answered — time from the INVITE to the final response.'
+      : 'Still ringing — no answer yet.',
+  };
 }
 
 export function FullCallsCard({
@@ -63,8 +109,8 @@ export function FullCallsCard({
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const r = await sipTraceApi.listCalls({
         kind: 'calls',
@@ -77,11 +123,33 @@ export function FullCallsCard({
     } catch (err: any) {
       toast.error(err?.response?.data?.error ?? 'Failed to load calls');
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, [search, page]);
 
   useEffect(() => { void load(); }, [load, refreshKey]);
+
+  // A call with an answer and no hangup yet is still up.
+  const hasLive = rows.some(c => !!c.answerTime && !c.terminatedAt);
+
+  // Re-render once a second, but ONLY while something is actually live, so an
+  // idle Calls list does not hold a timer open forever. The row data does not
+  // change; this just lets the elapsed figure recompute against the clock.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!hasLive) return;
+    const id = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasLive]);
+
+  // ...and re-poll quietly while live, so the counter actually STOPS when the
+  // BYE lands instead of counting up forever until someone hits Refresh.
+  // Quiet, because spinning the Refresh icon every 10s reads as an error loop.
+  useEffect(() => {
+    if (!hasLive) return;
+    const id = setInterval(() => void load(true), 10000);
+    return () => clearInterval(id);
+  }, [hasLive, load]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -137,7 +205,8 @@ export function FullCallsCard({
               </thead>
               <tbody>
                 {rows.map(c => {
-                  const o = outcome(c.lastStatus);
+                  const o = outcome(c);
+                  const d = callDuration(c);
                   const isSel = selectedCallId === c.callId;
                   return (
                     <tr
@@ -161,8 +230,20 @@ export function FullCallsCard({
                       <td className="px-3 py-1.5 font-mono text-nms-text whitespace-nowrap">
                         {c.toUser ?? '—'}
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-nms-text-dim whitespace-nowrap">
-                        {duration(c.startTime, c.endTime)}
+                      <td
+                        className={clsx(
+                          'px-3 py-1.5 font-mono whitespace-nowrap',
+                          d.live ? 'text-nms-green' : 'text-nms-text-dim',
+                        )}
+                        title={d.title}
+                      >
+                        {d.live && (
+                          <span
+                            className="inline-block w-1.5 h-1.5 rounded-full bg-nms-green mr-1.5 align-middle"
+                            aria-hidden="true"
+                          />
+                        )}
+                        {d.text}
                       </td>
                       <td
                         className={clsx(

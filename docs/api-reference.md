@@ -1219,7 +1219,7 @@ for the exact routes.
 | `/api/modules` | Module "Fix All"/staleness reconciliation | `modules-controller.ts` |
 | `/api/radio-signal` | UE Signal Monitoring (per-UE RSRP/RSRQ/SINR/etc.) | `radio-signal-controller.ts` |
 | `/api/snmp` | SNMP Monitoring | `snmp-controller.ts` |
-| `/api/sas` | CBRS SAS server admin | `sas-controller.ts` (via `createSasAdminRouter`) |
+| `/api/sas` | SASBench status with NMS-derived band occupancy, the band plan (`GET /spectrum`), and keeping SASBench's own checkout current (`GET /version`, `POST /update`) | `sas-controller.ts` (via `createSasRouter`) |
 
 All are `requireAdmin`-gated like the rest of the API unless noted otherwise in the
 controller itself.

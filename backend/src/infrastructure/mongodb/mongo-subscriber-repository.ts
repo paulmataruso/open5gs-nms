@@ -54,7 +54,7 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
         { $sort: { _sortKey: sortDir, imsi: 1 } },
         { $skip: skip },
         { $limit: limit },
-        { $project: { imsi: 1, nickname: 1, iccid: 1, msisdn: 1, slice: 1 } },
+        { $project: { imsi: 1, nickname: 1, iccid: 1, simType: 1, msisdn: 1, slice: 1 } },
       ]).toArray();
 
       return this.mapToListItems(docs);
@@ -63,7 +63,7 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     // Default: sort by imsi
     const docs = await this.collection
       .find({})
-      .project({ imsi: 1, nickname: 1, iccid: 1, msisdn: 1, slice: 1 })
+      .project({ imsi: 1, nickname: 1, iccid: 1, simType: 1, msisdn: 1, slice: 1 })
       .sort({ imsi: sortDir })
       .skip(skip)
       .limit(limit)
@@ -86,6 +86,7 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
         imsi:          doc.imsi     as string,
         nickname:      doc.nickname as string | undefined,
         iccid:         doc.iccid   as string | undefined,
+        simType:       doc.simType as 'esim' | 'physical' | null | undefined,
         msisdn:        doc.msisdn  as string[] | undefined,
         slice_count:   Array.isArray(doc.slice) ? doc.slice.length : 0,
         session_count: Array.isArray(doc.slice)
@@ -138,7 +139,7 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
   async search(query: string, skip: number = 0, limit: number = 50): Promise<SubscriberListItem[]> {
     const docs = await this.collection
       .find(this.searchFilter(query))
-      .project({ imsi: 1, nickname: 1, iccid: 1, msisdn: 1, slice: 1 })
+      .project({ imsi: 1, nickname: 1, iccid: 1, simType: 1, msisdn: 1, slice: 1 })
       .skip(skip)
       .limit(limit)
       .toArray();

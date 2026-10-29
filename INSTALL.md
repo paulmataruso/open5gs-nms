@@ -15,9 +15,10 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
    - [5. Configure DNS Resolution](#5-configure-dns-resolution)
 3. [Installation Steps](#installation-steps)
 4. [Post-Installation Configuration](#post-installation-configuration)
-5. [Verification](#verification)
-6. [Troubleshooting](#troubleshooting)
-7. [Next Steps](#next-steps)
+5. [Upgrading an Existing Deployment](#upgrading-an-existing-deployment)
+6. [Verification](#verification)
+7. [Troubleshooting](#troubleshooting)
+8. [Next Steps](#next-steps)
 
 ---
 
@@ -284,7 +285,33 @@ sudo mkdir -p /etc/open5gs/backups/mongodb
 sudo chmod 755 /etc/open5gs/backups
 ```
 
-### Step 4: Build and Deploy
+### Step 4: Clone SASBench (the CBRS SAS)
+
+The Spectrum Access System is [SASBench](https://github.com/paulmataruso/SASBench),
+which runs as one of this stack's containers. It is a separate repository and is
+deliberately **not** bundled here, so clone it before building:
+
+```bash
+sudo git clone https://github.com/paulmataruso/SASBench.git /opt/sasbench
+```
+
+Use `git clone`, not a downloaded archive. The NMS reads this checkout's git
+state to tell you when SASBench is behind upstream, and applies the update
+itself from the SAS page — pull, rebuild the image, recreate the container. A
+directory with no git history still runs, but the SAS page reports that it
+cannot be updated from here.
+
+Set `SASBENCH_DIR` in `.env` if you put it somewhere else. SASBench binds the
+SAS-CBSD protocol ports itself — `SAS_HTTP_PORT` (8899) and `SAS_HTTPS_PORT`
+(8443) — plus its own admin UI and REST API on `SASBENCH_UI_PORT` (8094).
+nginx is not involved in the SAS path at all.
+
+Point each radio's SAS server URL at one of those two ports. SASBench builds
+its own PKI on first start; a radio that verifies the SAS server certificate
+needs SASBench's CA installed, available from its Certificates page or
+`GET /api/v1/trust-bundle`.
+
+### Step 5: Build and Deploy
 
 ```bash
 # Build Docker images (this may take 5–10 minutes)
@@ -310,7 +337,7 @@ open5gs-grafana         | ... HTTP Server Listen
 
 Press `Ctrl+C` to exit log view.
 
-### Step 5: Configure Firewall
+### Step 6: Configure Firewall
 
 ```bash
 # Allow NMS web interface
@@ -443,6 +470,100 @@ These are optional modules, each installed on-demand from its own page — no ma
 - **Syslog Forwarding** — On the **Logs** page, click **Syslog Forwarding**, install rsyslog if prompted, then enter your syslog server's host/port/protocol.
 
 > These modules can be hidden from the UI entirely at build time via `.env` (`ENABLE_SMS_MODULE`, `ENABLE_IMS_MODULE`, `ENABLE_VALIDATION_MODULE`, `ENABLE_VOWIFI_MODULE`) if you don't want them available at all — requires `docker compose build frontend && docker compose up -d frontend` to take effect. SEPP and DNS (BIND9)/FQDN Migration are core NMS features, not optional modules — no install step or flag needed.
+
+---
+
+## Upgrading an Existing Deployment
+
+Pulling this release onto a host that ran the NMS's own built-in SAS module is
+**not** a drop-in upgrade. That module was removed and replaced by SASBench,
+which is a separate repository and a separate container. Do these three steps
+before `docker compose up`, in this order.
+
+### 1. Clone SASBench first — the stack will not start without it
+
+The `sasbench` service's Docker build context is `SASBENCH_DIR`
+(default `/opt/sasbench`). Compose resolves every build context before it starts
+anything, so if that directory does not exist the build fails and **the whole
+stack fails to come up** — not just the SAS. Clone it before bringing the stack
+back:
+
+```bash
+sudo git clone https://github.com/paulmataruso/SASBench.git /opt/sasbench
+```
+
+Use `git clone`, not an archive: the NMS reads this checkout's git state to
+report how far behind upstream it is, and the SAS page's Update button applies
+the update from it.
+
+### 2. Recreate nginx so it releases port 8443
+
+The old module terminated SAS TLS at nginx on 8443. That vhost is gone from
+`nginx/nginx.conf`, but **a `git pull` alone does not reach the running
+container**: `nginx.conf` is a single-file bind mount, which pins the file's
+inode, so the container keeps serving the pre-pull config — still holding
+8443 — and `nginx -s reload` re-reads that same stale inode. SASBench then
+cannot bind 8443 and the SAS has no HTTPS listener.
+
+```bash
+docker compose up -d --force-recreate nginx
+```
+
+Confirm the swap actually happened by comparing inodes, not file contents:
+
+```bash
+stat -c %i nginx/nginx.conf
+docker compose exec nginx stat -c %i /etc/nginx/conf.d/nms.conf
+```
+
+Matching numbers mean the container is serving the config in your working tree.
+
+### 3. Check the three SAS ports are free, then re-point the radios
+
+SASBench binds all three itself (`network_mode: host`); nginx serves none of
+them and must not be put in front of any of them — it would hide every radio's
+real source address, which SASBench reads from the socket and has no
+`X-Forwarded-For` handling for.
+
+| Port | Variable | Serves |
+|---|---|---|
+| 8899 | `SAS_HTTP_PORT` | SAS-CBSD protocol, plain HTTP |
+| 8443 | `SAS_HTTPS_PORT` | SAS-CBSD protocol, HTTPS / mutual TLS |
+| 8094 | `SASBENCH_UI_PORT` | SASBench's admin UI and REST API |
+
+8094 is deliberately not SASBench's own default of 8080, and not 8090–8093
+either — on a full deployment PyHSS holds 8080, VectorCore MMSC 8090, the ePDG
+8091, the SMSC 8092 and SigScale OCS 8093. Check before you start:
+
+```bash
+ss -lntp | grep -E ':(8899|8443|8094) '
+```
+
+Anything already listening there is a conflict to resolve first — expect 8443 to
+still be nginx until step 2 is done.
+
+**Radios pointed at the old NMS-served SAS path keep their URL but need the port
+changed.** The old module answered on the nginx vhosts (`:8888/sas/...` and
+`:8443`); SASBench matches the protocol path anywhere in the URL, so a radio
+configured for `.../sas/v1.2/registration` works unchanged **once it is pointed
+at 8899 or 8443 on this host**. A radio left on `:8888/sas/` now gets a 404 from
+nginx and will silently never register, hold a grant, or heartbeat.
+
+A radio that verifies the SAS server certificate needs SASBench's own CA, from
+its Certificates page or `GET /api/v1/trust-bundle`. The old
+`https://<host>:8443/sas-cert/` download no longer exists, and the leftover
+`nginx/certs/sas*.crt`/`sas*.key` files are dead — nothing references them.
+
+### Afterwards
+
+- Set `SAS_ADMIN_PASSWORD` in `.env`. Left empty, SASBench runs on its default
+  `admin` account.
+- Keep `SAS_PROFILE=lab`. `winnforum` sets `tlsClientAuth=require` and
+  `acceptVersionlessPaths=false`; either drops live radios instantly unless
+  every one of them holds a SASBench-issued client certificate and sends a
+  well-formed versioned path.
+- The old module's `sas_*` MongoDB collections are left behind and are inert —
+  nothing reads them. Drop them at your leisure.
 
 ---
 

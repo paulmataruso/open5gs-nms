@@ -90,6 +90,8 @@ import { createCdrRouter, readCdrSettings } from './interfaces/rest/cdr-controll
 import { HepCollector } from './application/use-cases/sip-trace/hep-collector';
 import { ensureSipTraceIndexes } from './application/use-cases/sip-trace/sip-trace-store';
 import { createSipTraceRouter, readSipTraceSettings } from './interfaces/rest/sip-trace-controller';
+import { CallDebugSessionManager } from './application/use-cases/sip-trace/call-debug-session';
+import { ensureCallDebugIndexes } from './application/use-cases/sip-trace/call-debug-store';
 import { ActiveSessionsUseCase } from './application/use-cases/active-sessions';
 import { SuciManagementUseCase } from './application/use-cases/suci-management';
 import { SyncSDUseCase } from './application/use-cases/sync-sd-usecase';
@@ -129,11 +131,11 @@ import { createSmsRouter } from './interfaces/rest/sms-controller';
 import { createGsmRouter } from './interfaces/rest/gsm-controller';
 import { createMmsRouter, MmsMsisdnMapRefresher } from './interfaces/rest/mms-controller';
 import { createVectorcoreSmscRouter } from './interfaces/rest/vectorcore-smsc-controller';
-import { createImsRouter, readCurrentImsConfig, getSmsDeliveryMode } from './interfaces/rest/ims-controller';
+import { createImsRouter, readCurrentImsConfig, getSmsDeliveryMode, getSipTracingEnabled, setSipTracingEnabled } from './interfaces/rest/ims-controller';
 import { createVowifiRouter } from './interfaces/rest/vowifi-controller';
 import { createSecgwRouter } from './interfaces/rest/secgw-controller';
 import { createSwuEmulatorRouter } from './interfaces/rest/swu-emulator-controller';
-import { createPstnRouter } from './interfaces/rest/pstn-controller';
+import { createPstnRouter, readPstnState } from './interfaces/rest/pstn-controller';
 import { createAsterisk2gRouter } from './interfaces/rest/asterisk-2g-controller';
 import { createHnbgwRouter, loadHnbgwState } from './interfaces/rest/hnbgw-controller';
 import { createOcsRouter } from './interfaces/rest/ocs-controller';
@@ -146,8 +148,7 @@ import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validatio
 import { createQciValidationRouter } from './interfaces/rest/qci-validation-controller';
 import * as http from 'http';
 import { spawn } from 'child_process';
-import { SasService } from './domain/sas/sas-service';
-import { createSasProtocolRouter, createSasAdminRouter } from './interfaces/rest/sas-controller';
+import { createSasRouter } from './interfaces/rest/sas-controller';
 import { createSercommNRRouter } from './interfaces/rest/sercomm-nr-controller';
 import { createSubscriberGroupsRouter } from './interfaces/rest/subscriber-groups-controller';
 import { SubscriberIpAccounting } from './application/use-cases/traffic-history/subscriber-ip-accounting';
@@ -187,7 +188,21 @@ async function main() {
           },
   });
 
-  logger.info({ config }, 'Starting Open5GS NMS Backend');
+  // Redact credentials before logging the config. This object is logged
+  // wholesale at startup and the log stream is readable from the UI, so any
+  // secret added to AppConfig has to be masked here too.
+  logger.info(
+    {
+      config: {
+        ...config,
+        sasbenchPassword: config.sasbenchPassword ? '***' : '',
+        simlesslyAccessKey: config.simlesslyAccessKey ? '***' : '',
+        simlesslySecretKey: config.simlesslySecretKey ? '***' : '',
+        firstRunPassword: config.firstRunPassword ? '***' : null,
+      },
+    },
+    'Starting Open5GS NMS Backend',
+  );
 
   // Initialize infrastructure components
   const hostExecutor = new LocalHostExecutor(logger, config.systemctlPath);
@@ -297,8 +312,16 @@ async function main() {
   // listening means enabling tracing from the UI needs no backend restart and
   // cannot race Kamailio's first duplicated message.
   const hepCollector = new HepCollector(subscriberRepo.getDb(), logger);
-  ensureSipTraceIndexes(subscriberRepo.getDb(), readSipTraceSettings().retentionHours)
+  const sipTraceSettings = readSipTraceSettings();
+  // Keepalive suppression is a persisted setting, so it has to be re-applied
+  // to the collector at every boot -- the default is "suppress", and without
+  // this an operator who deliberately turned suppression OFF would find it
+  // silently back on after a backend restart.
+  hepCollector.setStoreKeepalives(sipTraceSettings.storeKeepalives === true);
+  ensureSipTraceIndexes(subscriberRepo.getDb(), sipTraceSettings.retentionHours)
     .catch(err => logger.warn({ err: String(err) }, 'SIP trace: index setup failed'));
+  ensureCallDebugIndexes(subscriberRepo.getDb())
+    .catch(err => logger.warn({ err: String(err) }, 'Call debug: index setup failed'));
   hepCollector.start().catch(err => logger.warn({ err: String(err) }, 'SIP trace: HEP collector failed to start'));
 
   // Periodically clears stuck Gy/Ro reservations leaked by a real,
@@ -344,14 +367,11 @@ async function main() {
   cdrMetricsMonitor.start();
   const cdrMetricsRegistry = createCdrMetricsRegistry(cdrMetricsMonitor);
 
-  // ── SAS service ──
-  // Create a child logger tagged with module:'sas' so the log stream can filter SAS-only messages
+  // ── SAS ──
+  // The CBRS SAS is SASBench, running as its own container and owning the
+  // SAS-CBSD protocol ports directly. Nothing here implements, proxies or
+  // terminates TLS for that protocol; the NMS only reads SASBench's REST API.
   const sasLogger = logger.child({ module: 'sas' });
-  const sasService = new SasService(config.mongodbUri, sasLogger);
-  await sasService.initialize();
-  sasService.startGrantKeeper(200_000);
-  sasService.startSummaryLogger(30_000);
-  logger.info('SAS grant keeper and summary logger started');
 
   // ── Auth setup ──
   const authRepo = new SqliteAuthRepository(config.authDbPath, logger);
@@ -517,6 +537,41 @@ async function main() {
     logger,
   );
   const pcapUseCase = new PcapUseCase(hostExecutor, configRepo, logger);
+
+  // Call Debug sessions: a SIP trace scoped to two numbers, paired with a real
+  // packet capture of the same call. Dependencies are injected as functions
+  // rather than imported inside the manager -- pcap.ts already statically
+  // imports ims-controller/sms-controller/vowifi-controller, so a manager that
+  // imported those AND was imported back by pcap.ts would be a genuine
+  // load-time cycle (CLAUDE.md pattern #16's rule).
+  const callDebugManager = new CallDebugSessionManager(
+    subscriberRepo.getDb(),
+    hepCollector,
+    pcapUseCase,
+    {
+      imsAddresses: () => {
+        const ims = readCurrentImsConfig();
+        return ims
+          ? { pcscfIp: ims.pcscfIp, icscfIp: ims.icscfIp, scscfIp: ims.scscfIp, rtpEngineIp: ims.rtpEngineIp }
+          : {};
+      },
+      asteriskAddress: () => readPstnState()?.asteriskIp,
+      externalTrunk: () => {
+        const t = readPstnState()?.externalTrunk;
+        return t?.enabled ? { providerHost: t.providerHost, bindIp: t.bindIp } : undefined;
+      },
+      tracingEnabled: () => getSipTracingEnabled(),
+      setTracingEnabled: async (on: boolean) => {
+        const r = await setSipTracingEnabled(on);
+        return { needsConfigure: r.needsConfigure, instances: r.instances };
+      },
+    },
+    logger,
+  );
+  // A session's scope filter lives in memory while setSipTracingEnabled()
+  // persists tracing ON to the host IMS state, so a restart mid-session would
+  // otherwise resume with tracing on and nothing scoping it.
+  callDebugManager.reconcile().catch(err => logger.warn({ err: String(err) }, 'Call debug: reconcile failed'));
   const esimGeneratorUseCase = new EsimGeneratorUseCase(
     config.simlesslyAccessKey,
     config.simlesslySecretKey,
@@ -712,7 +767,7 @@ async function main() {
   app.use('/api/ocs',        createOcsRouter(subscriberRepo, subscriberRepo.getDb(), logger, auditLogger));
   app.use('/api/charging-plans', createChargingPlansRouter(subscriberRepo, subscriberRepo.getDb(), logger, auditLogger));
   app.use('/api/cdr',        createCdrRouter(subscriberRepo.getDb(), logger, auditLogger, cdrSyncMonitor));
-  app.use('/api/sip-trace', createSipTraceRouter(subscriberRepo.getDb(), hepCollector, logger, auditLogger));
+  app.use('/api/sip-trace', createSipTraceRouter(subscriberRepo.getDb(), hepCollector, logger, auditLogger, callDebugManager));
   app.use('/api/swu-emulator', createSwuEmulatorRouter(subscriberRepo, logger, auditLogger));
   app.use('/api/bind', createBindRouter(logger, auditLogger));
   app.use('/api/validation/volte', createVolteValidationRouter(logger, auditLogger));
@@ -730,11 +785,16 @@ async function main() {
   app.use('/api/radio-signal', createRadioSignalRouter(authRepo.getDb(), subscriberRepo, activeSessionsUseCase, logger));
   app.use('/api/snmp', createSnmpRouter(activeSessionsUseCase, hostExecutor, configRepo, auditLogger, logger));
 
-  // SAS endpoints — WinnForum CBSD protocol (unauthenticated, CBSDs connect directly)
-  // IMPORTANT: contains NO admin routes — those are in createSasAdminRouter below
-  app.use('/sas', createSasProtocolRouter(sasService, sasLogger));
-  // SAS admin endpoints — authenticated + admin-only, mounted under /api
-  app.use('/api/sas', createSasAdminRouter(sasService, sasLogger, config.genieacsNbiUrl));
+  // SAS — a read-only view of SASBench for the SAS page and the dashboard
+  // card, plus keeping the SASBench checkout itself in step with upstream.
+  // Radios never touch this: they talk to SASBench directly.
+  app.use('/api/sas', createSasRouter({
+    apiUrl: config.sasbenchApiUrl,
+    uiPort: config.sasbenchUiPort,
+    user: config.sasbenchUser,
+    password: config.sasbenchPassword,
+    dir: config.sasbenchDir,
+  }, sasLogger, hostExecutor, auditLogger));
 
   // Error handler
   app.use(
@@ -801,18 +861,6 @@ async function main() {
     });
   }
 
-  // SAS proxy on port 8899 — Sercomm NR radios send HTTP/1.1 without Host header,
-  // which nginx 1.31 rejects before location matching. This separate server uses
-  // insecureHTTPParser to accept the malformed requests and route them to the SAS handler.
-  const sasProxyApp = express();
-  sasProxyApp.use(express.json({ limit: '1mb' }));
-  sasProxyApp.use(express.urlencoded({ extended: false }));
-  sasProxyApp.use('/sas', createSasProtocolRouter(sasService, sasLogger));
-  const sasProxyServer = http.createServer({ insecureHTTPParser: true } as any, sasProxyApp);
-  sasProxyServer.listen(8899, '0.0.0.0', () => {
-    logger.info('SAS proxy listening on 0.0.0.0:8899 (Sercomm NR Host-less HTTP/1.1 workaround)');
-  });
-
   // ── Authenticated WebSocket upgrade ──────────────────────────────────────────
   // The WebSocket server uses noServer:true so we can validate the Lucia session
   // cookie on the HTTP upgrade request BEFORE the socket is accepted.
@@ -855,8 +903,6 @@ async function main() {
   const shutdown = async () => {
     logger.info('Shutting down gracefully...');
     serviceMonitorUseCase.stopPolling();
-    sasService.stopGrantKeeper();
-    sasService.stopSummaryLogger();
     logStreamHandler.cleanup();
     subscriberIpAccounting.stop();
     radioBlockService.stop();
@@ -875,7 +921,6 @@ async function main() {
     await rfPlanningProjectRepo.disconnect();
     await apnProfileRepo.disconnect();
     httpServer.close();
-    sasProxyServer.close();
     wss.close();
     process.exit(0);
   };

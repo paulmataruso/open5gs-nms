@@ -211,17 +211,52 @@ function ensurePlanErlHelper(): string {
     // as "has real balance," blocking the whole reassignment as a
     // precaution, since a destructive operation that can't confirm safety
     // must not proceed).
+    // Real bug, confirmed live 2026-10-17: the balance check is right that a
+    // product with credit must not be destroyed, but as written it made plan
+    // CHANGES impossible for every subscriber who already had a plan — which
+    // is everyone. Every plan grants a data/voice bucket, so anyone sitting on
+    // one always has a non-zero remain_amount, so lists:any/2 below always
+    // returned true and the assignment was always skipped. Live probe of three
+    // real subscribers: buckets [59999750, 999998702284437], [6000,
+    // 2000000000] and [59998439, 999992454070131] — all blocking. The UI
+    // surfaced it as "has a real balance on a different OCS product. Review
+    // manually.", which also mis-stated the cause.
+    //
+    // What this guard genuinely needs to protect is a product a human built in
+    // OCS's own web GUI (an explicitly-supported workflow per this project's
+    // docs) — NOT one this file created for a Charging Plan, which it is free
+    // to move a subscriber off because add_product below recreates the
+    // equivalent grant on the new plan. The two are distinguishable from the
+    // product record itself: element(7) is the product-offering id, and every
+    // bundle this file creates is named `plan-<mongo _id>-bundle` (see
+    // planOfferIds() above). Verified against the live OCS — a real product
+    // carried "plan-6aab493280ae1919fc0849f5-bundle", matching that plan's own
+    // Mongo _id exactly.
+    //
+    // Anything NOT of that shape — a foreign offer id, a non-string, an
+    // unreadable field — falls through to the original bucket check with its
+    // fail-closed branches fully intact, so the 2026-09-24 critic finding
+    // (never treat an RPC hiccup as "confirmed no balance") still holds.
+    `          IsNmsPlanProduct = fun(Prod) ->`,
+    `            OfferId = element(7, Prod),`,
+    `            is_list(OfferId) andalso lists:prefix("plan-", OfferId)`,
+    `              andalso lists:suffix("-bundle", OfferId)`,
+    `          end,`,
     `          HasRealBalance = fun(ProdRef) ->`,
     `            case Ocs(find_product, [ProdRef]) of`,
     `              {ok, OldProd} ->`,
-    `                BucketIds = element(10, OldProd),`,
-    `                lists:any(fun(BId) ->`,
-    `                  case Ocs(find_bucket, [BId]) of`,
-    `                    {ok, B} -> element(7, B) > 0;`,
-    `                    {error, not_found} -> false;`,
-    `                    _ -> true`,
-    `                  end`,
-    `                end, BucketIds);`,
+    `                case IsNmsPlanProduct(OldProd) of`,
+    `                  true -> false;`,
+    `                  false ->`,
+    `                    BucketIds = element(10, OldProd),`,
+    `                    lists:any(fun(BId) ->`,
+    `                      case Ocs(find_bucket, [BId]) of`,
+    `                        {ok, B} -> element(7, B) > 0;`,
+    `                        {error, not_found} -> false;`,
+    `                        _ -> true`,
+    `                      end`,
+    `                    end, BucketIds)`,
+    `                end;`,
     `              {error, not_found} -> false;`,
     `              _ -> true`,
     `            end`,

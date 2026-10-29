@@ -66,6 +66,11 @@ nginx/certs/*.crt
 nginx/certs/*.key
 nginx/certs/*.pem
 
+# Local dev helper — flips the running UI between main and the pre-overhaul
+# baseline. Pins a specific commit, so it is meaningless in anyone else's
+# checkout; its own header says it is never committed.
+ui-switch.sh
+
 # Internal documentation (keep local)
 GIT_PUSH_COMMANDS.md
 PROJECT_STATE.md

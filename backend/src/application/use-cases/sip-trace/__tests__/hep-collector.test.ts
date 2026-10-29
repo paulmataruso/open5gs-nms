@@ -3,6 +3,7 @@ import pino from 'pino';
 import { HepCollector, HepBinding } from '../hep-collector';
 import { HEP_CHUNK, HEP_PROTO_SIP } from '../hep-parser';
 import { SipTraceDocument } from '../sip-trace-store';
+import { normaliseParty } from '../call-scope';
 
 // Exercises the real UDP socket and the real batching path; only Mongo is
 // stubbed. A collector that parses perfectly in unit tests but never actually
@@ -232,5 +233,157 @@ describe('HepCollector over a real UDP socket', () => {
     const again = new HepCollector(stub.db, log, BINDINGS, '127.0.0.1');
     await expect(again.start()).resolves.toBeUndefined();
     await again.stop();
+  });
+});
+
+// ── Scoping and keepalive suppression, through the real socket ──────────────
+//
+// The pure decision logic is covered in call-scope.test.ts. This block exists
+// because the WIRING is what actually drops a message: the filter is applied
+// after parsing, before the queue, and a mistake there would be invisible to a
+// pure-function test.
+
+/** A SIP message with controllable From/To users and CSeq method. */
+const sipParties = (callId: string, fromUser: string, toUser: string, method = 'INVITE', status?: number) => {
+  const start = status
+    ? `SIP/2.0 ${status} ${status === 200 ? 'OK' : 'Trying'}`
+    : `${method} sip:${toUser}@ims.mnc001.mcc001.3gppnetwork.org SIP/2.0`;
+  return [
+    start,
+    `From: <sip:${fromUser}@ims.mnc001.mcc001.3gppnetwork.org>;tag=1`,
+    `To: <sip:${toUser}@ims.mnc001.mcc001.3gppnetwork.org>`,
+    `Call-ID: ${callId}`,
+    `CSeq: 1 ${method}`,
+    '', '',
+  ].join('\r\n');
+};
+
+describe('HepCollector keepalive suppression', () => {
+  let c: HepCollector;
+  let stub: ReturnType<typeof stubDb>;
+  const log = pino({ level: 'silent' });
+
+  beforeEach(async () => {
+    stub = stubDb();
+    c = new HepCollector(stub.db, log, BINDINGS, '127.0.0.1');
+    await c.start();
+  });
+  afterEach(async () => { await c.stop(); });
+
+  it('drops the dispatcher OPTIONS keepalive with no session running', async () => {
+    // 68% of this deployment's real store, each one its own dialog.
+    await send(hep(sipParties('ka-1', 'dispatcher', '127.0.1.1:4060', 'OPTIONS')), PORTS.scscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(0);
+    expect(c.getStats().keepalivesIgnored).toBe(1);
+  });
+
+  it('drops the keepalive REPLY too, which carries no method at all', async () => {
+    await send(hep(sipParties('ka-2', 'dispatcher', '127.0.1.1:4060', 'OPTIONS', 200)), PORTS.scscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(0);
+    expect(c.getStats().keepalivesIgnored).toBe(1);
+  });
+
+  it('still stores a real call when keepalives are being suppressed', async () => {
+    await send(hep(sipParties('real-1', '15550000001', '6034771783')), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(1);
+    expect(c.getStats().keepalivesIgnored).toBe(0);
+  });
+
+  it('keeps keepalives when explicitly opted back in', async () => {
+    c.setStoreKeepalives(true);
+    await send(hep(sipParties('ka-3', 'dispatcher', '127.0.1.1:4060', 'OPTIONS')), PORTS.scscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(1);
+  });
+});
+
+describe('HepCollector scoped to a Call Debug session', () => {
+  let c: HepCollector;
+  let stub: ReturnType<typeof stubDb>;
+  const log = pino({ level: 'silent' });
+
+  const scopeTo = (parties: string[], o: Partial<{ dialogScope: any; tagOnly: boolean }> = {}) =>
+    c.setScopeFilter({
+      sessionId: 'SESS-1',
+      parties: parties.map(normaliseParty),
+      dialogScope: o.dialogScope ?? 'calls',
+      tagOnly: o.tagOnly ?? false,
+    });
+
+  beforeEach(async () => {
+    stub = stubDb();
+    c = new HepCollector(stub.db, log, BINDINGS, '127.0.0.1');
+    await c.start();
+  });
+  afterEach(async () => { await c.stop(); });
+
+  it('stores an in-scope call and stamps the session id on it', async () => {
+    scopeTo(['15550000001', '6034771783']);
+    await send(hep(sipParties('in-1', '15550000001', '6034771783')), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(1);
+    expect(stub.inserted[0].sessionId).toBe('SESS-1');
+  });
+
+  it('drops a different subscriber entirely, and counts it', async () => {
+    scopeTo(['15550000001']);
+    await send(hep(sipParties('other-1', '15550000007', '15550000004')), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(0);
+    expect(c.getStats().scopeFiltered).toBe(1);
+  });
+
+  it('excludes the reg-event SUBSCRIBE dialog even though it carries the MSISDN', async () => {
+    // Measured live at 211/217/218 messages in ONE dialog -- party scoping
+    // alone would drag that into every session.
+    scopeTo(['15550000001']);
+    await send(hep(sipParties('sub-1', '15550000001', '15550000001', 'SUBSCRIBE')), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(0);
+  });
+
+  it('includes REGISTER on the IMSI identity when registration context is asked for', async () => {
+    scopeTo(['15550000001', '001010000053555'], { dialogScope: 'callsAndRegistration' });
+    await send(hep(sipParties('reg-1', '001010000053555', '001010000053555', 'REGISTER')), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(1);
+    expect(stub.inserted[0].sessionId).toBe('SESS-1');
+  });
+
+  it('stores a response whose request has not arrived yet', async () => {
+    // Transaction-mode replies come back through tm callbacks on three
+    // independent sockets, so a 100 Trying can genuinely be seen first.
+    scopeTo(['15550000001']);
+    await send(hep(sipParties('race-1', '15550000001', '6034771783', 'INVITE', 100)), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(1);
+  });
+
+  it('releases the scope when the filter is cleared', async () => {
+    scopeTo(['15550000001']);
+    c.setScopeFilter(null);
+    await send(hep(sipParties('after-1', '15550000007', '15550000004')), PORTS.pcscf);
+    await settle();
+    await c.stop(); // stop() drains; the 1s flush interval has not fired yet
+    expect(stub.inserted).toHaveLength(1);
+    expect(stub.inserted[0].sessionId).toBeUndefined();
+    expect(c.getStats().activeSessionId).toBeNull();
+  });
+
+  it('reports the active session id while scoped', async () => {
+    scopeTo(['15550000001']);
+    expect(c.getStats().activeSessionId).toBe('SESS-1');
   });
 });

@@ -79,6 +79,13 @@ export interface SipTraceDocument {
   fromUser?: string;
   toUri?: string;
   toUser?: string;
+  /**
+   * Set only on a message a Call Debug session matched, so that session's view
+   * can query its own dialogs exactly instead of re-deriving them from the
+   * numbers (which would re-run the suffix/short-code rules at read time and
+   * could disagree with what was actually captured).
+   */
+  sessionId?: string;
   /** Verbatim message -- what the detail pane shows. */
   raw: string;
   /** Monotonic within one datagram burst, to keep same-millisecond ordering stable. */
@@ -105,6 +112,7 @@ export function toDocument(
   seq: number,
   source: SipTraceSource,
   parsed?: ParsedSip,
+  sessionId?: string,
 ): SipTraceDocument {
   const p = parsed ?? parseSipMessage(pkt.payload);
   return {
@@ -126,6 +134,7 @@ export function toDocument(
     fromUser: sipUser(p.fromUri),
     toUri: p.toUri,
     toUser: sipUser(p.toUri),
+    ...(sessionId ? { sessionId } : {}),
     raw: pkt.payload,
     seq,
   };
@@ -157,6 +166,13 @@ export async function ensureSipTraceIndexes(db: Db, retentionHours: number): Pro
   if (!indexes.find((ix: any) => ix.key && ix.key.timestamp === -1 && Object.keys(ix.key).length === 1)) {
     await c.createIndex({ timestamp: -1 });
   }
+  // A Call Debug session's own dialogs. Deliberately a compound index whose
+  // first key is sessionId: the existing TTL and timestamp probes above both
+  // require a SINGLE-key index, so this one is invisible to them and cannot be
+  // mistaken for either.
+  if (!indexes.find((ix: any) => ix.key && ix.key.sessionId === 1)) {
+    await c.createIndex({ sessionId: 1, timestamp: 1, seq: 1 });
+  }
   // Search by party.
   if (!indexes.find((ix: any) => ix.key && ix.key.fromUser === 1)) {
     await c.createIndex({ fromUser: 1, timestamp: -1 });
@@ -177,6 +193,47 @@ export async function insertMessages(db: Db, docs: SipTraceDocument[]): Promise<
   });
 }
 
+/** One captured message of a dialog, as the call-list aggregation pushes it. */
+export interface DialogEvent {
+  t: Date;
+  /** Request method; absent on a response. */
+  m?: string;
+  /** Response status; absent on a request. */
+  s?: number;
+  /** CSeq method -- present on BOTH requests and responses. */
+  c?: string;
+}
+
+/**
+ * When a dialog was answered, and when (or whether) it ended.
+ *
+ * Pure and exported so the rules below are testable without a database --
+ * they are easy to get subtly wrong and the cost of being wrong is a healthy
+ * call displayed as a 5-second one.
+ */
+export function dialogLifecycle(events: DialogEvent[]): { answerTime?: Date; terminatedAt?: Date } {
+  // Answered = a 2xx FINAL response to the INVITE transaction itself. Keyed on
+  // cseqMethod rather than method because a response carries no method of its
+  // own, and scoped to the INVITE transaction so a 200 to a REGISTER or to an
+  // in-dialog OPTIONS keepalive can never be mistaken for a pickup.
+  const answered = events.find(
+    e => e.c === 'INVITE' && typeof e.s === 'number' && e.s >= 200 && e.s < 300,
+  );
+  // A BYE in either direction ends an established dialog, and is the ONLY
+  // thing that does.
+  const bye = events.find(e => e.m === 'BYE' || e.c === 'BYE');
+  const rejected = events.find(e => e.c === 'INVITE' && typeof e.s === 'number' && e.s >= 300);
+  const cancelled = events.find(e => e.m === 'CANCEL' || e.c === 'CANCEL');
+  return {
+    answerTime: answered?.t,
+    // Once answered, a >=300 INVITE response is a failed RE-INVITE mid-call (a
+    // declined hold, a codec renegotiation) -- not a hangup. Treating it as
+    // one would stop the timer while the two parties were still talking, so a
+    // rejection or CANCEL only terminates a call that was never answered.
+    terminatedAt: bye?.t ?? (answered ? undefined : (rejected?.t ?? cancelled?.t)),
+  };
+}
+
 export interface CallSummary {
   callId: string;
   startTime: Date;
@@ -188,6 +245,27 @@ export interface CallSummary {
   toUser?: string;
   /** Highest final response seen, for an at-a-glance outcome. */
   lastStatus?: number;
+  /**
+   * When the callee actually picked up: the 2xx final response to the INVITE
+   * transaction. Absent means never answered (still ringing, or it failed).
+   *
+   * This exists because `endTime` is the last MESSAGE's timestamp, which is
+   * not the end of the call. SIP is silent for the whole conversation, so for
+   * a call in progress the last message is the ACK and `endTime - startTime`
+   * is the SETUP time -- about 5 seconds -- no matter how long the call runs.
+   * Reported as "Duration" that was simply wrong, and wrong in the direction
+   * that makes a perfectly healthy call look like it dropped instantly.
+   */
+  answerTime?: Date;
+  /**
+   * When the dialog actually ended, or absent while it is still up.
+   *
+   * Only a BYE ends an ESTABLISHED dialog. A >=300 response to an INVITE ends
+   * the call only if it was never answered -- on an answered call that is a
+   * failed re-INVITE (a declined hold, a codec renegotiation), which must not
+   * be read as a hangup while the two parties are still talking.
+   */
+  terminatedAt?: Date;
   sources: SipTraceSource[];
 }
 
@@ -197,6 +275,8 @@ export interface CallListFilter {
   search?: string;
   method?: string;
   source?: SipTraceSource;
+  /** Restrict to one Call Debug session's matched messages. */
+  sessionId?: string;
   page?: number;
   pageSize?: number;
   /**
@@ -229,6 +309,7 @@ export async function listCalls(
     match.timestamp = t;
   }
   if (f.source) match.source = f.source;
+  if (f.sessionId) match.sessionId = f.sessionId;
   if (f.search && f.search.trim()) {
     // Escaped: a search box must never be able to inject a regex that pins a
     // CPU core on a large collection.
@@ -246,7 +327,13 @@ export async function listCalls(
         endTime: { $last: '$timestamp' },
         messageCount: { $sum: 1 },
         methods: { $push: '$method' },
-        statuses: { $push: '$statusCode' },
+        // One entry per message, pushed as a document rather than as parallel
+        // arrays. Parallel arrays would have to be index-aligned to tell which
+        // status belonged to which CSeq method, and `$push` of a missing field
+        // does not reliably contribute an element -- so the alignment those
+        // arrays imply is not guaranteed. A document per message carries its
+        // own fields and cannot drift.
+        events: { $push: { t: '$timestamp', m: '$method', s: '$statusCode', c: '$cseqMethod' } },
         fromUser: { $first: '$fromUser' },
         toUser: { $first: '$toUser' },
         sources: { $addToSet: '$source' },
@@ -273,7 +360,12 @@ export async function listCalls(
   return {
     rows: rows.map((r: any) => {
       const methods: (string | undefined)[] = r.methods ?? [];
-      const statuses: (number | undefined)[] = (r.statuses ?? []).filter((s: unknown) => typeof s === 'number');
+      // Chronological: the pipeline sorts on { timestamp, seq } before $group.
+      const events: DialogEvent[] = r.events ?? [];
+      const statuses: (number | undefined)[] = events
+        .map(e => e.s)
+        .filter((x: unknown) => typeof x === 'number');
+      const lifecycle = dialogLifecycle(events);
       return {
         callId: r._id,
         startTime: r.startTime,
@@ -283,6 +375,8 @@ export async function listCalls(
         fromUser: r.fromUser,
         toUser: r.toUser,
         lastStatus: statuses.length ? statuses[statuses.length - 1] : undefined,
+        answerTime: lifecycle.answerTime,
+        terminatedAt: lifecycle.terminatedAt,
         sources: (r.sources ?? []).filter((s: unknown): s is SipTraceSource => !!s),
       };
     }),

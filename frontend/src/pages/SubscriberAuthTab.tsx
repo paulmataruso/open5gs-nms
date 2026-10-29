@@ -4,6 +4,7 @@ import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
 import { gsmApi, type HlrSubscriberStatus } from '../api/gsm';
 import { smsApi } from '../api/sms';
+import { subscriberApi } from '../api';
 
 function AuthBadge({ has }: { has: boolean }) {
   return (
@@ -38,15 +39,24 @@ function formatLu(ts: string | null): string {
 // reads correctly from either module's own page instead of a separate nav
 // entry implying it's 2G-specific.
 export function SubscriberAuthTab({ onNavigate }: { onNavigate?: (tab: string) => void }) {
-  const [subscribers, setSubscribers] = useState<HlrSubscriberStatus[] | null>(null);
+  const [subscribers, setSubscribers] = useState<(HlrSubscriberStatus & { nickname?: string })[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await gsmApi.listSubscribers();
-      setSubscribers(r.subscribers);
+      // gsmApi.listSubscribers() is the authoritative "is this subscriber
+      // actually present in hlr.db" source but only carries imsi/msisdn —
+      // join in nicknames from the general subscriber list so each row is
+      // identifiable by the name the operator gave the handset, the same way
+      // PstnGatewayPage's own Gsm2gExtensionsCard picker already does.
+      const [r, allSubs] = await Promise.all([
+        gsmApi.listSubscribers(),
+        subscriberApi.list(0, 500),
+      ]);
+      const nicknameByImsi = new Map(allSubs.subscribers.map(s => [s.imsi, s.nickname]));
+      setSubscribers(r.subscribers.map(s => ({ ...s, nickname: nicknameByImsi.get(s.imsi) })));
     } catch {
       toast.error('Failed to load 2G/3G subscriber auth status.');
     } finally {
@@ -103,6 +113,7 @@ export function SubscriberAuthTab({ onNavigate }: { onNavigate?: (tab: string) =
           <table className="w-full text-sm">
             <thead className="bg-nms-surface-2 text-nms-text-dim text-xs uppercase">
               <tr>
+                <th className="text-left px-4 py-2">Name</th>
                 <th className="text-left px-4 py-2">IMSI</th>
                 <th className="text-left px-4 py-2">MSISDN</th>
                 <th className="text-left px-4 py-2">2G/3G Auth</th>
@@ -112,12 +123,13 @@ export function SubscriberAuthTab({ onNavigate }: { onNavigate?: (tab: string) =
             </thead>
             <tbody>
               {subscribers?.length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-nms-text-dim">
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-nms-text-dim">
                   No subscribers in the 2G/3G HLR yet — sync from above.
                 </td></tr>
               )}
               {subscribers?.map(s => (
                 <tr key={s.imsi} className="border-t border-nms-border">
+                  <td className="px-4 py-2">{s.nickname || <span className="text-nms-text-dim">—</span>}</td>
                   <td className="px-4 py-2 font-mono">{s.imsi}</td>
                   <td className="px-4 py-2 font-mono">{s.msisdn || '—'}</td>
                   <td className="px-4 py-2"><AuthBadge has={s.hasAuthKeys} /></td>

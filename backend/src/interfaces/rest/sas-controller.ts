@@ -1,610 +1,622 @@
-import { Router, Request, Response } from 'express';
-import pino from 'pino';
-import * as fs from 'fs';
-import { SasService } from '../../domain/sas/sas-service';
-import { getSasPkiStatus, regenerateSasLeaf, regenerateSasRoot } from '../../application/use-cases/sas-pki';
+import { Router } from 'express';
+import { spawn } from 'node:child_process';
+import type pino from 'pino';
 import { requireAdmin } from './middleware/auth-middleware';
-import {
-  RegistrationRequest, SpectrumInquiryRequest,
-  GrantRequest, HeartbeatRequest,
-  RelinquishmentRequest, DeregistrationRequest,
-} from '../../domain/sas/sas-types';
+import type { IHostExecutor } from '../../domain/interfaces/host-executor';
+import type { IAuditLogger } from '../../domain/interfaces/audit-logger';
 
-// ─── SAS Protocol Router (unauthenticated — CBSDs connect directly) ────────────
-// Contains ONLY the WInnForum CBSD protocol endpoints.
-// Mounted at /sas with NO auth middleware in index.ts.
-// Admin routes are intentionally excluded — they live in createSasAdminRouter.
-export function createSasProtocolRouter(sas: SasService, logger: pino.Logger): Router {
-  const router = Router();
+// ── CBRS SAS ────────────────────────────────────────────────────────────────
+// This NMS does not implement a SAS. SASBench does, as its own container, and
+// it owns the SAS-CBSD protocol ports (SAS_HTTP_PORT / SAS_HTTPS_PORT in .env)
+// directly — no part of this deployment sits in front of it. Radios talk to
+// SASBench; nothing here proxies, terminates TLS for, or rewrites that traffic.
+//
+// All this router does is read SASBench's public REST API (/api/v1) so the NMS
+// can render a status page and the dashboard card. It is READ-ONLY by design:
+// everything that changes SAS state belongs in SASBench's own admin UI, which
+// the status page links to.
+//
+// SASBench credentials stay server-side. The browser never receives them — it
+// only ever sees this router's own already-authenticated /api/sas routes.
 
-  // Verbose toggle state — shared within this router instance only
-  let sasVerbose = true;
-  const setVerbose = (verbose: boolean) => {
-    (logger as any).level = verbose ? 'trace' : 'info';
-    if (verbose) {
-      sas.stopSummaryLogger();
-      logger.info({ sasVerbose: true }, 'SAS verbose logging ENABLED — all protocol messages visible, summary suppressed');
-    } else {
-      sas.startSummaryLogger(30_000);
-      logger.info({ sasVerbose: false }, 'SAS verbose logging DISABLED — 30s summary only');
-    }
-  };
-  setVerbose(true);
-
-  // ── POST /sas/v1.2/registration ──────────────────────────────────────────
-  router.post(['/v1.2/registration', '/registration'], async (req: Request, res: Response) => {
-    if (sas.isPaused()) return res.json({ registrationResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
-    logger.info({ body: req.body, ip: req.ip, headers: req.headers }, 'SAS registration request');
-    try {
-      const requests: RegistrationRequest[] = req.body?.registrationRequest;
-      if (!Array.isArray(requests) || requests.length === 0) {
-        logger.warn({ body: req.body }, 'SAS registration: missing registrationRequest array');
-        return res.status(400).json({ registrationResponse: [] });
-      }
-      const registrationResponse = await sas.registration(requests);
-      logger.info({ registrationResponse }, 'SAS registration response');
-      res.json({ registrationResponse });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS registration error');
-      res.status(500).json({ registrationResponse: [] });
-    }
-  });
-
-  // ── POST /sas/v1.2/spectrumInquiry ───────────────────────────────────────
-  router.post(['/v1.2/spectrumInquiry', '/spectrumInquiry'], async (req: Request, res: Response) => {
-    if (sas.isPaused()) return res.json({ spectrumInquiryResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
-    logger.trace({ body: req.body, ip: req.ip }, 'SAS spectrumInquiry request');
-    try {
-      const requests: SpectrumInquiryRequest[] = req.body?.spectrumInquiryRequest;
-      const clientIp = req.ip ?? '';
-      if (!Array.isArray(requests) || requests.length === 0) {
-        return res.status(400).json({ spectrumInquiryResponse: [] });
-      }
-      for (const r of requests) {
-        if (r.cbsdId) {
-          const cbsds = await sas.listCbsds();
-          const cbsd  = cbsds.find(c => c.cbsdId === r.cbsdId);
-          if (cbsd && r.inquiredSpectrum?.[0]) {
-            const fr = r.inquiredSpectrum[0];
-            sas.recordLastRequest(r.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, clientIp, fr.lowFrequency, fr.highFrequency, 'spectrumInquiry');
-          }
-        }
-      }
-      const spectrumInquiryResponse = await sas.spectrumInquiry(requests);
-      logger.trace({ spectrumInquiryResponse }, 'SAS spectrumInquiry response');
-      res.json({ spectrumInquiryResponse });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS spectrumInquiry error');
-      res.status(500).json({ spectrumInquiryResponse: [] });
-    }
-  });
-
-  // ── POST /sas/v1.2/grant ─────────────────────────────────────────────────
-  router.post(['/v1.2/grant', '/grant'], async (req: Request, res: Response) => {
-    if (sas.isPaused()) return res.json({ grantResponse: [{ response: { responseCode: 105, responseMessage: 'DEREGISTER' } }] });
-    try {
-      const requests: GrantRequest[] = req.body?.grantRequest;
-      const clientIp = req.ip ?? '';
-      logger.trace({ RAW_REQUEST: req.body, ip: clientIp }, 'SAS /grant RAW');
-      if (!Array.isArray(requests) || requests.length === 0) {
-        return res.status(400).json({ grantResponse: [] });
-      }
-      for (const r of requests) {
-        if (r.cbsdId && r.operationParam?.operationFrequencyRange) {
-          const cbsds = await sas.listCbsds();
-          const cbsd  = cbsds.find(c => c.cbsdId === r.cbsdId);
-          if (cbsd) {
-            const { lowFrequency, highFrequency } = r.operationParam.operationFrequencyRange;
-            sas.recordLastRequest(r.cbsdId, cbsd.cbsdSerialNumber, cbsd.fccId, clientIp, lowFrequency, highFrequency, 'grant');
-          }
-        }
-      }
-      const grantResponse = await sas.grant(requests);
-      logger.trace({ RAW_RESPONSE: { grantResponse } }, 'SAS /grant RAW response');
-      res.json({ grantResponse });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS grant error');
-      res.status(500).json({ grantResponse: [] });
-    }
-  });
-
-  // ── POST /sas/v1.2/heartbeat ─────────────────────────────────────────────
-  router.post(['/v1.2/heartbeat', '/heartbeat'], async (req: Request, res: Response) => {
-    if (sas.isPaused()) return res.json({ heartbeatResponse: [{ transmitExpireTime: new Date().toISOString(), response: { responseCode: 500, responseMessage: 'TERMINATED_GRANT' } }] });
-    try {
-      const requests: HeartbeatRequest[] = req.body?.heartbeatRequest;
-      logger.trace({ RAW_REQUEST: req.body, ip: req.ip }, 'SAS /heartbeat RAW');
-      if (!Array.isArray(requests) || requests.length === 0) {
-        return res.status(400).json({ heartbeatResponse: [] });
-      }
-      const heartbeatResponse = await sas.heartbeat(requests);
-      logger.trace({ RAW_RESPONSE: { heartbeatResponse } }, 'SAS /heartbeat RAW response');
-      res.json({ heartbeatResponse });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS heartbeat error');
-      res.status(500).json({ heartbeatResponse: [] });
-    }
-  });
-
-  // ── POST /sas/v1.2/relinquishment ────────────────────────────────────────
-  router.post(['/v1.2/relinquishment', '/relinquishment'], async (req: Request, res: Response) => {
-    logger.info({ body: req.body, ip: req.ip }, 'SAS relinquishment request');
-    try {
-      const requests: RelinquishmentRequest[] = req.body?.relinquishmentRequest;
-      if (!Array.isArray(requests) || requests.length === 0) {
-        return res.status(400).json({ relinquishmentResponse: [] });
-      }
-      const relinquishmentResponse = await sas.relinquishment(requests);
-      logger.info({ relinquishmentResponse }, 'SAS relinquishment response');
-      res.json({ relinquishmentResponse });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS relinquishment error');
-      res.status(500).json({ relinquishmentResponse: [] });
-    }
-  });
-
-  // ── POST /sas/v1.2/deregistration ────────────────────────────────────────
-  router.post(['/v1.2/deregistration', '/deregistration'], async (req: Request, res: Response) => {
-    logger.info({ body: req.body, ip: req.ip }, 'SAS deregistration request');
-    try {
-      const requests: DeregistrationRequest[] = req.body?.deregistrationRequest;
-      if (!Array.isArray(requests) || requests.length === 0) {
-        return res.status(400).json({ deregistrationResponse: [] });
-      }
-      const deregistrationResponse = await sas.deregistration(requests);
-      logger.info({ deregistrationResponse }, 'SAS deregistration response');
-      res.json({ deregistrationResponse });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS deregistration error');
-      res.status(500).json({ deregistrationResponse: [] });
-    }
-  });
-
-  return router;
+export interface SasBenchConfig {
+  /** Base URL of SASBench's UI/REST port, as reachable from the backend. */
+  apiUrl: string;
+  /** Real host port of SASBench's UI — what the browser is told to open. */
+  uiPort: number;
+  user: string;
+  password: string;
+  /**
+   * SASBench's source checkout on the host (SASBENCH_DIR, the sasbench
+   * service's build context). The NMS keeps this in step with upstream; it
+   * is outside this repository on purpose — SASBench is proprietary and this
+   * project is AGPL-3.0.
+   */
+  dir: string;
 }
 
-// ─── SAS Admin Router (authenticated + admin-only) ─────────────────────────────
-// All /admin/* routes. Mounted at /api/sas behind authMiddleware in index.ts.
-// requireAdmin is applied to every mutating route.
-export function createSasAdminRouter(sas: SasService, logger: pino.Logger, genieacsNbiUrl?: string): Router {
-  const router = Router();
-
-  let sasVerbose = true;
-  const setVerbose = (verbose: boolean) => {
-    (logger as any).level = verbose ? 'trace' : 'info';
-    if (verbose) {
-      sas.stopSummaryLogger();
-      logger.info({ sasVerbose: true }, 'SAS verbose logging ENABLED');
-    } else {
-      sas.startSummaryLogger(30_000);
-      logger.info({ sasVerbose: false }, 'SAS verbose logging DISABLED');
+/**
+ * One call into SASBench's REST API.
+ *
+ * SASBench answers HTTP Basic (see its api/v1/auth.ts: session | password |
+ * token | open), so no API key has to be provisioned before the NMS can read
+ * it — the admin account from SAS_ADMIN_PASSWORD is enough. A deployment
+ * running SAS_AUTH=off ignores the header and answers anyway.
+ */
+async function sasbench(
+  cfg: SasBenchConfig,
+  path: string,
+  timeoutMs = 5000,
+): Promise<{ ok: true; data: any } | { ok: false; status: number; error: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${cfg.apiUrl}/api/v1${path}`, {
+      signal: ctrl.signal,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Basic ${Buffer.from(`${cfg.user}:${cfg.password}`).toString('base64')}`,
+      },
+    });
+    // SASBench reports its own errors as JSON; keep the status so the UI can
+    // tell "SASBench is down" (ECONNREFUSED below) from "it said no" (401/403).
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      return { ok: false, status: res.status, error: body.slice(0, 500) || res.statusText };
     }
+    return { ok: true, data: await res.json() };
+  } catch (err: any) {
+    const reason = err?.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : String(err?.message ?? err);
+    return { ok: false, status: 0, error: reason };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+
+
+// ── Band occupancy ──────────────────────────────────────────────────────────
+// SASBench reports `authorizedMHz` as the SUM of every live grant's width,
+// which on a GAA deployment routinely exceeds the band itself: grants may
+// overlap freely, so 9 grants totalling 200 MHz can sit inside a 150 MHz band.
+// That number answers "how much spectrum did we hand out", not "how much of
+// the band is in use", and presenting it as occupancy would be wrong.
+//
+// So the NMS derives both from the real grant ranges: the UNION (distinct
+// spectrum actually in use) and the peak overlap depth (how many radios share
+// the busiest frequency — the thing that actually predicts co-channel
+// interference on GAA, where nothing is protected).
+
+export interface SasOccupancy {
+  bandLowHz: number;
+  bandHighHz: number;
+  bandMHz: number;
+  /** Sum of grant widths, i.e. SASBench's own authorizedMHz. */
+  grantedMHz: number;
+  /** Union of grant ranges — distinct spectrum in use. Never exceeds bandMHz. */
+  distinctMHz: number;
+  /** distinctMHz as a percentage of the band. */
+  occupancyPct: number;
+  /** Most grants overlapping any single frequency. 1 = no co-channel sharing. */
+  maxOverlap: number;
+  /** Contiguous free run, the biggest block a new grant could take. */
+  largestGapMHz: number;
+  liveGrants: number;
+}
+
+/** Union length, peak overlap and largest free run of a set of ranges. */
+function occupancyOf(
+  ranges: Array<{ low: number; high: number }>,
+  bandLow: number,
+  bandHigh: number,
+): { unionHz: number; maxOverlap: number; largestGapHz: number } {
+  // Clip to the band first: a grant reaching outside it must not inflate the
+  // union past the band width, which is what makes the percentage meaningful.
+  const clipped = ranges
+    .map((r) => ({ low: Math.max(Number(r.low), bandLow), high: Math.min(Number(r.high), bandHigh) }))
+    .filter((r) => Number.isFinite(r.low) && Number.isFinite(r.high) && r.high > r.low)
+    .sort((a, b) => a.low - b.low);
+
+  // Merge overlapping and touching ranges into disjoint runs, then measure
+  // both the runs (union) and the holes between them (gaps) off that one list.
+  const merged: Array<{ low: number; high: number }> = [];
+  for (const r of clipped) {
+    const last = merged[merged.length - 1];
+    if (last && r.low <= last.high) last.high = Math.max(last.high, r.high);
+    else merged.push({ ...r });
+  }
+
+  const unionHz = merged.reduce((n, r) => n + (r.high - r.low), 0);
+
+  let largestGapHz = 0;
+  let edge = bandLow;
+  for (const r of merged) {
+    largestGapHz = Math.max(largestGapHz, r.low - edge);
+    edge = r.high;
+  }
+  // Also the run from the last grant to the top of the band — and, when there
+  // are no grants at all, this single step correctly yields the whole band.
+  largestGapHz = Math.max(largestGapHz, bandHigh - edge);
+
+  // Peak overlap: sweep the edges, +1 at each low, -1 at each high. Ends sort
+  // before starts at the same frequency, so a grant ending exactly where the
+  // next begins counts as adjacent rather than overlapping.
+  const events = clipped
+    .flatMap((r) => [[r.low, 1], [r.high, -1]] as Array<[number, number]>)
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let depth = 0;
+  let maxOverlap = 0;
+  for (const [, delta] of events) {
+    depth += delta;
+    if (depth > maxOverlap) maxOverlap = depth;
+  }
+
+  return { unionHz, maxOverlap, largestGapHz };
+}
+
+/** Everything the status cards show beyond SASBench's own counts. */
+export interface SasDerived {
+  occupancy: SasOccupancy;
+  /** Registered radios holding at least one live grant — actually on air. */
+  radiosWithGrant: number;
+  /** Registered radios with no live grant: attached to the SAS, not transmitting. */
+  radiosIdle: number;
+  /** Registered radios by FCC category. */
+  byCategory: { A: number; B: number; unknown: number };
+  /** Live grants by channel type. */
+  byChannelType: Record<string, number>;
+}
+
+function deriveFrom(spectrum: any): SasDerived | null {
+  const bandLow = Number(spectrum?.band?.low);
+  const bandHigh = Number(spectrum?.band?.high);
+  if (!Number.isFinite(bandLow) || !Number.isFinite(bandHigh) || bandHigh <= bandLow) return null;
+
+  const grants: any[] = Array.isArray(spectrum.grants) ? spectrum.grants : [];
+  const cbsds: any[] = Array.isArray(spectrum.cbsds) ? spectrum.cbsds : [];
+  const { unionHz, maxOverlap, largestGapHz } = occupancyOf(grants, bandLow, bandHigh);
+  const bandHz = bandHigh - bandLow;
+  const grantedHz = grants.reduce((n, g) => n + Math.max(0, Number(g.high) - Number(g.low)), 0);
+
+  const withGrant = new Set(grants.map((g) => g.cbsdId));
+  const byCategory = { A: 0, B: 0, unknown: 0 };
+  for (const c of cbsds) {
+    if (c.category === 'A') byCategory.A++;
+    else if (c.category === 'B') byCategory.B++;
+    else byCategory.unknown++;
+  }
+  const byChannelType: Record<string, number> = {};
+  for (const g of grants) {
+    const t = typeof g.channelType === 'string' && g.channelType ? g.channelType : 'UNKNOWN';
+    byChannelType[t] = (byChannelType[t] ?? 0) + 1;
+  }
+
+  return {
+    occupancy: {
+      bandLowHz: bandLow,
+      bandHighHz: bandHigh,
+      bandMHz: bandHz / 1e6,
+      grantedMHz: grantedHz / 1e6,
+      distinctMHz: unionHz / 1e6,
+      occupancyPct: bandHz > 0 ? (unionHz / bandHz) * 100 : 0,
+      maxOverlap,
+      largestGapMHz: largestGapHz / 1e6,
+      liveGrants: grants.length,
+    },
+    radiosWithGrant: cbsds.filter((c) => withGrant.has(c.cbsdId)).length,
+    radiosIdle: cbsds.filter((c) => !withGrant.has(c.cbsdId)).length,
+    byCategory,
+    byChannelType,
+  };
+}
+
+// ── Keeping SASBench current ────────────────────────────────────────────────
+// SASBench is developed upstream, so this deployment tracks it rather than
+// freezing a copy: the NMS reads the checkout's own git state, says when it is
+// behind, and applies the update itself (pull -> rebuild the image -> recreate
+// the container). An operator never has to shell onto the host for it.
+//
+// Applying an update RECREATES the sasbench container, so the SAS-CBSD
+// listeners are down for as long as the new one takes to come up and live
+// radios miss heartbeats across that gap. That is why this is an explicit,
+// admin-only action and not something a status poll can trigger.
+//
+// SASBENCH_DIR is outside this repository on purpose — SASBench is proprietary
+// and this project is AGPL-3.0, so its source is never vendored in. A
+// deployment whose SASBENCH_DIR is an unpacked tarball rather than a git
+// checkout reports `managed: false`, which the UI must show as its own state:
+// "cannot be updated from here", never "up to date".
+
+export interface SasBenchVersion {
+  /** SASBENCH_DIR is a git checkout with a remote, so the NMS can update it. */
+  managed: boolean;
+  dir: string;
+  /** Why it is not managed, or why `behind` could not be determined. */
+  reason?: string;
+  remoteUrl?: string;
+  branch?: string;
+  localCommit?: string;
+  localDate?: string;
+  localSubject?: string;
+  upstreamCommit?: string;
+  upstreamDate?: string;
+  upstreamSubject?: string;
+  /** Commits on the tracked upstream branch that this checkout does not have. */
+  behind?: number;
+  /** Local commits not upstream — a pull would not be a fast-forward. */
+  ahead?: number;
+  /** Uncommitted local changes, which an update must not silently discard. */
+  dirty?: boolean;
+  /** ISO time upstream refs were last fetched SUCCESSFULLY, else null. */
+  fetchedAt?: string | null;
+  /**
+   * Why the last fetch failed. `behind` then describes the last refs that were
+   * successfully fetched, which may be stale — so the UI must show this rather
+   * than presenting a cached "up to date" as current.
+   */
+  fetchError?: string;
+  /** The version SASBench itself reports, when it is reachable. */
+  runningVersion?: string;
+}
+
+/**
+ * Refreshing upstream refs is a network call to the git remote, so it is NOT
+ * done on the status path: the SAS page polls every 15 s, which would mean
+ * four fetches a minute forever. The cached refs answer every read; a fetch
+ * happens when the operator asks, or at most once per this interval.
+ */
+const FETCH_TTL_MS = 30 * 60 * 1000;
+/**
+ * Last fetch ATTEMPT, success or not. The TTL is keyed off the attempt on
+ * purpose: if it keyed off success, a remote that is unreachable (no route
+ * out, GitHub down, credentials gone) would be retried on every single
+ * 15-second poll forever, which is exactly the hammering the TTL exists to
+ * prevent — and the failure case is the one where retrying helps least.
+ */
+let lastFetchAt = 0;
+/**
+ * Floor between fetches even when one is explicitly asked for. "Check for
+ * updates" is a button a person clicks, so a 30 s floor is invisible to real
+ * use — but without it any signed-in user (not just an admin: /version is a
+ * read) could drive one git fetch per request by repeating ?refresh=1.
+ */
+const MIN_FETCH_INTERVAL_MS = 30 * 1000;
+/** Last fetch that actually succeeded — what `fetchedAt` reports. */
+let lastFetchOkAt = 0;
+/** Why the last fetch failed, so the page can say so instead of going quiet. */
+let lastFetchError: string | null = null;
+
+/** One update at a time — two concurrent builds of the same image race. */
+let updateInFlight = false;
+
+async function readVersion(
+  cfg: SasBenchConfig,
+  host: IHostExecutor,
+  opts: { fetch: boolean },
+): Promise<SasBenchVersion> {
+  const dir = cfg.dir;
+  const git = (args: string[]) =>
+    host.executeCommand('git', ['-C', dir, ...args], 60000, { expectedFailure: true });
+  const out = async (args: string[]): Promise<string | null> => {
+    const r = await git(args).catch(() => null);
+    return r && r.exitCode === 0 ? r.stdout.trim() : null;
   };
 
-  // ── GET /api/sas/admin/last-requests ─────────────────────────────────────
-  router.get('/admin/last-requests', (_req, res) => {
-    res.json({ success: true, requests: sas.getLastRequests() });
-  });
+  const inside = await out(['rev-parse', '--is-inside-work-tree']);
+  if (inside !== 'true') {
+    return {
+      managed: false,
+      dir,
+      reason: `${dir} is not a git checkout, so the NMS cannot update it. Replace it with one: `
+        + `git clone https://github.com/paulmataruso/SASBench.git ${dir}`,
+    };
+  }
 
-  // ── GET/POST /api/sas/admin/verbose ──────────────────────────────────────
-  router.get('/admin/verbose', (_req, res) => {
-    res.json({ success: true, verbose: sasVerbose });
-  });
-  router.post('/admin/verbose', requireAdmin, (req, res) => {
-    sasVerbose = req.body?.verbose ?? !sasVerbose;
-    setVerbose(sasVerbose);
-    res.json({ success: true, verbose: sasVerbose });
-  });
+  const remoteUrl = (await out(['remote', 'get-url', 'origin'])) ?? undefined;
+  if (!remoteUrl) {
+    return { managed: false, dir, reason: `${dir} is a git checkout with no "origin" remote to update from.` };
+  }
 
-  // ── GET /api/sas/admin/logs ───────────────────────────────────────────────
-  router.get('/admin/logs', async (req: Request, res: Response) => {
-    const lines = Math.min(parseInt(req.query.lines as string ?? '200', 10), 2000);
-    try {
-      const { spawn }        = await import('child_process');
-      const { promises: fsp } = await import('fs');
+  if (opts.fetch) {
+    // --prune so a deleted upstream branch does not leave a stale ref that
+    // makes @{u} resolve to something that no longer exists.
+    lastFetchAt = Date.now();
+    const f = await git(['fetch', '--prune', '--quiet', 'origin']);
+    if (f.exitCode === 0) {
+      lastFetchOkAt = lastFetchAt;
+      lastFetchError = null;
+    } else {
+      lastFetchError = (f.stderr || f.stdout || `git fetch exited ${f.exitCode}`).trim().slice(0, 300);
+    }
+  }
 
-      let nginxLines: string[] = [];
-      try {
-        const raw = await fsp.readFile('/var/log/nginx-sas/sas-access.log', 'utf8');
-        nginxLines = raw.split('\n').filter(l => l.trim()).slice(-lines).map(l => `[NGINX] ${l}`);
-      } catch { /* file may not exist yet */ }
+  const branch = (await out(['rev-parse', '--abbrev-ref', 'HEAD'])) ?? undefined;
+  const [localCommit, localDate, localSubject] = (
+    (await out(['log', '-1', '--format=%h%x1f%cI%x1f%s'])) ?? ''
+  ).split('\x1f');
 
-      const dockerRaw = await new Promise<string>((resolve) => {
-        const args = ['logs', '--timestamps', '--tail', String(lines * 4), 'open5gs-nms-backend'];
-        const proc = spawn('docker', args);
-        let out = '';
-        proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-        proc.stderr.on('data', (d: Buffer) => { out += d.toString(); });
-        proc.on('close', () => resolve(out));
-        proc.on('error', () => resolve(''));
+  const v: SasBenchVersion = {
+    managed: true,
+    dir,
+    remoteUrl,
+    branch,
+    localCommit: localCommit || undefined,
+    localDate: localDate || undefined,
+    localSubject: localSubject || undefined,
+    dirty: (await out(['status', '--porcelain'])) !== '',
+    fetchedAt: lastFetchOkAt ? new Date(lastFetchOkAt).toISOString() : null,
+    fetchError: lastFetchError ?? undefined,
+  };
+
+  // @{u} is the tracked upstream branch. A checkout made by `git clone` has
+  // one; a detached HEAD or a hand-made branch may not, and that is reported
+  // rather than guessed at.
+  const upstream = await out(['rev-parse', '--abbrev-ref', '@{u}']);
+  if (!upstream) {
+    v.reason = `${branch ?? 'HEAD'} tracks no upstream branch, so there is nothing to compare against.`;
+    return v;
+  }
+
+  const [up, upDate, upSubject] = (
+    (await out(['log', '-1', '--format=%h%x1f%cI%x1f%s', '@{u}'])) ?? ''
+  ).split('\x1f');
+  v.upstreamCommit = up || undefined;
+  v.upstreamDate = upDate || undefined;
+  v.upstreamSubject = upSubject || undefined;
+
+  // One call gives both directions: "<behind>\t<ahead>" relative to upstream.
+  const counts = await out(['rev-list', '--left-right', '--count', `${upstream}...HEAD`]);
+  if (counts) {
+    const [behind, ahead] = counts.split(/\s+/).map((n) => parseInt(n, 10));
+    if (Number.isFinite(behind)) v.behind = behind;
+    if (Number.isFinite(ahead)) v.ahead = ahead;
+  }
+
+  return v;
+}
+
+/** The directory `docker compose` must run from — the NMS's own project. */
+async function composeDir(host: IHostExecutor): Promise<string | null> {
+  try {
+    const r = await host.executeLocalCommand('docker', [
+      'inspect', 'open5gs-nms-backend', '--format',
+      '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}',
+    ]);
+    const dir = r.stdout.trim();
+    return r.exitCode === 0 && dir && dir !== '<no value>' ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+export function createSasRouter(
+  cfg: SasBenchConfig,
+  logger: pino.Logger,
+  hostExecutor: IHostExecutor,
+  auditLogger: IAuditLogger,
+): Router {
+  const router = Router();
+
+  // Status for both the SAS page and the dashboard card. `reachable: false`
+  // is a normal answer, not a 5xx — SASBench being down is exactly the thing
+  // this card exists to show, so the UI always gets a usable body.
+  router.get('/status', async (_req, res) => {
+    const r = await sasbench(cfg, '/status');
+    if (!r.ok) {
+      logger.debug({ error: r.error, status: r.status }, 'SASBench status unavailable');
+      return res.json({
+        reachable: false,
+        error: r.error,
+        httpStatus: r.status || undefined,
+        uiPort: cfg.uiPort,
       });
+    }
+    // Real band occupancy, which SASBench's own counts cannot express: its
+    // `authorizedMHz` sums grant widths and so exceeds the band whenever GAA
+    // grants overlap (9 grants / 200 MHz inside a 150 MHz band, live). The
+    // union and the peak overlap depth are computed here from the real grant
+    // ranges. A failure to read /spectrum is not a failure of /status — the
+    // cards drop the extra detail and keep every count they already had.
+    let derived: SasDerived | null = null;
+    const sp = await sasbench(cfg, '/spectrum');
+    if (sp.ok) derived = deriveFrom(sp.data);
+    else logger.debug({ error: sp.error }, 'SASBench spectrum unavailable; status served without occupancy');
 
-      const backendLines = dockerRaw
-        .split('\n')
-        .filter(l => /SAS|sas\/v1\.2|registrationRequest|grantRequest|heartbeatRequest|spectrumInquiry|relinquishment|deregistration/i.test(l))
-        .slice(-lines)
-        .map(l => `[BACKEND] ${l}`);
+    res.json({ reachable: true, uiPort: cfg.uiPort, ...r.data, derived: derived ?? undefined });
+  });
 
-      const merged = [...nginxLines, ...backendLines]
-        .sort((a, b) => {
-          const ta = a.match(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/);
-          const tb = b.match(/\d{4}-\d{2}-\d{2}T[\d:.Z+-]+/);
-          if (!ta || !tb) return 0;
-          return ta[0].localeCompare(tb[0]);
-        })
-        .slice(-lines)
-        .join('\n');
+  // Registered radios, as SASBench sees them. Its list endpoints answer
+  // { items, total, limit, offset } (api/v1/routes/common.ts sqlPage).
+  router.get('/cbsds', async (_req, res) => {
+    const r = await sasbench(cfg, '/cbsds?limit=200');
+    if (!r.ok) return res.json({ reachable: false, error: r.error, cbsds: [], total: 0 });
+    res.json({ reachable: true, cbsds: r.data?.items ?? [], total: r.data?.total ?? 0 });
+  });
 
-      res.json({ success: true, logs: merged });
-    } catch (err) {
-      logger.error({ err: String(err) }, 'SAS log fetch failed');
-      res.status(500).json({ success: false, error: String(err) });
+  // Live grants only. SASBench keeps ended grants (TERMINATED/RELINQUISHED/
+  // EXPIRED/DELETED) in the same table until purged, so filter server-side
+  // rather than render an ever-growing history on a status page.
+  router.get('/grants', async (_req, res) => {
+    const r = await sasbench(cfg, '/grants?state=GRANTED,AUTHORIZED&limit=200');
+    if (!r.ok) return res.json({ reachable: false, error: r.error, grants: [], total: 0 });
+    res.json({ reachable: true, grants: r.data?.items ?? [], total: r.data?.total ?? 0 });
+  });
+
+  // Everything the band-occupancy chart draws: the managed band, GAA ranges,
+  // PAL/PPA channels, protections, live grants and the registered radios they
+  // belong to. Passed through nearly as-is — the chart needs the real ranges,
+  // and reshaping them here would only mean two places to keep in step with
+  // SASBench's own Spectrum page.
+  router.get('/spectrum', async (_req, res) => {
+    const r = await sasbench(cfg, '/spectrum', 8000);
+    if (!r.ok) return res.json({ reachable: false, error: r.error });
+    const d = r.data ?? {};
+    res.json({
+      reachable: true,
+      band: d.band ?? null,
+      gaaRanges: d.gaaRanges ?? [],
+      protections: d.protections ?? [],
+      ppas: d.ppas ?? [],
+      grants: d.grants ?? [],
+      cbsds: d.cbsds ?? [],
+      derived: deriveFrom(d) ?? undefined,
+    });
+  });
+
+  // ── Version / updates ─────────────────────────────────────────────────────
+
+  // What is installed, and whether upstream has moved on. Safe to poll: it
+  // only refreshes upstream refs when they are older than FETCH_TTL_MS, or
+  // when asked with ?refresh=1 (what the UI's "Check for updates" sends).
+  router.get('/version', async (req, res) => {
+    const forced = req.query.refresh === '1' || req.query.refresh === 'true';
+    const sinceFetch = Date.now() - lastFetchAt;
+    const doFetch = sinceFetch > FETCH_TTL_MS || (forced && sinceFetch > MIN_FETCH_INTERVAL_MS);
+    try {
+      const v = await readVersion(cfg, hostExecutor, { fetch: doFetch });
+      // The version SASBench reports about itself, so the page can show what
+      // is actually running next to what the checkout says.
+      const h = await sasbench(cfg, '/health', 3000);
+      if (h.ok && typeof h.data?.version === 'string') v.runningVersion = h.data.version;
+      res.json(v);
+    } catch (err: any) {
+      logger.error({ err }, 'Reading the SASBench version failed');
+      res.status(500).json({ managed: false, dir: cfg.dir, reason: String(err?.message ?? err) });
     }
   });
 
-  // ── DELETE /api/sas/admin/grants/:grantId ────────────────────────────────
-  router.delete('/admin/grants/:grantId', requireAdmin, async (req: Request, res: Response) => {
+  // Apply an upstream update: pull, rebuild the image, recreate the container.
+  //
+  // Streams its output (chunked) the same way every other long-running action
+  // in this NMS does — a real build takes well over nginx's generic 120 s
+  // /api/ read timeout, so this path needs its own location block in
+  // nginx.conf (see CLAUDE.md pattern #5).
+  //
+  // Deliberately NOT killed when the browser disconnects: a half-finished
+  // `docker compose build` leaves a worse state than one that runs to
+  // completion, and the final `up -d` is idempotent.
+  router.post('/update', requireAdmin, async (req, res) => {
+    const user = (req as any).user?.username ?? 'unknown';
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.flushHeaders();
+    const write = (t: string) => { res.write(t.endsWith('\n') ? t : t + '\n'); };
+
+    const fail = async (msg: string) => {
+      write(`\n❌ ${msg}`);
+      await auditLogger.log({ action: 'sasbench_update', user, details: msg, success: false }).catch(() => {});
+      res.end();
+    };
+
+    if (updateInFlight) return fail('A SASBench update is already running. Wait for it to finish.');
+    updateInFlight = true;
     try {
-      const deleted = await sas.deleteGrant(req.params.grantId);
-      if (!deleted) return res.status(404).json({ success: false, error: 'Grant not found' });
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
+      // Force a real fetch: this path must decide on current refs, never on
+      // whatever the status poll last cached.
+      lastFetchAt = 0;
+      const v = await readVersion(cfg, hostExecutor, { fetch: true });
+      if (!v.managed) return await fail(v.reason ?? `${cfg.dir} cannot be updated from here.`);
+      if (v.fetchError) return await fail(`Could not reach the git remote: ${v.fetchError}`);
 
-  // ── DELETE /api/sas/admin/cbsds/:cbsdId ──────────────────────────────────
-  router.delete('/admin/cbsds/:cbsdId', requireAdmin, async (req: Request, res: Response) => {
-    try {
-      const deleted = await sas.deleteCbsd(req.params.cbsdId);
-      if (!deleted) return res.status(404).json({ success: false, error: 'CBSD not found' });
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/cbsds ──────────────────────────────────────────────
-  router.get('/admin/cbsds', async (_req: Request, res: Response) => {
-    try {
-      const cbsds  = await sas.listCbsds();
-      const grants = await sas.listGrants();
-      const grantsByCbsd = grants.reduce((acc, g) => {
-        (acc[g.cbsdId] ??= []).push(g);
-        return acc;
-      }, {} as Record<string, typeof grants>);
-      const data = cbsds.map(c => ({ ...c, grants: grantsByCbsd[c.cbsdId] ?? [] }));
-      res.json({ success: true, cbsds: data });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/stats ──────────────────────────────────────────────
-  router.get('/admin/stats', async (_req: Request, res: Response) => {
-    try {
-      const stats = await sas.getStats();
-      res.json({ success: true, ...stats });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/config ─────────────────────────────────────────────
-  router.get('/admin/config', async (_req: Request, res: Response) => {
-    try {
-      const config = await sas.getConfig();
-      res.json({ success: true, config });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── PUT /api/sas/admin/config ─────────────────────────────────────────────
-  router.put('/admin/config', requireAdmin, async (req: Request, res: Response) => {
-    try {
-      const config = await sas.updateConfig(req.body);
-      res.json({ success: true, config });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── POST /api/sas/admin/reset ─────────────────────────────────────────────
-  router.post('/admin/reset', requireAdmin, async (_req: Request, res: Response) => {
-    try {
-      const result = await sas.resetAll();
-      res.json({ success: true, ...result });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── POST /api/sas/admin/pause ─────────────────────────────────────────────
-  router.post('/admin/pause', requireAdmin, (_req: Request, res: Response) => {
-    sas.pauseSas();
-    res.json({ success: true, paused: true });
-  });
-
-  // ── POST /api/sas/admin/resume ────────────────────────────────────────────
-  router.post('/admin/resume', requireAdmin, (_req: Request, res: Response) => {
-    sas.resumeSas();
-    res.json({ success: true, paused: false });
-  });
-
-  // ── GET /api/sas/admin/status ─────────────────────────────────────────────
-  router.get('/admin/status', (_req: Request, res: Response) => {
-    res.json({ success: true, paused: sas.isPaused() });
-  });
-
-  // ── GET /api/sas/admin/rf-status ─────────────────────────────────────────
-  router.get('/admin/rf-status', async (_req: Request, res: Response) => {
-    try {
-      const cbsds = await sas.listCbsds();
-
-      if (!genieacsNbiUrl) {
-        const status = await sas.getRfStatus();
-        return res.json({ success: true, status });
+      // Local edits to a proprietary upstream checkout are never discarded
+      // silently — the operator put them there on purpose or has a problem
+      // worth seeing, and either way a --ff-only pull would just fail later.
+      if (v.dirty) {
+        return await fail(
+          `${cfg.dir} has uncommitted local changes. Commit, stash or revert them first `
+          + `(git -C ${cfg.dir} status), then run the update again.`,
+        );
+      }
+      if (v.ahead) {
+        return await fail(
+          `${cfg.dir} has ${v.ahead} local commit(s) not in ${v.branch ?? 'upstream'}, so the update `
+          + `would not be a fast-forward. Reconcile it by hand first.`,
+        );
+      }
+      if (!v.behind) {
+        write(`Already current: ${v.localCommit} ${v.localSubject ?? ''}`);
+        write('Nothing to update.');
+        await auditLogger.log({ action: 'sasbench_update', user, details: 'already current', success: true }).catch(() => {});
+        return res.end();
       }
 
-      // Separate maps per vendor — matching logic differs between them.
-      const baiRfMap  = new Map<string, boolean | null>(); // keyed by hwSerial == SAS cbsdSerialNumber
-      const scRfMap   = new Map<string, boolean | null>(); // keyed by hwSerial; SAS serial is "Sercomm-<hwSerial>"
-      const scNrRfMap = new Map<string, boolean | null>(); // keyed by ACS serial == SAS cbsdSerialNumber (no prefix)
-      const FAP = 'Device.Services.FAPService.1.';
-
-      function getParam(device: Record<string, any>, dotPath: string): string {
-        const parts = dotPath.split('.');
-        let node: any = device;
-        for (const part of parts) {
-          if (node == null) return '';
-          node = node[part];
-        }
-        return node?._value != null ? String(node._value) : '';
+      const dir = await composeDir(hostExecutor);
+      if (!dir) {
+        return await fail(
+          'Could not resolve this deployment\'s compose project directory, so the image cannot be '
+          + 'rebuilt. Update by hand: git -C ' + cfg.dir + ' pull && docker compose build sasbench '
+          + '&& docker compose up -d sasbench',
+        );
       }
 
-      try {
-        const baiProjection = ['_id', '_lastInform', '_deviceId', `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, `${FAP}FAPControl.LTE.OpState`].join(',');
-        const baiResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(baiProjection)}`);
-        if (baiResp.ok) {
-          const devices = (await baiResp.json()) as Record<string, any>[];
-          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          for (const d of devices) {
-            const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
-            const oui = (d._deviceId?._OUI ?? '').toUpperCase();
-            if (!mfr.includes('baicells') && oui !== '48BF74') continue;
-            const hwSerial   = (d._deviceId?._SerialNumber ?? d._id) as string;
-            const lastInform = d._lastInform ?? null;
-            const isOnline   = lastInform && lastInform > fiveMinAgo;
-            const rfEnable   = getParam(d, `${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`);
-            const opState    = getParam(d, `${FAP}FAPControl.LTE.OpState`);
-            baiRfMap.set(hwSerial, !isOnline ? null : (rfEnable === 'true' && opState === 'true'));
-          }
-        }
-      } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Baicells query failed'); }
+      write(`SASBench update: ${v.behind} commit(s) behind ${v.branch} (${v.localCommit} -> ${v.upstreamCommit})`);
+      write(`Checkout: ${cfg.dir}    Compose project: ${dir}`);
+      write('Recreating the container drops the SAS protocol listeners briefly; radios will miss a heartbeat.\n');
 
-      // Sercomm/Moso only — X_000E8F_eNB_Status is the authoritative RF indicator.
-      // ACS hwSerial == _deviceId._SerialNumber (e.g. "2206CW5000768").
-      // SAS cbsdSerialNumber format: "Sercomm-<hwSerial>".
-      try {
-        const scProjection = ['_id', '_lastInform', '_deviceId', 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status'].join(',');
-        const scResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(scProjection)}`);
-        if (scResp.ok) {
-          const devices = (await scResp.json()) as Record<string, any>[];
-          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          for (const d of devices) {
-            const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
-            const oui = (d._deviceId?._OUI ?? '').toUpperCase();
-            if (!mfr.includes('sercomm') && !mfr.includes('freedomfi') && !mfr.includes('moso') && oui !== '000E8F') continue;
-            const hwSerial   = (d._deviceId?._SerialNumber ?? d._id) as string;
-            const lastInform = d._lastInform ?? null;
-            const isOnline   = lastInform && lastInform > fiveMinAgo;
-            const enbStatus  = getParam(d, 'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status');
-            scRfMap.set(hwSerial, !isOnline ? null : (enbStatus.toUpperCase() === 'SUCCESS'));
-          }
-        }
-      } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Sercomm query failed'); }
+      const script = [
+        'set -o pipefail',
+        `cd ${JSON.stringify(cfg.dir)} || exit 1`,
+        'echo "=== Pulling SASBench ==="',
+        'git merge --ff-only "@{u}" || exit 1',
+        'git log -1 --format="Now at %h %ci %s" || exit 1',
+        'echo',
+        'echo "=== Rebuilding the sasbench image ==="',
+        `cd ${JSON.stringify(dir)} || exit 1`,
+        'docker compose build sasbench || exit 1',
+        'echo',
+        'echo "=== Recreating the sasbench container ==="',
+        'docker compose up -d sasbench || exit 1',
+      ].join('\n');
 
-      // Sercomm NR (OUI 00C002) — SCE5164-B48 and similar 5G NR small cells.
-      // SAS cbsdSerialNumber == ACS _SerialNumber directly (no "Sercomm-" prefix).
-      // RF is on when SAS has an active grant (sasState === 'Authorized').
-      try {
-        const scNrProjection = ['_id', '_lastInform', '_deviceId', 'Device.Services.SAS.sasState'].join(',');
-        const scNrResp = await fetch(`${genieacsNbiUrl}/devices?projection=${encodeURIComponent(scNrProjection)}`);
-        if (scNrResp.ok) {
-          const devices = (await scNrResp.json()) as Record<string, any>[];
-          const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-          for (const d of devices) {
-            const oui = (d._deviceId?._OUI ?? '').toUpperCase();
-            if (oui !== '00C002') continue;
-            const hwSerial   = (d._deviceId?._SerialNumber ?? d._id) as string;
-            const lastInform = d._lastInform ?? null;
-            const isOnline   = lastInform && lastInform > fiveMinAgo;
-            const sasState   = getParam(d, 'Device.Services.SAS.sasState');
-            scNrRfMap.set(hwSerial, !isOnline ? null : (sasState === 'Authorized'));
-          }
-        }
-      } catch (e) { logger.warn({ err: String(e) }, 'rf-status: Sercomm NR query failed'); }
-
-      // Match each SAS CBSD to the right ACS RF reading.
-      // Priority: scNrRfMap (OUI 00C002, NR) → scRfMap (OUI 000E8F, LTE) → baiRfMap (Baicells).
-      // Sercomm LTE serial in SAS: "Sercomm-<hwSerial>"; NR serial: bare hwSerial.
-      const status = cbsds.map(c => {
-        let rfOn: boolean | null = null;
-        const hwSerial = c.cbsdSerialNumber.split('-').pop()!;
-        if (scNrRfMap.has(c.cbsdSerialNumber)) {
-          rfOn = scNrRfMap.get(c.cbsdSerialNumber)!;
-        } else if (scRfMap.has(hwSerial)) {
-          rfOn = scRfMap.get(hwSerial)!;
-        } else if (baiRfMap.has(c.cbsdSerialNumber)) {
-          rfOn = baiRfMap.get(c.cbsdSerialNumber)!;
-        }
-        return { cbsdId: c.cbsdId, serial: c.cbsdSerialNumber, fccId: c.fccId, rfOn };
+      // detached so nsenter leads its own process group (CLAUDE.md pattern
+      // #20: nsenter -p forks internally, so the direct child is not the
+      // process doing the work).
+      const code = await new Promise<number>((resolve) => {
+        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', script], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+        });
+        child.stdout.on('data', (d: Buffer) => write(d.toString()));
+        child.stderr.on('data', (d: Buffer) => write(d.toString()));
+        child.on('close', (c) => resolve(c ?? 1));
+        child.on('error', (e) => { write(String(e)); resolve(1); });
       });
 
-      res.json({ success: true, status });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
+      if (code !== 0) return await fail(`Update failed (exit ${code}). The previous image is still in place.`);
+
+      // "compose up -d returned 0" is not "the SAS is serving again" — wait
+      // for SASBench's own health endpoint to report both listeners back up
+      // before calling this done (CLAUDE.md: verify, don't trust success).
+      write('\n=== Waiting for SASBench to come back ===');
+      let healthy: any = null;
+      for (let i = 0; i < 30; i++) {
+        const h = await sasbench(cfg, '/health', 3000);
+        if (h.ok && h.data?.status === 'ok' && h.data?.listeners?.http !== undefined) { healthy = h.data; break; }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (!healthy) {
+        return await fail(
+          'SASBench did not report healthy within 60 s. Check: docker logs sasbench',
+        );
+      }
+
+      const after = await readVersion(cfg, hostExecutor, { fetch: false });
+      write(`SASBench ${healthy.version} is up — SAS HTTP ${healthy.listeners.http ? 'listening' : 'DOWN'}, `
+        + `SAS HTTPS ${healthy.listeners.https ? 'listening' : 'DOWN'}`);
+      write(`Now at ${after.localCommit} ${after.localSubject ?? ''}`);
+      write('\n✅ Update applied.');
+      await auditLogger.log({
+        action: 'sasbench_update', user, success: true,
+        details: `${v.localCommit} -> ${after.localCommit} (${v.behind} commits)`,
+      }).catch(() => {});
+      res.end();
+    } catch (err: any) {
+      await fail(String(err?.message ?? err));
+    } finally {
+      updateInFlight = false;
     }
-  });
-
-  // ── GET /api/sas/admin/slots ──────────────────────────────────────────────
-  router.get('/admin/slots', async (_req: Request, res: Response) => {
-    try {
-      const layout = await sas.getSlotLayout();
-      res.json({ success: true, ...layout });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/cert ───────────────────────────────────────────────
-  router.get('/admin/cert', async (_req: Request, res: Response) => {
-    const certPath = '/etc/nginx/certs/sas.crt';
-    try {
-      const exists = fs.existsSync(certPath);
-      if (!exists) return res.json({ exists: false, message: 'No certificate found. Run nginx/setup-sas-cert.sh to generate one.' });
-      const stat = fs.statSync(certPath);
-      res.json({ exists: true, size: stat.size, modified: stat.mtime });
-    } catch (err) {
-      res.json({ exists: false, message: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/cert/download ─────────────────────────────────────
-  router.get('/admin/cert/download', requireAdmin, async (_req: Request, res: Response) => {
-    const certPath = '/etc/nginx/certs/sas.crt';
-    try {
-      if (!fs.existsSync(certPath)) return res.status(404).json({ error: 'Certificate not found.' });
-      res.setHeader('Content-Type', 'application/x-pem-file');
-      res.setHeader('Content-Disposition', 'attachment; filename="sas.crt"');
-      res.sendFile(certPath);
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/pki/download/:format ───────────────────────────────
-  // Real bug found live 2026-09-27: the Certificates tab originally linked
-  // straight at the public /sas-cert/ path nginx serves for RADIOS to self-
-  // fetch (no login needed) -- that path only exists on the port-8443 TLS
-  // vhost, but the link was relative, so from the NMS's own (different
-  // port) origin it silently resolved to the SPA's own catch-all routing
-  // instead of downloading anything. Same fix shape as /admin/cert/download
-  // above (same-origin, authenticated, real Content-Disposition so a plain
-  // <a href> triggers a real download) -- just parameterized over crt/pem
-  // and pointed at sas.crt specifically (the root CA a radio should trust,
-  // not the leaf nginx itself presents).
-  router.get('/admin/pki/download/:format', requireAdmin, async (req: Request, res: Response) => {
-    const format = req.params.format;
-    if (format !== 'crt' && format !== 'pem') return res.status(400).json({ error: 'format must be crt or pem' });
-    const certPath = `/etc/nginx/certs/sas.${format}`;
-    try {
-      if (!fs.existsSync(certPath)) return res.status(404).json({ error: 'Root CA certificate not found.' });
-      res.setHeader('Content-Type', 'application/x-pem-file');
-      res.setHeader('Content-Disposition', `attachment; filename="sas.${format}"`);
-      res.sendFile(certPath);
-    } catch (err) {
-      res.status(500).json({ error: String(err) });
-    }
-  });
-
-  // ── GET /api/sas/admin/pki ────────────────────────────────────────────────
-  // Root CA + leaf server cert detail (subject/issuer/validity/SAN) for the
-  // SAS page's own Certificates tab -- /admin/cert above stays as-is (just
-  // existence/size/mtime, used by older callers) rather than being
-  // repurposed, since its shape is already a public contract.
-  router.get('/admin/pki', async (_req: Request, res: Response) => {
-    try {
-      res.json({ success: true, ...(await getSasPkiStatus()) });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── POST /api/sas/admin/pki/leaf ──────────────────────────────────────────
-  // Regenerates only the server cert (signed by the existing root) -- safe,
-  // doesn't affect any radio's already-installed trust anchor. Unspecified
-  // fields default to the current leaf's own values, so a bare POST just
-  // refreshes validity unchanged.
-  router.post('/admin/pki/leaf', requireAdmin, async (req: Request, res: Response) => {
-    try {
-      const { cn, san, days } = req.body ?? {};
-      const status = await regenerateSasLeaf({ cn, san, days });
-      res.json({ success: true, ...status });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── POST /api/sas/admin/pki/root ──────────────────────────────────────────
-  // Regenerates the root CA (and cascades into the leaf, since a leaf
-  // signed by a deleted root is a broken chain) -- real blast radius: any
-  // radio that already installed the CURRENT root as its trust anchor
-  // needs to re-install the new one afterward. Requires confirm:true in
-  // the body; regenerateSasRoot() itself throws without it, this is just
-  // the HTTP-layer mirror of that same guard.
-  router.post('/admin/pki/root', requireAdmin, async (req: Request, res: Response) => {
-    try {
-      const { cn, days, confirm, leafCn, leafSan } = req.body ?? {};
-      if (!confirm) return res.status(400).json({ success: false, error: 'confirm:true is required to regenerate the root CA' });
-      const status = await regenerateSasRoot({ cn, days, confirm, leafCn, leafSan });
-      res.json({ success: true, ...status });
-    } catch (err) {
-      res.status(500).json({ success: false, error: String(err) });
-    }
-  });
-
-  // ── Manual group assignments ──────────────────────────────────────────────
-  router.get('/admin/manual-groups', async (_req, res) => {
-    try { res.json({ success: true, groups: await sas.listManualGroups() }); }
-    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.put('/admin/manual-groups/:groupId', requireAdmin, async (req, res) => {
-    try {
-      const { cbsdIds } = req.body;
-      if (!Array.isArray(cbsdIds)) return res.status(400).json({ success: false, error: 'cbsdIds array required' });
-      const group = await sas.setManualGroup(req.params.groupId, cbsdIds);
-      res.json({ success: true, group });
-    } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.delete('/admin/manual-groups/:groupId', requireAdmin, async (req, res) => {
-    try { res.json({ success: true, deleted: await sas.deleteManualGroup(req.params.groupId) }); }
-    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-
-  // ── Band policy endpoints ─────────────────────────────────────────────────
-  router.get('/admin/policies/groups', async (_req, res) => {
-    try { res.json({ success: true, policies: await sas.listGroupPolicies() }); }
-    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.put('/admin/policies/groups/:groupId', requireAdmin, async (req, res) => {
-    try {
-      const { bandId, notes, customSlots, combineChannels } = req.body;
-      if (!bandId) return res.status(400).json({ success: false, error: 'bandId required' });
-      const p = await sas.setGroupPolicy(req.params.groupId, bandId, notes, customSlots, combineChannels);
-      res.json({ success: true, policy: p });
-    } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.delete('/admin/policies/groups/:groupId', requireAdmin, async (req, res) => {
-    try { res.json({ success: true, deleted: await sas.deleteGroupPolicy(req.params.groupId) }); }
-    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.get('/admin/policies/cbsds', async (_req, res) => {
-    try { res.json({ success: true, policies: await sas.listCbsdPolicies() }); }
-    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.put('/admin/policies/cbsds/:fccId/:serial', requireAdmin, async (req, res) => {
-    try {
-      const { bandId, notes } = req.body;
-      if (!bandId) return res.status(400).json({ success: false, error: 'bandId required' });
-      const p = await sas.setCbsdPolicy(req.params.fccId, req.params.serial, bandId, notes);
-      res.json({ success: true, policy: p });
-    } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
-  });
-  router.delete('/admin/policies/cbsds/:fccId/:serial', requireAdmin, async (req, res) => {
-    try { res.json({ success: true, deleted: await sas.deleteCbsdPolicy(req.params.fccId, req.params.serial) }); }
-    catch (err) { res.status(500).json({ success: false, error: String(err) }); }
   });
 
   return router;

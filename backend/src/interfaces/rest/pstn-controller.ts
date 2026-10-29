@@ -500,7 +500,36 @@ trust_id_inbound=yes
 ; this alone did NOT fix it — the mismatch persisted byte-for-byte after
 ; this was applied, so it's left in place as a real, correct setting for
 ; this deployment but is not sufficient by itself.
-asymmetric_rtp_codec=yes
+; CORRECTION 2026-10-19 — flipped to 'no', and THIS is the actual fix for the
+; one-way audio described below. The 2026-08-15 note above kept 'yes' on the
+; theory that it was "a real, correct setting" for cross-leg payload-type
+; independence, while recording in the same breath that it fixed nothing. It
+; was in fact the direct enabler of the real bug: 'yes' is precisely what
+; PERMITS this endpoint to send in a different format than it receives.
+; Measured on the wire during a live call 2026-10-19: the UE transmitted PT
+; 116 (AMR-WB) while Asterisk transmitted PT 118 (AMR-NB) on the very same
+; leg, 176 packets up vs 236 down, both well-formed. A real IMS handset
+; configures ONE decoder at session setup, so PT 118 was discarded and the
+; subscriber heard silence — in the PSTN->UE direction only, which is exactly
+; the reported symptom.
+; With 'no', chan_pjsip's read path sets the channel's write format to match
+; the format of the media it actually receives ("for maximum compatibility"
+; in Asterisk's own source), so receiving AMR-WB forces Asterisk to transmit
+; AMR-WB — PT 116, the number the UE is actually listening on.
+; Why this rather than dropping 'allow=amr': removing the codec also works (a
+; codec absent from allow= can never be answered — CLAUDE.md pattern #16
+; proved that on the 2G trunk), but it costs every narrowband-only handset
+; its AMR on this leg, and such a device offers no ulaw/alaw either, so it
+; would end up with no common codec at all and the call would fail outright
+; instead of merely sounding wrong. This setting changes only which format
+; Asterisk SENDS, so it narrows nothing. Confirmed 'ulaw -> amrwb' is a real
+; translation path on this host ('core show translation', 23000us) before
+; relying on it — Asterisk has no native AMR encoder, it comes from
+; codec_amr.so, so the path has to be checked rather than assumed.
+; Deliberately NOT changed on external_trunk or asterisk2g_trunk: external is
+; ulaw/alaw only (nothing to mismatch) and the 2G trunk is hard-restricted to
+; gsm for the reasons in CLAUDE.md pattern #16.
+asymmetric_rtp_codec=no
 ; Same 2026-08-15 investigation, next attempt: default codec_prefs_outgoing_
 ; offer is "operation:union" — when Asterisk builds its OWN offer for the
 ; callee leg, union lets it independently offer every codec in this
@@ -513,6 +542,47 @@ asymmetric_rtp_codec=yes
 ; re-deriving its own independent (and differently-numbered) offer for the
 ; same format. Unverified — reverify PSTN Gateway audio after this lands.
 codec_prefs_outgoing_offer=prefer:pending,operation:intersect,keep:all,transcode:allow
+; Real bug, root-caused live 2026-10-18: outbound UE->PSTN calls had audio ONLY
+; in the UE->PSTN direction. The media path was entirely healthy (rtpengine
+; confirmed/kernelized, endpoint == advertised endpoint, errors 0, packet counts
+; matching hop for hop on ogstun2 and lo) — the break was codec negotiation.
+; This endpoint's ANSWER had no codec_prefs_* of its own, so it sat at
+; Asterisk's default keep:all and answered a UE's 7-codec offer with TWO real
+; audio codecs at once:
+;     m=audio <p> RTP/AVP 116 118 110
+;       a=rtpmap:116 AMR-WB/16000   a=rtpmap:118 AMR/8000
+; An answer advertising two codecs leaves the sending format ambiguous and the
+; two ends resolved it differently — confirmed on the wire: the UE transmitted
+; payload type 116 while Asterisk transmitted 118. asymmetric_rtp_codec=yes
+; above explicitly permits send and receive to differ on one leg, so nothing
+; pulled Asterisk's send format back to 116. keep:first makes the joint list
+; collapse to ONE codec, and with prefer:pending + intersect that list follows
+; the UE's own preference order, so the single answered codec is the one the UE
+; actually transmits.
+; Why this survived the 2026-08-15 investigation above: that pass set
+; codec_prefs_outgoing_OFFER and never touched the answer side. The two are
+; independent, and only the answer is used on a UE-originated call.
+; Why handset-to-handset and inbound DID were never affected (the control
+; group, 7/7 across the SIP trace): on both of those a real IMS handset writes
+; the answer, and a handset answers with exactly one codec per 3GPP. Asterisk
+; is the only party here that ever emitted an ambiguous answer, and it only
+; writes the answer on UE-originated calls — precisely the one broken case.
+; Note Asterisk cannot do EVS at all (absent from allow= above), which is why
+; PSTN calls fall back to the AMR family in the first place; a UE<->UE call
+; settles on EVS and never reaches this code path.
+codec_prefs_outgoing_answer=prefer:pending,operation:intersect,keep:first
+; DISPROVEN 2026-10-19 — this line IS live and 'pjsip show endpoint' reports
+; it back verbatim, but it is INERT in Asterisk 20.6: on a real call placed
+; after it was applied the answer still carried
+;     m=audio 13260 RTP/AVP 116 118 110
+;       a=rtpmap:116 AMR-WB/16000   a=rtpmap:118 AMR/8000
+; i.e. two audio codecs, unchanged. So Asterisk 20.6's "reserved for future
+; functionality" note is accurate for the ANSWER-side knobs specifically — it
+; is NOT accurate for codec_prefs_outgoing_offer, which this deployment does
+; rely on, which is what made the boilerplate easy to dismiss. Left in place
+; because it correctly expresses the intent and costs nothing if a later
+; Asterisk implements it, but it is NOT what fixes this bug; the
+; asymmetric_rtp_codec=no above is.
 ; The callee leg's own offer (Asterisk -> a real UE) now carries a real,
 ; reachable address (external_media_address above) and passes through
 ; P-CSCF untouched — but the callee's OWN answer still gets rewritten onto
@@ -935,7 +1005,66 @@ export function formatPstnDispatcherEntry(): string | null {
 async function getCrossRanPeerCodes(mongoUri: string): Promise<{ extension: string; label?: string }[]> {
   const state = readPstnState();
   if (!state?.crossRanEnabled) return [];
-  return listGsm2gShortCodesForCrossRan(mongoUri);
+  const codes = await listGsm2gShortCodesForCrossRan(mongoUri);
+
+  // Asterisk-2G's ECHO TEST number belongs here too, and its absence was a
+  // real bug (confirmed live 2026-10-19, three failed attempts from two
+  // different handsets): dialling it from a 4G/5G handset produced
+  // `603 Decline`. 2G short codes were forwarded and the echo test was not,
+  // so it had no exact match in `pstn-internal` and fell through to the
+  // outbound `_X.` catch-all -- which dialled it at the real external
+  // provider as `PJSIP/600@external_trunk`. The provider declined a
+  // three-digit number that is not a phone number, and that 603 came back
+  // to the handset looking like the echo test itself had rejected the call.
+  //
+  // getAsterisk2gEchoTestNumber() was already imported on this side, but
+  // only to guard COLLISIONS (see the sweep below and POST /extensions) --
+  // so this side knew the number existed and still had no route to it.
+  //
+  // Forwarded, not resolved, exactly like every other code here: dialling
+  // the same digits out to asterisk2g_trunk re-enters Asterisk-2G's own
+  // `[2g-loopback]`, where its own `exten => <echo>` answers. Verified that
+  // is the context asterisk2g_trunk's far end actually lands in.
+  return withGsm2gEchoTest(
+    codes,
+    getAsterisk2gEchoTestNumber(),
+    state.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER,
+  );
+}
+
+export interface CrossRanCode { extension: string; label?: string }
+
+/**
+ * Add Asterisk-2G's echo test number to the codes forwarded to it.
+ *
+ * Pure and exported so the rule is testable: the live path needs Mongo, host
+ * state files and a sibling module, and this was wrong in production for the
+ * entire life of Cross-RAN Calling without anything failing.
+ */
+export function withGsm2gEchoTest(
+  codes: CrossRanCode[],
+  gsm2gEchoTestNumber: string,
+  pstnEchoTestNumber: string,
+): CrossRanCode[] {
+  const echo = (gsm2gEchoTestNumber ?? '').trim();
+  if (!echo) return codes;
+  // Never shadow this side's OWN echo test, and never duplicate a 2G short
+  // code that already resolves there.
+  const taken = new Set([pstnEchoTestNumber, ...codes.map(c => c.extension)]);
+  if (taken.has(echo)) return codes;
+  return [...codes, { extension: echo, label: '2G echo test' }];
+}
+
+/**
+ * Drop any forwarded code this side already owns locally.
+ *
+ * A duplicate `exten => N,1` in one context is not an error in Asterisk: it
+ * keeps the first and logs a warning, so the symptom would be a short code
+ * that silently routes to the wrong place.
+ */
+export function dropLocallyOwnedCodes(codes: CrossRanCode[], localDigits: Iterable<string>): CrossRanCode[] {
+  const local = new Set(localDigits);
+  return codes.filter(c => !local.has(c.extension));
 }
 
 async function isCodecGsmLoadedPstn(): Promise<boolean> {
@@ -950,7 +1079,16 @@ async function regenerateDialplan(mongoUri: string, subscriberRepo: ISubscriberR
   if (!imsState) throw new Error('IMS is not configured yet — configure IMS before assigning PSTN extensions.');
   const extensions = await withExtensions(mongoUri, col => col.find({}).toArray());
   const resolvedEchoTestNumber = echoTestNumber || readPstnState()?.echoTestNumber || DEFAULT_ECHO_TEST_NUMBER;
-  const crossRanPeerCodes = await getCrossRanPeerCodes(mongoUri);
+  // Local wins. A cross-RAN peer code that duplicates this side's own echo
+  // test or one of its own extensions would emit a SECOND `exten => N,1` into
+  // `pstn-internal`, where Asterisk silently keeps the first and logs a
+  // warning nobody reads. The enable-time sweep surfaces such a collision to
+  // the operator; this just guarantees the generated dialplan stays valid
+  // whatever state the registries are in.
+  const crossRanPeerCodes = dropLocallyOwnedCodes(
+    await getCrossRanPeerCodes(mongoUri),
+    [resolvedEchoTestNumber, ...extensions.map(e => e.extension)],
+  );
   const crossRanEnabled = !!readPstnState()?.crossRanEnabled;
   const usedDigits = new Set<string>([resolvedEchoTestNumber, ...extensions.map(e => e.extension), ...crossRanPeerCodes.map(c => c.extension)]);
   const autoDialEntries = await resolveAutoDialEntries(subscriberRepo, usedDigits, crossRanEnabled);
@@ -1243,6 +1381,11 @@ async function findCrossRanCollisions(mongoUri: string): Promise<string[]> {
     if (e.extension === gsm2gEcho) collisions.add(e.extension);
   }
   if (gsm2gSet.has(pstnEcho)) collisions.add(pstnEcho);
+  // Both sides' echo tests set to the same digits. Previously unchecked, and
+  // it matters now that the 2G echo number is actually ROUTED from this side
+  // rather than only guarded: whichever entry generated first would win and
+  // the other echo test would be silently unreachable.
+  if (pstnEcho === gsm2gEcho) collisions.add(pstnEcho);
   return [...collisions];
 }
 
@@ -1257,8 +1400,16 @@ async function findCrossRanCollisions(mongoUri: string): Promise<string[]> {
 // before this can be called; only live module/dialplan reloads, matching
 // this function's own configurePstn()'s "never a full restart" convention.
 //
-// No rollback on a partial failure, by design: both dialplans are
-// exact-match-only (this file has no catch-all at all; Asterisk-2G's _X.
+// No rollback on a partial failure, by design: both dialplans resolve a
+// short code by exact match (CORRECTION 2026-10-19 -- an earlier version of
+// this comment said "this file has no catch-all at all", which stopped being
+// true when the external SIP trunk added the outbound `_X.` block. That
+// staleness is how a real bug got through: the reasoning "unmatched digits
+// simply fail to route" is why a missing cross-RAN entry looked harmless,
+// but an unmatched short code is now DIALLED AT THE REAL PROVIDER instead,
+// which is how dialling the 2G echo test returned `603 Decline` from the
+// outside world. A missing exact match here is not a no-op any more.
+// Asterisk-2G's _X.
 // pattern always loses to an exact match in the same context regardless of
 // declaration order), so a half-applied state just means a call fails to
 // route on one side — it can never misroute or corrupt an in-progress call.

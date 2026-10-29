@@ -231,14 +231,47 @@ describe('SIP tracing config wiring', () => {
     expect(IMS_CODE).toMatch(/const HEP_COLLECTOR_BIND = '127\.0\.0\.1'/);
   });
 
-  it('Configure preserves the flag instead of silently turning tracing off', () => {
-    expect(IMS_CODE).toMatch(/prevSaved\?\.sipTracingEnabled === true\) sipTracingEnabled = true/);
+  it('Configure preserves an explicit opt-out instead of silently re-enabling', () => {
+    // Polarity matters: `=== false`, so only a deliberate "off" survives a
+    // Configure. Matching on `=== true` would pin a deployment that predates
+    // the flag to off forever, which is the old default by another route.
+    expect(IMS_CODE).toMatch(/prevSaved\?\.sipTracingEnabled === false\) sipTracingEnabled = false/);
   });
 
-  it('Configure loads the module but never starts tracing on its own', () => {
-    // Configure makes capture *available*; it does not begin duplicating
-    // every SIP message on an operator's behalf.
-    expect(IMS_CODE).toMatch(/let sipTracingEnabled = false;/);
+  it('Configure PERSISTS the tracing flag into the state file', () => {
+    // The regression this exists for, and the reason the opt-out above was
+    // self-defeating: Configure carried the old value into the generated
+    // includes -- so the CSCFs really did come up with CAPTURE_TRACE_ON and
+    // really were tracing -- and then omitted the key from the state file it
+    // wrote. getSipTracingEnabled() therefore read false and the UI reported
+    // tracing off while all three CSCFs filled the trace store, and the next
+    // Configure saw no key at all. The sibling toggles were always persisted;
+    // this one was not, and nothing covered it.
+    const start = IMS_CODE.indexOf('fs.writeFileSync(HOST_IMS_STATE, JSON.stringify({');
+    expect(start).toBeGreaterThan(-1);
+    const payload = IMS_CODE.slice(start, IMS_CODE.indexOf('}, null, 2), \'utf-8\');', start));
+    expect(payload).toMatch(/\bvoiceChargingEnabled,/);
+    expect(payload).toMatch(/\bcdrAccountingEnabled,/);
+    expect(payload).toMatch(/\bsipTracingEnabled,/);
+  });
+
+  it('Configure comes up tracing, because enabling costs no restart', () => {
+    // Reversed deliberately on 2026-10-19, on the operator's instruction.
+    //
+    // This previously asserted `= false`, on the reasoning that "Configure
+    // makes capture available; it does not begin duplicating every SIP
+    // message on an operator's behalf." The privacy/storage half of that is
+    // real, but it was weighed against a restart cost that does not exist:
+    // siptrace is loaded unconditionally and the toggle is a pure RPC
+    // (pinned by the restart test below, and verified live -- all three CSCFs
+    // went Disabled -> Enabled with HEP arriving in seconds and their
+    // ActiveEnterTimestamps unchanged). Defaulting off therefore bought no
+    // restart saving at all, and cost the operator a capture that is empty
+    // the first time they look at a real call.
+    //
+    // The storage half is answered separately by keepalive suppression, which
+    // removed 68% of what always-on used to store.
+    expect(IMS_CODE).toMatch(/let sipTracingEnabled = true;/);
   });
 
   it('neither direction of the toggle restarts anything', () => {

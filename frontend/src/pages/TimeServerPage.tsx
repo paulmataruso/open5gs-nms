@@ -3,29 +3,15 @@ import { Clock, CheckCircle, XCircle, AlertCircle, RefreshCw, Plus, Trash2, Save
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
+import { recentNtpClients, isNtpClient, CHRONY_RECENT_SECONDS, type ChronyClient } from '../api/chrony';
+
 const API = () => (import.meta.env.VITE_API_URL || '/api');
 
 interface ChronyServer  { type: 'server' | 'pool'; address: string; options: string; }
 interface ChronyConfig  { servers: ChronyServer[]; allowNets: string[]; localStratum: number; makestep: string; rtcsync: boolean; driftfile: string; logdir: string; }
-interface ChronyClient  { hostname: string; ntpRequests: number; ntpDropped: number; ntpInterval: string; ntpLast: string; }
 interface ChronySource  { mode: string; state: string; name: string; stratum: string; poll: string; reach: string; lastRx: string; offset: string; error: string; }
 interface ChronyTracking { refId: string; refSource: string; stratum: string; refTime: string; sysTimeOffset: string; rmsOffset: string; frequency: string; residualFreq: string; skew: string; rootDelay: string; rootDispersion: string; updateInterval: string; leap: string; }
 interface StatusData    { installed: boolean; active: boolean; tracking: ChronyTracking | null; sources: ChronySource[]; }
-
-/** Parse chronyc elapsed-time strings ("3h", "14m", "2d5h30m", raw seconds) → seconds. Returns null for "-" / unknown. */
-function parseChronycAge(s: string): number | null {
-  if (!s || s === '-') return null;
-  if (/^\d+$/.test(s)) return parseInt(s, 10);
-  let seconds = 0;
-  for (const [, n, unit] of s.matchAll(/(\d+)([dhms])/g)) {
-    const v = parseInt(n, 10);
-    if (unit === 'd') seconds += v * 86400;
-    else if (unit === 'h') seconds += v * 3600;
-    else if (unit === 'm') seconds += v * 60;
-    else seconds += v;
-  }
-  return seconds > 0 ? seconds : null;
-}
 
 function SvcBadge({ label, active }: { label: string; active: boolean }) {
   return (
@@ -310,12 +296,14 @@ export function TimeServerPage() {
       {active && (
         <div className="nms-card">
           {(() => {
-            const ONE_HOUR = 3600;
-            const recentClients = clients.filter(c => {
-              const age = parseChronycAge(c.ntpLast);
-              return age === null || age <= ONE_HOUR;
-            });
-            const staleCount = clients.length - recentClients.length;
+            // Shared with the dashboard's Time Server card (api/chrony.ts) so
+            // the two cannot disagree about who counts as a client — it also
+            // drops the command-mode `localhost` row this page's own chronyc
+            // call creates, which was being listed as a time client.
+            const recentClients = recentNtpClients(clients, CHRONY_RECENT_SECONDS);
+            // Counted against real NTP clients only — a command-mode row has
+            // never asked for time, so it is not a client that went quiet.
+            const staleCount = clients.filter(isNtpClient).length - recentClients.length;
             return (
               <>
                 <div className="flex items-center gap-2 mb-3">

@@ -165,6 +165,96 @@ function InlineTextCell({
   );
 }
 
+// ── SIM-type tag ────────────────────────────────────────────────────────────
+// Shared renderer so the inline cell and the add/edit form can never disagree
+// about what an eSIM looks like. An unset value renders as a dash rather than
+// defaulting to either type: the tag is deliberately not inferred from the
+// ICCID prefix (that only holds for one issuer, and two subscribers here have
+// no ICCID at all), so "not recorded" is a real, distinct state.
+const SIM_TYPE_OPTIONS = [
+  { value: '',         label: '\u2014 Not recorded' },
+  { value: 'physical', label: 'Physical SIM' },
+  { value: 'esim',     label: 'eSIM' },
+];
+
+function simTypeBadge(v: string): JSX.Element {
+  if (v === 'esim') {
+    return <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-xs bg-nms-accent/10 text-nms-accent border-nms-accent/30">eSIM</span>;
+  }
+  if (v === 'physical') {
+    return <span className="inline-flex items-center px-2 py-0.5 rounded-full border text-xs bg-nms-surface-2 text-nms-text border-nms-border-strong">Physical</span>;
+  }
+  return <span className="text-nms-text-dim">—</span>;
+}
+
+// Select-shaped sibling of InlineTextCell above. Kept as its own component
+// rather than generalising that one: a text cell commits on Enter/blur and so
+// needs an explicit Save/Cancel pair, whereas picking an option IS the commit
+// — so this saves on change and has no Save button at all. Folding both into
+// one component would mean threading a mode flag through every branch.
+function InlineSelectCell({
+  value, options, isAdmin, onSave, renderDisplay, ariaLabel,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  isAdmin: boolean;
+  onSave: (value: string) => Promise<void>;
+  renderDisplay: (value: string) => JSX.Element;
+  ariaLabel: string;
+}): JSX.Element {
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const commit = async (next: string) => {
+    if (next === value) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      await onSave(next);
+      toast.success('Updated');
+      setEditing(false);
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error ?? err?.message ?? 'Update failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <select aria-label={ariaLabel}
+        autoFocus
+        disabled={saving}
+        className="nms-input text-xs py-1 px-1.5 h-7 w-36"
+        value={value}
+        onChange={e => commit(e.target.value)}
+        onBlur={() => setEditing(false)}
+        onKeyDown={e => { if (e.key === 'Escape') setEditing(false); }}
+      >
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    );
+  }
+  return (
+    <div
+      className={clsx(
+        'inline-flex items-center rounded px-1 -mx-1 py-0.5 -my-0.5',
+        isAdmin && 'cursor-pointer hover:bg-nms-surface-2 transition-colors',
+      )}
+      onClick={() => { if (isAdmin) setEditing(true); }}
+      {...(isAdmin
+        ? {
+            role: 'button' as const,
+            tabIndex: 0,
+            'aria-label': ariaLabel,
+            onKeyDown: activateOnKey(() => setEditing(true)),
+          }
+        : {})}
+    >
+      {renderDisplay(value)}
+    </div>
+  );
+}
+
 // ── Click-to-toggle dropdown menu ───────────────────────────────────────────
 // Replaces the old `group-hover:block` CSS-only dropdowns (Set Plan, Add to
 // group, Add to plan) — those closed the instant the mouse crossed the small
@@ -2165,6 +2255,16 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
               />
             </div>
             <div>
+              <label className="nms-label" htmlFor="sub-sim-type">SIM Type</label>
+              <select id="sub-sim-type" aria-label="SIM Type"
+                className="nms-input text-sm"
+                value={(form as any).simType || ''}
+                onChange={e => setForm({...form, simType: (e.target.value || null) as 'esim' | 'physical' | null} as any)}
+              >
+                {SIM_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
               <label className="nms-label">MSISDN</label>
               <input aria-label="MSISDN" 
                 className="nms-input font-mono text-sm" 
@@ -2959,6 +3059,14 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
     await fetch();
   };
 
+  // Sends null rather than undefined when the tag is cleared: an undefined
+  // value is dropped from the JSON body entirely, never reaches the repo's
+  // $set, and would silently leave the previous tag in place.
+  const saveSimType = async (imsi: string, value: string) => {
+    await subscriberApi.update(imsi, { simType: (value || null) as 'esim' | 'physical' | null } as any);
+    await fetch();
+  };
+
   const saveSessionField = async (imsi: string, sessionIdx: number, field: 'name' | 'ipv4', value: string) => {
     if (field === 'name' && !value) throw new Error('APN cannot be empty');
     if (field === 'ipv4' && value && !/^(\d{1,3}\.){3}\d{1,3}$/.test(value)) {
@@ -3450,6 +3558,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                 { key: 'imsi',    label: 'IMSI' },
                 { key: null,      label: 'Nickname' },
                 { key: null,      label: 'ICCID' },
+                { key: null,      label: 'SIM' },
                 { key: null,      label: 'MSISDN' },
                 { key: 'apn',     label: 'APN' },
                 { key: 'ue_ipv4', label: 'UE IPv4' },
@@ -3488,7 +3597,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                 return (
                   <tr key={`group-${group._id}`} className="border-b border-nms-border" style={{ backgroundColor: (group.color ?? '#6366f1') + '14' }}>
                     {!isViewer && <td className="w-10 px-3 py-2" />}
-                    <td colSpan={9} className="px-3 py-2">
+                    <td colSpan={10} className="px-3 py-2">
                       <div className="flex items-center gap-2">
                         <button aria-label={collapsed ? 'Expand group' : 'Collapse group'}
                           onClick={() => setCollapsedGroups(prev => {
@@ -3582,6 +3691,16 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-nms-text-dim">
                     {sub.iccid || <span className="text-nms-text-dim">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    <InlineSelectCell
+                      value={sub.simType ?? ''}
+                      options={SIM_TYPE_OPTIONS}
+                      isAdmin={!isViewer}
+                      ariaLabel="SIM type"
+                      renderDisplay={simTypeBadge}
+                      onSave={(v) => saveSimType(sub.imsi, v)}
+                    />
                   </td>
                   <td className="px-4 py-3 text-xs text-nms-text-dim">
                     <InlineTextCell
@@ -3774,7 +3893,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
             })}
             {subscribers.length === 0 && (
               <tr>
-                <td colSpan={isViewer ? 9 : 10} className="px-4 py-12 text-center text-nms-text-dim">
+                <td colSpan={isViewer ? 10 : 11} className="px-4 py-12 text-center text-nms-text-dim">
                   No subscribers found
                 </td>
               </tr>

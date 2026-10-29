@@ -276,7 +276,7 @@ services:
     network_mode: host
     volumes:
       - ./nginx/certs:/certs
-      - ./nginx/setup-sas-cert.sh:/generate-cert.sh:ro
+      - ./nginx/setup-nginx-certs.sh:/generate-cert.sh:ro
     entrypoint: ["/bin/sh", "/generate-cert.sh"]
     labels:
       com.open5gs.nms.service: "cert-init"
@@ -334,3 +334,64 @@ services:
         max-file: "5"
     labels:
       com.open5gs.nms.service: "genieacs"
+
+  # ─────────────────────────────────────────────────────────
+  # SASBench — the CBRS Spectrum Access System (WINNF-TS-0016)
+  #
+  # This is the SAS. The NMS does not implement one: SASBench owns the
+  # SAS-CBSD protocol ports and binds them itself, so radios connect to it
+  # directly. Nothing in this stack proxies, terminates TLS for, or rewrites
+  # that traffic — deliberately, so what SASBench logs is what the radio sent,
+  # from the address it really came from.
+  #
+  #   SAS_HTTP_PORT   (8899) ← CBSD protocol, plain HTTP
+  #   SAS_HTTPS_PORT  (8443) ← CBSD protocol, HTTPS / mutual TLS
+  #   SASBENCH_UI_PORT(8094) ← SASBench admin UI + REST API (/api/v1)
+  #
+  # 8094 rather than SASBench's own default of 8080: PyHSS already binds
+  # 127.0.0.1:8080 on this host (same collision SigScale OCS hit — see
+  # CLAUDE.md architectural pattern #17).
+  #
+  # The build context lives OUTSIDE this repository (SASBENCH_DIR, default
+  # /opt/sasbench) and must stay there: SASBench is proprietary, this project
+  # is AGPL-3.0, so its source must never be vendored in here. Clone it to
+  # that path before the first `docker compose up` — see INSTALL.md.
+  # ─────────────────────────────────────────────────────────
+  sasbench:
+    build:
+      context: ${SASBENCH_DIR:-/opt/sasbench}
+    image: sasbench:latest
+    container_name: sasbench
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: "UTC"
+      UI_PORT: ${SASBENCH_UI_PORT:-8094}
+      SAS_HTTP_PORT: ${SAS_HTTP_PORT:-8899}
+      SAS_HTTPS_PORT: ${SAS_HTTPS_PORT:-8443}
+      # lab is required here, not a preference — see .env.example. winnforum
+      # sets tlsClientAuth=require and acceptVersionlessPaths=false, either of
+      # which drops every radio on this deployment the moment it is applied.
+      SAS_PROFILE: ${SAS_PROFILE:-lab}
+      SAS_PROFILE_APPLY: ${SAS_PROFILE_APPLY:-}
+      SAS_FQDN: ${SAS_FQDN:-}
+      SAS_BIND_IP: ${SAS_BIND_IP:-}
+      SAS_HOSTNAMES: ${SAS_HOSTNAMES:-}
+      SAS_ADMIN_PASSWORD: ${SAS_ADMIN_PASSWORD:-}
+      SAS_AUTH: ${SAS_AUTH:-}
+      SAS_API_CORS_ORIGINS: ${SAS_API_CORS_ORIGINS:-}
+    volumes:
+      - sas-data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+    labels:
+      com.open5gs.nms.service: "sasbench"
+
+volumes:
+  # SASBench's SQLite database, its own PKI, terrain and map tiles. A named
+  # volume, not a bind mount: it holds the SAS's live grant state and private
+  # keys, which must never land inside the repository working tree.
+  sas-data:

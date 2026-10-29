@@ -667,7 +667,7 @@ const SercommRadioRow: React.FC<{
               {/* Row 1 — SAS mode fields */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
-                  <LabelWithTooltip tooltip="How this radio's sasd client talks to the Spectrum Access System. Direct SAS: the radio connects straight to the SAS server URL below over HTTPS (CBRS SAS protocol, WInnForum TS-0016). Domain Proxy: the radio instead routes CBRS signaling through a Domain Proxy that aggregates multiple CBSDs behind one SAS registration — only use this if you're actually running a Domain Proxy in front of this deployment's SAS server; this project's built-in CBRS SAS server expects Direct SAS connections.">
+                  <LabelWithTooltip tooltip="How this radio's sasd client talks to the Spectrum Access System. Direct SAS: the radio connects straight to the SAS server URL below over HTTPS (CBRS SAS protocol, WInnForum TS-0016). Domain Proxy: the radio instead routes CBRS signaling through a Domain Proxy that aggregates multiple CBSDs behind one SAS registration — only use this if you're actually running a Domain Proxy in front of this deployment's SAS server; SASBench, the SAS this deployment runs, expects Direct SAS connections.">
                     <span className="nms-label">Method</span>
                   </LabelWithTooltip>
                   <select aria-label="Method" className="nms-input" value={form.sasMethod} onChange={e => set({ sasMethod: e.target.value })}>
@@ -808,7 +808,7 @@ const SercommRadioRow: React.FC<{
                 <label className="flex items-center gap-2 cursor-pointer group">
                   <input type="checkbox" checked={form.sasPeerCertVerify} onChange={e => set({ sasPeerCertVerify: e.target.checked })}
                     className="w-4 h-4 rounded border-nms-border bg-nms-surface text-nms-accent focus:ring-nms-accent" />
-                  <LabelWithTooltip tooltip="Whether the radio's SAS client validates the SAS server's TLS certificate against a trusted CA chain. Disable this when pointing at this deployment's own built-in SAS server, which uses a self-signed certificate (nginx/setup-sas-cert.sh) — leaving verification on against a self-signed cert will cause every SAS request to fail TLS validation and the radio will never get a grant. Enable it only if pointed at a real, publicly-trusted SAS provider.">
+                  <LabelWithTooltip tooltip="Whether the radio's SAS client validates the SAS server's TLS certificate against a trusted CA chain. Disable this when pointing at this deployment's own SASBench, which presents a certificate from its own lab PKI — leaving verification on against an untrusted CA makes every SAS request fail TLS validation and the radio never gets a grant. To keep it on instead, install SASBench's CA on the radio (SASBench → Certificates, or GET /api/v1/trust-bundle). Enable it only if pointed at a real, publicly-trusted SAS provider.">
                     <span className="text-xs text-nms-text group-hover:text-nms-accent transition-colors">
                       Verify SAS Cert <span className="text-nms-text-dim">(disable for self-signed)</span>
                     </span>

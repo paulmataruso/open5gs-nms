@@ -5,7 +5,7 @@ import {
   Satellite, Users, Signal, Copy, Check, Network, Plus, Trash2, Save,
 } from 'lucide-react';
 import { genieacsApi, radioTagsApi, BaicellsRadio, ProvisionInput, NbiTask, NeighborFreqEntry, NeighborCellEntry, MmePoolEntry, MmePoolConfig } from '../../api';
-import { sasApi } from '../../api/sas';
+import { sasApi, type SasGrant } from '../../api/sas';
 import { useTopologyStore } from '../../stores';
 import { ProvisionConfirmModal } from './ProvisionConfirmModal';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
@@ -50,31 +50,26 @@ function CopyBtn({ text }: { text: string }) {
 // relinquish/reboot forces re-sync). Cross-checking against our own SAS
 // server's grant records catches that kind of drift independently of what
 // the radio itself claims.
-interface CbsdGrant {
-  state: string;
-  grantExpireTime: string;
-  operationParam?: { operationFrequencyRange?: { lowFrequency: number; highFrequency: number } };
-}
-interface CbsdWithGrants {
-  cbsdSerialNumber: string;
-  fccId: string;
-  grants: CbsdGrant[];
-}
 interface GrantCrossCheck {
   status: 'ok' | 'mismatch';
   message: string;
 }
 
-function crossCheckGrant(radio: BaicellsRadio, cbsds: CbsdWithGrants[]): GrantCrossCheck {
-  const cbsd = cbsds.find(c =>
-    c.cbsdSerialNumber === radio.serial && (!radio.sasFccId || c.fccId === radio.sasFccId),
+// Grants come from SASBench, which denormalises the owning CBSD's serial and
+// FCC ID onto each grant — so the radio is matched on the grant itself and
+// there is no CBSD lookup to do first. `low`/`high` are Hz and
+// `grantExpireTime` is epoch milliseconds (SASBench stores every timestamp
+// that way), unlike the ISO string the NMS's own former SAS returned.
+function crossCheckGrant(radio: BaicellsRadio, grants: SasGrant[]): GrantCrossCheck {
+  const activeGrants = grants.filter(
+    g => g.serial === radio.serial
+      && (!radio.sasFccId || g.fccId === radio.sasFccId)
+      && (g.state === 'GRANTED' || g.state === 'AUTHORIZED'),
   );
-  if (!cbsd) return { status: 'ok', message: '' };
+  // No record at all for this radio: the cross-check has nothing to say.
+  // Distinct from "registered with no live grant", which IS reportable below.
+  if (!grants.some(g => g.serial === radio.serial)) return { status: 'ok', message: '' };
 
-  const now = Date.now();
-  const activeGrants = (cbsd.grants || []).filter(
-    g => g.state !== 'TERMINATED' && new Date(g.grantExpireTime).getTime() > now,
-  );
   const isSasMode = radio.sasEnableMode === '2';
 
   if (isSasMode && activeGrants.length === 0) {
@@ -86,8 +81,8 @@ function crossCheckGrant(radio: BaicellsRadio, cbsds: CbsdWithGrants[]): GrantCr
 
   if (!isSasMode && activeGrants.length > 0) {
     const g       = activeGrants[0];
-    const lowMhz  = (g.operationParam?.operationFrequencyRange?.lowFrequency  ?? 0) / 1e6;
-    const highMhz = (g.operationParam?.operationFrequencyRange?.highFrequency ?? 0) / 1e6;
+    const lowMhz  = g.low / 1e6;
+    const highMhz = g.high / 1e6;
     const expiry  = new Date(g.grantExpireTime).toLocaleString();
     return {
       status: 'mismatch',
@@ -97,8 +92,8 @@ function crossCheckGrant(radio: BaicellsRadio, cbsds: CbsdWithGrants[]): GrantCr
 
   if (isSasMode && activeGrants.length > 0) {
     const g          = activeGrants[0];
-    const lowMhz     = (g.operationParam?.operationFrequencyRange?.lowFrequency  ?? 0) / 1e6;
-    const highMhz    = (g.operationParam?.operationFrequencyRange?.highFrequency ?? 0) / 1e6;
+    const lowMhz     = g.low / 1e6;
+    const highMhz    = g.high / 1e6;
     const grantCenter = (lowMhz + highMhz) / 2;
     const liveEarfcn  = parseFloat(radio.earfcn || '0');
     if (liveEarfcn > 0) {
@@ -517,7 +512,7 @@ const MmePoolTable: React.FC<{ rows: MmePoolEntry[]; onChange: (rows: MmePoolEnt
 };
 
 // ─── Single radio row ─────────────────────────────────────────────────────────
-const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname?: string; cbsds: CbsdWithGrants[] }> = ({ radio, onRefresh, nickname, cbsds }) => {
+const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname?: string; grants: SasGrant[] }> = ({ radio, onRefresh, nickname, grants }) => {
   const [expanded, setExpanded]   = useState(false);
   const [form, setForm]           = useState<RadioForm>(radioToForm(radio));
   const [refreshing, setRefreshing] = useState(false);
@@ -645,7 +640,7 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
   // Cross-check GenieACS's reported SAS state against our own SAS server's
   // actual grant records — catches a stale enableMode flag (see B0669 case:
   // radio kept operating on a valid grant after enableMode reverted to 0).
-  const grantCheck = crossCheckGrant(radio, cbsds);
+  const grantCheck = crossCheckGrant(radio, grants);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -1265,7 +1260,7 @@ export const BaicellsAcsTab: React.FC = () => {
   const [error, setError]     = useState<string | null>(null);
   const [globalBusy, setGlobalBusy] = useState(false);
   const [radioTags, setRadioTags]   = useState<Record<string, string>>({});
-  const [cbsds, setCbsds] = useState<CbsdWithGrants[]>([]);
+  const [sasGrants, setSasGrants] = useState<SasGrant[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fetchInterfaceStatus = useTopologyStore(s => s.fetchInterfaceStatus);
 
@@ -1282,10 +1277,10 @@ export const BaicellsAcsTab: React.FC = () => {
     }
   }, []);
 
-  const fetchCbsds = useCallback(async () => {
+  const fetchSasGrants = useCallback(async () => {
     try {
-      const data = await sasApi.getCbsds();
-      if (data?.success) setCbsds(data.cbsds ?? []);
+      const data = await sasApi.getGrants();
+      if (data?.reachable) setSasGrants(data.grants ?? []);
     } catch {
       // Cross-check is a nice-to-have — if the SAS admin API is unreachable,
       // just skip it silently rather than surfacing an error banner for it.
@@ -1298,10 +1293,10 @@ export const BaicellsAcsTab: React.FC = () => {
   useEffect(() => {
     fetchDevices();
     fetchInterfaceStatus();
-    fetchCbsds();
-    pollRef.current = setInterval(() => { fetchDevices(true); fetchInterfaceStatus(); fetchCbsds(); }, POLL_INTERVAL_MS);
+    fetchSasGrants();
+    pollRef.current = setInterval(() => { fetchDevices(true); fetchInterfaceStatus(); fetchSasGrants(); }, POLL_INTERVAL_MS);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [fetchDevices, fetchInterfaceStatus, fetchCbsds]);
+  }, [fetchDevices, fetchInterfaceStatus, fetchSasGrants]);
 
   const handleRebootAll = async () => {
     if (!confirm(`Reboot ALL ${radios.length} radio(s)?\n\nAll radios will be unreachable for ~2 minutes.`)) return;
@@ -1478,7 +1473,7 @@ export const BaicellsAcsTab: React.FC = () => {
       {!loading && !error && radios.length > 0 && (
         <div className="space-y-2">
           {radios.map(radio => (
-            <RadioRow key={radio.id} radio={radio} onRefresh={() => fetchDevices(true)} nickname={radio.ip ? radioTags[radio.ip] : undefined} cbsds={cbsds} />
+            <RadioRow key={radio.id} radio={radio} onRefresh={() => fetchDevices(true)} nickname={radio.ip ? radioTags[radio.ip] : undefined} grants={sasGrants} />
           ))}
         </div>
       )}

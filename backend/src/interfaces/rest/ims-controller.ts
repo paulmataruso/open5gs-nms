@@ -23,6 +23,8 @@ import { VECTORCORE_SMSC_SIP_ADDRESS } from './vectorcore-smsc-controller';
 import { getOcsPeerInfo, addOcsDiameterClient } from './ocs-controller';
 import { formatPstnDispatcherEntry } from './pstn-controller';
 
+import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
+
 const execFileAsync = promisify(execFile);
 
 const nsenter = async (cmd: string, args: string[] = [], timeoutMs = 30000): Promise<{ stdout: string; stderr: string }> =>
@@ -3038,11 +3040,27 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // Defaults off: same live-S-CSCF blast radius as voiceChargingEnabled,
   // though this one has no external-service dependency to re-heal.
   let cdrAccountingEnabled = false;
-  // SIP tracing (HEP) -- preserved across Configure exactly like the two
-  // toggles above. Enabling it costs a restart of all three CSCFs, and a
-  // P-CSCF restart wipes every registered UE's IPsec SA, so it is never
-  // enabled implicitly here; only setSipTracingEnabled() turns it on.
-  let sipTracingEnabled = false;
+  // SIP tracing (HEP) -- ON by default. Unlike the two toggles above, it is an
+  // explicit opt-OUT that persists across Configure; an absent key means a
+  // deployment that predates the flag, which should come up tracing.
+  //
+  // Enabling tracing costs NO restart. siptrace is loaded unconditionally at
+  // Configure (see captureNodeDefine) and only its trace_on flag moves, over
+  // siptrace's own RPC. An earlier version of this comment asserted that
+  // enabling "costs a restart of all three CSCFs, and a P-CSCF restart wipes
+  // every registered UE's IPsec SA" -- which is why this defaulted off. That
+  // text predates CAPTURE_NODE becoming unconditional and is simply wrong
+  // now. Verified live 2026-10-19: `siptrace.status on` against all three
+  // already-running CSCFs took them Disabled -> Enabled with HEP datagrams
+  // arriving at the collector within seconds, and all three units'
+  // ActiveEnterTimestamp byte-identical before and after.
+  //
+  // So defaulting off bought nothing real and cost the operator a capture
+  // that is silently empty the first time they look at a call -- the exact
+  // "restart to use a diagnostic" cost the unconditional load exists to
+  // remove. Keepalive suppression (call-scope.ts) dropped 68% of what
+  // always-on used to store, which is what makes leaving it on cheap.
+  let sipTracingEnabled = true;
   if (fs.existsSync(HOST_IMS_STATE)) {
     try {
       const prevSaved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
@@ -3057,7 +3075,10 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
       if (prevSaved?.smsDeliveryMode === 'sgs' || prevSaved?.smsDeliveryMode === 'vectorcore') smsDeliveryMode = prevSaved.smsDeliveryMode;
       if (prevSaved?.voiceChargingEnabled === true) voiceChargingEnabled = true;
       if (prevSaved?.cdrAccountingEnabled === true) cdrAccountingEnabled = true;
-      if (prevSaved?.sipTracingEnabled === true) sipTracingEnabled = true;
+      // `=== false`, not `=== true`: only a deliberate opt-out survives a
+      // Configure. A missing key is a deployment from before this flag
+      // existed, which takes the new default rather than being pinned off.
+      if (prevSaved?.sipTracingEnabled === false) sipTracingEnabled = false;
     } catch { /* corrupt state — nothing to clean up */ }
   }
   // Fail-safe, not fail-loud, on a plain re-Configure: if the toggle was left
@@ -3330,6 +3351,13 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     smsWorkerIntervalSeconds,
     voiceChargingEnabled,
     cdrAccountingEnabled,
+    // Persisted, which it previously was NOT -- a real desync: Configure
+    // carried the old value forward into the generated includes (so the CSCFs
+    // came up with CAPTURE_TRACE_ON and really were tracing) but then dropped
+    // the key here, so getSipTracingEnabled() read false and the UI reported
+    // tracing off while all three CSCFs filled the store. It also made the
+    // carry-forward above self-defeating, since the NEXT Configure saw no key.
+    sipTracingEnabled,
     config: {
       mcc, mnc, additionalPlmns: additionalPlmns ?? [],
       pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
@@ -3619,9 +3647,19 @@ export interface SipTracingApplyReport {
  */
 async function siptraceRpc(ctl: string, arg: 'on' | 'off' | 'check'): Promise<{ ok: boolean; out: string }> {
   try {
-    // nsenter() resolves to { stdout, stderr } -- not a string. kamcmd writes
-    // its error line to stdout, so both streams are considered.
-    const res = await nsenter('kamcmd', ['-s', ctl, 'siptrace.status', arg]);
+    // safeNsenter, NOT this file's local nsenter() helper, and that matters
+    // here specifically: `nsenter -p` forks internally before exec, so a
+    // plain execFile timeout kills only the tracked top PID and orphans the
+    // real kamcmd (CLAUDE.md pattern #20). This call site is the highest-rate
+    // one in the file -- getSipTracingRuntime() fires it three times per
+    // /status request and the Packet Capture page polls /status every 10s per
+    // open browser tab, which is the recurring-interval shape pattern #20
+    // names explicitly. safeNsenter spawns detached so a timeout kills the
+    // whole process group.
+    //
+    // It resolves to { stdout, stderr } -- not a string. kamcmd writes its
+    // error line to stdout, so both streams are considered.
+    const res = await safeNsenter('kamcmd', ['-s', ctl, 'siptrace.status', arg], 20000);
     const raw = `${res?.stdout ?? ''}${res?.stderr ?? ''}`.trim();
     if (/^error:/i.test(raw) || /not found/i.test(raw)) {
       return { ok: false, out: raw || 'siptrace RPC not available' };

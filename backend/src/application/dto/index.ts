@@ -382,6 +382,7 @@ export interface SubscriberDto {
   access_restriction_data?: number;
   network_access_mode?: number;
   gsmEnabled?: boolean;
+  simType?: 'esim' | 'physical' | null;
 }
 
 // ── Service DTOs ──

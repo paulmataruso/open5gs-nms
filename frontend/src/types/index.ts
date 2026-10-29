@@ -446,6 +446,7 @@ export interface Subscriber {
   imsi: string;
   nickname?: string;
   iccid?: string;
+  simType?: 'esim' | 'physical' | null;
   msisdn?: string[];
   imeisv?: string | string[];  // Can be string or array
   mme_host?: string | string[];  // MME hostname
@@ -473,6 +474,7 @@ export interface SubscriberListItem {
   imsi: string;
   nickname?: string;
   iccid?: string;
+  simType?: 'esim' | 'physical' | null;
   msisdn?: string[];
   slice_count: number;
   session_count: number;

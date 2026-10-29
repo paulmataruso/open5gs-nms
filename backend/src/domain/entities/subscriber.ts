@@ -78,12 +78,20 @@ export interface Subscriber {
   // always has, on MSISDN alone — this is an additional, not replacement,
   // inclusion path).
   gsmEnabled?: boolean;
+  // App-level only — Open5GS has no notion of this, same as gsmEnabled
+  // above. Records whether this subscriber's credentials live on a physical
+  // SIM or an eSIM profile. Deliberately NOT inferred from the ICCID prefix:
+  // that only works for the one eSIM issuer currently in use and cannot
+  // classify a subscriber with no ICCID at all, so a wrong guess would be
+  // indistinguishable from a real answer. Unset means "not recorded yet".
+  simType?: 'esim' | 'physical' | null;
 }
 
 export interface SubscriberListItem {
   imsi: string;
   nickname?: string;
   iccid?: string;
+  simType?: 'esim' | 'physical' | null;
   msisdn?: string[];
   slice_count: number;
   session_count: number;

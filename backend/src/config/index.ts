@@ -19,6 +19,12 @@ export interface AppConfig {
   prometheusUrl: string;
   // GenieACS
   genieacsNbiUrl: string;
+  // SASBench (CBRS SAS) — runs as its own container; the NMS only reads its REST API
+  sasbenchApiUrl: string;
+  sasbenchUiPort: number;
+  sasbenchUser: string;
+  sasbenchPassword: string;
+  sasbenchDir: string;
   // Simlessly eSIM RSP API
   simlesslyAccessKey: string;
   simlesslySecretKey: string;
@@ -51,6 +57,24 @@ export function loadAppConfig(): AppConfig {
     prometheusUrl: process.env.PROMETHEUS_URL || `http://127.0.0.1:${process.env.PROMETHEUS_PORT || '9099'}`,
     // GenieACS NBI — internal, not exposed to users
     genieacsNbiUrl: process.env.GENIEACS_NBI_URL || 'http://127.0.0.1:7557',
+    // SASBench — the CBRS SAS. It owns the SAS protocol ports directly; this
+    // NMS never speaks SAS-CBSD itself, it only reads SASBench's REST API to
+    // render a status page. SASBENCH_UI_PORT is also what the browser is told
+    // to open for SASBench's own admin UI, so it must be the real host port.
+    sasbenchApiUrl:
+      process.env.SASBENCH_API_URL ||
+      `http://127.0.0.1:${process.env.SASBENCH_UI_PORT || '8094'}`,
+    sasbenchUiPort: parseInt(process.env.SASBENCH_UI_PORT || '8094', 10),
+    // HTTP Basic against SASBench, kept server-side so no SAS credential is
+    // ever handed to the browser. Matches SAS_ADMIN_PASSWORD in .env.
+    sasbenchUser: process.env.SASBENCH_USER || 'admin',
+    sasbenchPassword: process.env.SAS_ADMIN_PASSWORD || 'admin',
+    // SASBench's own source checkout on the HOST, outside this repository
+    // (it is proprietary; this project is AGPL-3.0, so it must never be
+    // vendored in). Must match docker-compose.yml's build context for the
+    // sasbench service, since that is what the NMS rebuilds when it applies
+    // an upstream update.
+    sasbenchDir: process.env.SASBENCH_DIR || '/opt/sasbench',
     // Simlessly eSIM RSP API — obtained from the Developer module on the user's
     // Simlessly account; empty until the user supplies real values.
     simlesslyAccessKey: process.env.SIMLESSLY_ACCESS_KEY || '',

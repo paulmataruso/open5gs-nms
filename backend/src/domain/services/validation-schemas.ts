@@ -261,4 +261,8 @@ export const subscriberSchema = z.object({
   network_access_mode: z.number().int().min(0).max(2).optional(),  // 0=PACKET_AND_CIRCUIT, 2=ONLY_PACKET
   schema_version: z.number().optional(),
   gsmEnabled: z.boolean().optional(),
+  // .nullable() is load-bearing: clearing the tag has to send an explicit
+  // null, because a dropped/undefined key never reaches the repo's $set and
+  // would silently leave the previous value in place.
+  simType: z.enum(['esim', 'physical']).nullable().optional(),
 });

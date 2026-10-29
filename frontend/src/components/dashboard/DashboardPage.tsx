@@ -4,7 +4,8 @@ import { Activity, Users, Wifi, AlertTriangle, Play, Square, Zap, Clock, Radio, 
 import { useServiceStore, useSubscriberStore } from '../../stores';
 import { configApi, serviceApi, interfaceApi, radioBlockApi, gnbBlockApi, hnbBlockApi } from '../../api';
 import { ConfirmModal } from '../common/ConfirmModal';
-import { sasApi } from '../../api/sas';
+import { sasApi, type SasStatus } from '../../api/sas';
+import { recentNtpClients, type ChronyClient } from '../../api/chrony';
 import { imsApi, type ImsStatus, type ImsCallStats } from '../../api/ims';
 import { vowifiApi, type VowifiStatus, type VectorcoreStats } from '../../api/vowifi';
 import { pstnApi, type PstnStatus } from '../../api/pstn';
@@ -18,47 +19,11 @@ import { FEATURES } from '../../config/features';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
-type SasBand = {
-  bandLow: number; bandHigh: number; label: string;
-  slots: Array<{ low: number; high: number; cbsdId?: string; serial?: string; state?: string }>;
-};
-
-// Compact single-band frequency bar for the dashboard's split SAS Grants card —
-// same underlying slot data as the full SpectrumChart on the SAS page, but
-// stripped to just color blocks + a hover tooltip (no legend/table — no room for it here).
-function MiniSpectrumBar({ band }: { band: SasBand }): JSX.Element {
-  const bandWidth = band.bandHigh - band.bandLow;
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs font-medium text-nms-text-dim">{band.label}</span>
-        <span className="text-xs font-mono text-nms-text-dim/50">{(band.bandLow / 1e6).toFixed(0)}–{(band.bandHigh / 1e6).toFixed(0)} MHz</span>
-      </div>
-      <div className="relative h-3 rounded-sm overflow-hidden bg-nms-surface-2 border border-nms-border">
-        {band.slots.map((s, i) => {
-          const leftPct = ((s.low - band.bandLow) / bandWidth) * 100;
-          const widthPct = ((s.high - s.low) / bandWidth) * 100;
-          if (!s.cbsdId) {
-            return (
-              <div key={i} className="absolute inset-y-0 opacity-20"
-                style={{
-                  left: `${leftPct}%`, width: `${widthPct}%`,
-                  backgroundImage: 'repeating-linear-gradient(-45deg, #6b7280 0, #6b7280 1px, transparent 0, transparent 50%)',
-                  backgroundSize: '4px 4px',
-                }} />
-            );
-          }
-          const color = s.state === 'AUTHORIZED' ? '#4ade80' : '#38bdf8';
-          return (
-            <div key={i} className="absolute inset-y-0"
-              style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color }}
-              title={`${s.serial ?? s.cbsdId}\n${(s.low / 1e6).toFixed(1)}–${(s.high / 1e6).toFixed(1)} MHz\n${s.state}`} />
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+// How many NTP clients the Time Server card lists before deferring to the
+// Time Server page. Four is what fits without making this column taller than
+// its three siblings, which is what leaves the dead space the cards are
+// sized to avoid.
+const NTP_CLIENT_ROWS = 4;
 
 function StatCard({
   icon: Icon,
@@ -184,9 +149,21 @@ export function DashboardPage(): JSX.Element {
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [bulkActing, setBulkActing] = useState(false);
   const [chronyStatus, setChronyStatus] = useState<{ installed: boolean; active: boolean; refSource?: string; sysTimeOffset?: string } | null>(null);
-  const [sasStats, setSasStats] = useState<{ activeGrants: number; authorizedGrants: number; registeredCbsds: number } | null>(null);
-  const [sasRfStatus, setSasRfStatus] = useState<{ rfOn: number; rfOff: number; unknown: number } | null>(null);
-  const [sasBands, setSasBands] = useState<SasBand[] | null>(null);
+  // Who is actually taking time from this server. Fetched once alongside the
+  // chrony status above, not polled: the list is "seen in the last hour", so
+  // a reading a few minutes old says the same thing.
+  const [chronyClients, setChronyClients] = useState<ChronyClient[]>([]);
+  // CBRS SAS — one read of SASBench's own status. It is the SAS; the NMS has
+  // no SAS state of its own to blend in, so one object covers both SAS cards.
+  const [sasStatus, setSasStatus] = useState<SasStatus | null>(null);
+  // Grant counts come from SASBench keyed by state; GRANTED means "has a
+  // grant, not yet cleared to transmit" and AUTHORIZED means "transmitting".
+  const sasAuthorized = sasStatus?.counts?.grantsByState?.AUTHORIZED ?? 0;
+  const sasGranted = sasStatus?.counts?.grantsByState?.GRANTED ?? 0;
+  // Band occupancy and the radio breakdowns the backend derives from the real
+  // grant ranges — see sas-controller.ts: SASBench's own authorizedMHz sums
+  // grant widths and so overstates how much of the band is actually in use.
+  const sasDerived = sasStatus?.derived;
   // Per-RAT UE counts, each { active, total } where active = communicating
   // right now (ECM/RR-connected), total = registered on that RAT (idle +
   // connected). NOT denominated against the whole subscriber pool — a UE
@@ -225,20 +202,13 @@ export function DashboardPage(): JSX.Element {
         });
       })
       .catch(() => setChronyStatus({ installed: false, active: false }));
-    // SAS stats
-    sasApi.getStats().then(s => setSasStats(s)).catch(() => {});
-    sasApi.getSlots().then(s => {
-      const bands = s.bands ?? (s.slots?.length ? [{ bandLow: s.bandLow, bandHigh: s.bandHigh, label: 'Band', slots: s.slots }] : []);
-      setSasBands(bands);
-    }).catch(() => {});
-    sasApi.getRfStatus().then(rf => {
-      const vals = rf.map((r: any) => r.rfOn);
-      setSasRfStatus({
-        rfOn:    vals.filter((v: any) => v === true).length,
-        rfOff:   vals.filter((v: any) => v === false).length,
-        unknown: vals.filter((v: any) => v === null).length,
-      });
-    }).catch(() => {});
+    axios.get(`${API}/chrony/clients`)
+      .then(res => setChronyClients(res.data.clients ?? []))
+      .catch(() => setChronyClients([]));
+    // CBRS SAS — SASBench. getStatus() resolves even when SASBench is down
+    // (reachable:false), so an unreachable SAS renders as a real state rather
+    // than two cards stuck on a dash.
+    sasApi.getStatus().then(s => setSasStatus(s)).catch(() => setSasStatus(null));
     // Active UEs — InterfaceStatus has no top-level count field, it returns
     // activeUEs4G/activeUEs5G arrays (see get-interface-status.ts); sum their lengths.
     interfaceApi.getStatus().then((s: any) => {
@@ -336,6 +306,9 @@ export function DashboardPage(): JSX.Element {
     return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(vowifiStatsInterval); clearInterval(mmsStatsInterval); clearInterval(secgwStatusInterval); };
   }, [fetchStatuses, fetchSubscribers]);
 
+  // Real NTP clients only, most recent first — recentNtpClients() drops the
+  // command-mode `localhost` entry that this NMS's own chronyc call creates.
+  const ntpClients = recentNtpClients(chronyClients);
   const activeCount = statuses.filter((s) => s.active).length;
   const totalCount = statuses.length || 5;
   const errorCount = validation?.errors?.filter((e) => e.severity === 'error').length || 0;
@@ -610,50 +583,60 @@ export function DashboardPage(): JSX.Element {
             </div>
           </div>
         </div>
-        {/* SAS Grants card — split: stats on top, mini spectrum map on bottom */}
-        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
-          <div className="flex items-start justify-between p-4">
-            <div>
-              <p className="text-xs text-nms-text-dim uppercase tracking-wider">SAS Grants</p>
-              <p className="text-2xl font-semibold font-display mt-1">{sasStats?.activeGrants ?? '—'}</p>
-              <p className="text-xs text-nms-text-dim mt-1">
-                <span className="text-green-400">{sasStats?.authorizedGrants ?? 0} authorized</span>
-                {sasStats != null && sasStats.activeGrants > sasStats.authorizedGrants && (
-                  <span className="text-amber-400 ml-1">{sasStats.activeGrants - sasStats.authorizedGrants} granted</span>
-                )}
-              </p>
-            </div>
-            <div className="p-2.5 rounded-lg bg-purple-500/10">
-              <Shield className="w-5 h-5 text-purple-400" />
-            </div>
-          </div>
-          <div className="p-4">
-            {sasBands && sasBands.length > 0 ? (
-              <div className="space-y-2">
-                {sasBands.map((band, i) => <MiniSpectrumBar key={i} band={band} />)}
+        {/* CBRS SAS — ONE card for every SAS reading. SASBench *is* the SAS
+            here, and all of this comes from its single /api/v1/status, so
+            splitting it across two cards in two grid columns read as two
+            subsystems that could disagree. Grants and radios share the header
+            row (they are the two counts an operator checks first); the band,
+            traffic and listener detail sits underneath. */}
+        <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border flex flex-col">
+          <div className="grid grid-cols-2 divide-x divide-nms-border">
+            <div className="flex items-start justify-between p-4">
+              <div>
+                <p className="text-xs text-nms-text-dim uppercase tracking-wider">SAS Grants</p>
+                <p className="text-2xl font-semibold font-display mt-1">
+                  {sasStatus?.reachable ? sasGranted + sasAuthorized : '—'}
+                </p>
+                <p className="text-xs text-nms-text-dim mt-1">
+                  {sasStatus?.reachable ? (
+                    <>
+                      <span className="text-nms-green">{sasAuthorized} authorized</span>
+                      {sasGranted > 0 && (
+                        <span className="text-nms-amber ml-1">{sasGranted} granted</span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-nms-red">unreachable</span>
+                  )}
+                </p>
               </div>
-            ) : (
-              <p className="text-xs text-nms-text-dim">No spectrum data</p>
-            )}
-          </div>
-        </div>
-
-        {/* CBRS Radios + Primary PLMN group — one grid slot, CBRS on top and the
-            combined PLMN card stacked below it (same pattern as the GTP/Time group). */}
-        <div className="flex flex-col gap-4">
-          <div className="nms-card animate-fade-in">
-            <div className="flex items-start justify-between">
+              <div className="p-2.5 rounded-lg bg-purple-500/10">
+                <Shield className="w-5 h-5 text-purple-400" />
+              </div>
+            </div>
+            <div className="flex items-start justify-between p-4">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">CBRS Radios</p>
-                <p className="text-2xl font-semibold font-display mt-1">{sasStats?.registeredCbsds ?? '—'}</p>
+                <p className="text-2xl font-semibold font-display mt-1">
+                  {sasStatus?.reachable ? (sasStatus.counts?.cbsdsRegistered ?? 0) : '—'}
+                </p>
                 <div className="flex flex-wrap gap-x-2 mt-1 text-xs">
-                  {sasRfStatus ? (
+                  {sasStatus?.reachable ? (
                     <>
-                      {sasRfStatus.rfOn   > 0 && <span className="text-cyan-400">{sasRfStatus.rfOn} RF on</span>}
-                      {sasRfStatus.rfOff  > 0 && <span className="text-red-400">{sasRfStatus.rfOff} RF off</span>}
-                      {sasRfStatus.unknown > 0 && <span className="text-nms-text-dim">{sasRfStatus.unknown} unknown</span>}
+                      {/* "On air" is the number that matters: a radio can be
+                          registered with the SAS and still hold no grant, in
+                          which case it is not allowed to transmit at all. */}
+                      <span className="text-nms-green">{sasDerived?.radiosWithGrant ?? 0} on air</span>
+                      {(sasDerived?.radiosIdle ?? 0) > 0 && (
+                        <span className="text-nms-text-dim">{sasDerived?.radiosIdle} idle</span>
+                      )}
+                      {(sasStatus.counts?.cbsdsPending ?? 0) > 0 && (
+                        <span className="text-nms-amber">{sasStatus.counts?.cbsdsPending} pending</span>
+                      )}
                     </>
-                  ) : <span className="text-nms-text-dim">Loading…</span>}
+                  ) : (
+                    <span className="text-nms-text-dim">—</span>
+                  )}
                 </div>
               </div>
               <div className="p-2.5 rounded-lg bg-blue-500/10">
@@ -661,12 +644,92 @@ export function DashboardPage(): JSX.Element {
               </div>
             </div>
           </div>
+          {/* flex-1 + justify-between: this is the card's last section, so
+              whatever row-stretch height is left over lands here and spreads
+              these rows apart rather than pooling as dead space under the
+              last one. */}
+          <div className="p-4 flex-1 flex flex-col justify-between gap-1.5">
+            {sasStatus?.reachable ? (
+              <>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">Band in use</span>
+                  <span className="font-mono text-nms-text">
+                    {sasDerived
+                      ? `${sasDerived.occupancy.distinctMHz.toFixed(0)} / ${sasDerived.occupancy.bandMHz.toFixed(0)} MHz`
+                        + ` (${sasDerived.occupancy.occupancyPct.toFixed(0)}%)`
+                      : `${(sasStatus.counts?.authorizedMHz ?? 0).toFixed(1)} MHz`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">Spectrum granted</span>
+                  <span className="font-mono text-nms-text">
+                    {(sasStatus.counts?.authorizedMHz ?? 0).toFixed(0)} MHz
+                    {/* Above the band width whenever GAA grants overlap, which
+                        is normal — so the overlap depth is shown next to it
+                        rather than leaving the number looking impossible. */}
+                    {(sasDerived?.occupancy.maxOverlap ?? 0) > 1 && (
+                      <span className="text-nms-amber">
+                        {' '}· {sasDerived?.occupancy.maxOverlap} deep
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">Largest free block</span>
+                  <span className="font-mono text-nms-text">
+                    {sasDerived ? `${sasDerived.occupancy.largestGapMHz.toFixed(0)} MHz` : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">By FCC category</span>
+                  <span className="font-mono text-nms-text">
+                    {sasDerived
+                      ? [
+                          sasDerived.byCategory.A ? `${sasDerived.byCategory.A} A` : null,
+                          sasDerived.byCategory.B ? `${sasDerived.byCategory.B} B` : null,
+                          sasDerived.byCategory.unknown ? `${sasDerived.byCategory.unknown} ?` : null,
+                        ].filter(Boolean).join(' · ') || '—'
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">Messages / errors (1h)</span>
+                  <span className="font-mono text-nms-text">
+                    {sasStatus.counts?.messagesLastHour ?? 0}
+                    <span className={(sasStatus.counts?.errorsLastHour ?? 0) > 0 ? 'text-nms-amber' : 'text-nms-text-dim'}>
+                      {' / '}{sasStatus.counts?.errorsLastHour ?? 0}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">Listeners</span>
+                  <span className="font-mono text-nms-text">
+                    {[
+                      sasStatus.listeners?.http?.listening ? `:${sasStatus.listeners.http.port}` : null,
+                      sasStatus.listeners?.https?.listening ? `:${sasStatus.listeners.https.port}` : null,
+                    ].filter(Boolean).join(' ') || <span className="text-nms-red">none</span>}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-nms-text-dim">Settings profile</span>
+                  <span className="font-mono text-nms-text">{sasStatus.profile ?? 'custom'}</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-nms-text-dim">
+                SASBench is not answering — no radio can register, get a grant or heartbeat.
+              </p>
+            )}
+          </div>
+        </div>
 
-          {/* Primary PLMN card — split top/bottom: 5G (AMF) over 4G (MME).
-              flex-1: last card in this column, absorbs any leftover
-              row-stretch height so this column's bottom edge lines up
-              with its siblings. */}
-          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border flex-1">
+        {/* Primary PLMN + UEs group — one grid slot. The CBRS card that used
+            to lead this column moved into the SAS card above, so the UE
+            counts moved up here from the GTP/Time column to keep this
+            column's natural height alongside its three siblings. */}
+        <div className="flex flex-col gap-4">
+          {/* Primary PLMN card — split top/bottom: 5G (AMF) over 4G (MME). */}
+          <div className="nms-card animate-fade-in !p-0 divide-y divide-nms-border">
             <div className="flex items-start justify-between p-4">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">5G Primary PLMN</p>
@@ -690,6 +753,30 @@ export function DashboardPage(): JSX.Element {
               <div className="p-2.5 rounded-lg bg-nms-accent/10">
                 <Globe className="w-5 h-5 text-nms-accent" />
               </div>
+            </div>
+          </div>
+
+          {/* flex-1 absorbs this row's leftover stretch height. The label
+              keeps its place at the top edge like every other card's; the
+              counts below it take the leftover height and centre in it, so
+              the remainder is split above and below them instead of pooling
+              at the bottom as a band of empty card surface. */}
+          <div className="nms-card animate-fade-in flex-1 flex flex-col">
+            <p className="text-xs text-nms-text-dim uppercase tracking-wider mb-1.5">UEs — active / total</p>
+            <div className="grid grid-cols-4 divide-x divide-nms-border flex-1 content-center">
+              {[
+                { label: 'Total', active: ues4G.active + ues5G.active + ues2G.active, total: subscriberTotal, tone: 'text-nms-text' },
+                { label: '2G', active: ues2G.active, total: ues2G.total, tone: 'text-teal-400' },
+                { label: '4G', active: ues4G.active, total: ues4G.total, tone: 'text-purple-400' },
+                { label: '5G', active: ues5G.active, total: ues5G.total, tone: 'text-nms-accent' },
+              ].map((c, i) => (
+                <div key={c.label} className={i === 0 ? 'pr-3' : 'px-3'}>
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">{c.label}</p>
+                  <p className={`text-base font-semibold font-display leading-tight ${c.tone}`}>
+                    {c.active}<span className="text-nms-text-dim text-xs font-normal">/{c.total ?? '—'}</span>
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -834,30 +921,11 @@ export function DashboardPage(): JSX.Element {
             </div>
           </div>
 
-        {/* UEs + GTP U-Plane Traffic + Time Server group — 3 short single-
-            stat cards stacked, regrouped here (UEs moved from the IMS
-            Status group above) so this column's natural height stays
-            close to its 3 siblings instead of standing out short. */}
+        {/* GTP U-Plane Traffic + Time Server group. The UE counts that used
+            to lead this column moved to the PLMN column when the Time Server
+            card gained its client table — the table is what now makes this
+            column's natural height match its three siblings. */}
         <div className="flex flex-col gap-4">
-          <div className="nms-card animate-fade-in">
-            <p className="text-xs text-nms-text-dim uppercase tracking-wider mb-1.5">UEs — active / total</p>
-            <div className="grid grid-cols-4 divide-x divide-nms-border">
-              {[
-                { label: 'Total', active: ues4G.active + ues5G.active + ues2G.active, total: subscriberTotal, tone: 'text-nms-text' },
-                { label: '2G', active: ues2G.active, total: ues2G.total, tone: 'text-teal-400' },
-                { label: '4G', active: ues4G.active, total: ues4G.total, tone: 'text-purple-400' },
-                { label: '5G', active: ues5G.active, total: ues5G.total, tone: 'text-nms-accent' },
-              ].map((c, i) => (
-                <div key={c.label} className={i === 0 ? 'pr-3' : 'px-3'}>
-                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">{c.label}</p>
-                  <p className={`text-base font-semibold font-display leading-tight ${c.tone}`}>
-                    {c.active}<span className="text-nms-text-dim text-xs font-normal">/{c.total ?? '—'}</span>
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-
           <div className="nms-card animate-fade-in">
             <div className="flex items-start justify-between">
               <div>
@@ -887,7 +955,7 @@ export function DashboardPage(): JSX.Element {
           {/* flex-1: last card in this column, absorbs any leftover
               row-stretch height so this column's bottom edge lines up
               with its siblings. */}
-          <div className="nms-card animate-fade-in flex-1">
+          <div className="nms-card animate-fade-in flex-1 flex flex-col">
             <div className="flex items-start justify-between">
               <div>
                 <p className="text-xs text-nms-text-dim uppercase tracking-wider">Time Server</p>
@@ -905,14 +973,64 @@ export function DashboardPage(): JSX.Element {
                     {chronyStatus.refSource}{chronyStatus.sysTimeOffset ? ` · ${chronyStatus.sysTimeOffset}` : ''}
                   </p>
                 )}
-                {!chronyStatus?.installed && (
-                  <p className="text-xs text-amber-400 mt-1">Click to install chrony</p>
+                {chronyStatus && !chronyStatus.installed && (
+                  <p className="text-xs text-amber-400 mt-1">Install it from the Time Server page</p>
                 )}
               </div>
               <div className="p-2.5 rounded-lg bg-nms-accent/10">
                 <Clock className="w-5 h-5 text-nms-accent" />
               </div>
             </div>
+            {/* Who is taking time from this server right now — the radios are
+                the ones that matter, since a CBRS/NR radio with a drifting
+                clock is a real RF problem, not a cosmetic one. Only the
+                busiest few fit here; the Time Server page has the full table
+                with drop counts and poll intervals. */}
+            {chronyStatus?.active && (
+              <div className="mt-3 pt-3 border-t border-nms-border flex-1 flex flex-col">
+                <div className="flex items-baseline justify-between mb-1.5">
+                  <p className="text-xs text-nms-text-dim uppercase tracking-wider">Connected clients</p>
+                  <span className="text-xs text-nms-text-dim">
+                    {ntpClients.length === 0 ? 'none' : `${ntpClients.length} in the last hour`}
+                  </span>
+                </div>
+                {ntpClients.length === 0 ? (
+                  <p className="text-xs text-nms-text-dim">
+                    Nothing has asked this server for time in the last hour.
+                  </p>
+                ) : (
+                  <div className="nms-table-scroll">
+                    <table className="w-full text-xs font-mono">
+                      <thead>
+                        <tr className="text-nms-text-dim">
+                          <th scope="col" className="text-left font-normal pb-1">Client</th>
+                          <th scope="col" className="text-right font-normal pb-1 pl-2">Requests</th>
+                          <th scope="col" className="text-right font-normal pb-1 pl-2">Last</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-nms-border/40">
+                        {ntpClients.slice(0, NTP_CLIENT_ROWS).map((c) => (
+                          <tr key={c.hostname}>
+                            <td className="py-1 text-nms-text whitespace-nowrap">{c.hostname}</td>
+                            <td className="py-1 pl-2 text-right text-nms-text-dim whitespace-nowrap">
+                              {c.ntpRequests.toLocaleString()}
+                            </td>
+                            <td className="py-1 pl-2 text-right text-nms-text-dim whitespace-nowrap">
+                              {c.ntpLast === '-' ? '—' : c.ntpLast}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {ntpClients.length > NTP_CLIENT_ROWS && (
+                  <p className="text-xs text-nms-text-dim mt-1.5">
+                    +{ntpClients.length - NTP_CLIENT_ROWS} more on the Time Server page
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

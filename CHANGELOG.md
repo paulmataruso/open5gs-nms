@@ -4,7 +4,357 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
-## [Unreleased]
+## [v2.0-beta_0.72] - 2026-10-29
+
+### Breaking — the built-in SAS module is gone; SASBench replaces it
+
+Upgrading an existing deployment is not a drop-in `git pull`. The NMS no longer
+implements a SAS; [SASBench](https://github.com/paulmataruso/SASBench) does, as
+its own repository and its own container. Three things have to happen before the
+stack comes back up, and the first one will stop it dead if it is skipped:
+
+1. **Clone SASBench to `SASBENCH_DIR`** (default `/opt/sasbench`). It is the
+   `sasbench` service's Docker build context, and Compose resolves build
+   contexts before starting anything — a missing directory fails the build and
+   with it the whole stack, not just the SAS.
+2. **`docker compose up -d --force-recreate nginx`.** nginx used to terminate
+   SAS TLS on 8443 and that vhost is now gone from the repo, but `nginx.conf` is
+   a single-file bind mount, so the running container stays pinned to the
+   pre-pull inode, keeps holding 8443, and does not release it on a reload.
+   SASBench cannot bind its HTTPS listener until nginx is recreated.
+3. **Re-point the radios' port.** SAS-CBSD is now 8899 (HTTP) and 8443
+   (HTTPS/mTLS) direct to SASBench, with its admin UI and REST API on 8094.
+   SASBench matches the protocol path anywhere in a URL, so an existing
+   `.../sas/v1.2/registration` path keeps working — but a radio left on the old
+   nginx `:8888/sas/` path gets a 404 and silently never registers, holds a
+   grant or heartbeats.
+
+nginx must not be placed in front of any of those three ports: SASBench reads
+each radio's source address straight off the socket and has no
+`X-Forwarded-For` handling, so proxying it makes every radio look like it came
+from the proxy.
+
+Also worth doing on an upgrade: set `SAS_ADMIN_PASSWORD` (empty means
+SASBench's default `admin`), keep `SAS_PROFILE=lab`, and know that the old
+module's `sas_*` MongoDB collections are left behind inert. Full step-by-step,
+including the inode check that proves nginx actually swapped configs:
+INSTALL.md's "Upgrading an Existing Deployment".
+
+
+### Added — Band occupancy on the SAS page, and fuller SAS cards
+
+The SAS page now draws the band plan: the managed band as a frequency axis with
+GAA availability, PAL channels, every active protection and all live grants
+packed into lanes and coloured per radio, with hover detail and a legend. It is
+a recreation of SASBench's own band plan fed from the same `GET /api/v1/spectrum`
+data (through a new `GET /api/sas/spectrum`), so the two views cannot disagree
+about one band.
+
+**Occupancy is derived rather than taken at face value.** SASBench reports
+`authorizedMHz` as the sum of every grant's width, which on GAA exceeds the band
+itself — the SAS authorizes overlapping grants by design, because nothing in GAA
+is protected. Measured on this deployment: 9 grants totalling 200 MHz inside a
+150 MHz band. Presenting that as occupancy would be wrong, so the NMS merges the
+real grant ranges and reports three things the sum cannot express:
+
+- **distinct spectrum in use** — the union of the grant ranges (94 MHz, 63%)
+- **deepest overlap** — how many grants share the busiest frequency (4), which
+  is the reading that predicts co-channel contention
+- **largest free block** — the biggest contiguous run a new grant could take (30 MHz)
+
+Both numbers are shown and labelled apart, so "200 MHz granted" no longer looks
+impossible next to a 150 MHz band.
+
+Also on the SAS page: the SASBench version sits beside the Online badge; a new
+TLS card gives the client-certificate policy, protocol version, cipher-suite
+count, trust-anchor count and the server certificates in use; and the Service
+card adds PPAs, ESC feed state, terrain tile count and whether measurement
+reports are being requested. The `mTLS:` suffix is gone from the HTTPS listener
+row — a client-certificate policy is not a property of the socket, and it now
+has a row of its own in the TLS card.
+
+On the dashboard, everything SAS now lives in **one** card. Grants and radios
+share its header row — the two counts an operator checks first — and the band,
+traffic and listener detail sits underneath: band in use, spectrum granted with
+its overlap depth, largest free block, FCC category split, messages and errors
+in the last hour, which listeners are up, and the settings profile. It leads
+with how many radios are actually **on air** rather than a bare registered
+count, because a radio can be registered and hold no grant, in which case it
+may not transmit at all.
+
+It was previously two cards in two grid columns, which read as two subsystems
+that could disagree, when in fact every number comes from one read of
+SASBench's `/api/v1/status`.
+
+### Added — The NMS keeps SASBench current
+
+SASBench is developed upstream, so this deployment tracks it rather than
+freezing a copy. The SAS page now shows what is installed against what is
+published, and applies the update itself:
+
+- `GET /api/sas/version` — the installed commit, subject and date, the branch
+  it tracks, how many commits it is behind, whether the tree is dirty or has
+  local commits, and the version SASBench reports about itself.
+- `POST /api/sas/update` — admin-only. Pulls (`git merge --ff-only`), rebuilds
+  the `sasbench` image, recreates the container, then waits for SASBench's own
+  `/health` to report both protocol listeners back up before reporting success.
+  Output streams live, like every other long-running action in this NMS.
+
+`SASBENCH_DIR` now has to be a real `git clone` of
+`https://github.com/paulmataruso/SASBench.git`, not an unpacked archive. A
+directory with no git history still runs perfectly well, but it reports
+`managed: false` and the page says it cannot be updated from here — which is
+its own state, never shown as "up to date".
+
+Three things it deliberately does not do. It does not fetch the git remote on
+the status path: the SAS page polls every 15 seconds, so upstream refs are read
+from cache and only refreshed when the operator asks or when they are over
+30 minutes old. It does not update a checkout with uncommitted changes or local
+commits — it refuses and says why, rather than discarding work. And it is not
+automatic: recreating the container takes the SAS HTTP and HTTPS listeners down
+while it restarts, and every live radio misses a heartbeat across that gap, so
+the operator decides when to spend it. The button says so before it is clicked.
+
+`/api/sas/update` is in nginx's streaming-timeout location, since a real image
+build runs well past the generic 120-second `/api/` read timeout.
+
+The SAS page header carries an **Update SASBench** button that does the whole
+job in one click: it contacts the git remote for the latest refs, and if there
+is anything new it asks for confirmation — naming the commit count and spelling
+out that the SAS listeners drop while the container restarts — before applying
+it. When there is nothing to apply it says so and stops, rather than rebuilding
+the image for no reason. The software card below it is the same thing in two
+steps, for reading what is coming first.
+
+The installed commit's subject line is no longer printed on that card. It is an
+upstream commit message, which describes SASBench's own development rather than
+anything an operator of this deployment acts on. What the update *would* bring
+is still shown, since that answers a real question.
+
+### Added — Connected NTP clients on the dashboard
+
+The Time Server card now lists who is actually taking time from this server:
+the busiest few clients with their request counts and how long ago each was
+heard, and a pointer to the Time Server page for the rest. A CBRS or NR radio
+with a drifting clock is a real RF problem, so which radios are still syncing
+is worth seeing without opening a page.
+
+`chronyc clients` also lists **command-mode** clients, which is how the NMS's
+own `chronyc` call appears as `localhost` with zero NTP requests — it was being
+counted as a time client on the Time Server page. A client that has never asked
+for time is not one, and it is not a stale one either, so it is now excluded
+from both the list and the "stale hidden" count. The filter, the one-hour
+recency window and the elapsed-time parser live in one module
+(`frontend/src/api/chrony.ts`) that both views import, so the dashboard and the
+page cannot disagree about who is connected.
+
+### Added — `docs/style-guide.md`
+
+The frontend's design system, written up so it can be applied to another
+project: the five dark themes as copy-pasteable CSS custom properties, the
+Tailwind config that wires them up, the component classes, the base layer
+(scrollbars, the single `:focus-visible` rule, reduced-motion handling), the
+page layout contract, the card and table patterns, the accessibility baseline
+with the contrast measurements behind it, and the anti-patterns — including why
+a mistyped `nms-*` token renders nothing instead of failing.
+
+It also documents the rule that produced this release's dashboard work: CSS
+grid stretches every column to the tallest one, so unused card surface is a
+symptom of columns that are unbalanced by content, and the fix is to group the
+content differently rather than to pad it.
+
+### Changed — SASBench updated to e244bb8
+
+Pulled upstream. Three of the changes matter to this deployment directly:
+
+- SAS listeners now tolerate radio quirks that previously needed workarounds
+  here: an HTTP/1.1 request with no `Host` header (Sercomm NR radios send none,
+  which is exactly what the deleted home-made proxy's `insecureHTTPParser`
+  existed for) and a doubled slash before the method name (`/v1.2//registration`
+  from Baicells). The double-slash case is now collapsed before the protocol
+  path is matched, so it no longer depends on `acceptVersionlessPaths`.
+- A new `acceptMicrodegrees` setting reads a latitude or longitude sent in
+  millionths of a degree as degrees — the exact Sercomm LTE TR-069 unit bug the
+  old SAS module carried a hand-written, FCC-ID-gated correction for. On by
+  default in the `lab` and `open` profiles, off in `winnforum`.
+- `SAS_HTTP_PORT`/`SAS_HTTPS_PORT` now lock the matching fields in Settings for
+  the run and are validated at startup, including a clash check against the UI
+  and API ports. Ports below 1024 work too: the image grants node
+  `cap_net_bind_service`, so a radio that expects a SAS URL with no port can be
+  pointed at 443.
+
+### Changed — The CBRS SAS is now SASBench, and the home-grown one is gone
+
+The NMS no longer implements a Spectrum Access System. SASBench runs as its own
+container, starts with the stack, and owns the SAS-CBSD protocol ports
+directly: `SAS_HTTP_PORT` (8899) and `SAS_HTTPS_PORT` (8443), with its admin UI
+and REST API on `SASBENCH_UI_PORT` (8094). All of it is set in `.env`.
+
+Removed outright: the SAS service and its Mongo-backed grant engine, the slot
+allocator and band-policy layer, the protocol and admin routers, the SAS PKI
+helper, the 2,781-line SAS page, and the home-made SAS domain proxy that
+listened on 8899 with `insecureHTTPParser` for Sercomm's Host-less HTTP/1.1.
+
+**nginx is deliberately not in the SAS path.** Its `location /sas/` block and
+its whole `listen 8443` SAS vhost were deleted, along with the two-tier SAS PKI
+`setup-sas-cert.sh` used to build and the `/sas-cert/` download it served.
+SASBench builds and manages its own PKI inside its `sas-data` volume. The
+script is now `setup-nginx-certs.sh` and makes only the `acs.crt`/`acs.key`
+pair the Sercomm ACS relay vhost needs — nginx still fails to start without it.
+
+Keeping nginx out of the path is load-bearing, not tidiness: SASBench reads a
+request's source address from the socket and has no `X-Forwarded-For` handling,
+so proxying would make every radio appear as `127.0.0.1` in its message log and
+UI. Re-adding a `/sas/` location would silently destroy that.
+
+The SAS page is now a read-only status view — listeners, registered CBSDs, live
+grants, authorized spectrum, message and error counts, settings profile — all
+read from SASBench's REST API over HTTP Basic held server-side, so no SAS
+credential reaches the browser. It links out to SASBench's console, which stays
+the one place SAS state is changed. The dashboard's SAS cards read the same
+endpoint and now render a real "unreachable" state instead of a dash.
+
+`SAS_PROFILE` defaults to `lab` and should stay there. `winnforum` sets
+`tlsClientAuth=require` and `acceptVersionlessPaths=false`; no radio on this
+deployment holds a SASBench-issued client certificate, and two Baicells send a
+malformed `/v1.2//heartbeat` path that only the versionless fallback accepts,
+so either setting drops live radios immediately.
+
+SASBench is a separate, proprietary repository and is **not** vendored here —
+this project is AGPL-3.0. Its build context is `SASBENCH_DIR` (default
+`/opt/sasbench`), cloned before the first build; see INSTALL.md.
+
+Radios need no URL change as long as they already point at 8443 or 8899:
+SASBench matches the protocol path unanchored, so a URL carrying a `/sas/`
+prefix keeps working. A radio pointed at nginx's old `:8888/sas/` path does
+need re-pointing to `:8899`.
+
+
+### Added — Call Debug: a capture scoped to one call
+
+The Packet Capture page's SIP tab now takes a caller and a callee and scopes
+both halves of a debugging session to that call: the SIP trace stores only
+those parties' dialogs, and a real packet capture runs alongside it over the
+same window. Sessions are listed with their message counts and a downloadable
+`.pcap`, and each keeps its own copy of the messages it captured so a session
+outlives the trace store's retention window.
+
+Pairing the two captures is not convenience. For a call out to the PSTN the SIP
+trace physically cannot see the far leg — Asterisk is a B2BUA, its second
+dialog carries its own Call-ID, and that dialog never traverses a CSCF, so no
+HEP tap receives it. Verified against the live store: zero Asterisk-originated
+Call-IDs exist in it. The packet capture is the only view of that leg, which is
+why a session fails closed rather than starting without one.
+
+Scoping is driven by what the numbers actually resolve to. A typed MSISDN is
+resolved to its subscriber and matched on its IMSI as well, because handsets
+register under the IMSI-form IMPU and dial under the MSISDN — matching only
+what was typed excluded registration context entirely. The same number written
+with or without a country code is treated as one party; short codes stay
+exact-match. Before a session is started, a read-only check reports whether
+each party is registered with P-CSCF and whether it has an IPsec security
+association, which answers a class of "the call didn't work" report without
+spending a test call at all.
+
+Sessions are bounded (10 minutes and 512 MB by default, both adjustable) via
+`dumpcap`'s own autostop, since the capture is unfiltered by protocol and runs
+on a production core. Reaching a limit is now reported as the designed
+termination it is rather than with the generic "backend restart or host event"
+text. At most one session runs at a time, enforced by a unique partial index
+rather than a read-then-write check, so two browser tabs cannot both start one.
+Starting a session switches SIP tracing on and restores its previous state
+afterwards — and only if the live state is still what the session set it to, so
+it cannot undo an operator's own mid-session change. Boot-time reconciliation
+closes out a session orphaned by a backend restart and puts tracing back,
+because tracing persists across restarts by design while the in-memory scope
+does not.
+
+### Fixed — a call in progress showed its setup time as its duration
+
+The Calls list reported a live 3-minute call as 5 seconds. The call was fine;
+the column was measuring the wrong thing. It subtracted the first captured
+message from the last, and SIP is silent for the entire conversation — so on a
+call still in progress the last message is the ACK and the figure shown was how
+long the call took to set up, frozen there no matter how long the call ran.
+
+Call length is now measured from the answer to the hangup, and counts up live
+while the call is still up, stopping on its own when the BYE arrives. That also
+removed a smaller error on calls that had already ended: the old span included
+however long the phone rang, so a 218-second conversation was reported as 223
+seconds. A call that was never answered no longer shows a "duration" at all —
+it shows how long it rang, which is the useful number for a call that failed.
+
+### Fixed — the 2G echo test was unreachable from 4G/5G, and dialled out to the PSTN
+
+Dialling Asterisk-2G's echo test number from a 4G/5G handset returned
+"Declined". Cross-RAN Calling forwarded the other side's short codes but never
+its echo test number, so the number had no route on the 4G/5G side and fell
+through to the outbound external-trunk rule — which dialled it at the real
+upstream provider, which declined a three-digit number that is not a phone
+number. The rejection came back to the handset looking as though the echo test
+itself had refused the call.
+
+The echo test is now forwarded like any other cross-RAN code, with a local
+extension always taking precedence so a collision can never produce two
+conflicting dialplan entries. The enable-time collision sweep additionally
+catches both sides' echo tests being set to the same digits.
+
+### Changed — SIP tracing is on by default, and the flag is persisted
+
+Tracing was defaulting to off on a fresh Configure, behind a comment claiming
+that enabling it costs a restart of all three CSCFs. It does not, and has not
+since siptrace was made resident on every CSCF unconditionally: both directions
+of the toggle are a runtime RPC against the already-running process. Measured
+rather than assumed — all three CSCFs went from `Disabled` to `Enabled` with
+HEP arriving at the collector within seconds and every unit's start timestamp
+unchanged. Defaulting off therefore saved no restart and only ensured that an
+operator's first look at a real call showed nothing. It is now on by default,
+with an explicit opt-out that survives Configure.
+
+Fixed in the same place: Configure wrote `voiceChargingEnabled` and
+`cdrAccountingEnabled` to its state file but omitted `sipTracingEnabled`, while
+still reading that key back on the next run. A Configure therefore carried the
+setting into the CSCF configs — so tracing really was running — and then forgot
+it, leaving the UI reporting tracing off while the store filled, and leaving the
+next Configure with nothing to carry forward.
+
+### Changed — OPTIONS keepalives are no longer stored by default
+
+Measured on this deployment: keepalives were 5,763 of 8,465 stored messages,
+and because every ping is its own dialog, roughly 5,790 of 5,840 distinct
+Call-IDs. Two senders produce them continuously and forever — S-CSCF's
+dispatcher pinging Asterisk, and P-CSCF's NAT keepalive to every registered
+contact. They are now suppressed before storage, counted in their own
+`keepalivesIgnored` statistic rather than silently dropped, and the SIP tracing
+card carries a control to store them again for the rare case where the
+keepalive itself is what is being investigated.
+
+An unparseable message is always kept, even while a session is scoping and even
+when it matches nothing — a malformed message is frequently the thing being
+hunted, and both the parser and the store already took that position
+explicitly.
+
+### Changed — SIP Capture UI split by concern
+
+`SipTraceTab` was a single 749-line component owning the tracing switch, the
+dialog list, the ladder and the hop detail at once. The tracing switch and
+collector health are now `TraceStatusCard`, hop detail is `HopDetailCard`, and
+the new scoped-session UI is `CallDebugCard`, behind centered pill tabs
+splitting "Call Debug" from "Live Trace". Opening a session jumps to its own
+dialogs, queried by session id rather than by re-searching the numbers, so the
+view can never disagree with what was captured. While a session is scoping, the
+Live Trace view says so plainly and offers a way back — a diagnostic that
+appears broken is as bad as one that is.
+
+### Fixed
+
+- `siptraceRpc` now goes through `safeNsenter` rather than this file's local
+  `execFileAsync('nsenter', ...)` helper. It is the highest-rate `nsenter`
+  caller in `ims-controller.ts` — three invocations per `/status` request, and
+  the page polls every 10 seconds per open browser tab — which is exactly the
+  recurring-interval shape that orphans processes on timeout (pattern #20).
+  Session status rides along in `/status` for the same reason, rather than
+  adding a second poll interval.
 
 ---
 

@@ -150,33 +150,24 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Femtocell Config Loaded](docs/screenshots/femto-config-loaded.png)
 
-### CBRS SAS Server (Citizens Broadband Radio Service)
-- **Built-in SAS** — Lab-only SAS-CBSD protocol emulator for controlled testing. Not an FCC-approved SAS and not suitable for live CBRS authorization. For live CBRS operation, CBSDs must obtain grants from an FCC-approved SAS Administrator.
-- **Multi-radio support** — deterministic per-CBSD channel assignment based on serial number sort order; race-condition-proof, survives re-registrations and Clear DB cycles
-- **Interference coordination groups** — radios in the same group are automatically spread across non-overlapping 20 MHz slots
-- **Multi-band support** — configure multiple frequency bands to serve different radio types (e.g. Baicells on 3560–3620 MHz, Sercomm on 3649–3700 MHz)
-- **Band Assignment** — three-level band policy: per-CBSD override > interference group assignment > global default; pins specific radios or entire groups to specific frequency ranges
-- **Unified spectrum view** — all radios and bands shown on a single 3550–3700 MHz plot alongside per-band detail charts
-- **Multi-site scaling** — independent slot assignment per interference group; two sites can reuse the same frequencies without conflict
-- **Spectrum chart** — visual frequency band display with color-coded slots, EARFCN labels, and per-CBSD assignment table
-- **GPS delay enforcement** — configurable lock delay (default 75 s) before grants are issued, ensuring radios are GPS-locked before transmitting
-- **Pause / Resume** — instantly stops all SAS responses (radios return DEREGISTER and go silent) without deleting any data
-- **Clear DB** — wipes all grants and CBSDs in one click for testing; radios re-register and get fresh deterministic slot assignments on reboot
-- **CBRS SAS protocol** — implements the WInnForum CBRS SAS-CBSD interface (registration, spectrumInquiry, grant, heartbeat, relinquishment, deregistration)
-- **HTTPS SAS endpoint** — TLS endpoint on port 8443 with auto-generated self-signed certificate; required for Sercomm radios which mandate HTTPS
-- **Sercomm SCE4255W full integration** — complete SAS parameter provisioning via GenieACS TR-069 including Method, Category, ChannelType, HeightType, ManufacturerPrefix, CPI settings, lat/long in microdegrees
-- **Baicells TR-069 integration** — full SAS parameter provisioning via GenieACS ACS on the Baicells provisioning page
-- **Quiet docker logs** — per-request SAS protocol noise suppressed; clean 30-second status summary printed to docker compose logs instead
+### CBRS SAS (SASBench)
 
-![SAS Dashboard](docs/screenshots/sas-dashboard.png)
+The Spectrum Access System is [SASBench](https://github.com/paulmataruso/SASBench),
+which runs as one of this stack's containers and owns the SAS-CBSD protocol
+ports directly. Radios connect to it; nothing in this NMS proxies, terminates
+TLS for, or rewrites that traffic.
 
-![SAS Spectrum Chart](docs/screenshots/sas-spectrum-chart.png)
+- **WINNF-TS-0016 SAS-CBSD protocol** — registration, spectrumInquiry, grant, heartbeat, relinquishment, deregistration, over plain HTTP and over HTTPS with optional mutual TLS (WINNF-TS-0065)
+- **Starts with the stack** — brought up by `docker compose up` alongside everything else; ports and settings profile come from `.env`
+- **Its own PKI** — root CA, sub-CAs, server and CBSD certificates, CRLs, all built and managed inside SASBench
+- **Status page in the NMS** — the SAS entry in the navigation shows listener state, TLS policy, registered CBSDs, live grants and recent message/error counts, read from SASBench's REST API, plus a link into SASBench's own console
+- **Band occupancy** — the managed band drawn as a frequency axis with GAA availability, PAL channels, active protections and every live grant packed into lanes and coloured per radio. Occupancy is measured as the union of the grant ranges, with the deepest grant overlap and the largest free block alongside it — on GAA the SAS authorizes overlapping grants by design, so the sum of grant widths can exceed the band and does not describe how much of it is in use
+- **Dashboard card** — the same data on the main dashboard, including a clear "SAS unreachable" state
+- **Kept current from the NMS** — the SAS page reports how far the installed SASBench is behind upstream and applies the update itself: pull, rebuild the image, recreate the container, then confirm both protocol listeners are serving again. Updating is an explicit action, since the restart costs every live radio a missed heartbeat
+- **Lab-only** — SASBench is a bench/test SAS, not an FCC-approved SAS Administrator. For live CBRS operation, CBSDs must obtain grants from an approved SAS.
 
-![SAS CBSD Table](docs/screenshots/sas-cbsd-table.png)
-
-![SAS Configuration](docs/screenshots/sas-config.png)
-
-![SAS Band Assignment](docs/screenshots/sas-band-assignment.png)
+Registrations, grants, spectrum, certificates, fault injection and settings are
+managed in SASBench's own console, not here — one system, one place to change it.
 
 ### Baicells eNodeB Provisioning *(Beta)*
 - **GenieACS TR-069 ACS integration** — radios register automatically via CWMP on port 7547

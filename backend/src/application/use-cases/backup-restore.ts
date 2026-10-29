@@ -278,34 +278,24 @@ const PSTN_BASE_CONFIG_FILES: readonly (readonly [string, string])[] = [
   [`${PSTN_ASTERISK_DIR}/modules.conf`, 'pstn-modules.conf'],
   [`${PSTN_ASTERISK_DIR}/rtp.conf`, 'pstn-rtp.conf'],
 ];
-// CBRS SAS's own TLS material — nginx terminates TLS for the real 8443 SAS
-// listener radios connect to (the backend itself stays plain HTTP, see
-// nginx.conf). HIGH severity, not low: this is a real two-tier PKI (changed
-// live 2026-09-27, see CLAUDE.md's "Known-fixed gotchas"), not a single
-// flat self-signed cert — sas.crt/sas.key is the ROOT CA a radio's own
-// "install CBRS vendor chain" flow trusts, while nginx's actual 8443
-// listener presents sas-fullchain.crt (leaf+root)/sas-leaf.key, a distinct
-// leaf identity signed BY that root (see nginx.conf's ssl_certificate
-// directives). A prior version of this comment only captured the root pair
-// and reasoned this was low-severity via sasPeerCertVerify (GenieACS's own
-// TR-069 peer-cert setting for the NMS's OWN outbound connection TO a
-// radio) — a genuinely different mechanism from whether a real radio
-// trusts the SAS SERVER's cert chain when IT connects in. Confirmed live
-// (API regression suite critic audit, 2026-10-02): a Full Restore onto a
-// fresh host only restored the root, leaving the fresh host's own
-// originally-generated (by cert-init on first `docker compose up`) leaf in
-// place, signed by a DIFFERENT root than the one just restored — an
-// internally-inconsistent chain. Per CLAUDE.md, a real Nokia AirScale
-// strictly validates this chain and rejects an untrusted one outright, so
-// every already-provisioned radio would fail to reconnect and need manual
-// CBRS trust re-provisioning. Directly bind-mounted read-only into this
-// container (./nginx/certs:/etc/nginx/certs:ro) — readable directly for
-// backup, but restore needs the real host path via getComposeWorkingDir()
-// since the container's own mount can't be written to. Restore also
-// reloads nginx afterward (see the restore-side loop below) — a bare file
-// copy alone wouldn't take effect until nginx re-reads it.
-const SAS_CERT_DIR = '/etc/nginx/certs';
-const SAS_CERT_FILES: readonly string[] = ['sas.crt', 'sas.key', 'sas-leaf.crt', 'sas-leaf.key', 'sas-fullchain.crt'];
+// nginx's own TLS material. Only the Sercomm factory-default ACS relay pair
+// (acs.crt/acs.key, CN=acs.sc.sercomm.com) lives here now: nginx fails to
+// start outright without it, so a restore that omitted it would leave the
+// whole web UI down.
+//
+// The CBRS SAS is NOT here any more. SASBench is the SAS; it owns the
+// SAS-CBSD ports itself, builds its own PKI on first start and keeps it in
+// its own `sas-data` Docker volume. nginx terminates no SAS TLS and holds no
+// SAS certificate, so there is nothing for this backup to capture — back up
+// SASBench's volume (or export from its own Certificates page) instead.
+// Directly bind-mounted read-only into this container
+// (./nginx/certs:/etc/nginx/certs:ro) — readable directly for backup, but
+// restore needs the real host path via getComposeWorkingDir() since the
+// container's own mount can't be written to. Restore also reloads nginx
+// afterward (see the restore-side loop below) — a bare file copy alone
+// wouldn't take effect until nginx re-reads it.
+const NGINX_CERT_DIR = '/etc/nginx/certs';
+const NGINX_CERT_FILES: readonly string[] = ['acs.crt', 'acs.key'];
 const ASTERISK_2G_ASTDB_HOST_PATH = '/var/lib/asterisk-2g/astdb.sqlite3';
 const ASTERISK_2G_ASTDB_PROC_PATH = `/proc/1/root${ASTERISK_2G_ASTDB_HOST_PATH}`;
 // VectorCore MMSC's own sqlite database — message/delivery metadata only;
@@ -684,16 +674,19 @@ export class BackupRestoreUseCase {
           this.logger.warn({ src, err: String(err) }, 'PSTN base Asterisk config not found, skipping');
         }
       }
-      // CBRS SAS's TLS cert — see SAS_CERT_DIR's own comment above.
-      for (const name of SAS_CERT_FILES) {
+      // nginx's TLS cert — see NGINX_CERT_DIR's own comment above. The
+      // `sas-` archive filename prefix is kept deliberately: it is what
+      // every existing archive uses, and the restore side below matches on
+      // it, so renaming would silently stop older backups restoring.
+      for (const name of NGINX_CERT_FILES) {
         try {
-          const src = `${SAS_CERT_DIR}/${name}`;
+          const src = `${NGINX_CERT_DIR}/${name}`;
           if (fs.existsSync(src)) {
             fs.copyFileSync(src, `${tmpDir}/optional-modules/sas-${name}`);
             categories['optional-modules'].itemCount++;
           }
         } catch (err) {
-          this.logger.warn({ name, err: String(err) }, 'SAS TLS cert file not found, skipping');
+          this.logger.warn({ name, err: String(err) }, 'nginx TLS cert file not found, skipping');
         }
       }
       categories['optional-modules'].present = categories['optional-modules'].itemCount > 0;
@@ -1285,7 +1278,10 @@ export class BackupRestoreUseCase {
             this.logger.warn({ err: String(err) }, 'Failed to restore MMS store directory');
           }
         }
-        // CBRS SAS's TLS cert — see SAS_CERT_DIR's own comment above. The
+        // nginx's TLS cert — see NGINX_CERT_DIR's own comment above. The
+      // `sas-` archive filename prefix is kept deliberately: it is what
+      // every existing archive uses, and the restore side below matches on
+      // it, so renaming would silently stop older backups restoring. The
         // container's own mount is read-only, so restore needs the real
         // host path via getComposeWorkingDir() (same pattern as ui-modules'
         // .env / genieacs's ext/ dir), not the ro-mounted /etc/nginx/certs
@@ -1294,7 +1290,7 @@ export class BackupRestoreUseCase {
           const workingDir = await this.getComposeWorkingDir();
           if (workingDir) {
             let sasCertRestored = false;
-            for (const name of SAS_CERT_FILES) {
+            for (const name of NGINX_CERT_FILES) {
               const src = `${dir}/sas-${name}`;
               if (fs.existsSync(src)) {
                 const certDst = `/proc/1/root${workingDir}/nginx/certs/${name}`;
@@ -1308,7 +1304,7 @@ export class BackupRestoreUseCase {
             // real gap found 2026-10-02 (API regression suite critic
             // audit): restoring the cert files alone left nginx still
             // serving whatever it already had loaded. `nginx -t` first,
-            // same care-before-acting shape as sas-pki.ts's own
+            // same care-before-acting shape the SAS PKI helper used to have
             // reloadNginx() — a bad cert pair would otherwise take the live
             // SAS endpoint down for every already-connected radio, not just
             // fail silently for a restore that was supposed to fix trust.
@@ -1317,12 +1313,12 @@ export class BackupRestoreUseCase {
                 await this.hostExecutor.executeLocalCommand('docker', ['exec', 'open5gs-nms-nginx', 'nginx', '-t']);
                 await this.hostExecutor.executeLocalCommand('docker', ['exec', 'open5gs-nms-nginx', 'nginx', '-s', 'reload']);
               } catch (err) {
-                this.logger.warn({ err: String(err) }, 'Restored SAS TLS cert but nginx -t/-s reload failed — the old cert may still be live until nginx is restarted manually');
+                this.logger.warn({ err: String(err) }, 'Restored nginx TLS cert but nginx -t/-s reload failed — the old cert may still be live until nginx is restarted manually');
               }
             }
           }
         } catch (err) {
-          this.logger.warn({ err: String(err) }, 'Failed to restore SAS TLS cert');
+          this.logger.warn({ err: String(err) }, 'Failed to restore nginx TLS cert');
         }
         if (any) restored.push('optional-modules');
       }

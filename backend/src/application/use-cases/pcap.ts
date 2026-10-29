@@ -36,13 +36,32 @@ export interface NfCaptureDescriptor {
   hostPorts: PcapHostPort[];
 }
 
-export type CaptureScopeMode = 'all' | 'nf' | 'functionType' | 'gtpAll' | 'custom';
+export type CaptureScopeMode = 'all' | 'nf' | 'functionType' | 'gtpAll' | 'custom' | 'call';
+
+/**
+ * A Call Debug capture's scope, resolved ENTIRELY by the caller.
+ *
+ * Deliberately pre-resolved: turning a phone number into addresses needs the
+ * subscriber repository, P-CSCF's registrar and the PSTN module's state, and
+ * doing that in here would either grow this file a subscriber-repo dependency
+ * or create a real load-time cycle (pcap -> call-debug -> pcap). So the caller
+ * hands over plain addresses and this file stays a BPF builder.
+ */
+export interface CallCaptureScope {
+  /** Single addresses -> BPF `host`. */
+  hosts: string[];
+  /** CIDRs -> BPF `net` (see the host/net note in buildScope). */
+  nets: string[];
+  /** Human description, composed by the caller which knows the numbers. */
+  description: string;
+}
 
 export interface CaptureScopeInput {
   mode: CaptureScopeMode;
   nfs?: string[];
   functionType?: string;
   customBpf?: string;
+  call?: CallCaptureScope;
 }
 
 export type CaptureStatus = 'starting' | 'running' | 'stopping' | 'stopped' | 'failed';
@@ -61,6 +80,15 @@ export interface PcapManifest {
   stoppedAt?: string;
   sizeBytes?: number;
   error?: string;
+  /**
+   * Autostop limits, when the caller set any. Recorded so reconciliation can
+   * tell a DESIGNED termination from a crash: listCaptures() otherwise stamps
+   * every inactive-but-running capture with "Capture process is no longer
+   * running (backend restart or host event)", which would make a capture that
+   * correctly hit its own limit read as a failure every single time.
+   */
+  autostopSeconds?: number;
+  autostopFilesizeKb?: number;
 }
 
 export interface DecodePreset {
@@ -386,6 +414,28 @@ export class PcapUseCase {
   private async buildScope(scope: CaptureScopeInput): Promise<{ bpf: string; description: string }> {
     if (scope.mode === 'all') return { bpf: '', description: 'Everything (no capture-time filter)' };
     if (scope.mode === 'gtpAll') return { bpf: 'udp port 2123 or udp port 2152', description: 'All GTP traffic (GTP-C + GTP-U)' };
+    if (scope.mode === 'call') {
+      const call = scope.call;
+      if (!call) throw new Error('Call scope requires resolved hosts');
+      // Host-only clauses, no proto/port, because a Call Debug capture is
+      // explicitly a FULL capture: SIP and RTP and Diameter Rx/Ro and GTP-U
+      // for the parties involved. Reusing the NF-descriptor clause shape
+      // (`host X and udp port N`) would silently defeat that -- the IMS
+      // descriptor carries only `rtpPortMin`, one port out of a 10,000-port
+      // media range, so media would be ~entirely missed and Diameter not
+      // captured at all.
+      const clauses = [
+        ...call.nets.map(n => `net ${n}`),
+        ...call.hosts.map(h => `host ${h}`),
+      ];
+      if (clauses.length === 0) {
+        throw new Error(
+          'Nothing to scope this capture to: no UE address resolved for either party and IMS is not configured. ' +
+          'Configure IMS, or use the Captures tab for an unscoped capture.',
+        );
+      }
+      return { bpf: clauses.join(' or '), description: call.description };
+    }
     if (scope.mode === 'custom') {
       const bpf = (scope.customBpf ?? '').trim();
       rejectUnsafeBpf(bpf);
@@ -447,7 +497,13 @@ export class PcapUseCase {
     return JSON.parse(raw);
   }
 
-  async start(input: { interfaces: string[]; scope: CaptureScopeInput; label?: string }): Promise<PcapManifest> {
+  async start(input: {
+    interfaces: string[];
+    scope: CaptureScopeInput;
+    label?: string;
+    autostopSeconds?: number;
+    autostopFilesizeKb?: number;
+  }): Promise<PcapManifest> {
     if (!input.interfaces || input.interfaces.length === 0) {
       throw new Error('At least one interface must be selected');
     }
@@ -470,6 +526,17 @@ export class PcapUseCase {
       if (bpf) dumpcapArgs.push('-f', bpf);
     }
     dumpcapArgs.push('-w', pcapPath);
+    // Bounded captures. A Call Debug session records full, unprotocol-filtered
+    // traffic on a production core, so an operator who walks away must not be
+    // able to fill the capture directory. Verified against the real binary's
+    // own --help: dumpcap takes `-a duration:NUM` (seconds) and
+    // `-a filesize:NUM` (kB).
+    if (input.autostopSeconds && input.autostopSeconds > 0) {
+      dumpcapArgs.push('-a', `duration:${Math.round(input.autostopSeconds)}`);
+    }
+    if (input.autostopFilesizeKb && input.autostopFilesizeKb > 0) {
+      dumpcapArgs.push('-a', `filesize:${Math.round(input.autostopFilesizeKb)}`);
+    }
 
     const manifest: PcapManifest = {
       id,
@@ -482,6 +549,8 @@ export class PcapUseCase {
       unitName,
       status: 'starting',
       startedAt: new Date().toISOString(),
+      ...(input.autostopSeconds ? { autostopSeconds: input.autostopSeconds } : {}),
+      ...(input.autostopFilesizeKb ? { autostopFilesizeKb: input.autostopFilesizeKb } : {}),
     };
     await this.saveManifest(manifest);
 
@@ -566,6 +635,26 @@ export class PcapUseCase {
     } catch { return undefined; }
   }
 
+  /**
+   * Why a capture that is no longer running stopped.
+   *
+   * A capture with autostop limits that reached one of them terminated exactly
+   * as designed, and saying "backend restart or host event" about it is simply
+   * wrong -- it is the normal end of every Call Debug session. Limits are
+   * compared with a small tolerance because dumpcap checks them on its own
+   * cadence and the elapsed time here is measured from the manifest.
+   */
+  private exitExplanation(m: PcapManifest): string | undefined {
+    const elapsedSec = (Date.now() - new Date(m.startedAt).getTime()) / 1000;
+    if (m.autostopSeconds && elapsedSec >= m.autostopSeconds - 5) {
+      return `Capture reached its ${m.autostopSeconds}s time limit and stopped as configured.`;
+    }
+    if (m.autostopFilesizeKb && (m.sizeBytes ?? 0) >= m.autostopFilesizeKb * 1024 * 0.95) {
+      return `Capture reached its ${m.autostopFilesizeKb} kB size limit and stopped as configured.`;
+    }
+    return 'Capture process is no longer running (backend restart or host event) — file may be valid up to the last flush.';
+  }
+
   async listCaptures(): Promise<PcapManifest[]> {
     await this.ensureDir();
     let files: string[];
@@ -583,8 +672,8 @@ export class PcapUseCase {
           if (!active) {
             m.status = 'stopped';
             m.stoppedAt = m.stoppedAt ?? new Date().toISOString();
-            m.error = m.error ?? 'Capture process is no longer running (backend restart or host event) — file may be valid up to the last flush.';
             m.sizeBytes = await this.statSize(this.pcapPath(id));
+            m.error = m.error ?? this.exitExplanation(m);
             await this.saveManifest(m);
           } else {
             m.sizeBytes = await this.statSize(this.pcapPath(id));
