@@ -57,9 +57,20 @@ func Init(identity, realm, localAddr, mmeIdentity, mmeAddr string, mmePort int) 
 	return nil
 }
 
+// CLRFlagReattachRequired is OGS_DIAM_S6A_CLR_FLAGS_REATTACH_REQUIRED from
+// lib/diameter/s6a/message.h:200 — (1 << 1), i.e. bit 1. Bit 0 is the S6a/S6d
+// indicator, so this is deliberately 2 and not 1. Passed in CLR-Flags, it is
+// what makes the MME's NAS Detach Request say "re-attach required" instead of
+// "re-attach not required" (mme-s6a-handler.c:295-300).
+const CLRFlagReattachRequired = 1 << 1
+
 // SendCLR sends a real Cancel-Location-Request for imsiBcd and blocks until
 // the Cancel-Location-Answer arrives or timeoutSec elapses.
-func SendCLR(imsiBcd, destRealm, destHost string, timeoutSec int) (Result, error) {
+//
+// clrFlags of 0 omits the CLR-Flags AVP, which is what "block this UE" wants
+// (the UE is told not to come back). Pass CLRFlagReattachRequired to bounce a
+// UE so it re-attaches by itself.
+func SendCLR(imsiBcd, destRealm, destHost string, timeoutSec, clrFlags int) (Result, error) {
 	cImsi := C.CString(imsiBcd)
 	defer C.free(unsafe.Pointer(cImsi))
 	cDestRealm := C.CString(destRealm)
@@ -68,7 +79,7 @@ func SendCLR(imsiBcd, destRealm, destHost string, timeoutSec int) (Result, error
 	defer C.free(unsafe.Pointer(cDestHost))
 
 	var cres C.shim_clr_result_t
-	rc := C.shim_send_clr(cImsi, cDestRealm, cDestHost, C.int(timeoutSec), &cres)
+	rc := C.shim_send_clr(cImsi, cDestRealm, cDestHost, C.int(timeoutSec), C.int(clrFlags), &cres)
 	if rc != 0 {
 		return Result{}, fmt.Errorf("shim_send_clr failed rc=%d: %s", rc, C.GoString(&cres.message[0]))
 	}

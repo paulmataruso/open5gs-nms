@@ -209,12 +209,31 @@ export interface UeDetachOutcome {
   resultCode?: number;
   experimentalResultCode?: number;
   message?: string;
+  /** Echoes back which NAS detach type the tool actually asked the MME for. */
+  reattach?: boolean;
+}
+
+export interface UeDetachOptions {
+  timeoutMs: number;
+  /**
+   * Sets CLR-Flags REATTACH_REQUIRED, which flips the MME's NAS Detach Request
+   * from "re-attach not required" to "re-attach required"
+   * (mme-s6a-handler.c:295-300, and see the shim's own file header).
+   *
+   * Defaults to FALSE, i.e. the behaviour this function has always had — so
+   * blocking a UE still tells it to stay off. Only the Bounce action passes
+   * true. Making this an options object rather than a second positional
+   * argument is deliberate: `runUeDetach(imsi, true)` silently landing in the
+   * timeout slot is exactly the kind of mistake a boolean positional invites.
+   */
+  reattach?: boolean;
 }
 
 // Spawns one CLR send, parses the tool's single JSON "result" line, and
 // resolves once it exits or timeoutMs elapses. Same SIGTERM-then-SIGKILL
 // pattern as qci-hw-test-runner.ts's runQciHwTest.
-export function runUeDetach(imsi: string, timeoutMs: number): Promise<UeDetachOutcome> {
+export function runUeDetach(imsi: string, opts: UeDetachOptions): Promise<UeDetachOutcome> {
+  const { timeoutMs, reattach = false } = opts;
   return new Promise((resolve) => {
     const { localIdentity, realm, mmeIdentity } = resolveUeDetachIdentity();
     const proc = spawn('nsenter', [
@@ -226,6 +245,7 @@ export function runUeDetach(imsi: string, timeoutMs: number): Promise<UeDetachOu
       '-local-addr', UE_DETACH_LOCAL_ADDR,
       '-mme-identity', mmeIdentity,
       '-timeout', String(Math.max(1, Math.floor(timeoutMs / 1000) - 2)),
+      ...(reattach ? ['-reattach'] : []),
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     let buffer = '';
@@ -249,6 +269,7 @@ export function runUeDetach(imsi: string, timeoutMs: number): Promise<UeDetachOu
           resultCode: parsed.resultCode,
           experimentalResultCode: parsed.experimentalResultCode,
           message: parsed.message,
+          reattach: parsed.reattach === true,
         });
       } else if (parsed.type === 'error') {
         settle({ status: 'error', message: parsed.message });

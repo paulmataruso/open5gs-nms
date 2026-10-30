@@ -60,7 +60,9 @@ export const createUeBlockRouter = (
     let detach: { attempted: boolean; status?: string; message?: string } = { attempted: false };
     if (isUeDetachToolBuilt()) {
       try {
-        const outcome = await runUeDetach(imsi, DETACH_TIMEOUT_MS);
+        // reattach is deliberately left at its default (false): a block wants
+        // the UE told NOT to come back. The Bounce action is what passes true.
+        const outcome = await runUeDetach(imsi, { timeoutMs: DETACH_TIMEOUT_MS });
         detach = { attempted: true, status: outcome.status, message: outcome.message };
       } catch (err) {
         detach = { attempted: true, status: 'error', message: String(err) };

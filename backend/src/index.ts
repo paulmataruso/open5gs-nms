@@ -116,6 +116,8 @@ import { createQciHwTestRouter } from './interfaces/rest/qci-hw-test-controller'
 import { SqliteUeBlockRepository } from './infrastructure/auth/sqlite-ue-block-repository';
 import { UeBlockService } from './application/use-cases/ran/ue-block-service';
 import { createUeBlockRouter } from './interfaces/rest/ue-block-controller';
+import { UeDeregisterUseCase } from './application/use-cases/ran/ue-deregister';
+import { createUeDeregisterRouter } from './interfaces/rest/ue-deregister-controller';
 import { createLogDownloadRouter } from './interfaces/rest/log-download-controller';
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
 import { createChronyRouter } from './interfaces/rest/chrony-controller';
@@ -743,6 +745,10 @@ async function main() {
   const ueBlockService = new UeBlockService(hostExecutor, ueBlockRepo, getInterfaceStatusForBlock, logger);
   ueBlockService.start();
   app.use('/api/ue-block', createUeBlockRouter(ueBlockService, auditLogger, logger));
+  // Bounce (force re-attach) — deliberately its own namespace, not under
+  // /api/ue-block: it installs no block. See the controller's own comment.
+  app.use('/api/ue', createUeDeregisterRouter(
+    new UeDeregisterUseCase(activeSessionsUseCase, logger), auditLogger, logger));
   app.use('/api/docker', createDockerRouter(dockerLogStreamingUseCase, logger));
   app.use('/api/logs', createLogDownloadRouter(hostExecutor, config, logger));
   app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath, baicellsUeCounts));

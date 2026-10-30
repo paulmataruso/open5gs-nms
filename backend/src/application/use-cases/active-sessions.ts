@@ -31,6 +31,19 @@ export interface ActiveUE {
   ip: string;
   imsi: string;
   cmState?: 'connected' | 'idle' | string;
+  /**
+   * EMM/5GMM registration state, e.g. 'registered' | 'deregistered' — NOT the
+   * same thing as cmState, which is the connection state.
+   *
+   * Carried because a 4G UE already in 'deregistered' is a real silent-success
+   * trap for any Cancel-Location-Request: mme-fd-path.c:2274 sends the
+   * Cancel-Location-Answer with DIAMETER_SUCCESS *before* queueing the event,
+   * and mme_s6a_handle_clr() then hits its emm_state_de_registered check
+   * (mme-s6a-handler.c:285-290), removes the context and returns WITHOUT
+   * sending any NAS Detach. So the caller is told it succeeded while the
+   * handset was never notified and will not re-attach.
+   */
+  mmState?: string;
   dnn?: string;
   apn?: string;
   // Every concurrent PDU/PDN connection this UE currently holds, one entry
@@ -360,6 +373,7 @@ export class ActiveSessionsUseCase {
           ip:          sessions[0].ip,
           imsi,
           cmState:     mmeUe.cm_state,
+          mmState:     mmeUe.mm_state,
           apn:         sessions[0].apn,
           sessions,
           ambrDownlink: mmeUe.ambr?.downlink,

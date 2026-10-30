@@ -1,8 +1,8 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin, Lock, Unlock } from 'lucide-react';
+import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin, Lock, Unlock, RotateCcw } from 'lucide-react';
 import { useTopologyStore } from '../../stores';
 import { radioTagsApi, radioBlockApi, gnbBlockApi, configApi } from '../../api';
-import { getBlockedUes, blockUe, unblockUe } from '../../api/ueBlock';
+import { getBlockedUes, blockUe, unblockUe, deregisterUe } from '../../api/ueBlock';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { imsApi } from '../../api/ims';
 import { useAuth } from '../../contexts/AuthContext';
@@ -315,6 +315,34 @@ function RadioBlockButton({ ip, isBlocked, isAdmin, isSyntheticIp, deviceNoun, d
     <button onClick={() => onRequestBlock(ip)} title={`Block this ${deviceNoun}'s ${blockedInterfaces} paths to the core (nftables, this host only — the ${deviceNoun} itself is not touched)`}
       className={clsx(cls, 'text-nms-red hover:text-white hover:bg-nms-red-strong border-nms-red/40 hover:border-nms-red')}>
       <ShieldAlert className="w-2.5 h-2.5" />{compact ? 'Block' : `Block ${deviceNounCap}`}
+    </button>
+  );
+}
+
+// Rendered TWICE per UE row — once beside the IMSI, where an operator looking
+// at one subscriber is already looking, and once in the Actions column beside
+// Block, where the other per-UE actions live. Extracted for the same reason
+// RadioBlockButton is: two hand-copied buttons drift, and a stale copy is
+// invisible until someone clicks it. Both copies share one pending flag, so
+// pressing either disables both.
+function UeBounceButton({ imsi, gen, cmState, isBlocked, isAdmin, pending, onRequest }: {
+  imsi: string; gen: string; cmState?: string;
+  isBlocked: boolean; isAdmin: boolean; pending: boolean;
+  onRequest: (ue: { imsi: string; gen: string; cmState?: string }) => void;
+}): JSX.Element | null {
+  // Hidden on a blocked UE (it is blackholed, so it cannot re-attach — the
+  // button would promise something that cannot happen) and on 2G, whose own
+  // Block is an osmo-bsc per-BTS admin lock with no per-UE detach path at all.
+  if (!isAdmin || isBlocked || gen === '2G') return null;
+  return (
+    <button
+      onClick={() => onRequest({ imsi, gen, cmState })}
+      disabled={pending}
+      className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-text-dim hover:text-nms-accent border border-nms-border hover:border-nms-accent px-1.5 py-0.5 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
+      title="Force this UE to detach and re-attach immediately — the network-side equivalent of toggling airplane mode. Nothing persists."
+    >
+      <RotateCcw className={clsx('w-2.5 h-2.5', pending && 'animate-spin')} />
+      {pending ? 'Bouncing…' : 'Bounce'}
     </button>
   );
 }
@@ -2053,7 +2081,11 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       if (result.detach.attempted && result.detach.status === 'success') {
         toast.success(`${imsi} detached and blocked`);
       } else if (result.detach.attempted) {
-        toast.success(`${imsi} blocked (detach: ${result.detach.status ?? 'no response'})`);
+        // The block itself DID apply — the detach is best-effort — but a
+        // detach that failed is not a success, and reporting it with
+        // toast.success made "blocked but still connected until it next
+        // re-attaches" look identical to a clean kick.
+        toast.error(`${imsi} blocked, but the detach failed (${result.detach.status ?? 'no response'}) — it stays connected until it re-attaches`);
       } else {
         toast.success(`${imsi} blocked`);
       }
@@ -2067,6 +2099,39 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       toast.success(`${imsi} unblocked`);
     } catch { toast.error('Failed to unblock UE'); }
   }, []);
+
+  // Bounce: force the UE off with the re-attach flag set so it comes straight
+  // back — the operator-side equivalent of toggling airplane mode. Confirmed
+  // first like blocking is, because it really does drop a live subscriber's
+  // session; unlike blocking, nothing persists afterwards.
+  const [pendingBounceUe, setPendingBounceUe] = useState<{ imsi: string; gen: string; cmState?: string } | null>(null);
+  const [bouncingUe, setBouncingUe] = useState<string | null>(null);
+
+  const handleBounceUe = useCallback(async (imsi: string) => {
+    setBouncingUe(imsi);
+    try {
+      const r = await deregisterUe(imsi);
+      // Every one of these is a real, reportable outcome rather than a
+      // failure, so each gets its own wording. Reporting "bounced" for a UE
+      // that was never notified is the specific thing this avoids.
+      if (r.status === 'detached-sent' && r.reattachRequested) {
+        toast.success(`${imsi} bounced — it should re-attach on its own shortly`);
+      } else if (r.status === 'detached-sent') {
+        toast.error(r.message);
+      } else if (r.status === 'not-attached') {
+        toast(`${imsi} is not currently attached — nothing to bounce`);
+      } else {
+        toast.error(r.message, { duration: 8000 });
+      }
+      // The UE drops out of the live list on a real detach, so refresh rather
+      // than leaving a row that no longer exists.
+      fetchInterfaceStatus();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to bounce UE');
+    } finally {
+      setBouncingUe(null);
+    }
+  }, [fetchInterfaceStatus]);
 
   // Derived, nickname-only view — matches every existing `radioTags[ip]` call
   // site's expectations unchanged.
@@ -2341,6 +2406,9 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                         <div>
                           <div className="flex items-center gap-1.5">
                             <button onClick={() => onNavigateToSubscriber?.(ue.imsi)} className="text-nms-accent hover:underline transition-colors">{ue.imsi}</button>
+                            <UeBounceButton imsi={ue.imsi} gen={ue.gen} cmState={ue.cmState}
+                              isBlocked={isUeBlocked} isAdmin={isAdmin}
+                              pending={bouncingUe === ue.imsi} onRequest={setPendingBounceUe} />
                             {isUeBlocked && (
                               <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded flex-shrink-0" title="Detached and blocked from this NMS — persists until unblocked">
                                 <UserX className="w-2.5 h-2.5" />UE BLOCKED
@@ -2397,23 +2465,32 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
                     {isAdmin && (
                       <td className="px-3 py-2.5 text-right">
                         {!ue.metricsOnly && (
-                          isUeBlocked ? (
-                            <button
-                              onClick={() => handleUnblockUe(ue.imsi)}
-                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-text-dim px-1.5 py-0.5 rounded transition-colors"
-                              title="Restore this UE"
-                            >
-                              <UserCheck className="w-2.5 h-2.5" />Unblock UE
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => setPendingBlockUeImsi(ue.imsi)}
-                              className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-red hover:text-white hover:bg-nms-red-strong border border-nms-red/40 hover:border-nms-red px-1.5 py-0.5 rounded transition-colors"
-                              title="Detach this UE now and block it from reconnecting until unblocked"
-                            >
-                              <UserX className="w-2.5 h-2.5" />Block UE
-                            </button>
-                          )
+                          <div className="flex items-center justify-end gap-1.5">
+                            {/* Bounce sits beside Block because they share one
+                                mechanism and differ by one CLR-Flags bit, but it
+                                is deliberately NOT red: nothing persists and the
+                                UE is meant to come straight back. */}
+                            <UeBounceButton imsi={ue.imsi} gen={ue.gen} cmState={ue.cmState}
+                              isBlocked={isUeBlocked} isAdmin={isAdmin}
+                              pending={bouncingUe === ue.imsi} onRequest={setPendingBounceUe} />
+                            {isUeBlocked ? (
+                              <button
+                                onClick={() => handleUnblockUe(ue.imsi)}
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-text-dim hover:text-nms-text border border-nms-border hover:border-nms-text-dim px-1.5 py-0.5 rounded transition-colors"
+                                title="Restore this UE"
+                              >
+                                <UserCheck className="w-2.5 h-2.5" />Unblock UE
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => setPendingBlockUeImsi(ue.imsi)}
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold text-nms-red hover:text-white hover:bg-nms-red-strong border border-nms-red/40 hover:border-nms-red px-1.5 py-0.5 rounded transition-colors"
+                                title="Detach this UE now and block it from reconnecting until unblocked"
+                              >
+                                <UserX className="w-2.5 h-2.5" />Block UE
+                              </button>
+                            )}
+                          </div>
                         )}
                       </td>
                     )}
@@ -2461,6 +2538,24 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
         danger
         onConfirm={() => { const imsi = pendingBlockUeImsi!; setPendingBlockUeImsi(null); handleBlockUe(imsi); }}
         onCancel={() => setPendingBlockUeImsi(null)}
+      />
+
+      <ConfirmModal
+        open={pendingBounceUe !== null}
+        title={`Bounce UE ${pendingBounceUe?.imsi}?`}
+        message={
+          `This forces the UE off the network and tells it to re-attach immediately — the network-side equivalent of toggling airplane mode on the handset. It is NOT a block: nothing persists, and the UE should be back within a few seconds.\n\n`
+          + `Its data session drops in the process, so anything in progress on the device is interrupted.`
+          + (pendingBounceUe?.gen === '5G'
+            ? `\n\nThis is a 5G UE. Bouncing is only supported on 4G — the request will be refused rather than half-applied, and will explain why.`
+            : pendingBounceUe?.cmState === 'idle'
+              ? `\n\nThis UE is idle, so the MME will page it first and then detach it. That is expected and adds a moment's delay.`
+              : '')
+        }
+        confirmLabel="Bounce"
+        danger={false}
+        onConfirm={() => { const imsi = pendingBounceUe!.imsi; setPendingBounceUe(null); handleBounceUe(imsi); }}
+        onCancel={() => setPendingBounceUe(null)}
       />
 
       <ConfirmModal

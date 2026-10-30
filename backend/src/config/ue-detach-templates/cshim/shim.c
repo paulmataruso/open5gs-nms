@@ -17,9 +17,26 @@
  * that makes MME actually send a real NAS Detach Request / paging-then-
  * detach to the UE and tear down its S1/GTP context, rather than the
  * MME_UPDATE_PROCEDURE/SGSN_UPDATE_PROCEDURE cases (which only mean "the UE
- * moved to a different MME" and skip UE-facing signaling entirely). CLR-Flags
- * is deliberately omitted (defaults to 0), which per that same switch means
- * "re-attach not required" — the correct choice for a block/detach action.
+ * moved to a different MME" and skip UE-facing signaling entirely).
+ *
+ * CLR-Flags, by contrast, is a per-call argument, because the two callers want
+ * opposite NAS behaviour out of this one message. mme-s6a-handler.c:295-300:
+ *
+ *     if (clr_message->clr_flags & OGS_DIAM_S6A_CLR_FLAGS_REATTACH_REQUIRED)
+ *         ... = OGS_NAS_DETACH_TYPE_TO_UE_RE_ATTACH_REQUIRED;
+ *     else
+ *         ... = OGS_NAS_DETACH_TYPE_TO_UE_RE_ATTACH_NOT_REQUIRED;
+ *
+ * So "Block" (keep the UE off) passes 0 and the UE is told not to come back,
+ * while "Bounce" (an operator-side substitute for toggling airplane mode)
+ * passes OGS_DIAM_S6A_CLR_FLAGS_REATTACH_REQUIRED so the handset re-attaches
+ * on its own. Note that constant is (1 << 1) = 2, NOT 1 — bit 0 is the
+ * S6a/S6d indicator (lib/diameter/s6a/message.h:199-200), so hardcoding a 1
+ * here would set an unrelated flag and silently take the else branch.
+ *
+ * Omitting the AVP and sending it as 0 are equivalent to the MME (the field is
+ * memset to 0 before parsing), but 0 omits it so that Block keeps producing
+ * byte-identical messages to the ones this tool sent before the flag existed.
  */
 
 #include "shim.h"
@@ -232,7 +249,7 @@ signal:
 }
 
 int shim_send_clr(const char *imsi_bcd, const char *dest_realm,
-                   const char *dest_host, int timeout_sec,
+                   const char *dest_host, int timeout_sec, int clr_flags,
                    shim_clr_result_t *out)
 {
     int ret;
@@ -296,6 +313,21 @@ int shim_send_clr(const char *imsi_bcd, const char *dest_realm,
     val.i32 = 2; /* OGS_DIAM_S6A_CT_SUBSCRIPTION_WITHDRAWAL */
     fd_msg_avp_setvalue(avp, &val);
     fd_msg_avp_add(req, MSG_BRW_LAST_CHILD, avp);
+
+    /* CLR-Flags — only when a caller actually asked for a flag, so Block's
+     * message stays exactly as it was. See file header for why this is
+     * per-call and why the re-attach bit is (1 << 1). */
+    if (clr_flags != 0) {
+        ret = fd_msg_avp_new(ogs_diam_s6a_clr_flags, 0, &avp);
+        if (ret != 0) {
+            snprintf(out->message, sizeof(out->message),
+                "fd_msg_avp_new(CLR-Flags) failed: %d", ret);
+            return -1;
+        }
+        val.u32 = (uint32_t)clr_flags;
+        fd_msg_avp_setvalue(avp, &val);
+        fd_msg_avp_add(req, MSG_BRW_LAST_CHILD, avp);
+    }
 
     /* Vendor-Specific-Application-Id */
     ret = ogs_diam_message_vendor_specific_appid_set(req, OGS_DIAM_S6A_APPLICATION_ID);

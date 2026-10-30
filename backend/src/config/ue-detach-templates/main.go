@@ -5,6 +5,13 @@
 // SUBSCRIPTION_WITHDRAWAL. Single-shot CLI tool: one IMSI in, one JSON result
 // out, matching qci-hw-test-templates/main.go's own shape (emit() writes
 // JSON events to stdout, log.Printf is for human-readable stderr only).
+//
+// -reattach picks which of the two NAS detach types the MME sends. Without it
+// the UE is told "re-attach not required" (what blocking wants); with it, the
+// UE re-attaches on its own, which is the operator-side equivalent of toggling
+// airplane mode on the handset. The default is deliberately the pre-existing
+// behaviour so that adding this flag could not silently change what every
+// existing caller does.
 package main
 
 import (
@@ -23,6 +30,7 @@ type event struct {
 
 	// result
 	Success                bool   `json:"success,omitempty"`
+	Reattach               bool   `json:"reattach,omitempty"`
 	TimedOut               bool   `json:"timedOut,omitempty"`
 	ResultCode             uint32 `json:"resultCode,omitempty"`
 	HasExperimental        bool   `json:"hasExperimental,omitempty"`
@@ -53,6 +61,7 @@ func main() {
 	mmeAddr := flag.String("mme-addr", "127.0.0.2", "MME's Diameter listen address")
 	mmePort := flag.Int("mme-port", 3868, "MME's Diameter listen port")
 	timeoutSec := flag.Int("timeout", 10, "Seconds to wait for the Cancel-Location-Answer")
+	reattach := flag.Bool("reattach", false, "Tell the UE to re-attach immediately (sets CLR-Flags REATTACH_REQUIRED). Default off = 'do not re-attach', which is what blocking a UE wants.")
 	flag.Parse()
 
 	if *imsi == "" || *localIdentity == "" || *realm == "" || *mmeIdentity == "" {
@@ -68,7 +77,12 @@ func main() {
 	}
 	emit(event{Type: "ready"})
 
-	res, err := cshim.SendCLR(*imsi, *realm, *mmeIdentity, *timeoutSec)
+	clrFlags := 0
+	if *reattach {
+		clrFlags = cshim.CLRFlagReattachRequired
+	}
+
+	res, err := cshim.SendCLR(*imsi, *realm, *mmeIdentity, *timeoutSec, clrFlags)
 	if err != nil {
 		log.Printf("cshim.SendCLR failed: %v", err)
 		emit(event{Type: "error", Message: err.Error()})
@@ -79,6 +93,7 @@ func main() {
 	emit(event{
 		Type:                   "result",
 		Success:                res.Success,
+		Reattach:               *reattach,
 		TimedOut:               res.TimedOut,
 		ResultCode:             res.ResultCode,
 		HasExperimental:        res.HasExperimental,

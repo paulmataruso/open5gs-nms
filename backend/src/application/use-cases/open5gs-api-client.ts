@@ -75,6 +75,10 @@ export interface MmeUeInfo {
   domain?: string;              // "EPS"
   rat?: string;                 // "E-UTRA"
   cm_state: string;
+  // EMM state, e.g. "registered" | "deregistered". Distinct from cm_state
+  // (which is the CONNECTION state, connected/idle) and load-bearing for the
+  // UE bounce action — see ActiveUE.mmState.
+  mm_state?: string;
   enb?: { enb_id?: number; cell_id?: number };
   location?: { tai?: { plmn: string; tac: number } };
   ambr?: { downlink: number; uplink: number };

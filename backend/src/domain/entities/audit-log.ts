@@ -29,6 +29,10 @@ export type AuditAction =
   | 'ue_detach_install'
   | 'ue_block'
   | 'ue_unblock'
+  // Bounce: a detach that tells the UE to re-attach. Distinct from ue_block
+  // because it installs no block, and because the two put a different
+  // CLR-Flags value on the wire.
+  | 'ue_deregister'
   | 'radio_reboot_all'
   | 'radio_rf_enable'
   | 'radio_rf_disable'
