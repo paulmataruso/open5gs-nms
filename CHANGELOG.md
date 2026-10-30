@@ -4,54 +4,24 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
-## [v2.0-beta_0.72] - 2026-10-29
+## [v2.0-beta_0.73] - 2026-10-29
 
-### Breaking — the built-in SAS module is gone; SASBench replaces it
+### Fixed — a `git pull` onto a pre-SASBench deployment took the whole stack down
 
-Upgrading an existing deployment is not a drop-in `git pull`. The NMS no longer
-implements a SAS; [SASBench](https://github.com/paulmataruso/SASBench) does, as
-its own repository and its own container. Three things have to happen before the
-stack comes back up, and the first one will stop it dead if it is skipped:
+The `sasbench` service's build context is a checkout outside this repository,
+and Compose resolves every build context before it starts anything. On a
+deployment predating SASBench that meant `docker compose up -d` failed in the
+build phase and **not one service started** — verified directly: an unrelated
+service in the same project stayed down too. A `git pull` was a total outage
+with no UI left to explain it, which no release note can help with, because by
+then there is nothing running to read it on.
 
-1. **Clone SASBench to `SASBENCH_DIR`** (default `/opt/sasbench`) and add
-   `COMPOSE_PROFILES=sas` to `.env`. The service is behind a Compose profile
-   precisely so that this is not a trap: Compose resolves every build context
-   before it starts anything, so without the profile a missing checkout fails
-   the build and **not one service starts**, including the containers with
-   nothing to do with the SAS. With it, a plain `up -d` skips the SAS, the rest
-   of the stack comes up, and the NMS detects the missing checkout and shows
-   you the commands in the same card it uses for anything needing
-   reconfiguration. An existing `.env` has no `COMPOSE_PROFILES` line, so an
-   upgrade is protected by default; `.env.example` ships it set, so a fresh
-   install needs nothing extra.
-2. **`docker compose up -d --force-recreate nginx`.** nginx used to terminate
-   SAS TLS on 8443 and that vhost is now gone from the repo, but `nginx.conf` is
-   a single-file bind mount, so the running container stays pinned to the
-   pre-pull inode, keeps holding 8443, and does not release it on a reload.
-   SASBench cannot bind its HTTPS listener until nginx is recreated.
-3. **Re-point the radios' port.** SAS-CBSD is now 8899 (HTTP) and 8443
-   (HTTPS/mTLS) direct to SASBench, with its admin UI and REST API on 8094.
-   SASBench matches the protocol path anywhere in a URL, so an existing
-   `.../sas/v1.2/registration` path keeps working — but a radio left on the old
-   nginx `:8888/sas/` path gets a 404 and silently never registers, holds a
-   grant or heartbeats.
-
-The NMS no longer relies on you reading any of this: a missing or
-non-git `SASBENCH_DIR` is reported in the reconfigure card with the exact
-commands to clear it, and the SAS page's own Update button refuses rather than
-guessing when the checkout is dirty, ahead of upstream, or unreachable.
-
-nginx must not be placed in front of any of those three ports: SASBench reads
-each radio's source address straight off the socket and has no
-`X-Forwarded-For` handling, so proxying it makes every radio look like it came
-from the proxy.
-
-Also worth doing on an upgrade: set `SAS_ADMIN_PASSWORD` (empty means
-SASBench's default `admin`), keep `SAS_PROFILE=lab`, and know that the old
-module's `sas_*` MongoDB collections are left behind inert. Full step-by-step,
-including the inode check that proves nginx actually swapped configs:
-INSTALL.md's "Upgrading an Existing Deployment".
-
+The service now sits behind the `sas` Compose profile, so a plain `up -d` skips
+it and everything else comes up. `COMPOSE_PROFILES=sas` ships set in
+`.env.example`, so a fresh install is unchanged; an existing `.env` has no such
+line, and that is precisely what makes an upgrade safe. Naming a service
+explicitly auto-enables its profile, so the SAS page's own update flow
+(`docker compose build sasbench` / `up -d sasbench`) is unaffected.
 
 ### Fixed — setting `SAS_ADMIN_PASSWORD` would have broken the SAS page
 
@@ -98,6 +68,59 @@ endpoint, since radios must reach SASBench directly.
 
 `POST /api/sas/update` is excluded even under `--include-disruptive`: applying
 an update recreates the container, so every live radio misses a heartbeat.
+
+---
+
+## [v2.0-beta_0.72] - 2026-10-29
+
+### Breaking — the built-in SAS module is gone; SASBench replaces it
+
+Upgrading an existing deployment is not a drop-in `git pull`. The NMS no longer
+implements a SAS; [SASBench](https://github.com/paulmataruso/SASBench) does, as
+its own repository and its own container. Three things have to happen before the
+stack comes back up, and the first one will stop it dead if it is skipped:
+
+1. **Clone SASBench to `SASBENCH_DIR`** (default `/opt/sasbench`) and add
+   `COMPOSE_PROFILES=sas` to `.env`. (The profile itself landed in
+   v2.0-beta_0.73 — on 0.72 exactly this step was mandatory *before* bringing
+   the stack up, with no safety net.) The service is behind a Compose profile
+   precisely so that this is not a trap: Compose resolves every build context
+   before it starts anything, so without the profile a missing checkout fails
+   the build and **not one service starts**, including the containers with
+   nothing to do with the SAS. With it, a plain `up -d` skips the SAS, the rest
+   of the stack comes up, and the NMS detects the missing checkout and shows
+   you the commands in the same card it uses for anything needing
+   reconfiguration. An existing `.env` has no `COMPOSE_PROFILES` line, so an
+   upgrade is protected by default; `.env.example` ships it set, so a fresh
+   install needs nothing extra.
+2. **`docker compose up -d --force-recreate nginx`.** nginx used to terminate
+   SAS TLS on 8443 and that vhost is now gone from the repo, but `nginx.conf` is
+   a single-file bind mount, so the running container stays pinned to the
+   pre-pull inode, keeps holding 8443, and does not release it on a reload.
+   SASBench cannot bind its HTTPS listener until nginx is recreated.
+3. **Re-point the radios' port.** SAS-CBSD is now 8899 (HTTP) and 8443
+   (HTTPS/mTLS) direct to SASBench, with its admin UI and REST API on 8094.
+   SASBench matches the protocol path anywhere in a URL, so an existing
+   `.../sas/v1.2/registration` path keeps working — but a radio left on the old
+   nginx `:8888/sas/` path gets a 404 and silently never registers, holds a
+   grant or heartbeats.
+
+The NMS no longer relies on you reading any of this: a missing or
+non-git `SASBENCH_DIR` is reported in the reconfigure card with the exact
+commands to clear it, and the SAS page's own Update button refuses rather than
+guessing when the checkout is dirty, ahead of upstream, or unreachable.
+
+nginx must not be placed in front of any of those three ports: SASBench reads
+each radio's source address straight off the socket and has no
+`X-Forwarded-For` handling, so proxying it makes every radio look like it came
+from the proxy.
+
+Also worth doing on an upgrade: set `SAS_ADMIN_PASSWORD` (empty means
+SASBench's default `admin`), keep `SAS_PROFILE=lab`, and know that the old
+module's `sas_*` MongoDB collections are left behind inert. Full step-by-step,
+including the inode check that proves nginx actually swapped configs:
+INSTALL.md's "Upgrading an Existing Deployment".
+
 
 ### Added — Band occupancy on the SAS page, and fuller SAS cards
 
