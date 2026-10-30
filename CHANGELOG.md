@@ -4,6 +4,91 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.74] - 2026-10-30
+
+### Fixed — the README's quick start failed before any service started
+
+The quick start copied `.env.example` and ran `docker compose up --build -d`
+with no step cloning SASBench. `.env.example` ships `COMPOSE_PROFILES=sas`, and
+the `sasbench` service's build context is a checkout outside this repository,
+so following the README on a fresh host produced `unable to prepare context:
+path "/opt/sasbench" not found` and **not one container started** — the same
+total failure the previous release removed for upgrades, still wide open for
+new installs, and reported by an error that never mentions SASBench or what to
+do about it. INSTALL.md had the clone in the right place all along, at Step 4
+before the build; the README, which is what people actually paste from, did
+not. It now clones the SAS before the build, and the feature list no longer
+claims the SAS simply "starts with the stack" without saying that it needs the
+clone and the `sas` profile to do so.
+
+### Added — a mobile site: nine operator pages built for a phone
+
+Reflowing the desktop pages was not a mobile site. The RAN page put its per-UE
+actions in the rightmost column of a nine-column table, so on a phone the
+Block buttons sat behind a horizontal scroll and overlapped each other, and
+page header action rows ran off the right edge.
+
+The operator destinations now have their own pages: Dashboard, RAN Network,
+Services, Subscribers, Unified Logs, UE Signal, Traffic History, SAS and Call
+History. Both bugs are gone by construction rather than patched — no mobile
+page uses a table with an action column, and none has a header action row.
+Tables become rows that own their full width, and per-item actions move into a
+bottom sheet where each is a full-width 48px target with a sentence of
+consequence. That is also safer than the desktop, where Detach and Block sit
+one tap apart and do very different things.
+
+Everything else is off the mobile navigation and lands on a screen explaining
+why, and confirming the page works at the same address on a desktop. Those
+destinations are still listed, under a "Needs a desktop" heading, rather than
+hidden: a dozen modules here can be switched off at build time, so an absent
+entry is indistinguishable from a disabled feature.
+
+The mobile pages are deliberately narrower in capability and say so. The
+dashboard is read-only, because the desktop's RAN kill switches drop every
+radio of a generation at once and that should not be one thumb-tap from a
+monitoring screen. Services has no bulk start/stop; Subscribers is look-up
+only. Traffic History draws its shape with divs rather than pulling a chart
+library onto a phone, and every value it plots is also printed as a number.
+
+Two bugs found while building it. Mobile Logs passed `useLogStream` an empty
+services array, and that hook sends `unsubscribe_logs` when the array is empty
+— the page would have connected, reported "Streaming", and shown nothing
+forever, which looks like it works. And four refresh buttons were written as
+`-m-2 h-9 w-9`: a negative margin repositions an element, it does not expand a
+hit area, so those were 36px targets that looked spacious.
+
+The `md` breakpoint is now declared explicitly, because it is load-bearing
+beyond styling — it is the exact width at which the layout swaps shells, and
+`MOBILE_MAX_WIDTH_PX` must stay one pixel below it. A build step fails if the
+two drift, and it runs as the first step of `npm run build`, so the check
+happens inside the image build rather than only on a developer's machine.
+
+### Added — Bounce, a per-UE detach that lets the UE come straight back
+
+Blocking a UE already sent a real S6a Cancel-Location-Request, but only with
+"re-attach not required" — the flag a block wants. There was no way to simply
+kick a UE back onto the network, which is what an operator reaches for when a
+handset is attached but wedged: the network-side equivalent of toggling
+airplane mode, with nothing left behind. Bounce sends the same CLR with
+CLR-Flags REATTACH_REQUIRED; the detach tool's flag defaults to off, so
+blocking is untouched.
+
+It reports what happened rather than whether the request succeeded. A UE that
+was not attached, or a 5G UE the AMF cannot page, returns a 200 with a status
+saying so instead of an error — those are expected outcomes, and reporting
+them as failures would train operators to ignore the result. It also refuses
+up front in the two cases where the network would otherwise answer with a
+plausible success: a 4G UE the MME already considers de-registered, and an
+idle 5G UE, where the AMF returns 204 having done nothing.
+
+The button appears twice per UE row, beside the IMSI and in the Actions
+column, as one component rendered twice sharing a single pending flag, so the
+action cannot be double-fired. It is hidden on a blocked UE, which is
+blackholed and cannot re-attach, and on 2G, whose Block is an osmo-bsc per-BTS
+admin lock with no per-UE detach path.
+
+---
+
 ## [v2.0-beta_0.73] - 2026-10-29
 
 ### Fixed — a `git pull` onto a pre-SASBench deployment took the whole stack down
