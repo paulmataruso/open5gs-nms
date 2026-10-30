@@ -4,6 +4,53 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.76] - 2026-10-30
+
+### Fixed — the SAS page claimed SASBench was up to date when it was not
+
+Pinning SASBench in the previous release changed the shape of what
+`GET /api/sas/version` reports, and the SAS page was still reading the old
+checkout-only `behind` field. Pinned mode leaves that field unset, so the
+page's "nothing to apply" branch was taken whenever upstream had moved —
+rendering **"Already up to date with upstream"** while the comparison said
+otherwise, and never showing the "update available" badge.
+
+Reporting an unknown or negative comparison as "current" is the one thing this
+card was explicitly built not to do, because an operator who reads "up to date"
+stops looking. The comparison is now three-valued and the UI keeps it that way:
+upstream has moved, this *is* upstream's current revision, or **not
+established** — an unreachable git remote and a pin that is a branch name both
+land in the third state and say so rather than picking an answer.
+
+### Removed — the SAS page's "Update SASBench" button, and its route
+
+With SASBench's revision pinned by the NMS release, a button that rebuilt at
+upstream's current commit produced a state that silently reverted on the
+operator's next plain `docker compose build`. A control that undoes itself is
+worse than no control, so it is gone rather than qualified with a caveat.
+
+`POST /api/sas/update`, the `sasApi.update` client method and the nginx
+streaming-timeout entry that existed for it were all deleted outright rather
+than left unused — deleting the client is what makes any stale call site fail
+to compile instead of silently doing nothing, the same reason the IP Plan
+rewrite deleted its old bulk-save route. The `sasbench_update` audit action is
+kept, marked historical, so existing audit rows stay typed. The SAS proxy is
+now five GET routes and no POST: it reads SASBench and changes nothing.
+
+What replaces it is the thing that was actually useful. The page still shows
+the pinned revision, still checks upstream on request, and when upstream has
+moved it says so and names the way to take it — `git pull && docker compose
+build && docker compose up -d` — because with the SAS pinned per release, that
+*is* the update mechanism. Two deployments on the same tag now always run the
+same SAS.
+
+A deployment that builds from a local checkout (`SASBENCH_CONTEXT` pointed at a
+path, which is for developing SASBench itself) keeps its own reporting —
+branch, commits behind, local commits, dirty tree — and is told to rebuild from
+that checkout instead.
+
+---
+
 ## [v2.0-beta_0.75] - 2026-10-30
 
 ### Changed — the CBRS SAS now comes up on its own, on every deployment

@@ -163,7 +163,7 @@ TLS for, or rewrites that traffic.
 - **Status page in the NMS** — the SAS entry in the navigation shows listener state, TLS policy, registered CBSDs, live grants and recent message/error counts, read from SASBench's REST API, plus a link into SASBench's own console
 - **Band occupancy** — the managed band drawn as a frequency axis with GAA availability, PAL channels, active protections and every live grant packed into lanes and coloured per radio. Occupancy is measured as the union of the grant ranges, with the deepest grant overlap and the largest free block alongside it — on GAA the SAS authorizes overlapping grants by design, so the sum of grant widths can exceed the band and does not describe how much of it is in use
 - **Dashboard card** — the same data on the main dashboard, including a clear "SAS unreachable" state
-- **Kept current from the NMS** — the SAS page reports how far the installed SASBench is behind upstream and applies the update itself: pull, rebuild the image, recreate the container, then confirm both protocol listeners are serving again. Updating is an explicit action, since the restart costs every live radio a missed heartbeat
+- **Upstream drift is reported, never applied behind your back** — the SAS page shows the pinned revision and says when upstream has moved past it. Taking a newer SASBench means bumping the pin and pulling, so the SAS is versioned with the release and two deployments on the same tag always run the same SAS
 - **Lab-only** — SASBench is a bench/test SAS, not an FCC-approved SAS Administrator. For live CBRS operation, CBSDs must obtain grants from an approved SAS.
 
 Registrations, grants, spectrum, certificates, fault injection and settings are

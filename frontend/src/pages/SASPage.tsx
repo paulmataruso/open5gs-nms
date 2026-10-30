@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import {
   Shield, ExternalLink, RefreshCw, AlertTriangle, Radio, Signal, Activity,
-  Download, GitBranch, CheckCircle2, BarChart3, Lock,
+  GitBranch, CheckCircle2, BarChart3, Lock,
 } from 'lucide-react';
 import {
   sasApi, sasbenchUiUrl,
@@ -9,8 +9,6 @@ import {
   type SasSpectrum,
 } from '../api/sas';
 import { BandOccupancy } from '../components/sas/BandOccupancy';
-import { ConfirmModal } from '../components/common/ConfirmModal';
-import toast from 'react-hot-toast';
 
 // ── CBRS SAS ────────────────────────────────────────────────────────────────
 // A status view of SASBench, which IS the SAS on this deployment: it runs as
@@ -23,36 +21,18 @@ import toast from 'react-hot-toast';
 // Rebuilding any of that here would mean two consoles disagreeing about one
 // system's state.
 //
-// The one thing the NMS does own is SASBench's own software: it tracks the
-// upstream checkout, says when it is behind and applies the update itself, so
-// keeping the SAS current never means shelling onto the host. That is an
-// explicit button and not automatic, because applying it recreates the
-// container and the SAS listeners drop while it restarts.
-
-/**
- * Why an update cannot (or need not) run, or null when there is genuinely
- * something to apply. These mirror the refusals POST /api/sas/update makes
- * server-side — the backend stays the authority, this just says why before
- * taking the SAS listeners down for nothing.
- */
-function updateBlockReason(v: SasBenchVersion): string | null {
-  if (!v.managed) {
-    return v.reason ?? 'SASBENCH_DIR is not a git checkout, so there is no upstream to update from.';
-  }
-  if (v.fetchError) {
-    return `Could not reach the git remote, so there is nothing reliable to compare against: ${v.fetchError}`;
-  }
-  if (v.dirty) {
-    return 'The checkout has uncommitted local changes — updating would discard them. Resolve them on the host first.';
-  }
-  if (v.ahead) {
-    return `The checkout has ${v.ahead} local commit${v.ahead === 1 ? '' : 's'} that are not upstream, so an update would not be a fast-forward. Reconcile it by hand.`;
-  }
-  if (!v.behind) {
-    return `Already up to date with ${v.branch ?? 'upstream'}${v.localCommit ? ` (${v.localCommit})` : ''}.`;
-  }
-  return null;
-}
+// SASBench's own software is reported here but never changed from here. The
+// sasbench image is built from a remote git context PINNED by this NMS
+// release, so the installed revision is a property of the release: a newer
+// SASBench arrives by moving that pin and pulling, the same way every other
+// part of this stack is updated.
+//
+// There used to be an "Update SASBench" button that rebuilt at upstream's
+// current commit. It was removed rather than kept, because with a pinned
+// context its effect silently reverted on the operator's next
+// `docker compose build` — a control that undoes itself is worse than no
+// control. What is kept is the comparison, so an operator can see that
+// upstream has moved and know a pin bump is due.
 
 const MHz = (hz: number) => (hz / 1e6).toFixed(1);
 
@@ -132,9 +112,6 @@ export function SASPage(): JSX.Element {
   const [refreshing, setRefreshing] = useState(false);
   const [version, setVersion] = useState<SasBenchVersion | null>(null);
   const [checking, setChecking] = useState(false);
-  const [updating, setUpdating] = useState(false);
-  const [updateLog, setUpdateLog] = useState('');
-  const [confirmUpdate, setConfirmUpdate] = useState(false);
 
   const load = useCallback(async () => {
     setRefreshing(true);
@@ -182,57 +159,17 @@ export function SASPage(): JSX.Element {
     return () => clearInterval(t);
   }, [load, loadVersion]);
 
-  const runUpdate = useCallback(async () => {
-    setUpdating(true);
-    setUpdateLog('');
-    try {
-      await sasApi.update((chunk) => setUpdateLog((prev) => prev + chunk));
-    } catch (err) {
-      setUpdateLog((prev) => prev + `\n\u274c ${String(err)}`);
-    } finally {
-      setUpdating(false);
-      // The container was just recreated, so everything on this page is stale.
-      await loadVersion(false);
-      await load();
-    }
-  }, [load, loadVersion]);
-
-  /**
-   * The header button. Contacts the git remote for the latest refs (a read,
-   * so it needs no confirmation), then asks before applying, because applying
-   * recreates the container and the SAS listeners drop while it restarts —
-   * every live radio misses a heartbeat. When there is nothing to apply it
-   * says so and stops, rather than rebuilding for no reason.
-   */
-  const checkThenUpdate = useCallback(async () => {
-    setChecking(true);
-    setUpdateLog('');
-    try {
-      const v = await sasApi.getVersion(true);
-      setVersion(v);
-      const blocked = updateBlockReason(v);
-      if (blocked) {
-        // "Already up to date" is the good outcome, not a failure.
-        if (v.managed && !v.behind && !v.dirty && !v.ahead && !v.fetchError) toast.success(blocked);
-        else toast.error(blocked);
-        setUpdateLog(blocked + '\n');
-        return;
-      }
-      setConfirmUpdate(true);
-    } catch (err) {
-      const msg = `Could not check for updates: ${String(err)}`;
-      toast.error(msg);
-      setUpdateLog(msg + '\n');
-    } finally {
-      setChecking(false);
-    }
-  }, []);
-
   const counts = status?.counts;
   const uiUrl = sasbenchUiUrl(status?.uiPort ?? 8094);
   const authorized = counts?.grantsByState?.AUTHORIZED ?? 0;
   const granted = counts?.grantsByState?.GRANTED ?? 0;
-  const updateAvailable = !!version?.managed && !!version.behind && version.behind > 0;
+  // Upstream has genuinely moved past what this deployment runs. Deliberately
+  // requires upToDate === false (pinned) or behind > 0 (local checkout): an
+  // UNDEFINED comparison is "not established", and treating that as either
+  // answer is how a page tells an operator something it does not know.
+  const behindUpstream = version?.source === 'pinned'
+    ? version.upToDate === false
+    : !!version?.managed && !!version?.behind && version.behind > 0;
   // Occupancy and the radio/grant breakdowns the NMS derives from the real
   // grant ranges; absent when SASBench answered /status but not /spectrum.
   const derived = status?.derived;
@@ -278,9 +215,9 @@ export function SASPage(): JSX.Element {
               profile: {status.profile}
             </span>
           )}
-          {updateAvailable && (
+          {behindUpstream && (
             <span className="px-2.5 py-1 rounded-md text-xs font-medium bg-nms-amber/10 text-nms-amber border border-nms-amber/30">
-              update available
+              newer SASBench upstream
             </span>
           )}
           <button
@@ -291,18 +228,6 @@ export function SASPage(): JSX.Element {
           >
             <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
-          </button>
-          {/* Manual update. One click fetches upstream and applies it if there
-              is anything new; the software card below is the same thing in two
-              steps, for reading what is coming first. */}
-          <button
-            onClick={() => void checkThenUpdate()}
-            disabled={checking || updating}
-            className={`nms-btn-ghost flex items-center gap-2 ${updateAvailable ? 'text-nms-amber' : ''}`}
-            title="Fetch the latest SASBench from GitHub and apply it if there is anything new"
-          >
-            <Download className={`w-4 h-4 ${updating ? 'animate-pulse' : checking ? 'animate-spin' : ''}`} />
-            {updating ? 'Updating…' : checking ? 'Checking…' : 'Update SASBench'}
           </button>
           <a
             href={uiUrl}
@@ -343,9 +268,9 @@ export function SASPage(): JSX.Element {
         </div>
       )}
 
-      {/* SASBench software — the one thing the NMS updates itself */}
+      {/* SASBench software — reported, never changed from here. */}
       {version && (
-        <div className={`nms-card ${updateAvailable ? 'border-nms-amber/40' : ''}`}>
+        <div className={`nms-card ${behindUpstream ? 'border-nms-amber/40' : ''}`}>
           <div className="flex items-start justify-between flex-wrap gap-3">
             <div className="min-w-0">
               <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
@@ -353,33 +278,23 @@ export function SASPage(): JSX.Element {
                 SASBench software
               </h2>
               <p className="text-xs text-nms-text-dim mt-1">
-                This NMS keeps SASBench in step with upstream. Its source lives on the host
-                at <code className="text-nms-text">{version.dir}</code>, outside this repository.
+                {version.source === 'checkout'
+                  ? <>Built from a local checkout at <code className="text-nms-text">{version.dir}</code>.</>
+                  : <>Built from a revision pinned by this NMS release, so there is nothing to clone
+                      on the host and every deployment runs the same SAS.</>}
               </p>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={() => void loadVersion(true)}
-                disabled={checking || updating || !version.managed}
-                className="nms-btn-ghost flex items-center gap-2"
-              >
-                <RefreshCw className={`w-4 h-4 ${checking ? 'animate-spin' : ''}`} />
-                Check for updates
-              </button>
-              {updateAvailable && (
-                <button
-                  onClick={() => void runUpdate()}
-                  disabled={updating || version.dirty || !!version.ahead}
-                  className="nms-btn-primary flex items-center gap-2"
-                >
-                  <Download className={`w-4 h-4 ${updating ? 'animate-pulse' : ''}`} />
-                  {updating ? 'Updating…' : `Update (${version.behind} commit${version.behind === 1 ? '' : 's'})`}
-                </button>
-              )}
-            </div>
+            <button
+              onClick={() => void loadVersion(true)}
+              disabled={checking}
+              className="nms-btn-ghost flex items-center gap-2"
+              title="Compare the installed revision against upstream"
+            >
+              <RefreshCw className={`w-4 h-4 ${checking ? 'animate-spin' : ''}`} />
+              Check upstream
+            </button>
           </div>
 
-          {/* Not a git checkout: its own state, never shown as "up to date". */}
           {!version.managed ? (
             <div className="mt-3 flex items-start gap-2 text-sm">
               <AlertTriangle className="w-4 h-4 text-nms-amber shrink-0 mt-0.5" />
@@ -393,11 +308,17 @@ export function SASPage(): JSX.Element {
                   <dd className="text-nms-text font-mono">{version.runningVersion ?? '—'}</dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="text-nms-text-dim">Tracking</dt>
-                  <dd className="text-nms-text font-mono text-right break-all">{version.branch ?? '—'}</dd>
+                  <dt className="text-nms-text-dim">
+                    {version.source === 'checkout' ? 'Tracking' : 'Repository'}
+                  </dt>
+                  <dd className="text-nms-text font-mono text-right break-all">
+                    {version.source === 'checkout' ? (version.branch ?? '—') : (version.repoUrl ?? '—')}
+                  </dd>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <dt className="text-nms-text-dim">Installed commit</dt>
+                  <dt className="text-nms-text-dim">
+                    {version.source === 'checkout' ? 'Installed commit' : 'Pinned revision'}
+                  </dt>
                   <dd className="text-nms-text font-mono">
                     {version.localCommit ?? '—'}
                     {version.localDate ? ` · ${new Date(version.localDate).toLocaleDateString()}` : ''}
@@ -411,10 +332,12 @@ export function SASPage(): JSX.Element {
                 </div>
               </dl>
 
-              {updateAvailable ? (
+              {/* Three distinct states, and "not established" is one of them —
+                  an unreachable remote must never read as "up to date". */}
+              {behindUpstream ? (
                 <div className="mt-3 pt-3 border-t border-nms-border space-y-1.5">
                   <p className="text-sm text-nms-amber">
-                    {version.behind} new commit{version.behind === 1 ? '' : 's'} upstream
+                    Upstream has moved past this revision
                     {version.upstreamCommit ? ` (latest ${version.upstreamCommit})` : ''}.
                   </p>
                   {version.upstreamSubject && (
@@ -424,15 +347,29 @@ export function SASPage(): JSX.Element {
                     </p>
                   )}
                   <p className="text-xs text-nms-text-dim">
-                    Applying it pulls the new source, rebuilds the image and recreates the
-                    container. The SAS HTTP and HTTPS listeners are down while it restarts,
-                    so radios will miss a heartbeat — grants survive, but expect a brief gap.
+                    {version.source === 'checkout'
+                      ? <>This deployment builds from the checkout above, so update it there and
+                          rebuild: <code className="text-nms-text">docker compose build sasbench
+                          &amp;&amp; docker compose up -d sasbench</code>.</>
+                      : <>A newer SASBench arrives by moving the pinned revision, so it ships in an
+                          NMS release: <code className="text-nms-text">git pull &amp;&amp; docker
+                          compose build &amp;&amp; docker compose up -d</code>. The SAS is pinned on
+                          purpose — every deployment runs the revision its release was tested
+                          against, rather than whatever upstream happened to be that day.</>}
                   </p>
                 </div>
-              ) : (
+              ) : version.upToDate === true || (version.source === 'checkout' && version.behind === 0) ? (
                 <p className="mt-3 pt-3 border-t border-nms-border text-sm text-nms-green flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4" />
-                  Up to date with {version.branch}.
+                  This is upstream's current revision.
+                </p>
+              ) : (
+                <p className="mt-3 pt-3 border-t border-nms-border text-sm text-nms-text-dim flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-nms-amber shrink-0 mt-0.5" />
+                  <span>
+                    {version.reason
+                      ?? 'Not compared against upstream yet — use Check upstream.'}
+                  </span>
                 </p>
               )}
 
@@ -444,43 +381,20 @@ export function SASPage(): JSX.Element {
               )}
               {version.dirty && (
                 <p className="text-xs text-nms-amber mt-2">
-                  The checkout has uncommitted local changes, so the NMS will not update it —
-                  an update would discard them. Resolve them on the host first.
+                  The checkout has uncommitted local changes, so what is built from it does not
+                  match any upstream revision.
                 </p>
               )}
               {!!version.ahead && (
                 <p className="text-xs text-nms-amber mt-2">
                   The checkout has {version.ahead} local commit{version.ahead === 1 ? '' : 's'} that
-                  are not upstream, so an update would not be a fast-forward. Reconcile it by hand.
+                  are not upstream.
                 </p>
               )}
             </>
           )}
-
-          {updateLog && (
-            <pre
-              className="mt-4 p-3 rounded-md bg-nms-surface-2 border border-nms-border text-[11px]
-                         font-mono text-nms-text whitespace-pre-wrap break-words max-h-80 overflow-auto"
-              aria-live="polite"
-            >
-              {updateLog}
-            </pre>
-          )}
         </div>
       )}
-
-      <ConfirmModal
-        open={confirmUpdate}
-        title="Update SASBench?"
-        message={
-          `This pulls ${version?.behind ?? 0} new commit${version?.behind === 1 ? '' : 's'} from upstream, rebuilds the ` +
-          'image and recreates the container. The SAS HTTP and HTTPS listeners are down while it ' +
-          'restarts, so every radio misses a heartbeat — existing grants survive, but expect a brief gap.'
-        }
-        confirmLabel="Update now"
-        onConfirm={() => { setConfirmUpdate(false); void runUpdate(); }}
-        onCancel={() => setConfirmUpdate(false)}
-      />
 
       {loading && !status && (
         <div className="nms-card text-sm text-nms-text-dim">Loading SAS status…</div>

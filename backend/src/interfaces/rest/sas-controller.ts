@@ -1,9 +1,6 @@
 import { Router } from 'express';
-import { spawn } from 'node:child_process';
 import type pino from 'pino';
-import { requireAdmin } from './middleware/auth-middleware';
 import type { IHostExecutor } from '../../domain/interfaces/host-executor';
-import type { IAuditLogger } from '../../domain/interfaces/audit-logger';
 
 // ── CBRS SAS ────────────────────────────────────────────────────────────────
 // This NMS does not implement a SAS. SASBench does, as its own container, and
@@ -269,8 +266,6 @@ export interface SasBenchVersion {
   pinnedRef?: string;
   /** 'pinned' only: false when upstream has moved past the pinned ref. */
   upToDate?: boolean;
-  /** 'pinned' only: the full upstream SHA, to rebuild pinned exactly to it. */
-  upstreamCommitFull?: string;
   /** Why it is not managed, or why `behind` could not be determined. */
   reason?: string;
   remoteUrl?: string;
@@ -326,9 +321,6 @@ let lastFetchOkAt = 0;
 /** Why the last fetch failed, so the page can say so instead of going quiet. */
 let lastFetchError: string | null = null;
 
-/** One update at a time — two concurrent builds of the same image race. */
-let updateInFlight = false;
-
 /**
  * The default shape: the image is built from a remote git context pinned to a
  * commit, so "what is installed" is that pin and the only question is whether
@@ -378,12 +370,10 @@ async function readPinnedVersion(
     return v;
   }
   v.upstreamCommit = upstream.slice(0, 7);
-  v.upstreamCommitFull = upstream;
   // Compare full against full when the pin is a full SHA; otherwise the pin
   // is a branch/tag name and "up to date" is not a question this can answer.
   if (/^[0-9a-f]{40}$/i.test(parsed.ref)) {
     v.upToDate = parsed.ref.toLowerCase() === upstream.toLowerCase();
-    v.behind = v.upToDate ? 0 : undefined;
   } else {
     v.reason = `Pinned to "${parsed.ref}" rather than a commit, so the exact revision follows upstream.`;
   }
@@ -482,67 +472,10 @@ async function readVersion(
   return v;
 }
 
-/**
- * Run a script on the HOST and stream its output to the caller.
- *
- * detached so nsenter leads its own process group (CLAUDE.md pattern #20:
- * `nsenter -p` forks internally, so the direct child is not the process doing
- * the work and a single-PID kill would orphan the real one).
- */
-function runHostScript(script: string, write: (t: string) => void): Promise<number> {
-  return new Promise<number>((resolve) => {
-    const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', script], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-    });
-    child.stdout.on('data', (d: Buffer) => write(d.toString()));
-    child.stderr.on('data', (d: Buffer) => write(d.toString()));
-    child.on('close', (c) => resolve(c ?? 1));
-    child.on('error', (e) => { write(String(e)); resolve(1); });
-  });
-}
-
-/**
- * "compose up -d returned 0" is not "the SAS is serving again" — wait for
- * SASBench's own health endpoint to report its listeners back up before
- * calling a rebuild done (CLAUDE.md: verify, don't trust success).
- */
-async function waitForSasbench(
-  cfg: SasBenchConfig,
-  write: (t: string) => void,
-): Promise<any | null> {
-  write('\n=== Waiting for SASBench to come back ===');
-  for (let i = 0; i < 30; i++) {
-    const h = await sasbench(cfg, '/health', 3000);
-    if (h.ok && h.data?.status === 'ok' && h.data?.listeners?.http !== undefined) {
-      write(`SASBench ${h.data.version} is up — SAS HTTP ${h.data.listeners.http ? 'listening' : 'DOWN'}, `
-        + `SAS HTTPS ${h.data.listeners.https ? 'listening' : 'DOWN'}`);
-      return h.data;
-    }
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-  return null;
-}
-
-/** The directory `docker compose` must run from — the NMS's own project. */
-async function composeDir(host: IHostExecutor): Promise<string | null> {
-  try {
-    const r = await host.executeLocalCommand('docker', [
-      'inspect', 'open5gs-nms-backend', '--format',
-      '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}',
-    ]);
-    const dir = r.stdout.trim();
-    return r.exitCode === 0 && dir && dir !== '<no value>' ? dir : null;
-  } catch {
-    return null;
-  }
-}
-
 export function createSasRouter(
   cfg: SasBenchConfig,
   logger: pino.Logger,
   hostExecutor: IHostExecutor,
-  auditLogger: IAuditLogger,
 ): Router {
   const router = Router();
 
@@ -634,169 +567,6 @@ export function createSasRouter(
     }
   });
 
-  // Apply an upstream update: pull, rebuild the image, recreate the container.
-  //
-  // Streams its output (chunked) the same way every other long-running action
-  // in this NMS does — a real build takes well over nginx's generic 120 s
-  // /api/ read timeout, so this path needs its own location block in
-  // nginx.conf (see CLAUDE.md pattern #5).
-  //
-  // Deliberately NOT killed when the browser disconnects: a half-finished
-  // `docker compose build` leaves a worse state than one that runs to
-  // completion, and the final `up -d` is idempotent.
-  router.post('/update', requireAdmin, async (req, res) => {
-    const user = (req as any).user?.username ?? 'unknown';
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.flushHeaders();
-    const write = (t: string) => { res.write(t.endsWith('\n') ? t : t + '\n'); };
-
-    const fail = async (msg: string) => {
-      write(`\n❌ ${msg}`);
-      await auditLogger.log({ action: 'sasbench_update', user, details: msg, success: false }).catch(() => {});
-      res.end();
-    };
-
-    if (updateInFlight) return fail('A SASBench update is already running. Wait for it to finish.');
-    updateInFlight = true;
-    try {
-      // Force a real fetch: this path must decide on current refs, never on
-      // whatever the status poll last cached.
-      lastFetchAt = 0;
-      const v = await readVersion(cfg, hostExecutor, { fetch: true });
-      if (!v.managed) return await fail(v.reason ?? `${cfg.dir} cannot be updated from here.`);
-      if (v.fetchError) return await fail(`Could not reach the git remote: ${v.fetchError}`);
-
-      // Local edits to a proprietary upstream checkout are never discarded
-      // silently — the operator put them there on purpose or has a problem
-      // worth seeing, and either way a --ff-only pull would just fail later.
-      // Pinned (the default): there is no checkout to pull. "Update" means
-      // rebuilding the image at upstream's current commit instead of the one
-      // this release pins, so it is explicit that the change lasts until the
-      // next plain `docker compose build`, which returns to the pinned
-      // revision. Moving the pin itself is a release decision.
-      if (v.source === 'pinned') {
-        if (v.fetchError) return await fail(`Could not reach the git remote: ${v.fetchError}`);
-        if (v.upToDate) {
-          write(`Already current: SASBench is pinned to ${v.pinnedRef} and upstream is at the same commit.`);
-          write('Nothing to update.');
-          await auditLogger.log({ action: 'sasbench_update', user, details: 'already current (pinned)', success: true }).catch(() => {});
-          return res.end();
-        }
-        if (!v.upstreamCommitFull) {
-          return await fail(v.reason ?? 'Could not determine upstream\'s current commit, so there is nothing to build.');
-        }
-        const dir = await composeDir(hostExecutor);
-        if (!dir) {
-          return await fail(
-            'Could not resolve this deployment\'s compose project directory, so the image cannot be '
-            + 'rebuilt. Update by hand: SASBENCH_CONTEXT=' + v.repoUrl + '#' + v.upstreamCommitFull
-            + ' docker compose build sasbench && docker compose up -d sasbench',
-          );
-        }
-        const ctx = `${v.repoUrl}#${v.upstreamCommitFull}`;
-        write(`SASBench update: pinned ${v.pinnedRef} -> upstream ${v.upstreamCommit}`);
-        write(`Compose project: ${dir}`);
-        write('Recreating the container drops the SAS protocol listeners briefly; radios will miss a heartbeat.');
-        write(`Note: a later plain \`docker compose build\` rebuilds at this release's pinned revision (${v.pinnedRef}).\n`);
-        const pinnedScript = [
-          'set -o pipefail',
-          `cd ${JSON.stringify(dir)} || exit 1`,
-          `export SASBENCH_CONTEXT=${JSON.stringify(ctx)}`,
-          'echo "=== Rebuilding the sasbench image at $SASBENCH_CONTEXT ==="',
-          'docker compose build sasbench || exit 1',
-          'echo',
-          'echo "=== Recreating the sasbench container ==="',
-          'docker compose up -d sasbench || exit 1',
-        ].join('\n');
-        const pinnedCode = await runHostScript(pinnedScript, write);
-        if (pinnedCode !== 0) {
-          return await fail(`Update failed (exit ${pinnedCode}). The previous image is still in place.`);
-        }
-        const ok = await waitForSasbench(cfg, write);
-        if (!ok) {
-          return await fail(
-            'SASBench did not report healthy after the rebuild. Check `docker compose logs sasbench`.',
-          );
-        }
-        write('\n✅ SASBench rebuilt and serving again.');
-        await auditLogger.log({ action: 'sasbench_update', user, details: `rebuilt at ${ctx}`, success: true }).catch(() => {});
-        return res.end();
-      }
-
-      if (v.dirty) {
-        return await fail(
-          `${cfg.dir} has uncommitted local changes. Commit, stash or revert them first `
-          + `(git -C ${cfg.dir} status), then run the update again.`,
-        );
-      }
-      if (v.ahead) {
-        return await fail(
-          `${cfg.dir} has ${v.ahead} local commit(s) not in ${v.branch ?? 'upstream'}, so the update `
-          + `would not be a fast-forward. Reconcile it by hand first.`,
-        );
-      }
-      if (!v.behind) {
-        write(`Already current: ${v.localCommit} ${v.localSubject ?? ''}`);
-        write('Nothing to update.');
-        await auditLogger.log({ action: 'sasbench_update', user, details: 'already current', success: true }).catch(() => {});
-        return res.end();
-      }
-
-      const dir = await composeDir(hostExecutor);
-      if (!dir) {
-        return await fail(
-          'Could not resolve this deployment\'s compose project directory, so the image cannot be '
-          + 'rebuilt. Update by hand: git -C ' + cfg.dir + ' pull && docker compose build sasbench '
-          + '&& docker compose up -d sasbench',
-        );
-      }
-
-      write(`SASBench update: ${v.behind} commit(s) behind ${v.branch} (${v.localCommit} -> ${v.upstreamCommit})`);
-      write(`Checkout: ${cfg.dir}    Compose project: ${dir}`);
-      write('Recreating the container drops the SAS protocol listeners briefly; radios will miss a heartbeat.\n');
-
-      const script = [
-        'set -o pipefail',
-        `cd ${JSON.stringify(cfg.dir)} || exit 1`,
-        'echo "=== Pulling SASBench ==="',
-        'git merge --ff-only "@{u}" || exit 1',
-        'git log -1 --format="Now at %h %ci %s" || exit 1',
-        'echo',
-        'echo "=== Rebuilding the sasbench image ==="',
-        `cd ${JSON.stringify(dir)} || exit 1`,
-        'docker compose build sasbench || exit 1',
-        'echo',
-        'echo "=== Recreating the sasbench container ==="',
-        'docker compose up -d sasbench || exit 1',
-      ].join('\n');
-
-      const code = await runHostScript(script, write);
-      if (code !== 0) return await fail(`Update failed (exit ${code}). The previous image is still in place.`);
-
-      const healthy = await waitForSasbench(cfg, write);
-      if (!healthy) {
-        return await fail(
-          'SASBench did not report healthy within 60 s. Check: docker logs sasbench',
-        );
-      }
-
-      const after = await readVersion(cfg, hostExecutor, { fetch: false });
-      write(`Now at ${after.localCommit} ${after.localSubject ?? ''}`);
-      write('\n✅ Update applied.');
-      await auditLogger.log({
-        action: 'sasbench_update', user, success: true,
-        details: `${v.localCommit} -> ${after.localCommit} (${v.behind} commits)`,
-      }).catch(() => {});
-      res.end();
-    } catch (err: any) {
-      await fail(String(err?.message ?? err));
-    } finally {
-      updateInFlight = false;
-    }
-  });
 
   return router;
 }

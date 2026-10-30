@@ -792,8 +792,10 @@ async function main() {
   app.use('/api/snmp', createSnmpRouter(activeSessionsUseCase, hostExecutor, configRepo, auditLogger, logger));
 
   // SAS — a read-only view of SASBench for the SAS page and the dashboard
-  // card, plus keeping the SASBench checkout itself in step with upstream.
-  // Radios never touch this: they talk to SASBench directly.
+  // card, including which SASBench revision this release pins and whether
+  // upstream has moved past it. Radios never touch this: they talk to
+  // SASBench directly. Nothing here mutates the SAS: it is updated by moving
+  // the pin and pulling, so there is no update route to call.
   app.use('/api/sas', createSasRouter({
     apiUrl: config.sasbenchApiUrl,
     uiPort: config.sasbenchUiPort,
@@ -801,7 +803,7 @@ async function main() {
     password: config.sasbenchPassword,
     dir: config.sasbenchDir,
     context: config.sasbenchContext,
-  }, sasLogger, hostExecutor, auditLogger));
+  }, sasLogger, hostExecutor));
 
   // Error handler
   app.use(

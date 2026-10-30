@@ -6,7 +6,9 @@ import axios from 'axios';
 // page links to; nothing here writes it.
 //
 // The one thing this NMS does own is keeping SASBench itself current: it
-// tracks the upstream checkout and applies updates (see getVersion/update).
+// reports which SASBench revision this release pins, and whether upstream has
+// moved past it (see getVersion). Applying a newer SASBench means moving that
+// pin and pulling, so there is no update call here.
 const api = axios.create({ baseURL: '/api/sas', withCredentials: true });
 
 export interface SasListener {
@@ -181,10 +183,29 @@ export interface SasGrant {
 }
 
 export interface SasBenchVersion {
-  /** SASBENCH_DIR is a git checkout the NMS can update. False is its own
-   *  state — "cannot be updated from here", NOT "up to date". */
+  /** The NMS could establish which revision is installed. */
   managed: boolean;
   dir: string;
+  /**
+   * Where the running SASBench came from. 'pinned' is the normal case: the
+   * image is built from a remote git context pinned by this NMS release, so
+   * there is no checkout to be behind or dirty and `upToDate` is the answer.
+   * 'checkout' is SASBENCH_CONTEXT pointed at a local path, where the
+   * branch/behind/ahead/dirty fields below apply instead.
+   */
+  source?: 'pinned' | 'checkout';
+  /** 'pinned': the repository and the revision the stack builds from. */
+  repoUrl?: string;
+  pinnedRef?: string;
+  /**
+   * 'pinned': false when upstream has moved past the pinned revision.
+   *
+   * UNDEFINED means "not established" — an unreachable remote, or a pin that
+   * is a branch name rather than a commit. It must never be rendered as "up
+   * to date": reporting an unknown comparison as current is how an operator
+   * stops looking at a SAS that is genuinely behind.
+   */
+  upToDate?: boolean;
   reason?: string;
   remoteUrl?: string;
   branch?: string;
@@ -240,27 +261,6 @@ export const sasApi = {
     return data;
   },
 
-  /**
-   * Apply an upstream update: pull, rebuild the image, recreate the container.
-   * Streams plain-text progress; `onLine` is called as output arrives.
-   *
-   * Read with fetch(), not axios: axios buffers the whole body, so a build
-   * that takes minutes would show nothing until it finished.
-   */
-  update: async (onLine: (text: string) => void): Promise<void> => {
-    const res = await fetch('/api/sas/update', { method: 'POST', credentials: 'include' });
-    if (!res.body) {
-      onLine(await res.text());
-      return;
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      onLine(decoder.decode(value, { stream: true }));
-    }
-  },
 };
 
 /**

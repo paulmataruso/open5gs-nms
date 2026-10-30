@@ -71,6 +71,42 @@ describe('sasbench build context', () => {
   });
 });
 
+// The SAS page's Update button rebuilt SASBench at upstream's HEAD. With a
+// pinned build context that state silently reverted on the operator's next
+// plain `docker compose build`, so the route, its client method and its nginx
+// streaming-timeout entry were deleted rather than left to mislead. Deleting
+// the client is what makes a stale call site fail to compile; these pin the
+// rest, because re-adding a route is easy and the reason not to is not obvious
+// from the code.
+describe('no SAS update route', () => {
+  it('the backend exposes no /update route', () => {
+    const src = read('backend/src/interfaces/rest/sas-controller.ts');
+    expect(src).not.toMatch(/router\.(post|put|patch)\(\s*['"]\/update['"]/);
+  });
+
+  it('the frontend client has no update call', () => {
+    const src = read('frontend/src/api/sas.ts');
+    expect(src).not.toContain('/api/sas/update');
+    expect(src).not.toMatch(/^\s*update:/m);
+  });
+
+  it('nginx no longer routes it to the streaming-timeout location', () => {
+    // Left in the regex it would be a location matching nothing, which reads
+    // as though the route still exists.
+    const conf = read('nginx/conf.d/nms.conf');
+    expect(conf).not.toMatch(/location[^\n]*sas\/update/);
+  });
+
+  it('reports upToDate as three-valued, so "unknown" is not "current"', () => {
+    // The bug this replaced: pinned mode leaves the checkout-only `behind`
+    // field unset, and the page read it, so an upstream that HAD moved
+    // rendered as "Already up to date".
+    const page = read('frontend/src/pages/SASPage.tsx');
+    expect(page).toContain("version.upToDate === false");
+    expect(page).toContain('version.upToDate === true');
+  });
+});
+
 describe('parseGitContext', () => {
   it('reads a repository and commit out of a pinned URL', () => {
     expect(parseGitContext('https://github.com/paulmataruso/SASBench.git#abc123'))

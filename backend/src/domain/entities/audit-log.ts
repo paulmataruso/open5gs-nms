@@ -218,6 +218,10 @@ export type AuditAction =
   | 'vectorcore_smsc_start'
   | 'vectorcore_smsc_stop'
   | 'vectorcore_smsc_restart'
+  // Historical: the SAS page's Update button was removed in v2.0-beta_0.76
+  // (SASBench's revision is pinned by the release, so it is updated by moving
+  // the pin and pulling). Kept so existing audit rows stay typed — nothing
+  // writes it any more, and the route is gone.
   | 'sasbench_update'
   | 'twamp_install'
   | 'twamp_uninstall'

@@ -296,8 +296,8 @@ up along with everything else.
 Pinning to a commit rather than tracking a branch is deliberate — real radios
 hold grants from this SAS, so every deployment runs the same revision instead
 of whatever the branch happened to be on the day it was built. The SAS page
-reports when upstream has moved past the pin, and its Update button rebuilds at
-upstream's current commit.
+reports when upstream has moved past the pin; taking that newer SASBench means
+bumping the pin and pulling, the same way the rest of the stack is updated.
 
 To build from a local working copy instead — only useful if you are developing
 SASBench itself — set `SASBENCH_CONTEXT` to a checkout path:
