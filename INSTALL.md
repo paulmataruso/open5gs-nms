@@ -285,27 +285,27 @@ sudo mkdir -p /etc/open5gs/backups/mongodb
 sudo chmod 755 /etc/open5gs/backups
 ```
 
-### Step 4: Clone SASBench (the CBRS SAS)
+### Step 4: The CBRS SAS (SASBench) — nothing to do
 
 The Spectrum Access System is [SASBench](https://github.com/paulmataruso/SASBench),
-which runs as one of this stack's containers. It is a separate repository and is
-deliberately **not** bundled here, so clone it before building:
+which runs as one of this stack's containers. There is nothing to clone and no
+flag to set: the `sasbench` service builds from a remote git context pinned to
+the SASBench revision this release was tested against, so Step 5 brings the SAS
+up along with everything else.
+
+Pinning to a commit rather than tracking a branch is deliberate — real radios
+hold grants from this SAS, so every deployment runs the same revision instead
+of whatever the branch happened to be on the day it was built. The SAS page
+reports when upstream has moved past the pin, and its Update button rebuilds at
+upstream's current commit.
+
+To build from a local working copy instead — only useful if you are developing
+SASBench itself — set `SASBENCH_CONTEXT` to a checkout path:
 
 ```bash
 sudo git clone https://github.com/paulmataruso/SASBench.git /opt/sasbench
+echo "SASBENCH_CONTEXT=/opt/sasbench" >> .env
 ```
-
-Use `git clone`, not a downloaded archive. The NMS reads this checkout's git
-state to tell you when SASBench is behind upstream, and applies the update
-itself from the SAS page — pull, rebuild the image, recreate the container. A
-directory with no git history still runs, but the SAS page reports that it
-cannot be updated from here.
-
-Set `SASBENCH_DIR` in `.env` if you put it somewhere else, and leave
-`COMPOSE_PROFILES=sas` as `.env.example` ships it — that profile is what runs
-the service, and the SAS does not start without it. (It is profiled so that a
-missing checkout skips the SAS instead of failing the whole stack's build; the
-NMS then says so on its own next start.)
 
 SASBench binds the SAS-CBSD protocol ports itself — `SAS_HTTP_PORT` (8899) and
 `SAS_HTTPS_PORT` (8443) — plus its own admin UI and REST API on
@@ -480,69 +480,42 @@ These are optional modules, each installed on-demand from its own page — no ma
 
 ## Upgrading an Existing Deployment
 
-Pulling this release onto a host that ran the NMS's own built-in SAS module is
-**not** a drop-in upgrade. That module was removed and replaced by SASBench,
-which is a separate repository and a separate container. Do these three steps
-before `docker compose up`, in this order.
-
-### 1. Clone SASBench and turn its Compose profile on
-
-The `sasbench` service's Docker build context is `SASBENCH_DIR`
-(default `/opt/sasbench`) — a checkout outside this repository, because
-SASBench is a separate, proprietary project and this one is AGPL-3.0.
-
-**The stack is safe to bring up before you do this.** The service sits behind a
-Compose profile, so a plain `docker compose up -d` skips it and everything else
-starts normally; the NMS then detects the missing checkout on its next load and
-tells you, in the same card it uses for anything needing reconfiguration. That
-guard exists because Compose resolves every build context *before* it starts
-anything: without the profile, a missing directory fails the build and not one
-service starts, including the containers that have nothing to do with the SAS.
-
-To actually run the SAS:
-
 ```bash
-sudo git clone https://github.com/paulmataruso/SASBench.git /opt/sasbench
-echo "COMPOSE_PROFILES=sas" >> .env
-docker compose up -d sasbench
+git pull
+docker compose build
+docker compose up -d
 ```
 
-Use `git clone`, not an archive: the NMS reads this checkout's git state to
-report how far behind upstream it is, and the SAS page's Update button applies
-the update from it.
+That is the whole upgrade, including onto a host that ran the NMS's own
+built-in SAS module before it was replaced by SASBench. Three things that used
+to need doing by hand are handled by the compose file now:
 
-`COMPOSE_PROFILES=sas` is what activates the service. It ships set in
-`.env.example`, so a fresh install needs nothing extra — but an existing `.env`
-predates the line, which is exactly what keeps an upgrade from failing. Without
-it the SAS stays off and the NMS keeps reminding you.
+- **The SAS needs nothing cloned.** The `sasbench` service builds from a remote
+  git context pinned to a commit, so there is no directory to create and no
+  Compose profile to switch on. An earlier release required both, and a
+  `COMPOSE_PROFILES=sas` line left in your `.env` is harmless — it now matches
+  no profile and is simply ignored.
+- **nginx releases port 8443 by itself.** The old module terminated SAS TLS at
+  nginx on 8443; that vhost is gone, and SASBench needs the port. nginx's config
+  is mounted as a directory rather than as two single files, so a replaced file
+  is actually seen by the container — and because that mount changed, `up -d`
+  recreates nginx once, which is what frees the port. (A single-file bind mount
+  pins the file's inode, so `git pull` never reached the running container and
+  `nginx -s reload` re-read the same stale inode. That is how an upgraded
+  deployment went on serving a deleted vhost.)
+- **The SAS starts after nginx**, so it cannot lose 8443 to the nginx container
+  it is about to replace.
 
-Naming a service explicitly auto-enables its profile, so
-`docker compose build sasbench` and `docker compose up -d sasbench` work either
-way — including the SAS page's own Update button, which runs exactly those.
-
-### 2. Recreate nginx so it releases port 8443
-
-The old module terminated SAS TLS at nginx on 8443. That vhost is gone from
-`nginx/nginx.conf`, but **a `git pull` alone does not reach the running
-container**: `nginx.conf` is a single-file bind mount, which pins the file's
-inode, so the container keeps serving the pre-pull config — still holding
-8443 — and `nginx -s reload` re-reads that same stale inode. SASBench then
-cannot bind 8443 and the SAS has no HTTPS listener.
-
-```bash
-docker compose up -d --force-recreate nginx
-```
-
-Confirm the swap actually happened by comparing inodes, not file contents:
+Afterwards, confirm the SAS is serving:
 
 ```bash
-stat -c %i nginx/nginx.conf
-docker compose exec nginx stat -c %i /etc/nginx/conf.d/nms.conf
+curl -s http://127.0.0.1:8094/api/v1/health
 ```
 
-Matching numbers mean the container is serving the config in your working tree.
+`{"status":"ok", ... "listeners":{"http":true,"https":true}}` means both
+protocol listeners are up.
 
-### 3. Check the three SAS ports are free, then re-point the radios
+### The three SAS ports, and re-pointing the radios
 
 SASBench binds all three itself (`network_mode: host`); nginx serves none of
 them and must not be put in front of any of them — it would hide every radio's
@@ -563,8 +536,9 @@ either — on a full deployment PyHSS holds 8080, VectorCore MMSC 8090, the ePDG
 ss -lntp | grep -E ':(8899|8443|8094) '
 ```
 
-Anything already listening there is a conflict to resolve first — expect 8443 to
-still be nginx until step 2 is done.
+Anything still listening there that is not SASBench is a conflict to resolve
+first. On an upgrade, 8443 belongs to nginx until `docker compose up -d`
+recreates it, which happens in the same command.
 
 **Radios pointed at the old NMS-served SAS path keep their URL but need the port
 changed.** The old module answered on the nginx vhosts (`:8888/sas/...` and

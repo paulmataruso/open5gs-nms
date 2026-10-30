@@ -800,6 +800,7 @@ async function main() {
     user: config.sasbenchUser,
     password: config.sasbenchPassword,
     dir: config.sasbenchDir,
+    context: config.sasbenchContext,
   }, sasLogger, hostExecutor, auditLogger));
 
   // Error handler

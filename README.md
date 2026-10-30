@@ -158,7 +158,7 @@ ports directly. Radios connect to it; nothing in this NMS proxies, terminates
 TLS for, or rewrites that traffic.
 
 - **WINNF-TS-0016 SAS-CBSD protocol** — registration, spectrumInquiry, grant, heartbeat, relinquishment, deregistration, over plain HTTP and over HTTPS with optional mutual TLS (WINNF-TS-0065)
-- **Starts with the stack** — brought up by `docker compose up` alongside everything else, once its repository is cloned to `SASBENCH_DIR` (default `/opt/sasbench`) and `COMPOSE_PROFILES=sas` is set, as `.env.example` ships it; ports and settings profile come from `.env`
+- **Starts with the stack, with nothing to clone** — `docker compose build && docker compose up -d` brings it up on any host: the image is built from a remote git context pinned to the SASBench revision this release was tested against, so every deployment runs the same SAS. Ports and settings profile come from `.env`
 - **Its own PKI** — root CA, sub-CAs, server and CBSD certificates, CRLs, all built and managed inside SASBench
 - **Status page in the NMS** — the SAS entry in the navigation shows listener state, TLS policy, registered CBSDs, live grants and recent message/error counts, read from SASBench's REST API, plus a link into SASBench's own console
 - **Band occupancy** — the managed band drawn as a frequency axis with GAA availability, PAL channels, active protections and every live grant packed into lanes and coloured per radio. Occupancy is measured as the union of the grant ranges, with the deepest grant overlap and the largest free block alongside it — on GAA the SAS authorizes overlapping grants by design, so the sum of grant widths can exceed the band and does not describe how much of it is in use
@@ -492,12 +492,7 @@ cd open5gs-nms
 cp .env.example .env
 nano .env
 
-# Clone the SAS. It is a separate repository and is NOT bundled here, and it is
-# the build context for one of this stack's containers — so clone it BEFORE the
-# first build, or `docker compose up` fails before any service starts.
-sudo git clone https://github.com/paulmataruso/SASBench.git /opt/sasbench
-
-# Build and start all services
+# Build and start all services (this includes the CBRS SAS — nothing to clone)
 docker compose up --build -d
 
 # Access the web interface

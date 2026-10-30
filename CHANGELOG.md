@@ -4,6 +4,77 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.75] - 2026-10-30
+
+### Changed — the CBRS SAS now comes up on its own, on every deployment
+
+`git pull && docker compose build && docker compose up -d` brings the whole
+stack up including the SAS, on a new host and an existing one alike, with
+nothing to clone and no flag to set.
+
+It did not before. The `sasbench` service's build context was a checkout
+outside this repository, and Compose resolves every build context before it
+starts anything — so a host without that directory failed the build and **not
+one service started**, including the containers with nothing to do with the
+SAS. The previous release put the service behind a `sas` Compose profile, which
+stopped a `git pull` taking the stack down but left the SAS switched off until
+someone cloned a repository by hand and edited `.env`. That is not the same as
+working.
+
+The build context is now a **remote git URL pinned to a commit**. BuildKit
+fetches SASBench itself and builds it with SASBench's own Dockerfile, so the
+build steps are never duplicated here and cannot drift from it. Nothing has to
+exist on the host, so neither the Compose profile nor the clone is needed and
+both are gone. A `COMPOSE_PROFILES=sas` line left in an existing `.env` is
+harmless — it now matches no profile and is ignored.
+
+Pinned to a commit rather than tracking a branch on purpose: real radios hold
+grants from this SAS, so every deployment gets the exact revision the release
+was tested against instead of whatever the branch happened to be on the day it
+was built. The same URL is written in three places, and a test fails if they
+drift.
+
+`SASBENCH_CONTEXT` can be pointed at a local path to build from a working copy
+instead, which is the only thing the old behaviour was actually good for.
+
+### Fixed — nginx kept port 8443 on upgrade, so the SAS could not bind it
+
+The built-in SAS module that SASBench replaced terminated SAS TLS at nginx on
+8443. That vhost is deleted, but **a `git pull` never reached the running
+container**: `nginx.conf` was a single-file bind mount, which pins the file's
+inode, so nginx went on serving the pre-pull config — still holding 8443 —
+and `nginx -s reload` re-reads the same stale inode. SASBench then has no
+HTTPS listener, on exactly the deployments that have been running longest.
+
+nginx's config is now mounted as a directory (`nginx/conf.d/`), so a replaced
+file is simply seen. Because that mount definition changed, `docker compose
+up -d` recreates nginx once on upgrade, which is what actually frees the port —
+a change to a file's *contents* never recreates a container. The SAS is also
+ordered after nginx, so it cannot lose 8443 to the container it is about to
+replace.
+
+### Fixed — a healthy deployment would have reported the SAS as broken
+
+`module-fixall`'s SASBench check reported a missing `SASBENCH_DIR` as something
+needing reconfiguration. With the build context now a URL, that directory is
+optional and usually absent, so every healthy deployment would have carried a
+permanent false "not installed" card for a SAS that was running perfectly. It
+now returns nothing at all for a URL context, and speaks only when
+`SASBENCH_CONTEXT` names a local path that is missing or is not a checkout —
+where the build genuinely cannot run.
+
+### Changed — SAS version tracking no longer needs a checkout
+
+`GET /api/sas/version` resolves the pinned revision out of the build context
+and compares it against upstream with `git ls-remote`, which needs no checkout,
+no clone and no credentials. `POST /api/sas/update` rebuilds at upstream's
+current commit and says plainly that the override lasts until the next plain
+`docker compose build`, which returns to the release's pin. Pointing
+`SASBENCH_CONTEXT` at a local path keeps the previous checkout behaviour,
+including its refusal to discard a dirty tree.
+
+---
+
 ## [v2.0-beta_0.74] - 2026-10-30
 
 ### Fixed — the README's quick start failed before any service started

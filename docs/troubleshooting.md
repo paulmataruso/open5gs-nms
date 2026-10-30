@@ -819,7 +819,7 @@ WebSocket connection to 'ws://...' failed
 1. **Proxy timeout:**
 ```nginx
 # nginx config needs longer timeout
-# Check nginx/nginx.conf
+# Check nginx/conf.d/nms.conf
 proxy_read_timeout 3600s;
 ```
 

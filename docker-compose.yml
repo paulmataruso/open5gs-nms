@@ -5,8 +5,16 @@ services:
     restart: unless-stopped
     network_mode: host
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/nms.conf:ro
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      # The whole conf.d DIRECTORY, deliberately not two single-file mounts.
+      # A single-file bind mount pins that file's inode, so rewriting it on the
+      # host — which is what `git pull` does — never reaches the running
+      # container: it keeps serving the pre-pull config, and `nginx -s reload`
+      # re-reads the same stale inode. That is how an upgraded deployment went
+      # on terminating SAS TLS on 8443 from a vhost that had been deleted,
+      # leaving SASBench unable to bind its own port. A directory mount
+      # resolves names per lookup, so an edited or replaced file is simply
+      # seen.
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/certs:/etc/nginx/certs
       - ./logs/nginx:/var/log/nginx
     depends_on:
@@ -117,13 +125,19 @@ services:
       # and the SAS page and dashboard card report the SAS as unreachable while
       # it is in fact running perfectly.
       #
-      # SASBENCH_DIR is here because the update flow reads that checkout's git
-      # state; it is a HOST path, used via nsenter, not a path in this
-      # container.
+      # SASBENCH_CONTEXT is the same value the sasbench service builds from,
+      # so the SAS page can say which SASBench revision this deployment is
+      # pinned to and whether upstream has moved past it. It must stay in step
+      # with that service's own default.
+      #
+      # SASBENCH_DIR is optional and is a HOST path used via nsenter, not a
+      # path in this container: when it happens to be a checkout, the SAS page
+      # reports commit-level detail from it. Nothing requires it to exist.
       - SASBENCH_UI_PORT=${SASBENCH_UI_PORT:-8094}
       - SASBENCH_USER=${SASBENCH_USER:-admin}
       - SAS_ADMIN_PASSWORD=${SAS_ADMIN_PASSWORD:-admin}
       - SASBENCH_DIR=${SASBENCH_DIR:-/opt/sasbench}
+      - SASBENCH_CONTEXT=${SASBENCH_CONTEXT:-https://github.com/paulmataruso/SASBench.git#e244bb825178d57e3adeeaaebb2941b3fab5fea9}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s
@@ -374,28 +388,39 @@ services:
   # that path before the first `docker compose up` — see INSTALL.md.
   # ─────────────────────────────────────────────────────────
   sasbench:
-    # Behind a profile so a missing SASBENCH_DIR cannot take the stack down.
+    # The build context is a REMOTE GIT URL, pinned to a commit, so that
+    # `git pull && docker compose build && docker compose up -d` works on any
+    # host with nothing cloned and no extra step — for a new install and an
+    # existing one alike. BuildKit fetches the repository itself and uses
+    # SASBench's own Dockerfile, so the build steps are never duplicated here
+    # and cannot drift from it.
     #
-    # This service's build context is a checkout OUTSIDE this repository, and
-    # Compose resolves every build context before it starts anything: if the
-    # directory is absent, `docker compose up -d` fails in the build phase and
-    # NOT ONE service starts — verified, including the containers that have
-    # nothing to do with the SAS. That turns a `git pull` on a deployment
-    # predating SASBench into a total outage with no UI left to explain it.
+    # This replaced a local-directory context, which could not meet that bar:
+    # Compose resolves every build context before it starts anything, so a
+    # directory that was not there failed the build and NOT ONE service
+    # started, including the containers with nothing to do with the SAS.
+    # Guarding that with a Compose profile kept the stack up but left the SAS
+    # switched off until the operator cloned a repository by hand. A URL is
+    # always resolvable, so neither the profile nor the clone is needed.
     #
-    # With the profile, a plain `up -d` skips this service and the rest of the
-    # stack comes up normally; the NMS then detects the missing checkout and
-    # tells the operator what to do (module-fixall-usecase.ts's sasbench
-    # entry). Set COMPOSE_PROFILES=sas in .env to run it — .env.example ships
-    # that way, so a fresh install gets the SAS with no extra step, while an
-    # existing .env without the line is protected by default.
+    # Pinned to a commit rather than tracking `main` on purpose: real radios
+    # hold grants from this SAS, so every deployment gets the exact revision
+    # this release was tested against instead of whatever `main` happened to
+    # be on the day it was built. Moving the pin is a release decision, and
+    # the SAS page reports when upstream has moved past it.
     #
-    # Naming a service explicitly auto-enables its profile, so the NMS's own
-    # update flow (`docker compose build sasbench` / `up -d sasbench` in
-    # sas-controller.ts) keeps working whether or not the profile is active.
-    profiles: ["sas"]
+    # Point SASBENCH_CONTEXT at a local checkout to build from a working copy
+    # instead (e.g. SASBENCH_CONTEXT=/opt/sasbench when developing SASBench
+    # itself).
     build:
-      context: ${SASBENCH_DIR:-/opt/sasbench}
+      context: ${SASBENCH_CONTEXT:-https://github.com/paulmataruso/SASBench.git#e244bb825178d57e3adeeaaebb2941b3fab5fea9}
+    # Ordered after nginx only for the upgrade case: a deployment predating
+    # SASBench has an nginx container still serving a pre-pull config that
+    # terminated SAS TLS on 8443. Recreating nginx is what releases that port,
+    # and without an ordering the two race — the SAS can lose 8443 to the
+    # nginx it is about to replace.
+    depends_on:
+      - nginx
     image: sasbench:latest
     container_name: sasbench
     restart: unless-stopped

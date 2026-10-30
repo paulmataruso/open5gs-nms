@@ -27,12 +27,38 @@ export interface SasBenchConfig {
   user: string;
   password: string;
   /**
-   * SASBench's source checkout on the host (SASBENCH_DIR, the sasbench
-   * service's build context). The NMS keeps this in step with upstream; it
-   * is outside this repository on purpose — SASBench is proprietary and this
-   * project is AGPL-3.0.
+   * An OPTIONAL SASBench checkout on the host (SASBENCH_DIR). Nothing
+   * requires it to exist — the sasbench service builds from a pinned remote
+   * git context by default. When it is a real checkout, the SAS page reports
+   * commit-level detail from it.
    */
   dir: string;
+  /**
+   * What the sasbench service builds from (SASBENCH_CONTEXT): by default a
+   * remote git URL pinned to a commit, so a fresh host needs nothing cloned.
+   * An operator developing SASBench can point it at a local path instead.
+   */
+  context: string;
+}
+
+/**
+ * Split a build context into a repository and a ref, or return null when it
+ * is a local path.
+ *
+ * A remote context is the default and is what makes `docker compose build`
+ * work on a host with nothing cloned. Recognising it by "://" rather than by
+ * trying to stat the path keeps this a pure function: it runs in the backend
+ * container, where a HOST path would not resolve anyway.
+ */
+export function parseGitContext(context: string): { repo: string; ref: string } | null {
+  const c = (context || '').trim();
+  if (!c.includes('://')) return null;
+  const hash = c.indexOf('#');
+  if (hash < 0) return { repo: c, ref: 'HEAD' };
+  // A git context ref may itself carry a subdirectory (ref:dir) — only the
+  // part before the colon is the ref.
+  const frag = c.slice(hash + 1);
+  return { repo: c.slice(0, hash), ref: (frag.split(':')[0] || 'HEAD') };
 }
 
 /**
@@ -228,9 +254,23 @@ function deriveFrom(spectrum: any): SasDerived | null {
 // "cannot be updated from here", never "up to date".
 
 export interface SasBenchVersion {
-  /** SASBENCH_DIR is a git checkout with a remote, so the NMS can update it. */
+  /** The NMS can rebuild SASBench from here. */
   managed: boolean;
   dir: string;
+  /**
+   * Where the running SASBench came from. 'pinned' is the default: the image
+   * is built from a remote git context pinned to a commit by this release,
+   * so there is no checkout to be behind or dirty. 'checkout' is the older
+   * shape, still supported when SASBENCH_CONTEXT names a local path.
+   */
+  source?: 'pinned' | 'checkout';
+  /** 'pinned' only: the repository and commit the stack builds from. */
+  repoUrl?: string;
+  pinnedRef?: string;
+  /** 'pinned' only: false when upstream has moved past the pinned ref. */
+  upToDate?: boolean;
+  /** 'pinned' only: the full upstream SHA, to rebuild pinned exactly to it. */
+  upstreamCommitFull?: string;
   /** Why it is not managed, or why `behind` could not be determined. */
   reason?: string;
   remoteUrl?: string;
@@ -289,11 +329,78 @@ let lastFetchError: string | null = null;
 /** One update at a time — two concurrent builds of the same image race. */
 let updateInFlight = false;
 
+/**
+ * The default shape: the image is built from a remote git context pinned to a
+ * commit, so "what is installed" is that pin and the only question is whether
+ * upstream has moved past it.
+ *
+ * Answered with `git ls-remote`, which needs no checkout, no clone and no
+ * credentials (SASBench is public) — so this works on a host where nothing
+ * has ever been cloned, which is the whole point of the pinned context.
+ */
+async function readPinnedVersion(
+  cfg: SasBenchConfig,
+  host: IHostExecutor,
+  parsed: { repo: string; ref: string },
+  opts: { fetch: boolean },
+): Promise<SasBenchVersion> {
+  const v: SasBenchVersion = {
+    managed: true,
+    source: 'pinned',
+    dir: cfg.dir,
+    repoUrl: parsed.repo,
+    pinnedRef: parsed.ref,
+    remoteUrl: parsed.repo,
+    localCommit: /^[0-9a-f]{7,40}$/i.test(parsed.ref) ? parsed.ref.slice(0, 7) : parsed.ref,
+    fetchedAt: lastFetchOkAt ? new Date(lastFetchOkAt).toISOString() : null,
+  };
+
+  if (!opts.fetch) return v;
+
+  lastFetchAt = Date.now();
+  // HEAD of the default branch: the pin is a commit, so there is no tracking
+  // branch to ask and the comparison is pin-vs-upstream-tip.
+  const r = await host
+    .executeCommand('git', ['ls-remote', parsed.repo, 'HEAD'], 60000, { expectedFailure: true })
+    .catch(() => null);
+  if (!r || r.exitCode !== 0) {
+    lastFetchError = ((r?.stderr || r?.stdout || 'git ls-remote failed') as string).trim().slice(0, 300);
+    v.fetchError = lastFetchError;
+    return v;
+  }
+  lastFetchOkAt = lastFetchAt;
+  lastFetchError = null;
+  v.fetchedAt = new Date(lastFetchOkAt).toISOString();
+
+  const upstream = (r.stdout || '').trim().split(/\s+/)[0] || '';
+  if (!/^[0-9a-f]{40}$/i.test(upstream)) {
+    v.reason = 'Could not read the upstream commit from git ls-remote.';
+    return v;
+  }
+  v.upstreamCommit = upstream.slice(0, 7);
+  v.upstreamCommitFull = upstream;
+  // Compare full against full when the pin is a full SHA; otherwise the pin
+  // is a branch/tag name and "up to date" is not a question this can answer.
+  if (/^[0-9a-f]{40}$/i.test(parsed.ref)) {
+    v.upToDate = parsed.ref.toLowerCase() === upstream.toLowerCase();
+    v.behind = v.upToDate ? 0 : undefined;
+  } else {
+    v.reason = `Pinned to "${parsed.ref}" rather than a commit, so the exact revision follows upstream.`;
+  }
+  return v;
+}
+
 async function readVersion(
   cfg: SasBenchConfig,
   host: IHostExecutor,
   opts: { fetch: boolean },
 ): Promise<SasBenchVersion> {
+  // A remote context is the default, and then there is no local checkout to
+  // inspect — asking git about one would report a missing directory as a
+  // fault on a perfectly healthy deployment.
+  const parsed = parseGitContext(cfg.context);
+  if (parsed) return readPinnedVersion(cfg, host, parsed, opts);
+
   const dir = cfg.dir;
   const git = (args: string[]) =>
     host.executeCommand('git', ['-C', dir, ...args], 60000, { expectedFailure: true });
@@ -373,6 +480,48 @@ async function readVersion(
   }
 
   return v;
+}
+
+/**
+ * Run a script on the HOST and stream its output to the caller.
+ *
+ * detached so nsenter leads its own process group (CLAUDE.md pattern #20:
+ * `nsenter -p` forks internally, so the direct child is not the process doing
+ * the work and a single-PID kill would orphan the real one).
+ */
+function runHostScript(script: string, write: (t: string) => void): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', script], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    child.stdout.on('data', (d: Buffer) => write(d.toString()));
+    child.stderr.on('data', (d: Buffer) => write(d.toString()));
+    child.on('close', (c) => resolve(c ?? 1));
+    child.on('error', (e) => { write(String(e)); resolve(1); });
+  });
+}
+
+/**
+ * "compose up -d returned 0" is not "the SAS is serving again" — wait for
+ * SASBench's own health endpoint to report its listeners back up before
+ * calling a rebuild done (CLAUDE.md: verify, don't trust success).
+ */
+async function waitForSasbench(
+  cfg: SasBenchConfig,
+  write: (t: string) => void,
+): Promise<any | null> {
+  write('\n=== Waiting for SASBench to come back ===');
+  for (let i = 0; i < 30; i++) {
+    const h = await sasbench(cfg, '/health', 3000);
+    if (h.ok && h.data?.status === 'ok' && h.data?.listeners?.http !== undefined) {
+      write(`SASBench ${h.data.version} is up — SAS HTTP ${h.data.listeners.http ? 'listening' : 'DOWN'}, `
+        + `SAS HTTPS ${h.data.listeners.https ? 'listening' : 'DOWN'}`);
+      return h.data;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
 }
 
 /** The directory `docker compose` must run from — the NMS's own project. */
@@ -523,6 +672,60 @@ export function createSasRouter(
       // Local edits to a proprietary upstream checkout are never discarded
       // silently — the operator put them there on purpose or has a problem
       // worth seeing, and either way a --ff-only pull would just fail later.
+      // Pinned (the default): there is no checkout to pull. "Update" means
+      // rebuilding the image at upstream's current commit instead of the one
+      // this release pins, so it is explicit that the change lasts until the
+      // next plain `docker compose build`, which returns to the pinned
+      // revision. Moving the pin itself is a release decision.
+      if (v.source === 'pinned') {
+        if (v.fetchError) return await fail(`Could not reach the git remote: ${v.fetchError}`);
+        if (v.upToDate) {
+          write(`Already current: SASBench is pinned to ${v.pinnedRef} and upstream is at the same commit.`);
+          write('Nothing to update.');
+          await auditLogger.log({ action: 'sasbench_update', user, details: 'already current (pinned)', success: true }).catch(() => {});
+          return res.end();
+        }
+        if (!v.upstreamCommitFull) {
+          return await fail(v.reason ?? 'Could not determine upstream\'s current commit, so there is nothing to build.');
+        }
+        const dir = await composeDir(hostExecutor);
+        if (!dir) {
+          return await fail(
+            'Could not resolve this deployment\'s compose project directory, so the image cannot be '
+            + 'rebuilt. Update by hand: SASBENCH_CONTEXT=' + v.repoUrl + '#' + v.upstreamCommitFull
+            + ' docker compose build sasbench && docker compose up -d sasbench',
+          );
+        }
+        const ctx = `${v.repoUrl}#${v.upstreamCommitFull}`;
+        write(`SASBench update: pinned ${v.pinnedRef} -> upstream ${v.upstreamCommit}`);
+        write(`Compose project: ${dir}`);
+        write('Recreating the container drops the SAS protocol listeners briefly; radios will miss a heartbeat.');
+        write(`Note: a later plain \`docker compose build\` rebuilds at this release's pinned revision (${v.pinnedRef}).\n`);
+        const pinnedScript = [
+          'set -o pipefail',
+          `cd ${JSON.stringify(dir)} || exit 1`,
+          `export SASBENCH_CONTEXT=${JSON.stringify(ctx)}`,
+          'echo "=== Rebuilding the sasbench image at $SASBENCH_CONTEXT ==="',
+          'docker compose build sasbench || exit 1',
+          'echo',
+          'echo "=== Recreating the sasbench container ==="',
+          'docker compose up -d sasbench || exit 1',
+        ].join('\n');
+        const pinnedCode = await runHostScript(pinnedScript, write);
+        if (pinnedCode !== 0) {
+          return await fail(`Update failed (exit ${pinnedCode}). The previous image is still in place.`);
+        }
+        const ok = await waitForSasbench(cfg, write);
+        if (!ok) {
+          return await fail(
+            'SASBench did not report healthy after the rebuild. Check `docker compose logs sasbench`.',
+          );
+        }
+        write('\n✅ SASBench rebuilt and serving again.');
+        await auditLogger.log({ action: 'sasbench_update', user, details: `rebuilt at ${ctx}`, success: true }).catch(() => {});
+        return res.end();
+      }
+
       if (v.dirty) {
         return await fail(
           `${cfg.dir} has uncommitted local changes. Commit, stash or revert them first `
@@ -570,32 +773,10 @@ export function createSasRouter(
         'docker compose up -d sasbench || exit 1',
       ].join('\n');
 
-      // detached so nsenter leads its own process group (CLAUDE.md pattern
-      // #20: nsenter -p forks internally, so the direct child is not the
-      // process doing the work).
-      const code = await new Promise<number>((resolve) => {
-        const child = spawn('nsenter', ['-t', '1', '-m', '-u', '-i', '-p', '--', 'bash', '-c', script], {
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: true,
-        });
-        child.stdout.on('data', (d: Buffer) => write(d.toString()));
-        child.stderr.on('data', (d: Buffer) => write(d.toString()));
-        child.on('close', (c) => resolve(c ?? 1));
-        child.on('error', (e) => { write(String(e)); resolve(1); });
-      });
-
+      const code = await runHostScript(script, write);
       if (code !== 0) return await fail(`Update failed (exit ${code}). The previous image is still in place.`);
 
-      // "compose up -d returned 0" is not "the SAS is serving again" — wait
-      // for SASBench's own health endpoint to report both listeners back up
-      // before calling this done (CLAUDE.md: verify, don't trust success).
-      write('\n=== Waiting for SASBench to come back ===');
-      let healthy: any = null;
-      for (let i = 0; i < 30; i++) {
-        const h = await sasbench(cfg, '/health', 3000);
-        if (h.ok && h.data?.status === 'ok' && h.data?.listeners?.http !== undefined) { healthy = h.data; break; }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
+      const healthy = await waitForSasbench(cfg, write);
       if (!healthy) {
         return await fail(
           'SASBench did not report healthy within 60 s. Check: docker logs sasbench',
@@ -603,8 +784,6 @@ export function createSasRouter(
       }
 
       const after = await readVersion(cfg, hostExecutor, { fetch: false });
-      write(`SASBench ${healthy.version} is up — SAS HTTP ${healthy.listeners.http ? 'listening' : 'DOWN'}, `
-        + `SAS HTTPS ${healthy.listeners.https ? 'listening' : 'DOWN'}`);
       write(`Now at ${after.localCommit} ${after.localSubject ?? ''}`);
       write('\n✅ Update applied.');
       await auditLogger.log({

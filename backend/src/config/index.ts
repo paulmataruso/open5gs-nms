@@ -25,6 +25,7 @@ export interface AppConfig {
   sasbenchUser: string;
   sasbenchPassword: string;
   sasbenchDir: string;
+  sasbenchContext: string;
   // Simlessly eSIM RSP API
   simlesslyAccessKey: string;
   simlesslySecretKey: string;
@@ -69,12 +70,18 @@ export function loadAppConfig(): AppConfig {
     // ever handed to the browser. Matches SAS_ADMIN_PASSWORD in .env.
     sasbenchUser: process.env.SASBENCH_USER || 'admin',
     sasbenchPassword: process.env.SAS_ADMIN_PASSWORD || 'admin',
-    // SASBench's own source checkout on the HOST, outside this repository
-    // (it is proprietary; this project is AGPL-3.0, so it must never be
-    // vendored in). Must match docker-compose.yml's build context for the
-    // sasbench service, since that is what the NMS rebuilds when it applies
-    // an upstream update.
+    // An OPTIONAL SASBench checkout on the HOST, outside this repository (it
+    // is proprietary; this project is AGPL-3.0, so it must never be vendored
+    // in). Nothing requires it to exist: the sasbench service builds from a
+    // pinned remote git context by default. When it does exist, the SAS page
+    // reports commit-level detail from it.
     sasbenchDir: process.env.SASBENCH_DIR || '/opt/sasbench',
+    // What the sasbench service actually builds from, so the SAS page can
+    // report which SASBench revision this deployment is pinned to. Keep this
+    // default in step with docker-compose.yml's own.
+    sasbenchContext:
+      process.env.SASBENCH_CONTEXT
+      || 'https://github.com/paulmataruso/SASBench.git#e244bb825178d57e3adeeaaebb2941b3fab5fea9',
     // Simlessly eSIM RSP API — obtained from the Developer module on the user's
     // Simlessly account; empty until the user supplies real values.
     simlesslyAccessKey: process.env.SIMLESSLY_ACCESS_KEY || '',

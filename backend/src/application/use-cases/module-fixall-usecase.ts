@@ -279,24 +279,29 @@ export class ModuleFixAllUseCase {
   }
 
   /**
-   * SASBench is a separate repository, so unlike every other module here the
-   * thing that can be missing is a CHECKOUT ON THE HOST, not a package or a
-   * generated config. This is the upgrade path that bites: a deployment that
-   * predates SASBench pulls this release and SASBENCH_DIR does not exist.
+   * SASBench builds from a remote git context pinned to a commit by default,
+   * so there is nothing on the host that can be missing and nothing to report
+   * — `docker compose build` fetches the repository itself. This stays silent
+   * in that case, which is every deployment that has not deliberately opted
+   * out.
    *
-   * It is deliberately NOT auto-fixable. Cloning a proprietary third-party
-   * repository and building a container image from it is a deliberate
-   * operator action, not something a "Fix All" button should do on their
-   * behalf — and the clone can need credentials or a proxy that only they
-   * have. So this reports, names the exact commands, and stops.
+   * It only has something to say when an operator has pointed
+   * SASBENCH_CONTEXT at a LOCAL path (building from a working copy while
+   * developing SASBench) and that path is missing or is not a checkout —
+   * there, the build genuinely cannot run.
    *
-   * Returning null when the directory is a usable git checkout keeps this
-   * silent on every healthy deployment, including one running SASBench from a
-   * non-git directory on purpose (that case is the SAS page's own
-   * `managed: false`, which is a different, non-blocking statement).
+   * Still deliberately NOT auto-fixable: the operator chose a local path on
+   * purpose, and the NMS silently cloning over it, or silently reverting them
+   * to the pinned remote, would both be worse than saying what is wrong.
    */
   private async getSasbenchStatus(): Promise<ModuleStaleStatus | null> {
-    const dir = process.env.SASBENCH_DIR || '/opt/sasbench';
+    // Keep this default in step with docker-compose.yml and config/index.ts.
+    const context = process.env.SASBENCH_CONTEXT
+      || 'https://github.com/paulmataruso/SASBench.git';
+    // A remote context cannot be "missing": BuildKit fetches it per build.
+    if (context.includes('://')) return null;
+
+    const dir = context;
     const quoted = JSON.stringify(dir);
 
     // One host call, so a slow/odd mount cannot cost three round trips.
@@ -326,14 +331,14 @@ export class ModuleFixAllUseCase {
         canAutoFix: false,
         installBadgeLabel: 'Not installed',
         blockedReason:
-          `${dir} does not exist, so the CBRS SAS is not running — no radio can register, hold a `
-          + 'grant or heartbeat. This NMS does not implement a SAS: SASBench is a separate '
-          + 'repository, cloned on the host rather than bundled here. Run these on the host, then '
-          + 'reload this page.',
+          `SASBENCH_CONTEXT points at ${dir}, which does not exist, so the sasbench image cannot `
+          + 'be built and the CBRS SAS is not running — no radio can register, hold a grant or '
+          + 'heartbeat. Either clone SASBench there, or remove SASBENCH_CONTEXT from .env to go '
+          + 'back to the pinned remote revision this release was tested against, which needs '
+          + 'nothing on the host.',
         fixCommands: [
           clone,
-          'echo "COMPOSE_PROFILES=sas" >> .env   # if not already set',
-          'docker compose up -d sasbench',
+          'docker compose build sasbench && docker compose up -d sasbench',
         ],
       };
     }
@@ -344,9 +349,10 @@ export class ModuleFixAllUseCase {
       canAutoFix: false,
       installBadgeLabel: 'Not a git checkout',
       blockedReason:
-        `${dir} exists but has no git history, so the NMS cannot tell you when SASBench falls `
-        + "behind upstream and the SAS page's Update button has nothing to pull from. The SAS "
-        + 'itself still runs. Replace the directory with a real clone to get update tracking.',
+        `SASBENCH_CONTEXT points at ${dir}, which exists but has no git history, so the NMS `
+        + 'cannot tell you when SASBench falls behind upstream. The SAS itself still builds and '
+        + 'runs from it. Replace it with a real clone, or remove SASBENCH_CONTEXT from .env to '
+        + 'use the pinned remote revision and get update tracking back.',
       fixCommands: [clone],
     };
   }

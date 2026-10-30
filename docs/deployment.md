@@ -88,7 +88,7 @@ Purchase certificate from trusted CA and install according to their instructions
 
 #### Configure nginx for SSL
 
-Edit `nginx/nginx.conf`:
+Edit `nginx/conf.d/nms.conf`:
 
 ```nginx
 server {
@@ -130,7 +130,7 @@ Update `docker-compose.yml` to mount certificates:
 ```yaml
 nginx:
   volumes:
-    - ./nginx/nginx.conf:/etc/nginx/conf.d/nms.conf:ro
+    - ./nginx/conf.d:/etc/nginx/conf.d:ro
     - /etc/letsencrypt:/etc/letsencrypt:ro  # Add this line
 ```
 
