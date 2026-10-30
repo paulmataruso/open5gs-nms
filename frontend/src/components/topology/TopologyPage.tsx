@@ -2245,7 +2245,7 @@ export function TopologyPage(): JSX.Element {
   }, [graph, interfaceStatus]);
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="p-4 md:p-6 h-full flex flex-col">
       <div className="mb-4">
         <h1 className="text-2xl font-semibold font-display text-nms-text">Network Topology</h1>
         <p className="text-sm text-nms-text-dim mt-1">

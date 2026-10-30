@@ -4,7 +4,15 @@ import { clsx } from 'clsx';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme, THEME_OPTIONS } from '../../contexts/ThemeContext';
 
-export function UserMenu({ collapsed }: { collapsed: boolean }): JSX.Element {
+/**
+ * `variant` places the dropdown. The sidebar sits at the bottom of a tall
+ * column, so its menu opens UPWARD; the mobile top bar is at the top of the
+ * screen, where opening upward would put the whole menu off-screen. Additive
+ * on purpose — 'sidebar' is the default and desktop behaviour is unchanged.
+ */
+export function UserMenu(
+  { collapsed, variant = 'sidebar' }: { collapsed: boolean; variant?: 'sidebar' | 'topbar' },
+): JSX.Element {
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
   const [open, setOpen] = useState(false);
@@ -20,12 +28,30 @@ export function UserMenu({ collapsed }: { collapsed: boolean }): JSX.Element {
   }, [open]);
 
   return (
-    <div ref={ref} className="relative border-t border-nms-border px-2 py-2">
+    <div
+      ref={ref}
+      className={clsx(
+        'relative',
+        variant === 'sidebar' ? 'border-t border-nms-border px-2 py-2' : 'shrink-0',
+      )}
+    >
       <button
         onClick={() => setOpen(o => !o)}
+        // Only when there is no visible text. In the expanded sidebar the
+        // button's visible label is the username + role, and an aria-label
+        // that contains neither breaks WCAG 2.5.3 Label in Name — a
+        // voice-control user saying "click <username>" would match nothing.
+        aria-label={collapsed || variant === 'topbar' ? 'Account, theme and sign out' : undefined}
+        aria-expanded={open}
+        aria-haspopup="menu"
         className={clsx(
-          'w-full flex items-center gap-2 px-2 py-2 rounded-md transition-colors hover:bg-nms-surface-2',
-          collapsed ? 'justify-center' : '',
+          'flex items-center gap-2 rounded-md transition-colors hover:bg-nms-surface-2 active:bg-nms-surface-2',
+          variant === 'sidebar'
+            ? 'w-full px-2 py-2'
+            // 44px square: the touch comfort target. The sidebar version is
+            // mouse-driven and keeps its original denser padding.
+            : 'h-11 w-11 justify-center',
+          collapsed && variant === 'sidebar' ? 'justify-center' : '',
         )}
       >
         <div className="w-7 h-7 rounded-full bg-nms-accent/20 border border-nms-accent/30 flex items-center justify-center shrink-0">
@@ -44,8 +70,12 @@ export function UserMenu({ collapsed }: { collapsed: boolean }): JSX.Element {
       {open && (
         <div
           className={clsx(
-            'absolute bottom-full mb-1 z-20 w-56 rounded-lg border border-nms-border bg-nms-surface shadow-xl overflow-hidden',
-            collapsed ? 'left-full ml-1' : 'left-2 right-2 w-auto',
+            'absolute z-20 w-56 rounded-lg border border-nms-border bg-nms-surface shadow-xl overflow-hidden',
+            variant === 'topbar'
+              // Anchored to the trigger's right edge so a 224px menu stays on
+              // a 320px screen instead of overflowing the viewport.
+              ? 'top-full mt-1 right-0'
+              : clsx('bottom-full mb-1', collapsed ? 'left-full ml-1' : 'left-2 right-2 w-auto'),
           )}
         >
           <div className="px-3 py-2.5 border-b border-nms-border">

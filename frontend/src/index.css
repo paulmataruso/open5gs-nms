@@ -198,6 +198,35 @@
   }
 }
 
+/* ── Touch behaviour ───────────────────────────────────────────────────────
+   Applies at every width: a touchscreen laptop at 1440px is still a touch
+   device, so gating these on a breakpoint would leave the 300ms delay in
+   exactly the case that is easiest to miss while testing. */
+@layer base {
+  button,
+  [role='button'],
+  summary,
+  input[type='checkbox'],
+  input[type='radio'] {
+    /* Removes the legacy ~300ms "is this a double-tap?" delay.
+       Be precise about the cost, because it is easy to state backwards:
+       `manipulation` means the browser considers a touch starting here for
+       panning and pinch-zoom ONLY — so it is exactly what DISABLES
+       double-tap-to-zoom on these elements, and that is how it removes the
+       delay. (`none` would additionally kill panning and pinching.) Pinch-zoom
+       still works everywhere, including over these controls, so page zoom is
+       not lost; what is lost is double-tap zoom while starting the gesture on
+       a control. Scoped to real controls on purpose: `a` and `label` were
+       removed from this list, since a link or a form label is as likely to be
+       something you want to double-tap-zoom on as ordinary text. */
+    touch-action: manipulation;
+    /* The UA's grey flash fights every theme's own :active state. Anything in
+       this list must therefore carry its own active: style — `hover:` alone
+       gives a touch user no feedback at all. */
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
 @layer components {
   .nms-card {
     @apply bg-nms-surface border border-nms-border rounded-lg p-4;
@@ -242,6 +271,21 @@
   }
   .nms-table-scroll {
     @apply overflow-x-auto;
+    /* Momentum scrolling on iOS, and keep a flick at the end of a wide table
+       from rubber-banding the whole page behind it. */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  /* The mobile shell's full-height box.
+     Two height declarations on purpose: the cascade IS the fallback. A browser
+     without `dvh` support discards the second and keeps 100vh. 100vh alone is
+     resolved against the largest viewport on mobile Safari (toolbars retracted),
+     so a bottom bar positioned by it sits underneath the toolbar whenever they
+     are showing. Do not "tidy" this into a single declaration. */
+  .nms-mobile-shell {
+    height: 100vh;
+    height: 100dvh;
   }
   .status-dot {
     @apply w-2.5 h-2.5 rounded-full;

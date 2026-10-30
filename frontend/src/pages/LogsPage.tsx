@@ -265,7 +265,13 @@ export const LogsPage: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-nms-bg">
+    /* h-full, not h-screen: inside the mobile shell this sits in a scroll
+       container that is already 100dvh minus the top bar and the tab bar, so
+       100vh here is taller than its parent by that chrome plus the mobile
+       toolbar delta — which pushes the live-tail pane below the fold and nests
+       a scroller inside a scroller. min-h-0 lets the inner
+       flex-1/overflow-auto region actually shrink. */
+    <div className="flex flex-col h-full min-h-0 md:h-screen bg-nms-bg">
       {/* Header */}
       <div className="p-4 border-b border-nms-border bg-nms-surface space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-3">

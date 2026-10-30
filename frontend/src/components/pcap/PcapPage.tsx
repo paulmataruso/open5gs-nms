@@ -203,7 +203,7 @@ export function PcapPage(): JSX.Element {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 space-y-4 md:p-6 md:space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display flex items-center gap-2">

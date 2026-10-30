@@ -6,6 +6,10 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { AuthGuard } from './components/auth/AuthGuard';
 import { StaleModulesModal } from './components/common/StaleModulesModal';
 import { FEATURES } from './config/features';
+import { useTabHistory } from './hooks/useTabHistory';
+import { isKnownNavTab } from './components/common/navItems';
+import { useIsMobile } from './hooks/useIsMobile';
+import { MobilePage } from './mobile/mobilePages';
 
 // Route-level code splitting. These pages pull in the heavy dependencies
 // (jointjs, leaflet, recharts, monaco), so importing them statically meant a
@@ -62,12 +66,18 @@ function PageLoading(): JSX.Element {
 }
 
 function App(): JSX.Element {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // `navigate` replaces a bare setState so that every destination change pushes
+  // a history entry — see useTabHistory. It is deliberately the ONLY way the
+  // tab changes: a second path that set state directly would give a back button
+  // that works from some screens and not others, which is harder to understand
+  // than one that never worked.
+  const [activeTab, navigate] = useTabHistory('dashboard', isKnownNavTab);
+  const isMobile = useIsMobile();
   const [subscriberToEdit, setSubscriberToEdit] = useState<string | undefined>(undefined);
 
   const handleNavigateToSubscriber = (imsi: string) => {
     setSubscriberToEdit(imsi);
-    setActiveTab('subscribers');
+    navigate('subscribers');
   };
 
   // Clear subscriberToEdit when navigating away from subscribers page
@@ -88,7 +98,7 @@ function App(): JSX.Element {
       case 'ran':
         return <RANPage onNavigateToSubscriber={handleNavigateToSubscriber} />;
       case 'services':
-        return <ServicesPage onNavigate={setActiveTab} />;
+        return <ServicesPage onNavigate={navigate} />;
       case 'config':
         return <ConfigPage />;
       case 'apn-profiles':
@@ -102,7 +112,7 @@ function App(): JSX.Element {
       case 'auto-config':
         return <AutoConfigPage />;
       case 'radio-config':
-        return <RadioProvisioningPage onNavigate={setActiveTab} />;
+        return <RadioProvisioningPage onNavigate={navigate} />;
       case 'rf-planning':
         return FEATURES.rfPlanning ? <RfPlanningPage /> : <DashboardPage />;
       case 'suci':
@@ -128,7 +138,7 @@ function App(): JSX.Element {
       case 'ims':
         return FEATURES.ims ? <IMSPage /> : <DashboardPage />;
       case 'pstn':
-        return FEATURES.pstn ? <PstnGatewayPage onNavigate={setActiveTab} /> : <DashboardPage />;
+        return FEATURES.pstn ? <PstnGatewayPage onNavigate={navigate} /> : <DashboardPage />;
       case 'ocs':
         return FEATURES.ocs ? <OcsPage /> : <DashboardPage />;
       case 'charging-plans':
@@ -140,13 +150,13 @@ function App(): JSX.Element {
       case 'secgw':
         return FEATURES.secgw ? <SecGWPage /> : <DashboardPage />;
       case 'gsm':
-        return FEATURES.gsm ? <GsmPage onNavigate={setActiveTab} /> : <DashboardPage />;
+        return FEATURES.gsm ? <GsmPage onNavigate={navigate} /> : <DashboardPage />;
       case 'gsm-signal':
         return FEATURES.gsm ? <Gsm2gSignalPage /> : <DashboardPage />;
       case 'hnbgw':
-        return FEATURES.hnbgw ? <HnbPage onNavigate={setActiveTab} /> : <DashboardPage />;
+        return FEATURES.hnbgw ? <HnbPage onNavigate={navigate} /> : <DashboardPage />;
       case 'twamp':
-        return FEATURES.twamp ? <TwampPage onNavigate={setActiveTab} /> : <DashboardPage />;
+        return FEATURES.twamp ? <TwampPage onNavigate={navigate} /> : <DashboardPage />;
       case 'validation':
         return FEATURES.validation ? <ValidationPage /> : <DashboardPage />;
       case 'pcap':
@@ -161,13 +171,36 @@ function App(): JSX.Element {
   return (
     <>
       <AuthGuard>
-        <Layout activeTab={activeTab} onTabChange={setActiveTab}>
-          <Suspense fallback={<PageLoading />}>{renderPage()}</Suspense>
+        <Layout activeTab={activeTab} onTabChange={navigate}>
+          {/*
+            A phone gets the mobile site's own pages, not the desktop ones
+            reflowed. They are different components with a different
+            information architecture — rows instead of tables, actions in a
+            bottom sheet instead of a row's rightmost column — so the choice
+            is made here rather than with breakpoint variants inside each
+            page. src/mobile/mobileNav.ts owns which destinations have one;
+            everything else renders the needs-a-desktop screen.
+
+            MobilePage carries its own Suspense boundary so a page chunk
+            arriving does not blank the chrome; the desktop branch keeps using
+            the shared PageLoading skeleton.
+          */}
+          {isMobile
+            ? <MobilePage tabId={activeTab} onNavigate={navigate} />
+            : <Suspense fallback={<PageLoading />}>{renderPage()}</Suspense>}
         </Layout>
         <StaleModulesModal />
       </AuthGuard>
       <Toaster
-        position="bottom-right"
+        position={isMobile ? 'top-center' : 'bottom-right'}
+        /*
+          Moved to the top on a phone. react-hot-toast renders a fixed
+          container at z-index 9999, so at bottom-right it covered the
+          right-hand end of the bottom tab bar — i.e. the More button, the way
+          to 33 of the destinations — for the life of every toast, and this app
+          toasts on essentially every action.
+        */
+        containerStyle={isMobile ? { top: 'calc(3.5rem + 0.5rem)' } : undefined}
         toastOptions={{
           // Driven off the theme tokens rather than hardcoded hex: these were
           // the Cyan Slate values, so toasts stayed blue-grey on all five

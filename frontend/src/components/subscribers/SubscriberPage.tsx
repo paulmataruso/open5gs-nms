@@ -3217,7 +3217,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 space-y-4 md:p-6 md:space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold font-display">Subscribers</h1>
@@ -3425,7 +3425,20 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
 
       {/* Floating selection toolbar */}
       {selectedImsis.size > 0 && !isViewer && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 bg-nms-surface border border-nms-accent/40 rounded-xl px-5 py-3 shadow-2xl">
+        /*
+          bottom offset clears the mobile bottom tab bar. The shell root is a
+          plain div and so not a stacking context, which means this fixed
+          element paints in the ROOT stacking context — at bottom-6 it sat
+          directly on top of the ~56px tab bar, covering the nav and eating
+          taps in that band whenever a row was selected. The tab bar now
+          declares --nms-bottom-chrome, so this offsets by it and the value has
+          one source. flex-wrap + max-w keep it inside a 320px viewport, since
+          it is centre-anchored and was clipped at both edges.
+        */
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-40 flex flex-wrap items-center justify-center gap-3 bg-nms-surface border border-nms-accent/40 rounded-xl px-5 py-3 shadow-2xl max-w-[calc(100vw-1.5rem)]"
+          style={{ bottom: 'calc(1.5rem + var(--nms-bottom-chrome, 0px))' }}
+        >
           <span className="text-sm font-semibold text-nms-accent">{selectedImsis.size} selected</span>
           <div className="w-px h-4 bg-nms-border" />
           <button

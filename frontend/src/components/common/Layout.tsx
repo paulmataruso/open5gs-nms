@@ -1,14 +1,12 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
-import {
-  Radio, Settings, Users, Activity, Network,
-  ChevronLeft, ChevronRight, Database, ScrollText,
-  Key, UserCog, BarChart2, EyeOff, Shield, ShieldCheck, Clock, GitBranch, Zap, MessageSquare, Phone, PhoneCall, FlaskConical, Wifi, Globe, Radar, TrendingUp, RadioTower, Calculator, Layers, Gauge, ServerCog, Signal, DollarSign, Wallet, History,
-} from 'lucide-react';
+import { ChevronLeft, ChevronRight, EyeOff } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
 import { UserMenu } from './UserMenu';
-import { FEATURES } from '../../config/features';
+import { NAV_ITEMS } from './navItems';
+import { MobileTopBar, MobileTabBar } from './MobileChrome';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -16,53 +14,38 @@ interface LayoutProps {
   onTabChange: (tab: string) => void;
 }
 
-const NAV_ITEMS: Array<{ id: string; label: string; icon: React.ComponentType<any> }> = [
-  { id: 'dashboard', label: 'Dashboard', icon: Activity },
-  { id: 'topology', label: 'Topology', icon: Network },
-  { id: 'ran', label: 'RAN Network', icon: Radio },
-  ...(FEATURES.ueSignal ? [{ id: 'radio-signal', label: '4G/5G UE Signal', icon: Wifi }] : []),
-  { id: 'services', label: 'Services', icon: Activity },
-  { id: 'config', label: 'Configuration', icon: Settings },
-  { id: 'auto-config', label: 'Auto Config', icon: Zap },
-  { id: 'radio-config', label: 'Radio Provisioning', icon: RadioTower },
-  ...(FEATURES.rfPlanning ? [{ id: 'rf-planning', label: 'RF Planning', icon: Calculator }] : []),
-  { id: 'apn-profiles', label: 'APN Profiles', icon: Layers },
-  { id: 'subscribers', label: 'Subscribers', icon: Users },
-  { id: 'suci', label: 'SUCI Keys', icon: Key },
-  { id: 'backup', label: 'Backup & Restore', icon: Database },
-  { id: 'logs', label: 'Unified Logs', icon: ScrollText },
-  { id: 'metrics', label: 'Metrics', icon: BarChart2 },
-  { id: 'traffic-history', label: 'Traffic History', icon: TrendingUp },
-  { id: 'sas',         label: 'SAS',          icon: Shield    },
-  { id: 'time-server', label: 'Time Server',   icon: Clock     },
-  { id: 'frr', label: 'L3 Routing', icon: GitBranch },
-  { id: 'bind', label: 'DNS (BIND9)', icon: Globe },
-  ...(FEATURES.sms ? [{ id: 'sms', label: FEATURES.mms ? 'SMS/MMS' : 'SMS', icon: MessageSquare }] : []),
-  ...(FEATURES.gsm ? [{ id: 'gsm', label: '2G GSM', icon: Signal }] : []),
-  ...(FEATURES.gsm ? [{ id: 'gsm-signal', label: '2G UE Signal', icon: Wifi }] : []),
-  ...(FEATURES.hnbgw ? [{ id: 'hnbgw', label: '3G UMTS', icon: Signal }] : []),
-  ...(FEATURES.ims ? [{ id: 'ims', label: 'IMS / VoLTE', icon: Phone }] : []),
-  ...(FEATURES.pstn ? [{ id: 'pstn', label: 'Voice Gateway', icon: PhoneCall }] : []),
-  ...(FEATURES.ocs ? [{ id: 'ocs', label: 'SigScale OCS', icon: DollarSign }] : []),
-  ...(FEATURES.ocs ? [{ id: 'charging-plans', label: 'Charging Plans', icon: Wallet }] : []),
-  ...(FEATURES.cdr ? [{ id: 'cdr', label: 'Call History', icon: History }] : []),
-  ...(FEATURES.vowifi ? [{ id: 'vowifi', label: 'VoWiFi', icon: Wifi }] : []),
-  ...(FEATURES.secgw ? [{ id: 'secgw', label: 'SecGW', icon: ShieldCheck }] : []),
-  ...(FEATURES.twamp ? [{ id: 'twamp', label: 'TWAMP', icon: Gauge }] : []),
-  ...(FEATURES.snmp ? [{ id: 'snmp', label: 'SNMP Monitoring', icon: ServerCog }] : []),
-  ...(FEATURES.validation ? [{ id: 'validation', label: 'UE/Core Validation', icon: FlaskConical }] : []),
-  ...(FEATURES.pcap ? [{ id: 'pcap', label: 'Packet Capture', icon: Radar }] : []),
-  { id: 'users',   label: 'User Management', icon: UserCog },
-];
 
 export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.Element {
   const [collapsed, setCollapsed] = useState(false);
   const { user } = useAuth();
+  const isMobile = useIsMobile();
 
+  // ONE root element for both shells, and the page lives in ONE keyed <main>.
+  //
+  // This matters more than it looks. React reconciles by element type at a
+  // given position, so returning <MobileShell> in one branch and a <div> in
+  // the other would change the root type on every crossing of 768px and
+  // unmount the whole page subtree — a running install loses its streamed log
+  // with no way to tell whether a 1800s apt-get succeeded, a half-typed
+  // subscriber form is gone, open modals close. And this is not an edge case:
+  // a modern phone in landscape is ~844px wide, so an ordinary rotation
+  // crosses it. The stable key on <main> is what makes React reuse it even
+  // though its sibling count differs between the two branches.
+  //
+  // The chrome is still swapped rather than CSS-hidden, because the two navs
+  // have different DOM and ARIA: rendering both would put every destination in
+  // the accessibility tree twice and double every focus stop.
   return (
-    <div className="flex h-screen overflow-hidden bg-nms-bg">
-      {/* Sidebar */}
+    <div className={isMobile
+      ? 'nms-mobile-shell flex flex-col bg-nms-bg'
+      : 'flex h-screen overflow-hidden bg-nms-bg'}
+    >
+      {isMobile ? (
+        <MobileTopBar key="chrome-mobile" activeTab={activeTab} />
+      ) : (
+      /* Sidebar */
       <aside
+        key="chrome-desktop"
         className={clsx(
           'flex flex-col border-r border-nms-border bg-nms-surface transition-all duration-200',
           collapsed ? 'w-16' : 'w-56',
@@ -82,8 +65,10 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
             <button
               key={item.id}
               onClick={() => onTabChange(item.id)}
+              aria-current={activeTab === item.id ? 'page' : undefined}
               className={clsx(
                 'w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm transition-all',
+                'min-h-9',
                 activeTab === item.id
                   ? 'bg-nms-accent/10 text-nms-accent border border-nms-accent/20'
                   : 'text-nms-text-dim hover:bg-nms-surface-2 hover:text-nms-text border border-transparent',
@@ -109,9 +94,15 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
           {collapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
         </button>
       </aside>
+      )}
 
-      {/* Main content */}
-      <main className="flex-1 overflow-auto">
+      {/* The page. One element, one key, both shells — see the comment above. */}
+      <main
+        key="page"
+        className={isMobile
+          ? 'flex-1 overflow-y-auto overscroll-contain'
+          : 'flex-1 overflow-auto'}
+      >
         {user?.role === 'viewer' && (
           <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-2 flex items-center gap-2">
             <EyeOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -120,6 +111,8 @@ export function Layout({ children, activeTab, onTabChange }: LayoutProps): JSX.E
         )}
         {children}
       </main>
+
+      {isMobile && <MobileTabBar key="tabbar" activeTab={activeTab} onTabChange={onTabChange} />}
     </div>
   );
 }

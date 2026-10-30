@@ -2,6 +2,19 @@
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
+    // Declared explicitly rather than inherited from Tailwind's defaults
+    // because `md` is load-bearing beyond styling: it is the exact width at
+    // which Layout swaps the desktop sidebar for the mobile shell, and
+    // MOBILE_MAX_WIDTH_PX in src/hooks/useIsMobile.ts must stay one pixel
+    // below it. scripts/check-breakpoints.mjs fails the build if they drift,
+    // so change both together or not at all.
+    screens: {
+      sm: '640px',
+      md: '768px',
+      lg: '1024px',
+      xl: '1280px',
+      '2xl': '1536px',
+    },
     extend: {
       colors: {
         // Themeable tokens — sourced from CSS custom properties set per-theme in

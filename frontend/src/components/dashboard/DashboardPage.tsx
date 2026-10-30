@@ -468,7 +468,7 @@ export function DashboardPage(): JSX.Element {
   }, [fetchBlockedCounts]);
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 space-y-4 md:p-6 md:space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
@@ -763,14 +763,23 @@ export function DashboardPage(): JSX.Element {
               at the bottom as a band of empty card surface. */}
           <div className="nms-card animate-fade-in flex-1 flex flex-col">
             <p className="text-xs text-nms-text-dim uppercase tracking-wider mb-1.5">UEs — active / total</p>
-            <div className="grid grid-cols-4 divide-x divide-nms-border flex-1 content-center">
+            {/* 2-across on a phone, 4 on desktop. Four columns inside a ~343px
+                card leaves ~85px each, which truncates both the label and the
+                count. `divide-x` is dropped in the collapsed state on purpose:
+                it sets border-left on every child but the first, so once the
+                grid wraps, the item starting row 2 draws a stray vertical line
+                at the card's left edge. Gap does the separating instead. */}
+            <div className="grid grid-cols-2 gap-x-3 gap-y-3 divide-x-0 md:grid-cols-4 md:gap-x-0 md:gap-y-0 md:divide-x divide-nms-border flex-1 content-center">
               {[
                 { label: 'Total', active: ues4G.active + ues5G.active + ues2G.active, total: subscriberTotal, tone: 'text-nms-text' },
                 { label: '2G', active: ues2G.active, total: ues2G.total, tone: 'text-teal-400' },
                 { label: '4G', active: ues4G.active, total: ues4G.total, tone: 'text-purple-400' },
                 { label: '5G', active: ues5G.active, total: ues5G.total, tone: 'text-nms-accent' },
               ].map((c, i) => (
-                <div key={c.label} className={i === 0 ? 'pr-3' : 'px-3'}>
+                // Horizontal padding is for the desktop divider rhythm; on a
+                // phone the grid gap handles it, so it is zeroed to buy back
+                // width rather than paying it twice.
+                <div key={c.label} className={i === 0 ? 'px-0 md:pl-0 md:pr-3' : 'px-0 md:px-3'}>
                   <p className="text-xs text-nms-text-dim uppercase tracking-wider">{c.label}</p>
                   <p className={`text-base font-semibold font-display leading-tight ${c.tone}`}>
                     {c.active}<span className="text-nms-text-dim text-xs font-normal">/{c.total ?? '—'}</span>

@@ -141,7 +141,7 @@ export function RadioSignalPage(): JSX.Element {
 
   const chart = (selected?.history ?? []).map(point => ({ ...point, time: new Date(point.sampledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }));
 
-  return <div className="p-6">
+  return <div className="p-4 md:p-6">
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>

@@ -1273,7 +1273,7 @@ export function FRRPage() {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-4 space-y-4 md:p-6 md:space-y-6">
       {pageTab === 'routing' && showWarning && (
         <SafetyWarningModal
           onAccept={() => { setWarningAccepted(true); localStorage.setItem('frr-warning-accepted', '1'); setShowWarning(false); }}
