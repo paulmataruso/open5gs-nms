@@ -1,4 +1,5 @@
 import pino from 'pino';
+import { applyGtpuSocketBuffers } from './host-tuning';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -827,6 +828,13 @@ export class AutoConfigUseCase {
         await this.hostExecutor.writeFile('/proc/1/root/etc/sysctl.d/99-open5gs-nat.conf', sysctlContent);
         await this.hostExecutor.executeCommand('sysctl', ['-p', '/etc/sysctl.d/99-open5gs-nat.conf']);
         this.logger.info('Enabled IP forwarding (persistent via /etc/sysctl.d/99-open5gs-nat.conf)');
+
+        // GTP-U socket buffers — same class of "required for ANY UE data path,
+        // not NAT-specific" prerequisite as ip_forward above, so it lives in this
+        // always-applied block rather than behind the NAT toggle. Also applied at
+        // backend start (index.ts); re-asserting it here means an operator who
+        // runs Apply Config after hand-editing sysctl gets it put back.
+        await applyGtpuSocketBuffers(this.hostExecutor, this.logger);
 
         // FORWARD accept for every session pool's own TUN device, plus the
         // primary interface. Interface-scoped, so a dev that doesn't exist on

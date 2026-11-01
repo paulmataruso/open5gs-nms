@@ -4,6 +4,66 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.77] - 2026-11-01
+
+### Fixed — GTP-U sockets ran on the stock 208 KB buffer and silently dropped uplink traffic
+
+Open5GS calls `setsockopt(SO_RCVBUF/SO_SNDBUF)` **nowhere**. Confirmed against
+the v2.8.0 source: `ogs_sockopt_t` carries only SCTP parameters, nodelay, linger
+and `so_bindtodevice`, and `ogs_udp_server()` applies only the last of those. So
+every GTP-U socket runs at exactly `net.core.{r,w}mem_default`, and no Open5GS
+YAML option can change it — the kernel default is the only lever there is.
+
+On the stock 212992 bytes that is roughly 90 ms of buffering at 11.5 Mbps, and a
+real deployment went past it: **53,435 UDP `RcvbufErrors`** — uplink GTP-U
+discarded before the UPF could read it — against 348 send failures. Only the
+send side was visible, as `ogs_sendto() failed (11: Resource temporarily
+unavailable)` in `upf.log`, and `ogs_gtp_send_with_teid()` drops that packet with
+no retry. The receive side, 153× the volume, logged nothing at all; it shows up
+only in `/proc/net/snmp` and `ss -uanpm`'s per-socket drop counter. The host's
+`net.core.*mem_max` was also left at 212992, so the ceiling equalled the default
+and nothing could have raised it even if it tried.
+
+The NMS now writes and applies `/etc/sysctl.d/99-open5gs-gtpu-buffers.conf`
+(4 MB default, 16 MB ceiling, and `netdev_max_backlog` 1000 → 16384 against
+306,595 device-level RX drops). This happens on **every backend start**, so an
+existing deployment picks it up from a plain
+`git pull && docker compose build && docker compose up -d` with no Apply Config
+run, and again inside Apply Config's always-applied data-plane block so a
+hand-edited sysctl gets put back.
+
+A kernel default rather than a patched Open5GS, deliberately: it covers both
+directions for every GTP-U socket at once — UPF, SGW-U and osmo-ggsn — and
+survives an Open5GS upgrade, where a local patch has to be reapplied after every
+rebuild. These are limits, not reservations; `net.ipv4.udp_mem` still caps total
+UDP memory.
+
+**`*_default` is read at socket creation, so a running NF keeps its old
+buffers.** The NMS reports which sockets are still undersized and leaves the
+restart to the operator rather than performing it — restarting `open5gs-smfd`/
+`upfd` tears down every PDU session *and* leaves each UE desynced from an AMF
+that still holds PDU contexts the new SMF has never heard of, which does not
+self-heal (UEs loop `PDU Session Reactivation Result : 0000` indefinitely until
+the AMF is cycled too).
+
+### Fixed — an SMF UE pool wider than the UPF's handed out unroutable addresses
+
+`smf.yaml` allocated `internet` from `10.45.0.0/16` while `upf.yaml` — and
+therefore `ogstun` — carried `10.45.0.0/24`. The SMF could hand a UE any of
+65,280 addresses the data plane had no route for, and a UE given one attaches
+with full signal and no internet. It had not bitten only because a handful of
+subscribers all landed inside the first `/24`.
+
+The mismatch was invisible by construction: `resolveDnnDevPairs()` deliberately
+tolerates SMF/UPF prefix-length differences, because it only needs to resolve the
+DNN's TUN device, and the Auto-Configuration Wizard reads session pools from the
+UPF alone — so nothing ever displayed the SMF's own value. Subscriber operations
+now report the one direction that is an outage, naming the DNN, both subnets, the
+device and how many addresses have no data path. A *narrower* SMF pool stays
+silent, since the UPF simply routes more than will ever be allocated.
+
+---
+
 ## [v2.0-beta_0.76] - 2026-10-30
 
 ### Fixed — the SAS page claimed SASBench was up to date when it was not

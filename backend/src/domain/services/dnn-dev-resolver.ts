@@ -1,4 +1,4 @@
-import { ipv4CidrOverlaps } from './ip-utils';
+import { ipv4CidrOverlaps, cidrNetworkRange } from './ip-utils';
 
 export interface DnnDevEntry {
   dnn: string;
@@ -76,4 +76,73 @@ export function preferIPv4ByDev<T extends { dev: string; subnet?: string | null 
     if (!byDev.has(dev) || isV4) byDev.set(dev, item);
   }
   return byDev;
+}
+
+// ── SMF pool wider than the UPF pool that has to carry it ──────────────────
+//
+// The join above deliberately TOLERATES SMF and UPF declaring different prefix
+// lengths for the same DNN, because it only needs to find the right `dev`. That
+// tolerance hid a real outage condition for a long time: if SMF's pool is WIDER
+// than the UPF's, the SMF will happily allocate a UE an address the UPF's own TUN
+// device has no route for, and that UE attaches with full signal and no data path.
+//
+// Confirmed live 2026-11-01: smf.yaml had `internet` on 10.45.0.0/16 while
+// upf.yaml (and therefore ogstun) had 10.45.0.0/24 — 65280 of the SMF's 65534
+// allocatable addresses were unroutable. It had not bitten only because this
+// deployment's handful of subscribers all landed inside the first /24.
+//
+// Only the wider-SMF direction is reported. A NARROWER SMF pool is harmless: the
+// UPF simply routes a range larger than anything that will be handed out.
+//
+// Range comparison is used rather than comparing prefix lengths so a
+// non-aligned or partially-overlapping pair is caught too, and so this reuses
+// cidrNetworkRange()'s already-fixed unsigned math (see ip-utils.ts — a bitwise
+// AND there once produced corrupted signed values for any first octet >= 128).
+export interface SmfPoolNotRoutable {
+  dnn: string;
+  dev: string;
+  smfSubnet: string;
+  upfSubnet: string;
+  /** Addresses the SMF can allocate that fall outside the UPF's routed range. */
+  unroutableAddresses: number;
+}
+
+export function findSmfPoolsWiderThanUpf(
+  smfSessions: any[],
+  upfSessions: any[],
+): SmfPoolNotRoutable[] {
+  const found: SmfPoolNotRoutable[] = [];
+
+  for (const smfSess of smfSessions ?? []) {
+    const smfSubnet = smfSess?.subnet;
+    // IPv6 is excluded on purpose: these pools are /48-style delegations whose
+    // routing does not work the same way, and cidrNetworkRange() is IPv4-only.
+    if (!smfSess?.dnn || !smfSubnet || String(smfSubnet).includes(':')) continue;
+
+    const upfSess = (upfSessions ?? []).find((u) => u?.dnn === smfSess.dnn)
+      ?? (upfSessions ?? []).find((u) => u?.subnet && !String(u.subnet).includes(':')
+        && ipv4CidrOverlaps(u.subnet, smfSubnet));
+    if (!upfSess?.subnet || String(upfSess.subnet).includes(':')) continue;
+
+    const smfRange = cidrNetworkRange(smfSubnet);
+    const upfRange = cidrNetworkRange(upfSess.subnet);
+
+    const overlapFirst = Math.max(smfRange.first, upfRange.first);
+    const overlapLast = Math.min(smfRange.last, upfRange.last);
+    if (overlapFirst > overlapLast) continue; // disjoint — a different problem
+
+    const smfSize = smfRange.last - smfRange.first + 1;
+    const overlapSize = overlapLast - overlapFirst + 1;
+    if (smfSize <= overlapSize) continue; // SMF fits inside the UPF's range
+
+    found.push({
+      dnn: smfSess.dnn,
+      dev: upfSess.dev || 'ogstun',
+      smfSubnet: String(smfSubnet),
+      upfSubnet: String(upfSess.subnet),
+      unroutableAddresses: smfSize - overlapSize,
+    });
+  }
+
+  return found;
 }

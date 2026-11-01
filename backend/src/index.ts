@@ -77,6 +77,7 @@ import { createImsRtpengineMetricsRegistry } from './application/use-cases/ims/i
 import { IpsecSaCleanup } from './application/use-cases/ims/ipsec-sa-cleanup';
 import { PyhssDiameterGuard } from './application/use-cases/ims/pyhss-diameter-guard';
 import { CdrSyncMonitor } from './application/use-cases/cdr/cdr-sync-monitor';
+import { applyGtpuSocketBuffers } from './application/use-cases/host-tuning';
 import { OcsReservationGuard } from './application/use-cases/ocs/ocs-reservation-guard';
 import { createOcsReservationGuardMetricsRegistry } from './application/use-cases/ocs/ocs-reservation-guard-metrics';
 import { OcsStatsMonitor } from './application/use-cases/ocs/ocs-stats-monitor';
@@ -325,6 +326,15 @@ async function main() {
   ensureCallDebugIndexes(subscriberRepo.getDb())
     .catch(err => logger.warn({ err: String(err) }, 'Call debug: index setup failed'));
   hepCollector.start().catch(err => logger.warn({ err: String(err) }, 'SIP trace: HEP collector failed to start'));
+
+  // GTP-U socket buffer tuning. Open5GS sets SO_RCVBUF/SO_SNDBUF nowhere, so every
+  // GTP-U socket inherits net.core.*mem_default and the stock 208 KB silently drops
+  // uplink packets under real load — see host-tuning.ts for the full measurement.
+  // Applied here, on every backend start, so an existing deployment picks it up from
+  // a plain `git pull && docker compose build && docker compose up -d` without having
+  // to run Apply Config. Idempotent, and it never restarts an NF by itself.
+  applyGtpuSocketBuffers(hostExecutor, logger)
+    .catch(err => logger.warn({ err: String(err) }, 'GTP-U buffer tuning failed'));
 
   // Periodically clears stuck Gy/Ro reservations leaked by a real,
   // still-unresolved OCS rating-engine crash (ocs_rating:charge2 on session

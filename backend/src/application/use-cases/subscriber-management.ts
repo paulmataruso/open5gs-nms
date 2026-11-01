@@ -8,7 +8,7 @@ import { SubscriberDto } from '../dto';
 import { Subscriber, SubscriberListItem } from '../../domain/entities/subscriber';
 import { TunManagementUseCase } from './tun-management';
 import { ipv4CidrOverlaps } from '../../domain/services/ip-utils';
-import { resolveDnnDevPairs } from '../../domain/services/dnn-dev-resolver';
+import { resolveDnnDevPairs, findSmfPoolsWiderThanUpf } from '../../domain/services/dnn-dev-resolver';
 
 export class SubscriberManagementUseCase {
   constructor(
@@ -49,6 +49,23 @@ export class SubscriberManagementUseCase {
         'No matching UPF session found for SMF DNN (by dnn or subnet) — static routes for this DNN will fall back to the default device',
       );
     });
+
+    // The join above tolerates SMF/UPF prefix-length differences by design, so it
+    // cannot report the one direction that is an outage: an SMF pool wider than the
+    // UPF pool carrying it means the SMF can allocate an address ogstun has no route
+    // for, and that UE attaches with full signal and no data path.
+    for (const m of findSmfPoolsWiderThanUpf(smfSessions, upfSessions)) {
+      this.logger.warn(
+        {
+          dnn: m.dnn, dev: m.dev, smfSubnet: m.smfSubnet,
+          upfSubnet: m.upfSubnet, unroutableAddresses: m.unroutableAddresses,
+        },
+        `SMF pool for DNN '${m.dnn}' (${m.smfSubnet}) is wider than the UPF pool on `
+        + `${m.dev} (${m.upfSubnet}) — ${m.unroutableAddresses} allocatable addresses `
+        + 'have no data path; a UE given one attaches with signal but no internet',
+      );
+    }
+
     return new Map(pairs.map((p) => [p.dnn, p.dev]));
   }
 
