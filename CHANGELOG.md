@@ -4,6 +4,175 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.78] - 2026-11-02
+
+### Added — a DHCP server module (Kea DHCPv4)
+
+Static bindings, per-interface binding and live leases, with the usual
+install/configure/start/stop lifecycle on its own page. `ENABLE_DHCP_MODULE`
+defaults **disabled**: installing it binds UDP/67, so a careless subnet could
+start answering DHCP on a live segment — a bigger blast radius than a display
+toggle.
+
+Kea rather than the obvious alternatives, deliberately. `isc-dhcp-server` is
+end of life upstream (ISC stopped maintaining it after 2022) and is still in
+Ubuntu 24.04, so starting a new module on it means shipping an unmaintained
+daemon. `dnsmasq` would be the easy choice except that it is a DNS server too,
+and this deployment's BIND9 is shared infrastructure owned by three other
+modules (architectural pattern #4) — two daemons contending for :53 is not a
+trade worth making for DHCP. Kea's config is JSON, which makes generating it a
+data transform rather than a bespoke config-language writer, and makes
+round-tripping an operator's hand edits feasible at all.
+
+The host's `kea-dhcp4.conf` is the single source of truth, with no mirror in
+Mongo — the same choice `chrony-controller.ts` makes for `chrony.conf`, for the
+same reason: a second copy drifts, and the daemon only ever reads the file.
+
+Two rules in there are load-bearing. `ogstun`/`ogstun2` are refused as listen
+interfaces, because Open5GS allocates UE addresses on those itself from
+`smf.yaml` and a second allocator on the same tunnel is a conflict with no
+upside. And a subnet with no local interface in its range is reported as
+**relayed** rather than flagged as a mistake: Kea's documented rule is that a
+relayed message "is accepted through any interface" and that the relay's
+`giaddr` selects the subnet, so a remote segment behind an `ip helper-address`
+is the ordinary case and needs nothing configured for it. `/status` also
+reports whatever else currently holds :67, which is the single most common
+reason Kea will not start.
+
+### Added — TWAMP history for the reflector, not just the targets
+
+The History tab only ever graphed the client side. The reflector — devices
+testing *inbound* against the reflector this host runs — existed only as a live
+5-second snapshot on Info & Stats, so there was nothing to graph, as opposed to
+a chart having been left out.
+
+The asymmetry is real. A client-side target test *is* an event, so
+`twamp-history.ts` has something to persist per test; nothing on this host
+initiates anything on the reflector side, remote radios do, so that half needed
+a sampling loop of its own. `TwampReflectorMonitor` writes one document every
+30s into `nms_twamp_reflector_history`, under the same single retention setting
+the client side already has — one TTL control still governs both collections.
+30s is picked against `twamp-server.go`'s own `lightPeerStaleAfter` of five
+minutes, so roughly ten observations fall inside the shortest window in which a
+peer can appear and disappear again.
+
+Three decisions worth knowing. Peer identity is the **IP**, not `ip:port`: a
+TWAMP-Light sender's ephemeral source port changes between runs, so `ip:port`
+would start a fresh series every time one radio restarted a session. That makes
+these counts distinct devices, which can legitimately read lower than the live
+Connected Clients table's row count (one row per session) — the UI says so
+rather than leaving two numbers to disagree silently. A packet counter that goes
+backwards is attributed to the interval as it stands rather than dropped, per
+Prometheus's own reset semantics: `cur < prev` means the reflector restarted, so
+`cur` *is* the count since that restart, and discarding it would erase exactly
+the post-restart window someone is investigating. And the sampler writes **one
+document per tick, not one per peer**, including while the reflector is stopped
+— per-peer documents write nothing at all for an idle tick, which renders a
+genuine "zero clients connected" and "the sampler was not running" identically,
+as a gap.
+
+The new sub-tab carries Connected Clients Over Time (average and peak distinct
+devices, integer axis, an optional per-protocol split, and a reflector-up-%
+axis that appears only when there was real downtime), Reflected Packet Rate,
+a sortable per-client table ranked by packet rate carrying each client's
+presence %, and a per-client drill-down. Presence is a real measurement rather
+than a by-product of which documents exist: the per-peer series deliberately
+avoids `$unwind`, which drops the ticks where a peer was absent and would
+therefore report every peer as 100% present by construction. Verified against
+the live collection, including the case that proves it — a peer that was never
+present returns one row per tick at `presenceRatio: 0`, not an empty result.
+
+Reflector history accumulates from the first backend start that has it. There is
+no way to backfill, so a 24-hour range is partial on the first day; the view
+states that a range holds no samples rather than implying no clients, and a
+failed read reports the error instead of rendering as "nothing was recorded",
+which would assert the opposite of what happened.
+
+### Added — collapsible radio groups on the RAN page
+
+The radio lists can be grouped by an operator-named group, by band, or by live
+status, with each group collapsible and the collapsed set remembered per viewer.
+Groups are stored as one more column on the existing `radio_tags` table, so a
+name survives a radio going offline and coming back, and `PUT /radio-tags/:ip`
+stays a partial update — setting a group never clobbers the nickname or band.
+
+The ordering rules live in one pure module shared by all six layouts (three
+4G/5G, three 2G). Those row types have nothing in common structurally, so the
+shape-specific part is pushed out into accessors rather than duplicated; six
+copies of the same ordering is how they drift. Status is ranked rather than
+sorted alphabetically — an operator scanning the list wants faults at the top,
+and "Blocked" before "Connected" is just the alphabet talking.
+
+Collapse state is keyed per list **and** per grouping kind. One shared key would
+make collapsing a 4G group collapse the identically-named 5G one, and would leak
+a collapsed set across a switch from Band to Status.
+
+### Fixed — the ACS pages showed a radio's old address until someone refreshed it
+
+GenieACS stores every parameter as a cached value plus the `_timestamp` of when
+it was last read, and the two sources of a device's IP age at completely
+different rates. `Device.ManagementServer.ConnectionRequestURL` is re-reported
+by the device in every Inform, so its timestamp tracks `_lastInform` and the
+host inside it is current. `Device.IP.Interface.1.IPv4Address.1.IPAddress` only
+changes when something explicitly reads it, and nothing reads it on a periodic
+inform — so after a radio changes address that value stays wrong until an
+operator happens to refresh that one device.
+
+Both the Baicells and the Sercomm paths preferred the cached interface address
+and fell back to the URL only when it was **absent**, which made staleness the
+default rather than a preference. Measured live on 2026-11-01: a Sercomm's
+`Device.IP` read `10.0.2.151` on an 18-minute-old timestamp while its
+`ConnectionRequestURL` read `172.16.0.31` at `_lastInform` — a different subnet
+entirely. A second Sercomm's cached value was four days old and only looked
+right because that radio had not moved.
+
+The freshest source now wins, and the loser is reported rather than dropped:
+where the two genuinely disagree the row carries an amber marker and names the
+other address with how far behind its read was. "The page disagrees with
+GenieACS" is otherwise impossible to explain from the UI. The Sercomm tab was
+also not requesting `ConnectionRequestURL` at all, which is what left it with no
+fresh source to prefer.
+
+### Fixed — Sercomm "RF On" reported success for a cell that could not come up
+
+RF On writes `FAPControl.LTE.AdminState = 1` and used to report success the
+moment GenieACS accepted the task. That is not the same thing. Measured live on
+2026-11-01: `AdminState` went True at 18:32:23 and the radio put it back to
+False at 18:46:19 on its own — no task, no fault. With SAS enabled the firmware
+will not hold a cell in service without a grant, and this radio had not
+contacted the SAS at all since its last grant five days earlier (`SAS_Status`
+empty, and a six-minute capture that did catch its CWMP inform and its NTP
+showed zero packets to the SAS ports). The cause was its GPS lock reading 0/0,
+which `buildSercommProvisionTasks()` already documents as the condition under
+which the radio's SAS client refuses to start.
+
+So an RF On now re-reads the radio's own in-service preconditions and says
+immediately when one is unmet, instead of leaving a successful-looking button to
+quietly undo itself a few minutes later. The assessment is deliberately
+non-fatal: a radio that will not answer a connection request still had its write
+queued, so failing to assess must not be reported as failing to set.
+
+### Fixed — one Sercomm provisioning write carried `ScanOnBoot` twice, with conflicting values
+
+`buildSercommTasks()` set `Device.FAP.GPS.ScanOnBoot` to `'1'` from Magma's
+enodebd parameter map, and the Location block in the same SetParameterValues set
+it to `'false'`. TR-069 does not order the parameters within one call, so the
+CPE may apply either, and some reject a duplicate name outright. The `'false'`
+is the one that is right here and the one kept — it carries its own reasoning (a
+GPS scan blocks LTE cell startup on a radio with no sky view, and SAS uses
+`HighAccuracyLatitude`/`Longitude` instead), and it is what both Sercomms on this
+deployment actually run, including the one that is serving.
+
+### Changed — backend tests are no longer compiled into `dist/`
+
+`tsc` was emitting every `*.test.ts` into the production build, where nothing
+imports them. It also meant a test could not read a file outside `rootDir` even
+though it never ships, which blocked executing the RAN page's pure grouping
+module — that file lives in `frontend/src` and is not in the backend image's
+build context at all.
+
+---
+
 ## [v2.0-beta_0.77] - 2026-11-01
 
 ### Fixed — GTP-U sockets ran on the stock 208 KB buffer and silently dropped uplink traffic

@@ -7,6 +7,13 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { radioBackupDir, backupDeviceById } from './radio-backup';
 import { parseMccMncFromMmeYaml, isPlmnMismatch } from '../../domain/services/read-plmn';
 import { BaicellsUeCountsUseCase } from '../../application/use-cases/baicells-ue-counts';
+import {
+  ACS_CONNECTION_REQUEST_PARAM, ACS_DEVICE_IP_PARAM, resolveAcsDeviceIp,
+} from '../../domain/services/acs-device-ip';
+import {
+  SERCOMM_RF_PRECONDITION_PARAMS, assessSercommRfPrecondition,
+  type SercommRfPrecondition,
+} from '../../domain/services/sercomm-rf-precondition';
 
 const HOST_MME_YAML = '/proc/1/root/etc/open5gs/mme.yaml';
 
@@ -119,7 +126,7 @@ interface NeighborCellEntry {
 // ─── Sercomm types & param builder ──────────────────────────────────────────────────────────
 const SFAP = 'Device.Services.FAPService.1.';
 
-interface SercommProvisionInput {
+export interface SercommProvisionInput {
   mcc: string; mnc: string; tac: string;
   mmeIp: string; mmeCfgIdList: string;
   earfcn: string;
@@ -153,7 +160,7 @@ interface SercommProvisionInput {
   enable256QAM: boolean;
 }
 
-function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasServerUrl?: string): NbiTask[] {
+export function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasServerUrl?: string): NbiTask[] {
   // All tasks use connection_request so GenieACS delivers them reliably.
   // The radio informs every 5s so extra connection_request attempts are harmless.
   // Using queueUrl (no connection_request) caused Tasks 2+3 to silently not deliver.
@@ -172,8 +179,16 @@ function buildSercommTasks(taskUrl: string, input: SercommProvisionInput, sasSer
     ['Device.ManagementServer.PeriodicInformInterval',                            '5',          'xsd:int'         ],
 
     // ── Misc static params (configuration_init._set_misc_static_params) ──────────
-    // GPS_ENABLE = Device.FAP.GPS.ScanOnBoot → xsd:boolean → '1'
-    ['Device.FAP.GPS.ScanOnBoot',                                                 '1',          'xsd:boolean'     ],
+    // GPS_ENABLE = Device.FAP.GPS.ScanOnBoot used to be set to '1' here, from
+    // Magma's enodebd parameter map. REMOVED 2026-11-01: the Location block
+    // below ALSO writes ScanOnBoot, as 'false', so one SetParameterValues
+    // carried the same parameter twice with conflicting values — the CPE may
+    // apply either (TR-069 does not order them), and some reject a duplicate
+    // name outright. 'false' is the one that is right here and the one kept:
+    // it has the reasoning in its own comment (a GPS scan blocks LTE cell
+    // startup on a radio with no sky view, and SAS uses
+    // HighAccuracyLatitude/Longitude instead), and it is empirically what both
+    // Sercomms on this deployment run — including the one that is serving.
 
     // ── Performance management (configuration_init._set_perf_mgmt) ────────────
     // PERF_MGMT_ENABLE → xsd:boolean → '1'
@@ -739,9 +754,11 @@ function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string, 
     !isOnline               ? 'offline' :
     radioEnable === 'true'  ? 'on'      : 'off';
 
-  const directIp = getParam(device, 'Device.IP.Interface.1.IPv4Address.1.IPAddress');
-  const crUrl    = getParam(device, 'Device.ManagementServer.ConnectionRequestURL');
-  const parsedIp = !directIp && crUrl ? (crUrl.match(/https?:\/\/([^:/]+)/)?.[1] ?? '') : directIp;
+  // Freshest source wins. This used to prefer the cached interface address and
+  // only fall back when it was ABSENT, which showed a radio's old address for
+  // as long as nothing refreshed that one parameter — see acs-device-ip.ts.
+  const ipInfo = resolveAcsDeviceIp(device);
+  const parsedIp = ipInfo.ip;
 
   // GPS coordinates stored as integer 1e-7 degrees (e.g. 43375198 → 43.375198°)
   const latRaw = getParam(device, 'Device.DeviceInfo.cpiLatitude');
@@ -759,6 +776,8 @@ function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string, 
     serial,
     lastInform,
     ip:           parsedIp,
+    ipSource:     ipInfo.source,
+    ipStaleAlternative: ipInfo.staleAlternative ?? null,
     rfStatus,
     plmnMismatch,
     duplicatePlmnEntries,
@@ -823,6 +842,42 @@ async function nbiPost(url: string, body: Record<string, any>): Promise<{ ok: bo
   });
   const text = await resp.text().catch(() => '');
   return { ok: resp.ok, status: resp.status, text };
+}
+
+/**
+ * Re-reads a Sercomm's own in-service preconditions straight after an RF write
+ * and says whether the cell can actually come up.
+ *
+ * "GenieACS accepted the task" is not "the radio is transmitting": with SAS
+ * enabled and no grant the firmware reverts AdminState by itself a few minutes
+ * later, which is exactly how this was found (see sercomm-rf-precondition.ts).
+ * Reporting the precondition closes that gap at the moment the operator is
+ * looking, rather than leaving a successful-looking button to undo itself.
+ *
+ * Deliberately non-fatal: a radio that will not answer a connection request
+ * still had its write queued, so a failure to assess must not be reported as a
+ * failure to set.
+ */
+async function assessSercommRf(
+  nbiUrl: string, encodedId: string,
+): Promise<SercommRfPrecondition | null> {
+  try {
+    const gpv = await nbiPost(
+      `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`,
+      { name: 'getParameterValues', parameterNames: [...SERCOMM_RF_PRECONDITION_PARAMS] },
+    );
+    // 202 = queued rather than delivered; the cached values are then whatever
+    // the last inform left, which is still worth reporting.
+    if (!gpv.ok && gpv.status !== 202) return null;
+    const resp = await fetch(
+      `${nbiUrl}/devices?query=${encodeURIComponent(JSON.stringify({ _id: decodeURIComponent(encodedId) }))}`,
+    );
+    if (!resp.ok) return null;
+    const devices = (await resp.json()) as Record<string, any>[];
+    return devices[0] ? assessSercommRfPrecondition(devices[0]) : null;
+  } catch {
+    return null;
+  }
 }
 
 // Refreshes the Baicells "LTE Freq/Cell" neighbor tables — Cell Neighbor Freq
@@ -955,7 +1010,11 @@ export function createGenieacsRouter(
         'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_eNB_Status',
         'Device.X_000E8F_DeviceFeature.X_000E8F_NEStatus.X_000E8F_S1_Status',
         `${SERCOMM_FAP}FAPControl.LTE.X_000E8F_CurrentUENum`,
-        'Device.IP.Interface.1.IPv4Address.1.IPAddress',
+        ACS_DEVICE_IP_PARAM,
+        // Re-reported by the device on every Inform, so it is the only IP
+        // source that is current without a refresh. Its absence here is what
+        // made this tab show a stale address with no way to notice.
+        ACS_CONNECTION_REQUEST_PARAM,
       ].join(',');
 
       const resp = await fetch(`${nbiUrl}/devices?projection=${encodeURIComponent(projection)}`);
@@ -986,9 +1045,13 @@ export function createGenieacsRouter(
         const rfStatus: 'on' | 'off' | 'offline' =
           !isOnline ? 'offline' : enbStatus.toUpperCase() === 'SUCCESS' ? 'on' : 'off';
 
+        const ipInfo = resolveAcsDeviceIp(d);
+
         return {
           id: serial, serial, lastInform, rfStatus, plmnMismatch,
-          ip:           getParam(d, 'Device.IP.Interface.1.IPv4Address.1.IPAddress'),
+          ip:           ipInfo.ip,
+          ipSource:     ipInfo.source,
+          ipStaleAlternative: ipInfo.staleAlternative ?? null,
           mcc, mnc,
           tac:          getParam(d, `${SERCOMM_FAP}CellConfig.LTE.EPC.TAC`),
           mmeIp:        getParam(d, `${SERCOMM_FAP}FAPControl.LTE.Gateway.S1SigLinkServerList`),
@@ -1696,8 +1759,23 @@ export function createGenieacsRouter(
         parameterValues: [[`${SFAP}FAPControl.LTE.AdminState`, enable ? '1' : '0', 'xsd:boolean']],
       });
       if (!r.ok) throw new Error(`RF set failed (${r.status}): ${r.text}`);
-      await auditLogger.log({ action, user, target: deviceId, details: `Sercomm AdminState ${enable ? '1' : '0'}`, success: true });
-      res.json({ success: true, message: `RF ${enable ? 'enabled' : 'disabled'}.` });
+
+      // Only worth asking on the way UP — switching a cell off has no
+      // precondition to fail.
+      const pre = enable ? await assessSercommRf(nbiUrl, encodedId) : null;
+      await auditLogger.log({
+        action, user, target: deviceId,
+        details: `Sercomm AdminState ${enable ? '1' : '0'}`
+          + (pre?.blocked ? ` — precondition unmet: ${pre.reasons[0]}` : ''),
+        success: true,
+      });
+      res.json({
+        success: true,
+        message: pre?.blocked
+          ? 'AdminState set, but this radio cannot bring its cell up yet.'
+          : `RF ${enable ? 'enabled' : 'disabled'}.`,
+        precondition: pre,
+      });
     } catch (err) {
       await auditLogger.log({ action, user, target: deviceId, details: String(err), success: false });
       res.status(502).json({ success: false, error: String(err) });

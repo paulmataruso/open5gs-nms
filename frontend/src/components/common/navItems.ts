@@ -66,6 +66,7 @@ export const NAV_ITEMS: NavItem[] = [
   ...(FEATURES.secgw ? [{ id: 'secgw', label: 'SecGW', icon: ShieldCheck }] : []),
   ...(FEATURES.twamp ? [{ id: 'twamp', label: 'TWAMP', icon: Gauge }] : []),
   ...(FEATURES.snmp ? [{ id: 'snmp', label: 'SNMP Monitoring', icon: ServerCog }] : []),
+  ...(FEATURES.dhcp ? [{ id: 'dhcp', label: 'DHCP Server', icon: Network }] : []),
   ...(FEATURES.validation ? [{ id: 'validation', label: 'UE/Core Validation', icon: FlaskConical }] : []),
   ...(FEATURES.pcap ? [{ id: 'pcap', label: 'Packet Capture', icon: Radar }] : []),
   { id: 'users',   label: 'User Management', icon: UserCog },

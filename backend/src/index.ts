@@ -123,6 +123,7 @@ import { createLogDownloadRouter } from './interfaces/rest/log-download-controll
 import { createGenieacsRouter } from './interfaces/rest/genieacs-controller';
 import { createChronyRouter } from './interfaces/rest/chrony-controller';
 import { createSyslogRouter } from './interfaces/rest/syslog-controller';
+import { createDhcpRouter } from './interfaces/rest/dhcp-controller';
 import { createSpeedtestRouter } from './interfaces/rest/speedtest-controller';
 import { createIpPlanRouter } from './interfaces/rest/ip-plan-controller';
 import { IpPlanApplyUseCase } from './application/use-cases/ip-plan-apply-usecase';
@@ -159,6 +160,7 @@ import { createTrafficMetricsRegistry } from './application/use-cases/traffic-hi
 import { createTrafficHistoryRouter } from './interfaces/rest/traffic-history-controller';
 import * as promClient from 'prom-client';
 import { TwampMonitor } from './application/use-cases/twamp/twamp-monitor';
+import { TwampReflectorMonitor } from './application/use-cases/twamp/twamp-reflector-monitor';
 import { createTwampMetricsRegistry } from './application/use-cases/twamp/twamp-metrics';
 import { createGsmMetricsRegistry } from './application/use-cases/gsm/gsm-metrics';
 import { createGsm2gTrafficMetricsRegistry } from './application/use-cases/gsm/gsm2g-traffic-metrics';
@@ -247,6 +249,12 @@ async function main() {
   // Prometheus exporter and GET /api/twamp/targets read from it.
   const twampMonitor = new TwampMonitor(subscriberRepo.getDb(), hostExecutor, logger);
   const { registry: twampMetricsRegistry, removeTargetSeries: removeTwampTargetMetrics } = createTwampMetricsRegistry(twampMonitor, hostExecutor);
+
+  // The reverse direction — devices testing INBOUND against the reflector
+  // this host optionally runs. Started unconditionally like the client-side
+  // monitor above; it no-ops per tick until a reflector is actually
+  // installed and configured, so there is nothing to gate it on here.
+  new TwampReflectorMonitor(subscriberRepo.getDb(), hostExecutor, logger);
 
   // 2G UE signal — no monitor/executor dependency, reads gsm-controller.ts's
   // own module-scoped cache (getCachedGsmSignalSamples) directly.
@@ -764,6 +772,7 @@ async function main() {
   app.use('/api/genieacs', createGenieacsRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath, baicellsUeCounts));
   app.use('/api/chrony',   createChronyRouter(logger, auditLogger));
   app.use('/api/syslog',   createSyslogRouter(logger, auditLogger));
+  app.use('/api/dhcp',     createDhcpRouter(logger, auditLogger));
   app.use('/api/speedtest', createSpeedtestRouter(logger, auditLogger));
   app.use('/api/ip-plan',  createIpPlanRouter(logger, auditLogger, configRepo, ipPlanApplyUseCase));
   app.use('/api/frr/source-build', createFrrSourceBuildRouter(logger, auditLogger));

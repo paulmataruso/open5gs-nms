@@ -40,6 +40,7 @@ const SMSPage = lazy(() => import('./pages/SMSPage').then(m => ({ default: m.SMS
 const SecGWPage = lazy(() => import('./pages/SecGWPage').then(m => ({ default: m.SecGWPage })));
 const ServicesPage = lazy(() => import('./components/services/ServicesPage').then(m => ({ default: m.ServicesPage })));
 const SnmpPage = lazy(() => import('./pages/SnmpPage').then(m => ({ default: m.SnmpPage })));
+const DhcpPage = lazy(() => import('./components/dhcp/DhcpPage').then(m => ({ default: m.DhcpPage })));
 const SubscriberPage = lazy(() => import('./components/subscribers/SubscriberPage').then(m => ({ default: m.SubscriberPage })));
 const SuciManagementPage = lazy(() => import('./components/suci/SuciManagementPage').then(m => ({ default: m.SuciManagementPage })));
 const TimeServerPage = lazy(() => import('./pages/TimeServerPage').then(m => ({ default: m.TimeServerPage })));
@@ -125,6 +126,8 @@ function App(): JSX.Element {
         return FEATURES.ueSignal ? <RadioSignalPage /> : <DashboardPage />;
       case 'snmp':
         return FEATURES.snmp ? <SnmpPage /> : <DashboardPage />;
+      case 'dhcp':
+        return FEATURES.dhcp ? <DhcpPage /> : <DashboardPage />;
       case 'sas':
         return <SASPage />;
       case 'time-server':

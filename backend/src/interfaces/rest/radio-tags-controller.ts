@@ -21,8 +21,20 @@ export const createRadioTagsRouter = (
     }
   });
 
-  // GET /full — nickname + LTE band together, for the RAN page's band
-  // tagging/filter UI.
+  // GET /groups — distinct operator-named groups in use, for the RAN page's
+  // group-assignment dropdown. Open to all authenticated users: it is the same
+  // information /full already exposes, just deduplicated.
+  router.get('/groups', (_req: Request, res: Response) => {
+    try {
+      res.json(radioTagRepo.listGroups());
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Failed to list radio groups');
+      res.status(500).json({ error: 'Failed to list radio groups' });
+    }
+  });
+
+  // GET /full — nickname + LTE band + operator-named group together, for the
+  // RAN page's band tagging/filter UI and its collapsible radio groups.
   router.get('/full', (_req: Request, res: Response) => {
     try {
       const tags = radioTagRepo.getAllFull();
@@ -33,17 +45,19 @@ export const createRadioTagsRouter = (
     }
   });
 
-  // PUT /:ip — partial update, admin only. Body may include `nickname`
-  // and/or `band` — each key present is upserted (empty string clears just
-  // that field) independently of the other, so setting one never clobbers
-  // the other.
+  // PUT /:ip — partial update, admin only. Body may include `nickname`,
+  // `band` and/or `group` — each key present is upserted (empty string clears
+  // just that field) independently of the others, so setting one never
+  // clobbers another.
   router.put('/:ip', requireAdmin, (req: Request, res: Response) => {
     try {
       const ip = decodeURIComponent(req.params.ip);
-      const { nickname, band } = req.body as { nickname?: string; band?: string | null };
+      const { nickname, band, group } = req.body as {
+        nickname?: string; band?: string | null; group?: string | null;
+      };
 
-      if (nickname === undefined && band === undefined) {
-        res.status(400).json({ error: 'At least one of nickname or band is required' });
+      if (nickname === undefined && band === undefined && group === undefined) {
+        res.status(400).json({ error: 'At least one of nickname, band or group is required' });
         return;
       }
 
@@ -61,8 +75,15 @@ export const createRadioTagsRouter = (
         }
         radioTagRepo.upsertBand(ip, band);
       }
+      if (group !== undefined) {
+        if (group && group.trim().length > 48) {
+          res.status(400).json({ error: 'Group name must be 48 characters or fewer' });
+          return;
+        }
+        radioTagRepo.upsertGroup(ip, group);
+      }
 
-      const full = radioTagRepo.getAllFull()[ip] ?? { nickname: '', band: null };
+      const full = radioTagRepo.getAllFull()[ip] ?? { nickname: '', band: null, group: null };
       logger.info({ ip, ...full }, 'Radio tag updated');
       res.json({ success: true, ip, ...full });
     } catch (err) {

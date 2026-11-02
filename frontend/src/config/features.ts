@@ -59,4 +59,8 @@ export const FEATURES = {
   // Opt-in like pstn/mms/secgw/twamp/rfPlanning — installs snmpd (a real
   // host service) and opens UDP/161, not just a config toggle.
   snmp: import.meta.env.VITE_ENABLE_SNMP === 'true',
+  // Opt-in like snmp/pstn/secgw — installs Kea (a real host service) and binds
+  // UDP/67, which a careless subnet could hand addresses out on a live segment.
+  // Bigger blast radius than a display toggle, so it is never default-on.
+  dhcp: import.meta.env.VITE_ENABLE_DHCP === 'true',
 };

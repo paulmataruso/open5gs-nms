@@ -14,6 +14,14 @@ export interface BaicellsRadio {
   serial:       string;
   lastInform:   string | null;
   ip:           string;
+  /**
+   * Which GenieACS parameter this address came from. ConnectionRequestURL is
+   * re-reported on every Inform; Device.IP.Interface is a cached value that
+   * only changes when something reads it, so the fresher one wins.
+   */
+  ipSource?:    'connection-request' | 'device-ip' | 'none';
+  /** The other source's value, when the two disagree and it was read earlier. */
+  ipStaleAlternative?: { ip: string; source: 'connection-request' | 'device-ip'; ageSeconds: number } | null;
   rfStatus:     'on' | 'off' | 'offline';
   plmnMismatch: boolean;
   // Populated whenever the radio's own PLMNList/MmePoolConfigParam tables
@@ -163,6 +171,14 @@ export interface SercommRadio {
   rfStatus:      'on' | 'off' | 'offline';
   plmnMismatch:  boolean;
   ip:            string;
+  /**
+   * Which GenieACS parameter this address came from. ConnectionRequestURL is
+   * re-reported on every Inform; Device.IP.Interface is a cached value that
+   * only changes when something reads it, so the fresher one wins.
+   */
+  ipSource?:    'connection-request' | 'device-ip' | 'none';
+  /** The other source's value, when the two disagree and it was read earlier. */
+  ipStaleAlternative?: { ip: string; source: 'connection-request' | 'device-ip'; ageSeconds: number } | null;
   mcc:           string;
   mnc:           string;
   tac:           string;
@@ -234,6 +250,29 @@ export interface RadioBackup {
   deviceId: string;
 }
 
+/**
+ * What the radio's own in-service preconditions look like straight after an RF
+ * write. `blocked` means the cell cannot come up however many times RF On is
+ * sent — with SAS enabled and no grant the firmware reverts AdminState by
+ * itself minutes later, so "the task was accepted" is not "it is transmitting".
+ */
+export interface SercommRfPrecondition {
+  blocked: boolean;
+  reasons: string[];
+  sasEnabled: boolean;
+  sasStatus: string;
+  enbStatus: string;
+  adminState: boolean | null;
+  gpsLocked: boolean;
+}
+
+export interface SercommRfResult {
+  success: boolean;
+  message: string;
+  /** null when the radio could not be re-read; never treat that as "fine". */
+  precondition: SercommRfPrecondition | null;
+}
+
 export const genieacsApi = {
   getDevices: async (): Promise<BaicellsRadio[]> => {
     const { data } = await api.get('/devices');
@@ -299,7 +338,7 @@ export const genieacsApi = {
     return data;
   },
 
-  setRfSercomm: async (deviceId: string, enable: boolean): Promise<{ success: boolean; message: string }> => {
+  setRfSercomm: async (deviceId: string, enable: boolean): Promise<SercommRfResult> => {
     const { data } = await api.post(`/rf-sercomm/${encodeURIComponent(deviceId)}`, { enable });
     return data;
   },

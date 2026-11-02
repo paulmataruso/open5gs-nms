@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, RefreshCw, Send, ChevronDown, ChevronUp,
   AlertCircle, Clock, ExternalLink, RotateCw, Wifi, WifiOff,
-  Satellite, Users, Signal, Copy, Check, Network, Plus, Trash2, Save,
+  Satellite, Users, Signal, Copy, Check, Network, Plus, Trash2, Save, AlertTriangle,
 } from 'lucide-react';
 import { genieacsApi, radioTagsApi, BaicellsRadio, ProvisionInput, NbiTask, NeighborFreqEntry, NeighborCellEntry, MmePoolEntry, MmePoolConfig } from '../../api';
 import { sasApi, type SasGrant } from '../../api/sas';
@@ -743,7 +743,18 @@ const RadioRow: React.FC<{ radio: BaicellsRadio; onRefresh: () => void; nickname
           {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
           {radio.ip && (
             <span className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
-              <span className="text-xs text-nms-text-dim font-mono">{radio.ip}</span>
+              <span className="text-xs text-nms-text-dim font-mono"
+                title={radio.ipStaleAlternative
+                  ? `Live address, from the device's own ConnectionRequestURL. GenieACS's cached ${radio.ipStaleAlternative.source === 'device-ip' ? 'Device.IP.Interface' : 'ConnectionRequestURL'} still reads ${radio.ipStaleAlternative.ip}, last read ${Math.round(radio.ipStaleAlternative.ageSeconds / 60)} min earlier — it only updates when that parameter is refreshed.`
+                  : undefined}>
+                {radio.ip}
+              </span>
+              {radio.ipStaleAlternative && (
+                <span aria-label={`GenieACS also holds an older address, ${radio.ipStaleAlternative.ip}`}
+                  title={`GenieACS also holds an older address: ${radio.ipStaleAlternative.ip}`}>
+                  <AlertTriangle className="w-3 h-3 text-nms-amber" aria-hidden="true" />
+                </span>
+              )}
               <CopyBtn text={radio.ip} />
             </span>
           )}

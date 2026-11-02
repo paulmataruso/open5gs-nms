@@ -10,16 +10,20 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import {
   HOST_ROOT, TWAMP_DIR, TWAMP_SRC, TWAMP_BIN,
-  TWAMP_SERVER_SRC, TWAMP_SERVER_BIN, TWAMP_SERVER_UNIT, TWAMP_SERVER_UNIT_PATH, TWAMP_SERVER_METRICS_ADDR,
+  TWAMP_SERVER_SRC, TWAMP_SERVER_BIN, TWAMP_SERVER_UNIT, TWAMP_SERVER_UNIT_PATH,
   TWAMP_SERVER_LIGHT_PEERS_ADDR,
   GO_VERSION, isTwampInstalled, isTwampServerInstalled, runTwampTest, TwampMode, TwampProtocol,
   readTwampState, writeTwampState, getFullConnections, getLightPeers, HOST_TWAMP_STATE,
+  getReflectorMetrics,
 } from '../../application/use-cases/twamp/twamp-runner';
 import { TwampMonitor, TwampTargetDoc, TWAMP_TARGETS_COLLECTION } from '../../application/use-cases/twamp/twamp-monitor';
 import {
   DEFAULT_HISTORY_RETENTION_DAYS, MIN_RETENTION_DAYS, MAX_RETENTION_DAYS,
   ensureHistoryIndexes, recordTwampHistorySample, queryHistorySummary, queryHistorySeries, pickBucketMs,
 } from '../../application/use-cases/twamp/twamp-history';
+import {
+  ensureReflectorHistoryIndexes, queryReflectorSummary, queryReflectorSeries, queryReflectorPeerSeries,
+} from '../../application/use-cases/twamp/twamp-reflector-history';
 
 // ── TWAMP reflector testing ──────────────────────────────────────────────────
 //
@@ -79,33 +83,6 @@ WantedBy=multi-user.target
 
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-// Minimal Prometheus text-exposition-format parser — just enough to render
-// every twamp_* series as a generic table (name/labels/value) for the Info
-// & Stats page. Not a general-purpose parser (no #TYPE/#HELP handling
-// needed, we're displaying raw numbers, not re-exposing them as our own
-// metrics), so a small hand-rolled regex is preferable to a real dependency
-// for this.
-interface ParsedMetric { metric: string; labels: Record<string, string>; value: number }
-function parsePrometheusText(text: string): ParsedMetric[] {
-  const results: ParsedMetric[] = [];
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const match = trimmed.match(/^(\w+)(\{([^}]*)\})?\s+([-\d.eE+]+)\s*$/);
-    if (!match) continue;
-    const [, metric, , labelStr, valueStr] = match;
-    const labels: Record<string, string> = {};
-    if (labelStr) {
-      for (const pair of labelStr.split(',')) {
-        const kv = pair.match(/^(\w+)="([^"]*)"$/);
-        if (kv) labels[kv[1]] = kv[2];
-      }
-    }
-    results.push({ metric, labels, value: parseFloat(valueStr) });
-  }
-  return results;
 }
 
 // Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
@@ -353,8 +330,15 @@ export function createTwampRouter(
   // saved, or the default) on every startup — this is the only lifecycle
   // this needs, no separate init step, matching this module's overall
   // "install just builds a binary, no extra setup" simplicity.
-  ensureHistoryIndexes(db, readTwampState()?.history?.retentionDays ?? DEFAULT_HISTORY_RETENTION_DAYS)
+  const bootRetentionDays = readTwampState()?.history?.retentionDays ?? DEFAULT_HISTORY_RETENTION_DAYS;
+  ensureHistoryIndexes(db, bootRetentionDays)
     .catch(err => logger.error({ err: String(err) }, 'failed to ensure twamp history indexes'));
+  // The reflector half shares the one retention setting — see
+  // twamp-reflector-history.ts. Kept as a separate call rather than folded
+  // into the above so a failure on one collection cannot stop the other's
+  // TTL index from being created.
+  ensureReflectorHistoryIndexes(db, bootRetentionDays)
+    .catch(err => logger.error({ err: String(err) }, 'failed to ensure twamp reflector history indexes'));
 
   router.get('/status', async (_req: Request, res: Response) => {
     try {
@@ -572,6 +556,7 @@ export function createTwampRouter(
     }
     try {
       await ensureHistoryIndexes(db, retentionDays!);
+      await ensureReflectorHistoryIndexes(db, retentionDays!);
       writeTwampState({ ...(readTwampState() ?? {}), history: { retentionDays: retentionDays! } });
       await auditLogger.log({ action: 'twamp_history_settings_update', user, details: `retentionDays=${retentionDays}`, success: true });
       res.json({ success: true, retentionDays });
@@ -727,14 +712,49 @@ export function createTwampRouter(
   // the Info & Stats page's human-readable table, not a Grafana time series.
   router.get('/server/metrics', requireAdmin, async (_req: Request, res: Response) => {
     try {
-      const result = await hostExecutor.executeCommand('curl', ['-fsS', `http://${TWAMP_SERVER_METRICS_ADDR}/metrics`], 5000);
-      if (result.exitCode !== 0) {
-        return res.json({ success: true, available: false, data: [] });
-      }
-      const data = parsePrometheusText(result.stdout).filter(m => m.metric.startsWith('twamp_'));
-      res.json({ success: true, available: true, data });
+      const { available, data } = await getReflectorMetrics(hostExecutor);
+      res.json({ success: true, available, data });
     } catch (err) {
       logger.error({ err: String(err) }, 'twamp server metrics error');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // ── Reflector history ───────────────────────────────────────────────────
+  // The reverse direction's own history: which devices tested against this
+  // host's reflector, how hard, and whether the reflector was up — sampled
+  // by TwampReflectorMonitor, since unlike a client-side target test there
+  // is no event here for the app to hang a sample off. Same time-range
+  // contract and the same shared retention as /history/* above.
+
+  router.get('/server/history/summary', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const toMs = req.query.toMs ? Number(req.query.toMs) : Date.now();
+      const fromMs = req.query.fromMs ? Number(req.query.fromMs) : toMs - 24 * 60 * 60 * 1000;
+      const summary = await queryReflectorSummary(db, new Date(fromMs), new Date(toMs));
+      res.json({ success: true, ...summary });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Failed to query twamp reflector history summary');
+      res.status(500).json({ success: false, error: String(err) });
+    }
+  });
+
+  // peerIp is optional: without it this is the aggregate (connected
+  // clients / total reflected throughput) series, with it the drill-down
+  // for one device. Two shapes, one route, because the caller asks the same
+  // question of the same store over the same range.
+  router.get('/server/history/series', requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const peerIp = typeof req.query.peerIp === 'string' && req.query.peerIp.trim() ? req.query.peerIp.trim() : null;
+      const toMs = req.query.toMs ? Number(req.query.toMs) : Date.now();
+      const fromMs = req.query.fromMs ? Number(req.query.fromMs) : toMs - 24 * 60 * 60 * 1000;
+      const bucketMs = pickBucketMs(Math.max(1, toMs - fromMs));
+      const data = peerIp
+        ? await queryReflectorPeerSeries(db, peerIp, new Date(fromMs), new Date(toMs), bucketMs)
+        : await queryReflectorSeries(db, new Date(fromMs), new Date(toMs), bucketMs);
+      res.json({ success: true, bucketMs, peerIp, data });
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Failed to query twamp reflector history series');
       res.status(500).json({ success: false, error: String(err) });
     }
   });

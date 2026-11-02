@@ -13,6 +13,7 @@ import { twampApi } from '../api/twamp';
 import type {
   TwampStatus, TwampTarget, TwampTargetInput, TwampMode, TwampProtocol, TwampServerStatus,
   TwampServerConnection, TwampMetricSample, TwampHistorySummaryRow, TwampHistorySeriesPoint,
+  TwampReflectorSummary, TwampReflectorSeriesPoint, TwampReflectorPeerSeriesPoint,
 } from '../api/twamp';
 import { TimeRangePicker, type TimeRangeValue } from '../components/common/TimeRangePicker';
 import { useZoomableChartData } from '../hooks/useZoomableChartData';
@@ -700,8 +701,170 @@ type HistorySortKey = 'name' | 'sampleCount' | 'avgRttMs' | 'minRttMs' | 'maxRtt
 
 const DEFAULT_HISTORY_RANGE: TimeRangeValue = { type: 'relative', ms: 24 * 60 * 60 * 1000, label: 'Last 24 hours' };
 
+// Relative ranges re-anchor to "now" on every load; absolute ranges are fixed.
+function resolveRange(timeRange: TimeRangeValue): { from: number; to: number } {
+  if (timeRange.type === 'absolute') return { from: timeRange.from.getTime(), to: timeRange.to.getTime() };
+  const to = Date.now();
+  return { from: to - timeRange.ms, to };
+}
+
+// >= 24h, not "wider than ~1.5 days" — see the matching comment in
+// TrafficHistoryPage.tsx. Same latent bug here (a date-less "HH:MM" label
+// lets the first and last point of an exactly-24h window collide, breaking
+// the drag-to-zoom ReferenceArea) — this page's own default history range is
+// also exactly 24h. It happens not to have been hit yet only because the
+// server-side auto-bucketing here doesn't always land the first/last bucket
+// on the same wall-clock minute the way Traffic History's clean 15-minute-
+// aligned buckets do — that's luck, not a fix, so it gets the same threshold.
+function bucketLabeller(from: number, to: number): (ts: number) => string {
+  const showDate = to - from >= 24 * 60 * 60 * 1000;
+  return ts => new Date(ts).toLocaleString(undefined, showDate
+    ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+    : { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtInt(v: number | null | undefined): string {
+  return v === null || v === undefined ? '—' : v.toLocaleString();
+}
+function fmtNum(v: number | null | undefined, digits = 2): string {
+  return v === null || v === undefined ? '—' : v.toFixed(digits);
+}
+function fmtWhen(ms: number | null | undefined): string {
+  return ms === null || ms === undefined
+    ? '—'
+    : new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Shared chart furniture, so the reflector charts added alongside the
+// original target one can't drift from it on grid/tooltip/axis styling.
+const CHART_GRID_STROKE = '#1e293b';
+const CHART_AXIS_TICK = { fontSize: 11, fill: '#94a3b8' };
+const CHART_TOOLTIP_STYLE = { background: '#1a2236', border: '1px solid #1e293b', fontSize: 12 };
+const CHART_TOOLTIP_LABEL_STYLE = { color: '#e2e8f0' };
+
+// ── History tab shell ────────────────────────────────────────────────────
+// Owns the query controls (time range, retention) shared by BOTH halves of
+// this module's history, and switches between them. The two halves are
+// genuinely different stores answering different questions — "how is our
+// backhaul to each radio" (client) vs "which radios are testing against us
+// and was our reflector up" (reflector) — so they get their own views
+// rather than being forced into one table.
+//
+// Refresh is a counter rather than a callback registry: each view reloads
+// on any change to (timeRange, reloadKey), so the shell never needs to know
+// what a given view actually fetches.
 function HistorySection() {
   const [timeRange, setTimeRange] = useState<TimeRangeValue>(DEFAULT_HISTORY_RANGE);
+  const [subTab, setSubTab] = useState<'targets' | 'reflector'>('targets');
+  const [reloadKey, setReloadKey] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [retentionDays, setRetentionDays] = useState<number | null>(null);
+  const [retentionInput, setRetentionInput] = useState('');
+  const [retentionSaving, setRetentionSaving] = useState(false);
+
+  useEffect(() => {
+    twampApi.getHistorySettings()
+      .then(s => { setRetentionDays(s.retentionDays); setRetentionInput(String(s.retentionDays)); })
+      .catch(() => {});
+  }, []);
+
+  const refresh = () => {
+    setRefreshing(true);
+    setReloadKey(k => k + 1);
+    // Purely the spinner's own minimum visible duration — the views do
+    // their own real loading and report it in their own bodies.
+    window.setTimeout(() => setRefreshing(false), 400);
+  };
+
+  const saveRetention = async () => {
+    const n = Number(retentionInput);
+    if (!Number.isFinite(n) || n < 1 || n > 365) {
+      toast.error('Retention must be between 1 and 365 days');
+      return;
+    }
+    setRetentionSaving(true);
+    try {
+      const r = await twampApi.updateHistorySettings(n);
+      setRetentionDays(r.retentionDays);
+      toast.success(`History retention set to ${r.retentionDays} day${r.retentionDays !== 1 ? 's' : ''}`);
+    } catch (err: any) {
+      toast.error(`Failed to update retention: ${err?.response?.data?.error ?? err.message}`);
+    } finally {
+      setRetentionSaving(false);
+    }
+  };
+
+  const SubTab = ({ value, label, icon: Icon }: { value: 'targets' | 'reflector'; label: string; icon: typeof History }) => (
+    <button
+      type="button"
+      onClick={() => setSubTab(value)}
+      aria-current={subTab === value ? 'page' : undefined}
+      className={clsx(
+        'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all',
+        subTab === value
+          ? 'bg-nms-accent text-nms-accent-fg shadow-sm'
+          : 'text-nms-text-dim hover:text-nms-text hover:bg-nms-surface',
+      )}
+    >
+      <Icon className="w-3.5 h-3.5" /> {label}
+    </button>
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Filters — shared by both views below */}
+      <div className="nms-card flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="nms-label">Time Range</label>
+            <TimeRangePicker value={timeRange} onChange={setTimeRange} align="left" />
+          </div>
+          <button onClick={refresh} className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-2">
+            <RefreshCw className={clsx('w-3 h-3', refreshing && 'animate-spin')} /> Refresh
+          </button>
+        </div>
+        <div className="flex items-end gap-2">
+          <div>
+            <label className="nms-label">History Retention (days, 1–365)</label>
+            <input aria-label="History Retention (days, 1–365)"
+              type="number" min={1} max={365}
+              className="nms-input w-32 font-mono text-sm"
+              value={retentionInput}
+              onChange={e => setRetentionInput(e.target.value)}
+            />
+          </div>
+          <button
+            onClick={saveRetention}
+            disabled={retentionSaving || !retentionDays || retentionInput === String(retentionDays)}
+            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-2"
+          >
+            <Settings className="w-3 h-3" /> {retentionSaving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </div>
+
+      {/* Which direction's history — our tests OUT, or theirs IN */}
+      <div className="flex justify-center">
+        <div className="flex gap-1 p-1 bg-nms-surface-2 rounded-lg border border-nms-border">
+          <SubTab value="targets" label="Targets (outbound)" icon={TrendingUp} />
+          <SubTab value="reflector" label="Reflector (inbound)" icon={Server} />
+        </div>
+      </div>
+
+      {subTab === 'targets'
+        ? <TargetHistoryView timeRange={timeRange} reloadKey={reloadKey} retentionDays={retentionDays} />
+        : <ReflectorHistoryView timeRange={timeRange} reloadKey={reloadKey} retentionDays={retentionDays} />}
+    </div>
+  );
+}
+
+interface HistoryViewProps {
+  timeRange: TimeRangeValue;
+  reloadKey: number;
+  retentionDays: number | null;
+}
+
+function TargetHistoryView({ timeRange, reloadKey, retentionDays }: HistoryViewProps) {
   const [summary, setSummary] = useState<TwampHistorySummaryRow[]>([]);
   const [loading, setLoading] = useState(true);
   // "Sort by worst ms to best ms" — default view is exactly that: avg RTT,
@@ -711,41 +874,25 @@ function HistorySection() {
   const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
   const [series, setSeries] = useState<TwampHistorySeriesPoint[]>([]);
   const [seriesLoading, setSeriesLoading] = useState(false);
-  const [retentionDays, setRetentionDays] = useState<number | null>(null);
-  const [retentionInput, setRetentionInput] = useState('');
-  const [retentionSaving, setRetentionSaving] = useState(false);
-
-  // Relative ranges re-anchor to "now" on every load; absolute ranges are fixed.
-  const resolveRange = useCallback((): { from: number; to: number } => {
-    if (timeRange.type === 'absolute') return { from: timeRange.from.getTime(), to: timeRange.to.getTime() };
-    const to = Date.now();
-    return { from: to - timeRange.ms, to };
-  }, [timeRange]);
 
   const loadSummary = useCallback(async () => {
     setLoading(true);
     try {
-      const { from, to } = resolveRange();
+      const { from, to } = resolveRange(timeRange);
       setSummary(await twampApi.getHistorySummary(from, to));
     } catch {
       toast.error('Failed to load TWAMP history summary');
     } finally {
       setLoading(false);
     }
-  }, [resolveRange]);
+  }, [timeRange, reloadKey]);
 
   useEffect(() => { loadSummary(); }, [loadSummary]);
-
-  useEffect(() => {
-    twampApi.getHistorySettings()
-      .then(s => { setRetentionDays(s.retentionDays); setRetentionInput(String(s.retentionDays)); })
-      .catch(() => {});
-  }, []);
 
   const loadSeries = useCallback(async (targetId: string) => {
     setSeriesLoading(true);
     try {
-      const { from, to } = resolveRange();
+      const { from, to } = resolveRange(timeRange);
       const { data } = await twampApi.getHistorySeries(targetId, from, to);
       setSeries(data);
     } catch {
@@ -754,7 +901,7 @@ function HistorySection() {
     } finally {
       setSeriesLoading(false);
     }
-  }, [resolveRange]);
+  }, [timeRange, reloadKey]);
 
   useEffect(() => { if (selectedTargetId) loadSeries(selectedTargetId); }, [selectedTargetId, loadSeries]);
 
@@ -784,44 +931,15 @@ function HistorySection() {
     else { setSortKey(key); setSortDir('desc'); }
   };
 
-  const saveRetention = async () => {
-    const n = Number(retentionInput);
-    if (!Number.isFinite(n) || n < 1 || n > 365) {
-      toast.error('Retention must be between 1 and 365 days');
-      return;
-    }
-    setRetentionSaving(true);
-    try {
-      const r = await twampApi.updateHistorySettings(n);
-      setRetentionDays(r.retentionDays);
-      toast.success(`History retention set to ${r.retentionDays} day${r.retentionDays !== 1 ? 's' : ''}`);
-    } catch (err: any) {
-      toast.error(`Failed to update retention: ${err?.response?.data?.error ?? err.message}`);
-    } finally {
-      setRetentionSaving(false);
-    }
-  };
-
   const chartPoints = useMemo(() => {
-    const { from, to } = resolveRange();
-    // >= 24h, not "wider than ~1.5 days" — see the matching comment in
-    // TrafficHistoryPage.tsx. Same latent bug here (a date-less "HH:MM"
-    // label lets the first and last point of an exactly-24h window collide,
-    // breaking the drag-to-zoom ReferenceArea) — this page's own default
-    // history range is also exactly 24h. It happens not to have been hit
-    // yet only because the server-side auto-bucketing here doesn't always
-    // land the first/last bucket on the same wall-clock minute the way
-    // Traffic History's clean 15-minute-aligned buckets do — that's luck,
-    // not a fix, so it gets the same threshold.
-    const showDate = to - from >= 24 * 60 * 60 * 1000;
+    const { from, to } = resolveRange(timeRange);
+    const label = bucketLabeller(from, to);
     return series.map(p => ({
-      label: new Date(p.ts).toLocaleString(undefined, showDate
-        ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
-        : { hour: '2-digit', minute: '2-digit' }),
+      label: label(p.ts),
       avgRttMs: p.avgRttMs, minRttMs: p.minRttMs, maxRttMs: p.maxRttMs, jitterMs: p.jitterMs,
       lossPct: p.packetLossRatio !== null ? Number((p.packetLossRatio * 100).toFixed(2)) : null,
     }));
-  }, [series, resolveRange]);
+  }, [series, timeRange]);
 
   const zoom = useZoomableChartData(chartPoints);
 
@@ -853,40 +971,6 @@ function HistorySection() {
 
   return (
     <div className="space-y-6">
-      {/* Filters */}
-      <div className="nms-card flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-wrap items-end gap-3">
-          <div>
-            <label className="nms-label">Time Range</label>
-            <TimeRangePicker value={timeRange} onChange={setTimeRange} align="left" />
-          </div>
-          <button
-            onClick={() => { loadSummary(); if (selectedTargetId) loadSeries(selectedTargetId); }}
-            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-2"
-          >
-            <RefreshCw className={clsx('w-3 h-3', loading && 'animate-spin')} /> Refresh
-          </button>
-        </div>
-        <div className="flex items-end gap-2">
-          <div>
-            <label className="nms-label">History Retention (days, 1–365)</label>
-            <input aria-label="History Retention (days, 1–365)"
-              type="number" min={1} max={365}
-              className="nms-input w-32 font-mono text-sm"
-              value={retentionInput}
-              onChange={e => setRetentionInput(e.target.value)}
-            />
-          </div>
-          <button
-            onClick={saveRetention}
-            disabled={retentionSaving || !retentionDays || retentionInput === String(retentionDays)}
-            className="nms-btn-ghost text-xs flex items-center gap-1.5 px-2.5 py-2"
-          >
-            <Settings className="w-3 h-3" /> {retentionSaving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-
       {/* Summary table */}
       <div className="nms-card">
         <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
@@ -903,7 +987,7 @@ function HistorySection() {
             No history recorded yet for this range — data accumulates as targets are tested (background poll or "Test Now").
           </p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="nms-table-scroll">
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-nms-text-dim border-b border-nms-border">
@@ -946,9 +1030,7 @@ function HistorySection() {
                     <td className="py-2 pr-4 font-mono">{fmtMsOrDash(r.maxRttMs)}</td>
                     <td className="py-2 pr-4 font-mono">{fmtMsOrDash(r.avgJitterMs)}</td>
                     <td className={clsx('py-2 pr-4 font-mono', (r.avgPacketLossRatio ?? 0) > 0 && 'text-amber-400')}>{fmtPct(r.avgPacketLossRatio)}</td>
-                    <td className="py-2 pr-4 font-mono">
-                      {new Date(r.lastTimestampMs).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                    </td>
+                    <td className="py-2 pr-4 font-mono">{fmtWhen(r.lastTimestampMs)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1006,15 +1088,15 @@ function HistorySection() {
               onMouseMove={zoom.onMouseMove}
               onMouseUp={zoom.onMouseUp}
             >
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} minTickGap={40} allowDataOverflow />
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+              <XAxis dataKey="label" tick={CHART_AXIS_TICK} minTickGap={40} allowDataOverflow />
               <YAxis
-                yAxisId="ms" tick={{ fontSize: 11, fill: '#94a3b8' }} allowDataOverflow
+                yAxisId="ms" tick={CHART_AXIS_TICK} allowDataOverflow
                 scale={msScale} domain={msScale === 'log' ? [LOG_EPSILON_MS, 'auto'] : [0, 'auto']}
                 label={{ value: msScale === 'log' ? 'ms (log)' : 'ms', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
               />
-              <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 11, fill: '#94a3b8' }} allowDataOverflow label={{ value: 'loss %', angle: 90, position: 'insideRight', fill: '#94a3b8', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: '#1a2236', border: '1px solid #1e293b', fontSize: 12 }} labelStyle={{ color: '#e2e8f0' }} />
+              <YAxis yAxisId="pct" orientation="right" tick={CHART_AXIS_TICK} allowDataOverflow label={{ value: 'loss %', angle: 90, position: 'insideRight', fill: '#94a3b8', fontSize: 11 }} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={CHART_TOOLTIP_LABEL_STYLE} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line yAxisId="ms" type="monotone" dataKey="maxRttMs" name="Max RTT" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
               <Line yAxisId="ms" type="monotone" dataKey="avgRttMs" name="Avg RTT" stroke="#38bdf8" strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -1027,7 +1109,7 @@ function HistorySection() {
         )}
 
         {selectedTarget && (
-          <div className="mt-4 pt-4 border-t border-nms-border overflow-x-auto">
+          <div className="mt-4 pt-4 border-t border-nms-border nms-table-scroll">
             <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">
               Summary for the selected time range ({timeRange.label})
             </p>
@@ -1056,6 +1138,436 @@ function HistorySection() {
                   <td className={clsx('py-2 pr-4 font-mono', (selectedTarget.avgPacketLossRatio ?? 0) > 0 && 'text-amber-400')}>
                     {fmtPct(selectedTarget.avgPacketLossRatio)}
                   </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+type ReflectorSortKey = 'peerIp' | 'presentSamples' | 'packetsInRange' | 'avgPacketsPerSec' | 'maxPacketsPerSec' | 'maxSessions' | 'lastSeenMs';
+
+// ── Reflector (inbound) history ──────────────────────────────────────────
+// The mirror of TargetHistoryView for the reverse direction. The questions
+// are different, so the charts are: a target's history is about LATENCY to
+// one place we chose, a reflector's is about WHO showed up, how much they
+// sent, and whether we were listening at all.
+function ReflectorHistoryView({ timeRange, reloadKey, retentionDays }: HistoryViewProps) {
+  const [summary, setSummary] = useState<TwampReflectorSummary | null>(null);
+  const [series, setSeries] = useState<TwampReflectorSeriesPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sortKey, setSortKey] = useState<ReflectorSortKey>('avgPacketsPerSec');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [selectedPeerIp, setSelectedPeerIp] = useState<string | null>(null);
+  const [peerSeries, setPeerSeries] = useState<TwampReflectorPeerSeriesPoint[]>([]);
+  const [peerLoading, setPeerLoading] = useState(false);
+  // Tracked separately from "summary is null" so a failed request never
+  // renders as the empty state below, which would assert that nothing was
+  // recorded — the opposite of what a failed read actually tells us.
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { from, to } = resolveRange(timeRange);
+      const [s, aggregate] = await Promise.all([
+        twampApi.getReflectorHistorySummary(from, to),
+        twampApi.getReflectorHistorySeries(from, to),
+      ]);
+      setSummary(s);
+      setSeries(aggregate.data);
+      setLoadError(null);
+    } catch (err: any) {
+      toast.error('Failed to load reflector history');
+      setLoadError(err?.response?.data?.error ?? err?.message ?? 'request failed');
+      setSummary(null);
+      setSeries([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [timeRange, reloadKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const loadPeerSeries = useCallback(async (peerIp: string) => {
+    setPeerLoading(true);
+    try {
+      const { from, to } = resolveRange(timeRange);
+      const { data } = await twampApi.getReflectorHistoryPeerSeries(peerIp, from, to);
+      setPeerSeries(data);
+    } catch {
+      toast.error('Failed to load peer history');
+      setPeerSeries([]);
+    } finally {
+      setPeerLoading(false);
+    }
+  }, [timeRange, reloadKey]);
+
+  useEffect(() => { if (selectedPeerIp) loadPeerSeries(selectedPeerIp); }, [selectedPeerIp, loadPeerSeries]);
+
+  // Auto-select the busiest peer, same reasoning as the target view: a
+  // blank "pick something" panel below a populated table is just a step
+  // the operator always has to take.
+  useEffect(() => {
+    const rows = summary?.rows ?? [];
+    if (!selectedPeerIp && rows.length > 0) {
+      const busiest = [...rows].sort((a, b) => (b.avgPacketsPerSec ?? -1) - (a.avgPacketsPerSec ?? -1))[0];
+      setSelectedPeerIp(busiest.peerIp);
+    }
+  }, [summary, selectedPeerIp]);
+
+  const sorted = useMemo(() => {
+    const rows = summary?.rows ?? [];
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      if (typeof av === 'string' && typeof bv === 'string') return dir * av.localeCompare(bv);
+      return dir * ((av as number) - (bv as number));
+    });
+  }, [summary, sortKey, sortDir]);
+
+  const toggleSort = (key: ReflectorSortKey) => {
+    if (key === sortKey) setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir('desc'); }
+  };
+
+  const clientPoints = useMemo(() => {
+    const { from, to } = resolveRange(timeRange);
+    const label = bucketLabeller(from, to);
+    return series.map(p => ({
+      label: label(p.ts),
+      avgTotalPeers: p.avgTotalPeers,
+      maxTotalPeers: p.maxTotalPeers,
+      avgLightPeers: p.avgLightPeers,
+      avgFullPeers: p.avgFullPeers,
+      upPct: Number((p.upRatio * 100).toFixed(1)),
+      avgPacketsPerSec: p.avgPacketsPerSec,
+      maxPacketsPerSec: p.maxPacketsPerSec,
+    }));
+  }, [series, timeRange]);
+
+  // A protocol that was switched off for the whole range would otherwise
+  // draw a flat zero line claiming "no clients on Full" as if it were a
+  // measurement rather than a disabled listener — only plot a per-protocol
+  // breakdown when there is actually something to break down.
+  const hasLight = clientPoints.some(p => (p.avgLightPeers ?? 0) > 0);
+  const hasFull = clientPoints.some(p => (p.avgFullPeers ?? 0) > 0);
+  const showProtocolSplit = hasLight && hasFull;
+  // Same reasoning for the uptime axis: a constant 100% line spends a whole
+  // Y axis saying "nothing happened".
+  const hadDowntime = series.some(p => p.upRatio < 1);
+
+  const clientZoom = useZoomableChartData(clientPoints);
+  const throughputZoom = useZoomableChartData(clientPoints);
+
+  const peerPoints = useMemo(() => {
+    const { from, to } = resolveRange(timeRange);
+    const label = bucketLabeller(from, to);
+    return peerSeries.map(p => ({
+      label: label(p.ts),
+      avgPacketsPerSec: p.avgPacketsPerSec,
+      maxPacketsPerSec: p.maxPacketsPerSec,
+      presencePct: Number((p.presenceRatio * 100).toFixed(1)),
+    }));
+  }, [peerSeries, timeRange]);
+  const peerZoom = useZoomableChartData(peerPoints);
+
+  const selectedPeer = summary?.rows.find(r => r.peerIp === selectedPeerIp);
+  const totalSamples = summary?.totalSamples ?? 0;
+  const upPctOfRange = totalSamples > 0 ? ((summary!.activeSamples / totalSamples) * 100) : null;
+  const totalPacketsInRange = (summary?.rows ?? []).reduce((acc, r) => acc + (r.packetsInRange ?? 0), 0);
+
+  const SortHeader = ({ label, k }: { label: string; k: ReflectorSortKey }) => (
+    <th className="py-2 pr-4 font-medium cursor-pointer select-none hover:text-nms-text" onClick={() => toggleSort(k)}>
+      <span className="flex items-center gap-1">{label}{sortKey === k && (sortDir === 'asc' ? ' ▲' : ' ▼')}</span>
+    </th>
+  );
+
+  if (loading) {
+    return <div className="nms-card"><p className="text-sm text-nms-text-dim py-10 text-center">Loading reflector history…</p></div>;
+  }
+
+  if (loadError) {
+    return (
+      <div className="nms-card">
+        <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+          <AlertCircle className="w-4 h-4 text-amber-400" /> Reflector — History Unavailable
+        </h2>
+        <p className="text-xs text-nms-text-dim">
+          The stored history could not be read, so nothing below would be accurate: <span className="font-mono text-nms-text">{loadError}</span>.
+          Use Refresh above to retry.
+        </p>
+      </div>
+    );
+  }
+
+  // One honest empty state instead of four empty cards. This store is
+  // sampled by the backend every 30s and only starts once a reflector is
+  // installed AND configured, so a wide range can legitimately be empty on
+  // a deployment that just enabled it.
+  if (totalSamples === 0) {
+    return (
+      <div className="nms-card">
+        <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+          <Server className="w-4 h-4 text-nms-accent" /> Reflector — No History In This Range
+        </h2>
+        <p className="text-xs text-nms-text-dim">
+          The backend samples the reflector every 30 seconds — connected clients, reflected packet rate per
+          client, and whether the reflector service was running. Nothing is stored for this time range yet.
+          This is expected if the reflector was only just installed and configured, or if the range predates it;
+          pick a shorter range (such as the last hour) and the graphs fill in as samples accumulate.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Connected clients over time */}
+      <div className="nms-card">
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-1">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+            <Users className="w-4 h-4 text-nms-accent" /> Reflector — Connected Clients Over Time
+          </h2>
+          {clientZoom.isZoomed && (
+            <button onClick={clientZoom.resetZoom} className="nms-btn-ghost flex items-center gap-1.5 text-xs px-2 py-1">
+              <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-nms-text-dim mb-4">
+          Distinct devices testing inbound against this host's reflector, bucketed over the selected range.
+          {' '}<span className="font-mono text-nms-text">{summary!.rows.length}</span> device{summary!.rows.length !== 1 ? 's' : ''} seen
+          {upPctOfRange !== null && <> · reflector running for <span className={clsx('font-mono', upPctOfRange < 100 ? 'text-amber-400' : 'text-nms-text')}>{upPctOfRange.toFixed(1)}%</span> of the range</>}
+          {retentionDays !== null && <> · keeping <span className="font-mono text-nms-text">{retentionDays}</span> day{retentionDays !== 1 ? 's' : ''} of samples</>}.
+          {' '}Counted per device, not per session — one radio using two source ports is one client here, unlike the
+          live Connected Clients table on Info &amp; Stats.
+        </p>
+        <ResponsiveContainer width="100%" height={300}>
+          <ComposedChart
+            data={clientZoom.displayData}
+            margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+            onMouseDown={clientZoom.onMouseDown}
+            onMouseMove={clientZoom.onMouseMove}
+            onMouseUp={clientZoom.onMouseUp}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+            <XAxis dataKey="label" tick={CHART_AXIS_TICK} minTickGap={40} allowDataOverflow />
+            <YAxis
+              yAxisId="count" tick={CHART_AXIS_TICK} allowDataOverflow allowDecimals={false} domain={[0, 'auto']}
+              label={{ value: 'clients', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+            />
+            {hadDowntime && (
+              <YAxis yAxisId="pct" orientation="right" tick={CHART_AXIS_TICK} allowDataOverflow domain={[0, 100]}
+                label={{ value: 'reflector up %', angle: 90, position: 'insideRight', fill: '#94a3b8', fontSize: 11 }} />
+            )}
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={CHART_TOOLTIP_LABEL_STYLE} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line yAxisId="count" type="monotone" dataKey="maxTotalPeers" name="Peak clients" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+            <Line yAxisId="count" type="monotone" dataKey="avgTotalPeers" name="Avg clients" stroke="#38bdf8" strokeWidth={2} dot={false} isAnimationActive={false} />
+            {showProtocolSplit && <Line yAxisId="count" type="monotone" dataKey="avgLightPeers" name="Light (UDP)" stroke="#22c55e" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+            {showProtocolSplit && <Line yAxisId="count" type="monotone" dataKey="avgFullPeers" name="Full (TCP)" stroke="#a78bfa" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+            {hadDowntime && <Line yAxisId="pct" type="monotone" dataKey="upPct" name="Reflector up %" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} />}
+            {clientZoom.selection && <ReferenceArea yAxisId="count" x1={clientZoom.selection.x1} x2={clientZoom.selection.x2} strokeOpacity={0.3} fill="#38bdf8" fillOpacity={0.15} />}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Reflected throughput */}
+      <div className="nms-card">
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-1">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+            <Activity className="w-4 h-4 text-nms-accent" /> Reflector — Reflected Packet Rate
+          </h2>
+          {throughputZoom.isZoomed && (
+            <button onClick={throughputZoom.resetZoom} className="nms-btn-ghost flex items-center gap-1.5 text-xs px-2 py-1">
+              <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-nms-text-dim mb-4">
+          Test packets this reflector sent back, summed across every client — derived from the reflector's own
+          per-client counters, so a restart is handled as a counter reset rather than a spike.
+          {' '}<span className="font-mono text-nms-text">{fmtInt(totalPacketsInRange)}</span> packets reflected in this range.
+          {' '}TWAMP-Light only: the full-protocol path exposes no per-client counter, so a Full client appears in the
+          client count above and the table below, but not here.
+        </p>
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart
+            data={throughputZoom.displayData}
+            margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+            onMouseDown={throughputZoom.onMouseDown}
+            onMouseMove={throughputZoom.onMouseMove}
+            onMouseUp={throughputZoom.onMouseUp}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+            <XAxis dataKey="label" tick={CHART_AXIS_TICK} minTickGap={40} allowDataOverflow />
+            <YAxis
+              yAxisId="pps" tick={CHART_AXIS_TICK} allowDataOverflow domain={[0, 'auto']}
+              label={{ value: 'packets/s', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+            />
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={CHART_TOOLTIP_LABEL_STYLE} />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
+            <Line yAxisId="pps" type="monotone" dataKey="maxPacketsPerSec" name="Peak pkt/s" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+            <Line yAxisId="pps" type="monotone" dataKey="avgPacketsPerSec" name="Avg pkt/s" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
+            {throughputZoom.selection && <ReferenceArea yAxisId="pps" x1={throughputZoom.selection.x1} x2={throughputZoom.selection.x2} strokeOpacity={0.3} fill="#f59e0b" fillOpacity={0.15} />}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Per-client rollup */}
+      <div className="nms-card">
+        <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2 mb-1">
+          <ListTree className="w-4 h-4 text-nms-accent" /> Clients — Ranked by Packet Rate
+        </h2>
+        <p className="text-xs text-nms-text-dim mb-4">
+          Every device seen testing against this reflector over the range. "Present" is the share of the
+          {' '}<span className="font-mono text-nms-text">{fmtInt(totalSamples)}</span> samples in this range where the device
+          was actually testing — a device that stops shows up here as a low percentage rather than disappearing.
+          Click a column to sort, click a row to graph it below.
+        </p>
+        {sorted.length === 0 ? (
+          <p className="text-sm text-nms-text-dim py-6 text-center">
+            Samples exist for this range, but no device was ever seen testing against the reflector in it.
+          </p>
+        ) : (
+          <div className="nms-table-scroll">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-nms-text-dim border-b border-nms-border">
+                  <SortHeader label="Client IP" k="peerIp" />
+                  <th className="py-2 pr-4 font-medium">Protocol</th>
+                  <SortHeader label="Present" k="presentSamples" />
+                  <SortHeader label="Packets" k="packetsInRange" />
+                  <SortHeader label="Avg pkt/s" k="avgPacketsPerSec" />
+                  <SortHeader label="Peak pkt/s" k="maxPacketsPerSec" />
+                  <SortHeader label="Peak Sessions" k="maxSessions" />
+                  <SortHeader label="Last Seen" k="lastSeenMs" />
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map(r => {
+                  const presencePct = totalSamples > 0 ? (r.presentSamples / totalSamples) * 100 : 0;
+                  return (
+                    <tr
+                      key={r.peerIp}
+                      onClick={() => setSelectedPeerIp(r.peerIp)}
+                      onKeyDown={activateOnKey(() => setSelectedPeerIp(r.peerIp))}
+                      tabIndex={0}
+                      aria-selected={selectedPeerIp === r.peerIp}
+                      className={clsx(
+                        'border-b border-nms-border/50 hover:bg-nms-bg/50 cursor-pointer',
+                        selectedPeerIp === r.peerIp && 'bg-nms-accent/10',
+                      )}
+                    >
+                      <td className="py-2 pr-4 font-mono text-nms-text">{r.peerIp}</td>
+                      <td className="py-2 pr-4">
+                        <span className={clsx('px-1.5 py-0.5 rounded font-mono text-[10px] border',
+                          r.protocol === 'light' ? 'text-nms-accent bg-nms-accent/10 border-nms-accent/30' : 'text-nms-text-dim bg-nms-surface-2 border-nms-border')}>
+                          {r.protocol === 'light' ? 'Light' : 'Full'}
+                        </span>
+                      </td>
+                      <td className={clsx('py-2 pr-4 font-mono', presencePct < 95 && 'text-amber-400')}>{presencePct.toFixed(1)}%</td>
+                      <td className="py-2 pr-4 font-mono">{fmtInt(r.packetsInRange)}</td>
+                      <td className="py-2 pr-4 font-mono text-nms-accent font-semibold">{fmtNum(r.avgPacketsPerSec)}</td>
+                      <td className="py-2 pr-4 font-mono">{fmtNum(r.maxPacketsPerSec)}</td>
+                      <td className="py-2 pr-4 font-mono">{fmtInt(r.maxSessions)}</td>
+                      <td className="py-2 pr-4 font-mono">{fmtWhen(r.lastSeenMs)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Per-client drill-down */}
+      <div className="nms-card">
+        <div className="flex items-start justify-between flex-wrap gap-2 mb-1">
+          <h2 className="text-sm font-semibold text-nms-text flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-nms-accent" />
+            {selectedPeer ? `${selectedPeer.peerIp} — Packet Rate / Presence Over Time` : 'Select a client above'}
+          </h2>
+          {peerZoom.isZoomed && (
+            <button onClick={peerZoom.resetZoom} className="nms-btn-ghost flex items-center gap-1.5 text-xs px-2 py-1">
+              <RotateCcw className="w-3.5 h-3.5" /> Reset Zoom
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-nms-text-dim mb-4">
+          Presence is the share of each bucket's samples where this client was testing, so a gap in its testing
+          reads as a dip rather than a break in the line. Drag across the chart to zoom into a time range.
+        </p>
+        {!selectedPeerIp ? (
+          <p className="text-sm text-nms-text-dim py-10 text-center">No client selected yet.</p>
+        ) : peerLoading ? (
+          <p className="text-sm text-nms-text-dim py-10 text-center">Loading…</p>
+        ) : peerPoints.length === 0 ? (
+          <p className="text-sm text-nms-text-dim py-10 text-center">No samples for this client in this range.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart
+              data={peerZoom.displayData}
+              margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+              onMouseDown={peerZoom.onMouseDown}
+              onMouseMove={peerZoom.onMouseMove}
+              onMouseUp={peerZoom.onMouseUp}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART_GRID_STROKE} />
+              <XAxis dataKey="label" tick={CHART_AXIS_TICK} minTickGap={40} allowDataOverflow />
+              <YAxis
+                yAxisId="pps" tick={CHART_AXIS_TICK} allowDataOverflow domain={[0, 'auto']}
+                label={{ value: 'packets/s', angle: -90, position: 'insideLeft', fill: '#94a3b8', fontSize: 11 }}
+              />
+              <YAxis yAxisId="pct" orientation="right" tick={CHART_AXIS_TICK} allowDataOverflow domain={[0, 100]}
+                label={{ value: 'present %', angle: 90, position: 'insideRight', fill: '#94a3b8', fontSize: 11 }} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} labelStyle={CHART_TOOLTIP_LABEL_STYLE} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line yAxisId="pps" type="monotone" dataKey="maxPacketsPerSec" name="Peak pkt/s" stroke="#475569" strokeWidth={1} strokeDasharray="3 3" dot={false} isAnimationActive={false} />
+              <Line yAxisId="pps" type="monotone" dataKey="avgPacketsPerSec" name="Avg pkt/s" stroke="#f59e0b" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line yAxisId="pct" type="monotone" dataKey="presencePct" name="Present %" stroke="#38bdf8" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              {peerZoom.selection && <ReferenceArea yAxisId="pps" x1={peerZoom.selection.x1} x2={peerZoom.selection.x2} strokeOpacity={0.3} fill="#f59e0b" fillOpacity={0.15} />}
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
+
+        {selectedPeer && (
+          <div className="mt-4 pt-4 border-t border-nms-border nms-table-scroll">
+            <p className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">
+              Summary for the selected time range ({timeRange.label})
+            </p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-nms-text-dim border-b border-nms-border">
+                  <th className="py-2 pr-4 font-medium">Protocol</th>
+                  <th className="py-2 pr-4 font-medium">Present</th>
+                  <th className="py-2 pr-4 font-medium">Packets</th>
+                  <th className="py-2 pr-4 font-medium">Avg pkt/s</th>
+                  <th className="py-2 pr-4 font-medium">Peak pkt/s</th>
+                  <th className="py-2 pr-4 font-medium">Peak Sessions</th>
+                  <th className="py-2 pr-4 font-medium">First Seen</th>
+                  <th className="py-2 pr-4 font-medium">Last Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="hover:bg-nms-bg/50">
+                  <td className="py-2 pr-4 font-mono">{selectedPeer.protocol === 'light' ? 'TWAMP-Light (UDP)' : 'Full (TCP)'}</td>
+                  <td className="py-2 pr-4 font-mono">
+                    {totalSamples > 0 ? `${((selectedPeer.presentSamples / totalSamples) * 100).toFixed(1)}%` : '—'}
+                  </td>
+                  <td className="py-2 pr-4 font-mono text-nms-text">{fmtInt(selectedPeer.packetsInRange)}</td>
+                  <td className="py-2 pr-4 font-mono text-nms-accent font-semibold">{fmtNum(selectedPeer.avgPacketsPerSec)}</td>
+                  <td className="py-2 pr-4 font-mono text-nms-text">{fmtNum(selectedPeer.maxPacketsPerSec)}</td>
+                  <td className="py-2 pr-4 font-mono">{fmtInt(selectedPeer.maxSessions)}</td>
+                  <td className="py-2 pr-4 font-mono">{fmtWhen(selectedPeer.firstSeenMs)}</td>
+                  <td className="py-2 pr-4 font-mono">{fmtWhen(selectedPeer.lastSeenMs)}</td>
                 </tr>
               </tbody>
             </table>

@@ -24,5 +24,11 @@
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  // Test files are deliberately NOT emitted. They were previously compiled into
+  // dist/ (unused by anything — nothing imports a test), and leaving them in the
+  // production compile also meant a test could not reach outside rootDir even
+  // though it never ships: ran-radio-grouping.test.ts executes the RAN page's
+  // pure grouping module, which lives in frontend/src and is not present in the
+  // backend image's build context at all.
+  "exclude": ["node_modules", "dist", "src/**/__tests__/**", "src/**/*.test.ts"]
 }

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Radio, MapPin, Wifi, Server, Locate, AlertCircle, Terminal, Monitor,
   Eye, EyeOff, HelpCircle, Send, RefreshCw, ChevronDown, ChevronUp,
-  Clock, ExternalLink, Copy, Check, RotateCw, WifiOff, Users,
+  Clock, ExternalLink, Copy, Check, RotateCw, WifiOff, Users, AlertTriangle,
 } from 'lucide-react';
 import { LabelWithTooltip } from '../common/UniversalTooltipWrappers';
 import { configApi, genieacsApi, radioTagsApi, SercommRadio, SercommProvisionInput, NbiTask } from '../../api';
@@ -300,8 +300,19 @@ const SercommRadioRow: React.FC<{
     if (!enable && !confirm(`Disable RF on ${radio.serial}?`)) return;
     setRfBusy(true);
     try {
-      await genieacsApi.setRfSercomm(radio.id, enable);
-      toast.success(`${radio.serial}: RF ${enable ? 'enabled' : 'disabled'}.`);
+      const r = await genieacsApi.setRfSercomm(radio.id, enable);
+      // The write landing is not the cell coming up. A radio with SAS enabled
+      // and no grant accepts AdminState=1 and reverts it on its own a few
+      // minutes later, so reporting plain success here is how an operator ends
+      // up waiting on a radio that was never going to transmit.
+      if (r.precondition?.blocked) {
+        toast.error(
+          `${radio.serial}: AdminState set, but the cell cannot come up. ${r.precondition.reasons[0]}`,
+          { duration: 12000 },
+        );
+      } else {
+        toast.success(`${radio.serial}: RF ${enable ? 'enabled' : 'disabled'}.`);
+      }
       setTimeout(onRefresh, 5000);
     } catch (err: any) {
       toast.error(`RF set failed: ${err?.response?.data?.error ?? err?.message}`);
@@ -411,7 +422,18 @@ const SercommRadioRow: React.FC<{
           {nickname && <span className="text-xs text-nms-text-dim font-mono">{nickname}</span>}
           {radio.ip && (
             <span className="flex items-center gap-0.5" onClick={e => e.stopPropagation()}>
-              <span className="text-xs text-nms-text-dim font-mono">{radio.ip}</span>
+              <span className="text-xs text-nms-text-dim font-mono"
+                title={radio.ipStaleAlternative
+                  ? `Live address, from the device's own ConnectionRequestURL. GenieACS's cached ${radio.ipStaleAlternative.source === 'device-ip' ? 'Device.IP.Interface' : 'ConnectionRequestURL'} still reads ${radio.ipStaleAlternative.ip}, last read ${Math.round(radio.ipStaleAlternative.ageSeconds / 60)} min earlier — it only updates when that parameter is refreshed.`
+                  : undefined}>
+                {radio.ip}
+              </span>
+              {radio.ipStaleAlternative && (
+                <span aria-label={`GenieACS also holds an older address, ${radio.ipStaleAlternative.ip}`}
+                  title={`GenieACS also holds an older address: ${radio.ipStaleAlternative.ip}`}>
+                  <AlertTriangle className="w-3 h-3 text-nms-amber" aria-hidden="true" />
+                </span>
+              )}
               <CopyBtn text={radio.ip} />
             </span>
           )}

@@ -141,6 +141,61 @@ export interface TwampHistorySeriesPoint {
   sampleCount: number;
 }
 
+// ── Reflector (server-side) history ──────────────────────────────────────
+// The reverse direction: devices testing INBOUND against the reflector this
+// host runs. Peer identity is the IP, not ip:port — a TWAMP-Light sender's
+// ephemeral source port changes between runs, so ip:port would start a new
+// series every time one radio restarted a session. `maxSessions` keeps that
+// detail. This also means the counts here are DISTINCT DEVICES, which can
+// legitimately read lower than the live Connected Clients table's row count
+// (one row per session).
+
+export interface TwampReflectorSummaryRow {
+  peerIp: string;
+  protocol: TwampProtocol;
+  presentSamples: number;
+  /** null for a full-protocol peer: there is no per-peer counter to read. */
+  packetsInRange: number | null;
+  avgPacketsPerSec: number | null;
+  maxPacketsPerSec: number | null;
+  maxSessions: number;
+  firstSeenMs: number;
+  lastSeenMs: number;
+}
+
+export interface TwampReflectorSummary {
+  rows: TwampReflectorSummaryRow[];
+  /** Ticks stored in the range — the denominator for a peer's presence %. */
+  totalSamples: number;
+  activeSamples: number;
+}
+
+export interface TwampReflectorSeriesPoint {
+  ts: number;
+  avgFullPeers: number | null;
+  maxFullPeers: number | null;
+  avgLightPeers: number | null;
+  maxLightPeers: number | null;
+  avgTotalPeers: number | null;
+  maxTotalPeers: number | null;
+  avgPacketsPerSec: number | null;
+  maxPacketsPerSec: number | null;
+  /** Fraction of the bucket's ticks where the reflector service was up (0-1). */
+  upRatio: number;
+  sampleCount: number;
+}
+
+export interface TwampReflectorPeerSeriesPoint {
+  ts: number;
+  avgPacketsPerSec: number | null;
+  maxPacketsPerSec: number | null;
+  packetsInBucket: number | null;
+  maxSessions: number | null;
+  /** Fraction of the bucket's ticks where this peer was present (0-1). */
+  presenceRatio: number;
+  sampleCount: number;
+}
+
 export const twampApi = {
   getStatus: async (): Promise<TwampStatus> => { const { data } = await api.get('/status'); return data; },
   install:   () => fetch('/api/twamp/install',   { method: 'POST', credentials: 'include' }),
@@ -178,6 +233,19 @@ export const twampApi = {
   },
   getHistorySeries: async (targetId: string, fromMs: number, toMs: number): Promise<{ bucketMs: number; data: TwampHistorySeriesPoint[] }> => {
     const { data } = await api.get('/history/series', { params: { targetId, fromMs, toMs } });
+    return { bucketMs: data.bucketMs, data: data.data };
+  },
+
+  getReflectorHistorySummary: async (fromMs: number, toMs: number): Promise<TwampReflectorSummary> => {
+    const { data } = await api.get('/server/history/summary', { params: { fromMs, toMs } });
+    return { rows: data.rows, totalSamples: data.totalSamples, activeSamples: data.activeSamples };
+  },
+  getReflectorHistorySeries: async (fromMs: number, toMs: number): Promise<{ bucketMs: number; data: TwampReflectorSeriesPoint[] }> => {
+    const { data } = await api.get('/server/history/series', { params: { fromMs, toMs } });
+    return { bucketMs: data.bucketMs, data: data.data };
+  },
+  getReflectorHistoryPeerSeries: async (peerIp: string, fromMs: number, toMs: number): Promise<{ bucketMs: number; data: TwampReflectorPeerSeriesPoint[] }> => {
+    const { data } = await api.get('/server/history/series', { params: { peerIp, fromMs, toMs } });
     return { bucketMs: data.bucketMs, data: data.data };
   },
 };

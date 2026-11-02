@@ -178,6 +178,12 @@ export class SqliteAuthRepository implements IAuthRepository {
     if (!radioTagsCols.some(c => c.name === 'band')) {
       this.db.exec('ALTER TABLE radio_tags ADD COLUMN band TEXT');
     }
+    // Operator-named group for the RAN page's collapsible radio groups. Named
+    // `group_name` rather than `group`, which is a SQL keyword and would need
+    // quoting at every use site.
+    if (!radioTagsCols.some(c => c.name === 'group_name')) {
+      this.db.exec('ALTER TABLE radio_tags ADD COLUMN group_name TEXT');
+    }
 
     this.logger.info('Auth database schema initialised');
   }

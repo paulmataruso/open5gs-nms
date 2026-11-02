@@ -16,6 +16,7 @@ import { vectorcoreSmscApi, type VectorcoreSmscStatus } from '../../api/vectorco
 import type { ValidationResult, ServiceStatus } from '../../types';
 import { gsmApi } from '../../api/gsm';
 import { FEATURES } from '../../config/features';
+import { dhcpApi, type DhcpStatus } from '../../api/dhcp';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 
@@ -178,6 +179,7 @@ export function DashboardPage(): JSX.Element {
   const [pstnStatus, setPstnStatus] = useState<PstnStatus | null>(null);
   const [asterisk2gStatus, setAsterisk2gStatus] = useState<Asterisk2gStatus | null>(null);
   const [secgwStatus, setSecgwStatus] = useState<SecGwStatus | null>(null);
+  const [dhcpStatus, setDhcpStatus] = useState<DhcpStatus | null>(null);
   const [mmsStatus, setMmsStatus] = useState<MmsStatus | null>(null);
   const [vectorcoreSmscStatus, setVectorcoreSmscStatus] = useState<VectorcoreSmscStatus | null>(null);
   const [amfPlmn, setAmfPlmn] = useState<{ mcc: string; mnc: string } | null>(null);
@@ -235,6 +237,9 @@ export function DashboardPage(): JSX.Element {
     // Security Gateway status — service health + radio/tunnel counts for its
     // own mini-card in the Network Functions grid below.
     secgwApi.getStatus().then(setSecgwStatus).catch(() => {});
+    // DHCP (Kea) — its own mini-card in the Network Functions grid below. Gated
+    // on the flag so a deployment with the module off makes no request at all.
+    if (FEATURES.dhcp) dhcpApi.status().then(setDhcpStatus).catch(() => {});
     // MMS (VectorCore MMSC + MM1 MSISDN proxy) status — services.serviceActive/
     // proxyActive for the Network Functions grid below (message-count stats
     // already come from mmsApi.getAdmin() above, this is just service health).
@@ -303,7 +308,12 @@ export function DashboardPage(): JSX.Element {
       secgwApi.getStatus().then(setSecgwStatus).catch(() => {});
     };
     const secgwStatusInterval = setInterval(fetchSecgwStatus, 5000);
-    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(vowifiStatsInterval); clearInterval(mmsStatsInterval); clearInterval(secgwStatusInterval); };
+    // 15s rather than 5s: this is service up/down, which moves far less often
+    // than tunnel or call counts.
+    const dhcpStatusInterval = FEATURES.dhcp
+      ? setInterval(() => { dhcpApi.status().then(setDhcpStatus).catch(() => {}); }, 15000)
+      : undefined;
+    return () => { clearInterval(gtpInterval); clearInterval(callStatsInterval); clearInterval(vowifiStatsInterval); clearInterval(mmsStatsInterval); clearInterval(secgwStatusInterval); if (dhcpStatusInterval) clearInterval(dhcpStatusInterval); };
   }, [fetchStatuses, fetchSubscribers]);
 
   // Real NTP clients only, most recent first — recentNtpClients() drops the
@@ -1085,6 +1095,9 @@ export function DashboardPage(): JSX.Element {
           <AddonServiceMiniCard name="MMSC" vendor="VectorCore" active={!!mmsStatus?.serviceActive} loading={!mmsStatus} />
           <AddonServiceMiniCard name="MM1 PROXY" vendor="Open5GS NMS" active={!!mmsStatus?.proxyActive} loading={!mmsStatus} />
           <AddonServiceMiniCard name="SMSC" vendor="VectorCore" active={!!vectorcoreSmscStatus?.serviceActive} loading={!vectorcoreSmscStatus} />
+          {FEATURES.dhcp && (
+            <AddonServiceMiniCard name="DHCP" vendor="Kea" active={!!dhcpStatus?.running} loading={!dhcpStatus} />
+          )}
         </div>
       </div>
 

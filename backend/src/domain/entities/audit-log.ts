@@ -29,6 +29,12 @@ export type AuditAction =
   | 'ue_detach_install'
   | 'ue_block'
   | 'ue_unblock'
+  // DHCP server module (Kea)
+  | 'dhcp_install'
+  | 'dhcp_config_save'
+  | 'dhcp_start'
+  | 'dhcp_stop'
+  | 'dhcp_restart'
   // Bounce: a detach that tells the UE to re-attach. Distinct from ue_block
   // because it installs no block, and because the two put a different
   // CLR-Flags value on the wire.

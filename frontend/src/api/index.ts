@@ -72,15 +72,29 @@ export const serviceApi = {
 };
 
 // ── Subscribers ──
+export interface RadioTagFull {
+  nickname: string;
+  band: string | null;
+  /** Operator-named group for the RAN page's collapsible radio groups. */
+  group: string | null;
+}
+
 export const radioTagsApi = {
   getAll: () =>
     api.get<Record<string, string>>('/radio-tags').then(r => r.data),
   getAllFull: () =>
-    api.get<Record<string, { nickname: string; band: string | null }>>('/radio-tags/full').then(r => r.data),
+    api.get<Record<string, RadioTagFull>>('/radio-tags/full').then(r => r.data),
+  // Distinct operator-named groups already in use, for the RAN page's
+  // group-assignment dropdown.
+  listGroups: () =>
+    api.get<string[]>('/radio-tags/groups').then(r => r.data),
   set: (ip: string, nickname: string) =>
     api.put(`/radio-tags/${encodeURIComponent(ip)}`, { nickname }).then(r => r.data),
   setBand: (ip: string, band: string) =>
     api.put(`/radio-tags/${encodeURIComponent(ip)}`, { band }).then(r => r.data),
+  // Empty string clears the assignment, leaving nickname and band untouched.
+  setGroup: (ip: string, group: string) =>
+    api.put(`/radio-tags/${encodeURIComponent(ip)}`, { group }).then(r => r.data),
   remove: (ip: string) =>
     api.delete(`/radio-tags/${encodeURIComponent(ip)}`).then(r => r.data),
 };

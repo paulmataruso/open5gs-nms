@@ -172,6 +172,69 @@ export async function getLightPeers(hostExecutor: IHostExecutor): Promise<Server
   }
 }
 
+// Minimal Prometheus text-exposition-format parser — just enough to read
+// every twamp_* series as name/labels/value. Not a general-purpose parser
+// (no #TYPE/#HELP handling needed: nothing here re-exposes these as our own
+// metrics), so a small hand-rolled regex is preferable to a real dependency.
+//
+// Lives here rather than in twamp-controller.ts because there are now two
+// consumers of the reflector's own metrics — the Info & Stats table and the
+// history sampler (twamp-reflector-monitor.ts) — and the same reasoning
+// getFullConnections/getLightPeers already carry applies: one definition of
+// "what the reflector reports", so a table and a graph of the same thing
+// cannot disagree.
+export interface ParsedMetric { metric: string; labels: Record<string, string>; value: number }
+
+export function parsePrometheusText(text: string): ParsedMetric[] {
+  const results: ParsedMetric[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const match = trimmed.match(/^(\w+)(\{([^}]*)\})?\s+([-\d.eE+]+)\s*$/);
+    if (!match) continue;
+    const [, metric, , labelStr, valueStr] = match;
+    const labels: Record<string, string> = {};
+    if (labelStr) {
+      for (const pair of labelStr.split(',')) {
+        const kv = pair.match(/^(\w+)="([^"]*)"$/);
+        if (kv) labels[kv[1]] = kv[2];
+      }
+    }
+    results.push({ metric, labels, value: parseFloat(valueStr) });
+  }
+  return results;
+}
+
+// Reads the reflector's own loopback-only Prometheus endpoint
+// (twamp-server.go's -metrics-addr, never overridden in the generated
+// unit so the Go default always applies). `available: false` means the
+// endpoint did not answer — the reflector is stopped, or too old to expose
+// it — which is a normal state, not an error.
+export async function getReflectorMetrics(
+  hostExecutor: IHostExecutor,
+): Promise<{ available: boolean; data: ParsedMetric[] }> {
+  const result = await hostExecutor.executeCommand(
+    'curl', ['-fsS', `http://${TWAMP_SERVER_METRICS_ADDR}/metrics`], 5000,
+  ).catch(() => null);
+  if (!result || result.exitCode !== 0) return { available: false, data: [] };
+  return { available: true, data: parsePrometheusText(result.stdout).filter(m => m.metric.startsWith('twamp_')) };
+}
+
+// Per-peer-IP cumulative reflected-packet counters, keyed by peer IP —
+// twamp_light_packets_reflected_total is labelled by IP only (deliberately,
+// see twamp-server.go), which is also the identity the reflector history
+// keys on, so this maps straight across with no port reconciliation.
+export function lightPacketCountersByIp(metrics: ParsedMetric[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const m of metrics) {
+    if (m.metric !== 'twamp_light_packets_reflected_total') continue;
+    const ip = m.labels.peer_ip;
+    if (!ip || !Number.isFinite(m.value)) continue;
+    out[ip] = m.value;
+  }
+  return out;
+}
+
 export function isTwampInstalled(): boolean {
   return fs.existsSync(`${HOST_ROOT}${TWAMP_BIN}`);
 }

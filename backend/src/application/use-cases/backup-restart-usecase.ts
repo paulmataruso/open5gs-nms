@@ -21,6 +21,7 @@ import { readPstnState, configurePstn, applyExternalTrunkChange } from '../../in
 import { configureVectorcoreSmsc } from '../../interfaces/rest/vectorcore-smsc-controller';
 import { readTwampState } from './twamp/twamp-runner';
 import { ensureHistoryIndexes } from './twamp/twamp-history';
+import { ensureReflectorHistoryIndexes } from './twamp/twamp-reflector-history';
 import { configureTwampServer } from '../../interfaces/rest/twamp-controller';
 import { readCdrSettings } from '../../interfaces/rest/cdr-controller';
 import { ensureCdrIndexes } from './cdr/cdr-store';
@@ -813,6 +814,9 @@ export class BackupRestartUseCase {
         // UI shows the source host's real retention value.
         if (saved?.history?.retentionDays) {
           await ensureHistoryIndexes(this.db, saved.history.retentionDays);
+          // Reflector history shares the same single retention setting, so
+          // it has the same gap and needs the same reapply.
+          await ensureReflectorHistoryIndexes(this.db, saved.history.retentionDays);
         }
       }));
     }

@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
-import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin, Lock, Unlock, RotateCcw } from 'lucide-react';
+import { Radio, Activity, Users, Circle, Wifi, Network, Shield, ChevronRight, ArrowUp, ArrowDown, Pencil, Check, X, Map, Server, ArrowRight, Filter, Tag, ShieldOff, ShieldAlert, UserX, UserCheck, Pin, Lock, Unlock, RotateCcw, ChevronDown, Layers } from 'lucide-react';
 import { useTopologyStore } from '../../stores';
-import { radioTagsApi, radioBlockApi, gnbBlockApi, configApi } from '../../api';
+import { radioTagsApi, radioBlockApi, gnbBlockApi, configApi, type RadioTagFull } from '../../api';
 import { getBlockedUes, blockUe, unblockUe, deregisterUe } from '../../api/ueBlock';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { imsApi } from '../../api/ims';
@@ -20,6 +20,10 @@ import { smsApi } from '../../api/sms';
 import { mmsApi } from '../../api/mms';
 import { Signal } from 'lucide-react';
 import { useEscapeKey } from '../../hooks/useKeyboardA11y';
+import {
+  groupRadioRows, RADIO_GROUP_KINDS,
+  type RadioGroupKind, type RadioGroup,
+} from './radio-grouping';
 
 interface RANPageProps {
   onNavigateToSubscriber?: (imsi: string) => void;
@@ -169,10 +173,10 @@ function RadioBandTag({ ip, band, isAdmin, onSave }: {
     );
   }
   return (
-    <div className="flex items-center gap-1 group/band">
+    <div className="flex items-center gap-1 shrink-0 group/band">
       {band ? (
-        <span className="inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded bg-nms-accent/10 text-nms-accent">
-          <Tag className="w-2.5 h-2.5" />{band}
+        <span className="inline-flex items-center gap-1 shrink-0 whitespace-nowrap text-xs font-medium px-1.5 py-0.5 rounded bg-nms-accent/10 text-nms-accent">
+          <Tag className="w-2.5 h-2.5 shrink-0" />{band}
         </span>
       ) : isAdmin && <span className="text-xs text-nms-text-dim/40 italic hidden group-hover/band:inline">add band</span>}
       {isAdmin && (
@@ -182,6 +186,115 @@ function RadioBandTag({ ip, band, isAdmin, onSave }: {
         </button>
       )}
     </div>
+  );
+}
+
+// ── Inline group assignment editor ───────────────────────────────────────────
+// Third member of the RadioTagCell/RadioBandTag family, same interaction shape.
+// Backed by a datalist of the groups already in use, so assigning a radio to an
+// existing group is a pick rather than a retype — a typo would otherwise create
+// a near-duplicate group, which is the main way this kind of free-text grouping
+// goes wrong. (groupRadioRows() also matches case-insensitively, which catches
+// the other common near-miss.)
+
+function RadioGroupTag({ radioKey, group, isAdmin, knownGroups, onSave }: {
+  // An IP for a 4G/5G radio, or `bts:<id>` for a 2G BTS — the group store's key
+  // column is plain text and the `bts:` prefix cannot collide with an IP.
+  radioKey: string; group?: string | null; isAdmin: boolean; knownGroups: string[];
+  onSave: (radioKey: string, group: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue]     = useState(group || '');
+  const listId = `radio-groups-${radioKey.replace(/[^\w.-]/g, '_')}`;
+  const handleSave = async () => { await onSave(radioKey, value.trim()); setEditing(false); };
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') { setValue(group || ''); setEditing(false); }
+  };
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1">
+        <input aria-label="Group" autoFocus list={listId}
+          className="nms-input text-xs py-0.5 px-1.5 h-6 w-36"
+          value={value} onChange={e => setValue(e.target.value)} onKeyDown={handleKeyDown}
+          onBlur={handleSave} placeholder="e.g. North Site" maxLength={48} />
+        <datalist id={listId}>
+          {knownGroups.map(g => <option key={g} value={g} />)}
+        </datalist>
+        <button aria-label="Save group" onClick={handleSave} className="text-nms-green hover:text-nms-green/80"><Check className="w-3 h-3" /></button>
+        <button aria-label="Cancel editing group" onClick={() => { setValue(group || ''); setEditing(false); }} className="text-nms-text-dim hover:text-nms-red"><X className="w-3 h-3" /></button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 shrink-0 group/grp">
+      {group ? (
+        // whitespace-nowrap + shrink-0: a group name is a single label, so it
+        // stays on one line and the row grows to fit it rather than the name
+        // wrapping inside its own chip.
+        <span className="inline-flex items-center gap-1 shrink-0 whitespace-nowrap text-xs font-medium px-1.5 py-0.5 rounded bg-nms-surface text-nms-text-dim border border-nms-border">
+          <Layers className="w-2.5 h-2.5 shrink-0" />{group}
+        </span>
+      ) : isAdmin && <span className="text-xs text-nms-text-dim/40 italic hidden group-hover/grp:inline">add group</span>}
+      {isAdmin && (
+        <button onClick={() => { setValue(group || ''); setEditing(true); }}
+          className="opacity-0 group-hover/grp:opacity-100 transition-opacity text-nms-text-dim hover:text-nms-accent" title="Assign this radio to a group">
+          <Pencil className="w-3 h-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Collapsible named group container ────────────────────────────────────────
+// Wraps whichever radio layout is selected, so the contents look exactly like
+// the ungrouped list does — the group only adds a titled, indented shell around
+// it. Indentation is on the CONTENT, not the header, which is what makes the
+// nesting legible at a glance.
+//
+// A real <button> for the header, so keyboard activation, focus ring and
+// aria-expanded all come for free; a div with onClick would need all three
+// adding by hand and still not announce its state.
+
+function RadioGroupShell({ name, isUngrouped, collapsed, onToggle, count, countNoun, meta, children }: {
+  name: string; isUngrouped: boolean; collapsed: boolean; onToggle: () => void;
+  count: number; countNoun: string; meta?: React.ReactNode; children: React.ReactNode;
+}): JSX.Element {
+  const Chevron = collapsed ? ChevronRight : ChevronDown;
+  return (
+    <section className={clsx(
+      'rounded-lg border',
+      // The catch-all reads as deliberately secondary to the operator's own
+      // groups rather than as another peer group.
+      isUngrouped ? 'border-nms-border/60 bg-nms-surface-2/10' : 'border-nms-border bg-nms-surface-2/30',
+    )}>
+      <button type="button" onClick={onToggle} aria-expanded={!collapsed}
+        className={clsx(
+          'w-full flex items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-nms-surface-2/60',
+          collapsed ? 'rounded-lg' : 'rounded-t-lg',
+        )}
+        title={collapsed ? `Expand ${name}` : `Collapse ${name}`}>
+        <Chevron className="w-4 h-4 text-nms-text-dim shrink-0" />
+        <Layers className={clsx('w-3.5 h-3.5 shrink-0', isUngrouped ? 'text-nms-text-dim/50' : 'text-nms-accent')} />
+        {/* min-w-0 is what makes `truncate` work on a flex item: without it a
+            flex item's automatic minimum size is its content width, so a long
+            name overflows the header instead of ellipsing. The name takes every
+            spare pixel first (flex-1), and `title` keeps the full text
+            readable when it is still too long for the card. */}
+        <span className={clsx(
+          'flex-1 min-w-0 text-sm font-semibold font-display truncate',
+          isUngrouped ? 'text-nms-text-dim' : 'text-nms-text',
+        )} title={name}>{name}</span>
+        <span className="flex items-center gap-3 shrink-0">
+          {meta}
+          <span className="text-xs text-nms-text-dim">
+            {count} {count === 1 ? countNoun : `${countNoun}s`}
+          </span>
+        </span>
+      </button>
+      {/* pl-6 lines the contents up under the group name, past the chevron. */}
+      {!collapsed && <div className="px-3 pb-3 pl-6">{children}</div>}
+    </section>
   );
 }
 
@@ -259,6 +372,58 @@ function loadDefaultRadioLayout(): RadioLayoutKind {
   return 'table';
 }
 
+// Grouping preferences live beside the layout one, for the same reason: this is
+// a per-operator display choice, not shared operational data. radio-grouping.ts
+// stays free of localStorage so its ordering rules remain testable in node.
+const RADIO_GROUP_KIND_STORAGE_KEY = 'nms.ranPage.radioGroupKind';
+const RADIO_GROUP_COLLAPSE_PREFIX  = 'nms.ranPage.radioGroupCollapsed';
+
+function loadRadioGroupKind(): RadioGroupKind {
+  try {
+    const saved = localStorage.getItem(RADIO_GROUP_KIND_STORAGE_KEY);
+    if (saved === 'custom' || saved === 'band' || saved === 'status') return saved;
+  } catch { /* unavailable — fall through */ }
+  return 'custom';
+}
+
+// Scoped per list AND per grouping kind: collapsing a 4G group must not collapse
+// the same-named 5G one, and switching Band -> Status must not inherit the
+// other's collapsed set.
+function collapseKey(scope: string, kind: RadioGroupKind): string {
+  return `${RADIO_GROUP_COLLAPSE_PREFIX}.${scope}.${kind}`;
+}
+
+function loadCollapsedGroups(scope: string, kind: RadioGroupKind): Set<string> {
+  try {
+    const raw = localStorage.getItem(collapseKey(scope, kind));
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((k: unknown): k is string => typeof k === 'string')) : new Set();
+  } catch { return new Set(); }
+}
+
+function saveCollapsedGroups(scope: string, kind: RadioGroupKind, collapsed: Set<string>): void {
+  try { localStorage.setItem(collapseKey(scope, kind), JSON.stringify([...collapsed])); } catch { /* ignore */ }
+}
+
+/**
+ * Shared collapse state for one grouped list. Re-reads when the grouping kind
+ * changes so each kind keeps its own remembered set.
+ */
+function useCollapsedGroups(scope: string, kind: RadioGroupKind) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedGroups(scope, kind));
+  useEffect(() => { setCollapsed(loadCollapsedGroups(scope, kind)); }, [scope, kind]);
+  const toggle = useCallback((key: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      saveCollapsedGroups(scope, kind, next);
+      return next;
+    });
+  }, [scope, kind]);
+  return { collapsed, toggle };
+}
+
 interface RadioRowData {
   radio: ConnectedRadio;
   isSyntheticIp: boolean;
@@ -289,6 +454,13 @@ interface RadioListProps {
   layout: RadioLayoutKind;
   radios: ConnectedRadio[]; ues: ActiveUE[]; generation: '4G' | '5G'; deviceLabel: string;
   radioTags: Record<string, string>; radioBands: Record<string, string>; isAdmin: boolean;
+  // Grouping. `groupScope` identifies this particular list for collapse-state
+  // persistence (each interface card has its own).
+  radioGroups: Record<string, string | null>;
+  knownGroups: string[];
+  groupKind: RadioGroupKind;
+  groupScope: string;
+  onGroupSave: (ip: string, group: string) => Promise<void>;
   onTagSave: (ip: string, nickname: string) => Promise<void>;
   onBandSave: (ip: string, band: string) => Promise<void>;
   onNavigateToSubscriber?: (imsi: string) => void;
@@ -376,7 +548,8 @@ const UE_LIST_HEADER = (is5G: boolean) => (
 // ── Layout A: Compact Table (the original layout — dense grid rows, UEs nested inline) ─────
 
 function RadioListTable({ radios, ues, generation, deviceLabel, radioTags, radioBands, isAdmin,
-  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock }: RadioListProps): JSX.Element {
+  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock,
+  radioGroups, knownGroups, onGroupSave }: RadioListProps): JSX.Element {
   const is5G = generation === '5G';
   const blockedInterfaces = is5G ? 'N2 and N3' : 'S1-MME and S1-U';
   const deviceNoun = is5G ? 'gNodeB' : 'radio';
@@ -385,19 +558,20 @@ function RadioListTable({ radios, ues, generation, deviceLabel, radioTags, radio
   if (rows.length === 0) return <EmptyRadioList deviceLabel={deviceLabel} hasActiveFilter={hasActiveFilter} />;
   return (
     <div className="border border-nms-border rounded-md overflow-hidden">
-      <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-3 text-xs font-semibold text-nms-text uppercase tracking-wider">
+      <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-[minmax(0,1fr)_5rem_8rem] text-xs font-semibold text-nms-text uppercase tracking-wider">
         <span>IP / Nickname</span><span className="text-center">UEs</span><span className="text-right">Status</span>
       </div>
       {rows.map(({ radio, isSyntheticIp, radioUEs, totalUeCount, nickname, band, isBlocked }, idx) => (
         <div key={radio.ip + idx}>
           <div className={clsx(
-            'grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border hover:bg-nms-surface-2/50 transition-colors',
+            'grid grid-cols-[minmax(0,1fr)_5rem_8rem] items-start px-3 py-2 border-b border-nms-border hover:bg-nms-surface-2/50 transition-colors',
             isBlocked ? 'animate-flash-red ring-1 ring-inset ring-nms-red/40' : 'bg-nms-surface-2/20',
           )}>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-mono font-semibold text-nms-text">{radio.ip}</span>
+                <span className="text-sm font-mono font-semibold text-nms-text shrink-0">{radio.ip}</span>
                 <RadioBandTag ip={radio.ip} band={band} isAdmin={isAdmin} onSave={onBandSave} />
+                <RadioGroupTag radioKey={radio.ip} group={radioGroups[radio.ip]} isAdmin={isAdmin} knownGroups={knownGroups} onSave={onGroupSave} />
                 {isBlocked && (
                   <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded" title={`${blockedInterfaces} blocked from this NMS (nftables) — the ${deviceNoun} itself is untouched`}>
                     <ShieldOff className="w-2.5 h-2.5" />{deviceNoun.toUpperCase()} BLOCKED
@@ -446,7 +620,8 @@ function RadioListTable({ radios, ues, generation, deviceLabel, radioTags, radio
 // ── Layout C: Collapsible List (one-line summary per radio, click to expand details) ───────
 
 function RadioListAccordion({ radios, ues, generation, deviceLabel, radioTags, radioBands, isAdmin,
-  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock }: RadioListProps): JSX.Element {
+  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock,
+  radioGroups, knownGroups, onGroupSave }: RadioListProps): JSX.Element {
   const is5G = generation === '5G';
   const blockedInterfaces = is5G ? 'N2 and N3' : 'S1-MME and S1-U';
   const deviceNoun = is5G ? 'gNodeB' : 'radio';
@@ -483,6 +658,7 @@ function RadioListAccordion({ radios, ues, generation, deviceLabel, radioTags, r
               <div className="px-3 pb-3 pl-9 bg-nms-surface-2/10 space-y-2">
                 <div className="flex items-center gap-3 flex-wrap">
                   <RadioBandTag ip={radio.ip} band={band} isAdmin={isAdmin} onSave={onBandSave} />
+                <RadioGroupTag radioKey={radio.ip} group={radioGroups[radio.ip]} isAdmin={isAdmin} knownGroups={knownGroups} onSave={onGroupSave} />
                   <RadioTagCell ip={radio.ip} nickname={nickname} isAdmin={isAdmin} onSave={onTagSave} />
                   <RadioBlockButton ip={radio.ip} isBlocked={isBlocked} isAdmin={isAdmin} isSyntheticIp={isSyntheticIp}
                     deviceNoun={deviceNoun} deviceNounCap={deviceNounCap} blockedInterfaces={blockedInterfaces}
@@ -510,7 +686,8 @@ function RadioListAccordion({ radios, ues, generation, deviceLabel, radioTags, r
 // ── Layout D: List + Detail Panel (narrow radio list, selected radio's detail on the right) ─
 
 function RadioListSplit({ radios, ues, generation, deviceLabel, radioTags, radioBands, isAdmin,
-  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock }: RadioListProps): JSX.Element {
+  onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter, blockedIps, onRequestBlock, onUnblock,
+  radioGroups, knownGroups, onGroupSave }: RadioListProps): JSX.Element {
   const is5G = generation === '5G';
   const blockedInterfaces = is5G ? 'N2 and N3' : 'S1-MME and S1-U';
   const deviceNoun = is5G ? 'gNodeB' : 'radio';
@@ -543,6 +720,7 @@ function RadioListSplit({ radios, ues, generation, deviceLabel, radioTags, radio
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="text-base font-mono font-semibold text-nms-text">{radio.ip}</span>
                     <RadioBandTag ip={radio.ip} band={band} isAdmin={isAdmin} onSave={onBandSave} />
+                <RadioGroupTag radioKey={radio.ip} group={radioGroups[radio.ip]} isAdmin={isAdmin} knownGroups={knownGroups} onSave={onGroupSave} />
                     {isBlocked && (
                       <span className="flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded">
                         <ShieldOff className="w-2.5 h-2.5" />{deviceNoun.toUpperCase()} BLOCKED
@@ -580,7 +758,7 @@ function RadioListSplit({ radios, ues, generation, deviceLabel, radioTags, radio
   );
 }
 
-function RadioList(props: RadioListProps): JSX.Element {
+function RadioLayoutBody(props: RadioListProps): JSX.Element {
   switch (props.layout) {
     case 'accordion': return <RadioListAccordion {...props} />;
     case 'split':      return <RadioListSplit {...props} />;
@@ -589,11 +767,68 @@ function RadioList(props: RadioListProps): JSX.Element {
   }
 }
 
+/** The status label used when grouping by status. Ranked by STATUS_ORDER. */
+function radioStatusLabel(radio: ConnectedRadio, isBlocked: boolean): string {
+  if (isBlocked) return 'Blocked';
+  if (!radio.setupSuccess) return 'Setup failed';
+  return radio.numConnectedUes > 0 ? 'Connected' : 'Idle';
+}
+
+// Groups at the `radios` level and renders the SELECTED layout once per group,
+// deliberately rather than teaching each layout about groups: the three layouts
+// each build their own rows from `radios`, so passing a subset gives grouping in
+// all three with no change inside any of them.
+function RadioList(props: RadioListProps): JSX.Element {
+  const { collapsed, toggle } = useCollapsedGroups(props.groupScope, props.groupKind);
+
+  const groups = useMemo(() => groupRadioRows(props.radios, props.groupKind, {
+    group:  r => props.radioGroups[r.ip],
+    band:   r => props.radioBands[r.ip],
+    status: r => radioStatusLabel(r, props.blockedIps.has(r.ip)),
+  }), [props.radios, props.groupKind, props.radioGroups, props.radioBands, props.blockedIps]);
+
+  // Nothing to show a shell for: either there are no radios, or every radio is
+  // in the catch-all. Render exactly what an ungrouped page rendered before, so
+  // the container only ever appears once it is carrying real information.
+  if (groups.length === 0 || (groups.length === 1 && groups[0].isUngrouped)) {
+    return <RadioLayoutBody {...props} />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {groups.map((group: RadioGroup<ConnectedRadio>) => {
+        const ipsInGroup = new Set(group.rows.map(r => r.ip));
+        const ueCount = props.ues.filter(u => u.radioIp && ipsInGroup.has(u.radioIp)).length;
+        const blockedCount = group.rows.filter(r => props.blockedIps.has(r.ip)).length;
+        return (
+          <RadioGroupShell key={group.key} name={group.name} isUngrouped={group.isUngrouped}
+            collapsed={collapsed.has(group.key)} onToggle={() => toggle(group.key)}
+            count={group.rows.length} countNoun={props.deviceLabel}
+            meta={
+              <span className="flex items-center gap-2">
+                {blockedCount > 0 && (
+                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-nms-red bg-nms-red/10 border border-nms-red/30 px-1.5 py-0.5 rounded"
+                    title={`${blockedCount} of these ${props.deviceLabel}s ${blockedCount === 1 ? 'is' : 'are'} blocked`}>
+                    <ShieldOff className="w-2.5 h-2.5" />{blockedCount}
+                  </span>
+                )}
+                {ueCount > 0 && <span className="text-xs text-nms-accent font-semibold" title="UEs on radios in this group">{ueCount} UE{ueCount === 1 ? '' : 's'}</span>}
+              </span>
+            }>
+            <RadioLayoutBody {...props} radios={group.rows} />
+          </RadioGroupShell>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Interface card ────────────────────────────────────────────────────────────
 
 function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, generation, ues,
   radioTags, radioBands, isAdmin, onTagSave, onBandSave, onNavigateToSubscriber, hasActiveFilter,
-  blockedIps, onRequestBlock, onUnblock, layout }: {
+  blockedIps, onRequestBlock, onUnblock, layout,
+  radioGroups, knownGroups, groupKind, onGroupSave }: {
   icon: React.ReactNode; title: string; subtitle: string; active: boolean;
   radios: ConnectedRadio[]; deviceLabel: string; generation: '4G' | '5G';
   ues: ActiveUE[]; radioTags: Record<string, string>; radioBands: Record<string, string>; isAdmin: boolean;
@@ -605,6 +840,10 @@ function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, gen
   onRequestBlock: (ip: string) => void;
   onUnblock: (ip: string) => Promise<void>;
   layout: RadioLayoutKind;
+  radioGroups: Record<string, string | null>;
+  knownGroups: string[];
+  groupKind: RadioGroupKind;
+  onGroupSave: (ip: string, group: string) => Promise<void>;
 }): JSX.Element {
   const is5G = generation === '5G';
   const accentColor = is5G ? 'text-nms-accent' : 'text-purple-400';
@@ -631,7 +870,11 @@ function InterfaceCard({ icon, title, subtitle, active, radios, deviceLabel, gen
       <RadioList layout={layout} radios={radios} ues={ues} generation={generation} deviceLabel={deviceLabel}
         radioTags={radioTags} radioBands={radioBands} isAdmin={isAdmin} onTagSave={onTagSave} onBandSave={onBandSave}
         onNavigateToSubscriber={onNavigateToSubscriber} hasActiveFilter={hasActiveFilter}
-        blockedIps={blockedIps} onRequestBlock={onRequestBlock} onUnblock={onUnblock} />
+        blockedIps={blockedIps} onRequestBlock={onRequestBlock} onUnblock={onUnblock}
+        radioGroups={radioGroups} knownGroups={knownGroups} groupKind={groupKind} onGroupSave={onGroupSave}
+        /* Derived from the card title so each of the four interface cards keeps
+           its own collapse state without every call site passing a scope. */
+        groupScope={title.replace(/[^\w]+/g, '-').toLowerCase()} />
     </div>
   );
 }
@@ -1693,23 +1936,43 @@ interface Gsm2GBlockProps {
   onUnblock: (id: string) => void;
 }
 
+// 2G BTS entries have no IP of their own (osmo-bsc addresses them by index), so
+// their group assignment is keyed by a prefixed BTS id in the same store the
+// 4G/5G radios use. Band and Status grouping need no assignment at all on 2G —
+// BtsEntry already carries its own `band`, and status is derived from the live
+// OML link plus the admin lock.
+function btsGroupKey(id: string): string { return `bts:${id}`; }
+
+interface Gsm2GGroupProps {
+  radioGroups: Record<string, string | null>;
+  knownGroups: string[];
+  onGroupSave: (radioKey: string, group: string) => Promise<void>;
+}
+
+/** Status label for 2G grouping. Ranked by STATUS_ORDER in radio-grouping.ts. */
+function btsStatusLabel(r: Gsm2GRow): string {
+  if (r.bts.blocked) return 'Blocked';
+  if (r.omlUp === false) return 'Setup failed';
+  return r.ues.length > 0 ? 'Connected' : 'Idle';
+}
+
 // ── 2G Layout A: Table (dense rows + inline nested UE list) ───────────────────
-function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
+function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate, radioGroups, knownGroups, onGroupSave, ...block }: {
   rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
-} & Gsm2GBlockProps): JSX.Element {
+} & Gsm2GBlockProps & Gsm2GGroupProps): JSX.Element {
   return (
     <div className="border border-nms-border rounded-md overflow-hidden">
-      <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-3 text-xs font-semibold text-nms-text uppercase tracking-wider">
+      <div className="bg-nms-surface-2 px-3 py-2 border-b border-nms-border grid grid-cols-[minmax(0,1fr)_4rem_7rem] text-xs font-semibold text-nms-text uppercase tracking-wider">
         <span>BTS / Band</span><span className="text-center">UEs</span><span className="text-right">Abis</span>
       </div>
       {rows.map((r, i) => (
         <div key={r.bts.id}>
           <div className={clsx(
-            'grid grid-cols-3 items-start px-3 py-2 border-b border-nms-border',
+            'grid grid-cols-[minmax(0,1fr)_4rem_7rem] items-start px-3 py-2 border-b border-nms-border',
             r.bts.blocked ? 'animate-flash-red ring-1 ring-inset ring-nms-red/40' : 'bg-nms-surface-2/20',
           )}>
-            <div>
-              <div className="flex items-center gap-1.5 flex-wrap"><span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span><Gsm2GBandTag b={r.bts} />{r.bts.blocked && <Gsm2GBlockedBadge />}</div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5"><span className="text-sm font-mono font-semibold text-nms-text shrink-0">{r.bts.name}</span><Gsm2GBandTag b={r.bts} /><RadioGroupTag radioKey={btsGroupKey(r.bts.id)} group={radioGroups[btsGroupKey(r.bts.id)]} isAdmin={block.isAdmin} knownGroups={knownGroups} onSave={onGroupSave} />{r.bts.blocked && <Gsm2GBlockedBadge />}</div>
               <Gsm2GBtsMeta b={r.bts} />
             </div>
             <div className="text-center self-center"><span className="text-sm font-bold text-teal-400" title="Registered UEs seen on this BTS">{r.ues.length}</span></div>
@@ -1733,9 +1996,9 @@ function Gsm2GTable({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
 }
 
 // ── 2G Layout B: Collapsible list ────────────────────────────────────────────
-function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
+function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate, radioGroups, knownGroups, onGroupSave, ...block }: {
   rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
-} & Gsm2GBlockProps): JSX.Element {
+} & Gsm2GBlockProps & Gsm2GGroupProps): JSX.Element {
   const [open, setOpen] = useState<Set<string>>(() => new Set(rows.filter(r => r.ues.length > 0).map(r => r.bts.id)));
   const toggle = (id: string) => setOpen(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   return (
@@ -1748,6 +2011,7 @@ function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
               <ChevronRight className={clsx('w-3.5 h-3.5 text-nms-text-dim flex-shrink-0 transition-transform', isOpen && 'rotate-90')} />
               <span className="text-sm font-mono font-semibold text-nms-text">{r.bts.name}</span>
               <Gsm2GBandTag b={r.bts} />
+              <RadioGroupTag radioKey={btsGroupKey(r.bts.id)} group={radioGroups[btsGroupKey(r.bts.id)]} isAdmin={block.isAdmin} knownGroups={knownGroups} onSave={onGroupSave} />
               {r.bts.blocked && <Gsm2GBlockedBadge />}
               <span className="ml-auto flex items-center gap-2 flex-shrink-0">
                 <span className="text-xs font-semibold text-teal-400 bg-teal-500/10 px-1.5 py-0.5 rounded-full">{r.ues.length} UE{r.ues.length === 1 ? '' : 's'}</span>
@@ -1779,9 +2043,9 @@ function Gsm2GAccordion({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
 }
 
 // ── 2G Layout C: List + detail panel ────────────────────────────────────────
-function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
+function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate, radioGroups, knownGroups, onGroupSave, ...block }: {
   rows: Gsm2GRow[]; unassigned: Gsm2GUe[]; aIfaceUp: boolean; onNavigate?: (imsi: string) => void;
-} & Gsm2GBlockProps): JSX.Element {
+} & Gsm2GBlockProps & Gsm2GGroupProps): JSX.Element {
   const [sel, setSel] = useState<string | null>(null);
   const selected = rows.find(r => r.bts.id === sel) ?? rows[0];
   return (
@@ -1817,7 +2081,7 @@ function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
           <>
             <div className="flex items-start justify-between gap-2 mb-2">
               <div>
-                <div className="flex items-center gap-1.5 flex-wrap"><span className="text-base font-mono font-semibold text-nms-text">{selected.bts.name}</span><Gsm2GBandTag b={selected.bts} />{selected.bts.blocked && <Gsm2GBlockedBadge />}</div>
+                <div className="flex items-center gap-1.5 flex-wrap"><span className="text-base font-mono font-semibold text-nms-text">{selected.bts.name}</span><Gsm2GBandTag b={selected.bts} /><RadioGroupTag radioKey={btsGroupKey(selected.bts.id)} group={radioGroups[btsGroupKey(selected.bts.id)]} isAdmin={block.isAdmin} knownGroups={knownGroups} onSave={onGroupSave} />{selected.bts.blocked && <Gsm2GBlockedBadge />}</div>
                 <Gsm2GBtsMeta b={selected.bts} />
               </div>
               <div className="flex items-center gap-2 flex-shrink-0"><Gsm2GAbisDot omlUp={selected.omlUp} fallbackUp={aIfaceUp} /><Gsm2GBlockButton bts={selected.bts} {...block} /></div>
@@ -1835,21 +2099,62 @@ function Gsm2GSplit({ rows, unassigned, aIfaceUp, onNavigate, ...block }: {
   );
 }
 
-function Gsm2GSection({ btsEntries, services, samples, linkStatus, pdpContexts, layout, onNavigateToSubscriber, isAdmin, onRequestBlock, onUnblock }: {
+function Gsm2GSection({ btsEntries, services, samples, linkStatus, pdpContexts, layout, onNavigateToSubscriber, isAdmin, onRequestBlock, onUnblock,
+  radioGroups, knownGroups, onGroupSave, groupKind }: {
   btsEntries: BtsEntry[]; services: Record<string, boolean>; samples: GsmSignalSample[];
   linkStatus: Record<string, { omlConnected: boolean; rslConnected: boolean }>;
   pdpContexts: Record<string, PdpContext>;
   layout: RadioLayoutKind;
+  groupKind: RadioGroupKind;
   onNavigateToSubscriber?: (imsi: string) => void;
-} & Gsm2GBlockProps): JSX.Element {
+} & Gsm2GBlockProps & Gsm2GGroupProps): JSX.Element {
   const aIfaceUp = services['osmo-bsc'] === true && services['osmo-mgw'] === true;
   const { rows, unassigned } = build2gRows(btsEntries, samples, linkStatus, pdpContexts);
   const blockProps = { isAdmin, onRequestBlock, onUnblock };
+  const groupProps = { radioGroups, knownGroups, onGroupSave };
+  const { collapsed, toggle } = useCollapsedGroups('gsm-2g', groupKind);
+
+  const renderLayout = (rs: Gsm2GRow[], un: Gsm2GUe[]) =>
+    layout === 'accordion' ? <Gsm2GAccordion rows={rs} unassigned={un} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} {...groupProps} />
+    : layout === 'split'   ? <Gsm2GSplit     rows={rs} unassigned={un} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} {...groupProps} />
+    :                        <Gsm2GTable     rows={rs} unassigned={un} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} {...groupProps} />;
+
+  const groups = groupRadioRows(rows, groupKind, {
+    group:  r => radioGroups[btsGroupKey(r.bts.id)],
+    band:   r => r.bts.band,
+    status: r => btsStatusLabel(r),
+  });
+
+  const grouped = groups.length > 1 || (groups.length === 1 && !groups[0].isUngrouped);
+
   const body = btsEntries.length === 0
     ? <p className="text-sm text-nms-text-dim py-6 text-center">No BTS configured — add one on the 2G GSM page.</p>
-    : layout === 'accordion' ? <Gsm2GAccordion rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} />
-    : layout === 'split'     ? <Gsm2GSplit     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} />
-    :                          <Gsm2GTable     rows={rows} unassigned={unassigned} aIfaceUp={aIfaceUp} onNavigate={onNavigateToSubscriber} {...blockProps} />;
+    : !grouped
+      ? renderLayout(rows, unassigned)
+      : (
+        <div className="space-y-2">
+          {groups.map((g, i) => (
+            <RadioGroupShell key={g.key} name={g.name} isUngrouped={g.isUngrouped}
+              collapsed={collapsed.has(g.key)} onToggle={() => toggle(g.key)}
+              count={g.rows.length} countNoun="BTS"
+              meta={(() => {
+                const ueCount = g.rows.reduce((n, r) => n + r.ues.length, 0);
+                return ueCount > 0
+                  ? <span className="text-xs text-nms-accent font-semibold" title="UEs on this group's BTS">{ueCount} UE{ueCount === 1 ? '' : 's'}</span>
+                  : null;
+              })()}>
+              {/* Unattributed UEs go to the LAST group only, so they appear
+                  exactly once and in their usual place at the bottom. Each 2G
+                  layout renders that block differently (a pseudo-row, a labelled
+                  panel, a selectable list entry), so it cannot be hoisted out
+                  without redesigning all three — and the last group is the
+                  catch-all whenever one exists, which is where UEs that could
+                  not be attributed to a BTS belong anyway. */}
+              {renderLayout(g.rows, i === groups.length - 1 ? unassigned : [])}
+            </RadioGroupShell>
+          ))}
+        </div>
+      );
   return (
     <div>
       <SectionHeader label="2G GSM" color="2G" />
@@ -2005,7 +2310,7 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
     } catch { /* silent */ }
   }, []);
 
-  const [radioTagsFull, setRadioTagsFull] = useState<Record<string, { nickname: string; band: string | null }>>({});
+  const [radioTagsFull, setRadioTagsFull] = useState<Record<string, RadioTagFull>>({});
   const loadTags = useCallback(async () => {
     try { setRadioTagsFull(await radioTagsApi.getAllFull()); } catch { /* silent */ }
   }, []);
@@ -2145,16 +2450,29 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
     for (const [ip, t] of Object.entries(radioTagsFull)) if (t.band) out[ip] = t.band;
     return out;
   }, [radioTagsFull]);
+  const radioGroups = useMemo(() => {
+    const out: Record<string, string | null> = {};
+    for (const [ip, t] of Object.entries(radioTagsFull)) if (t.group) out[ip] = t.group;
+    return out;
+  }, [radioTagsFull]);
   // Distinct tagged bands, for the filter dropdown's option list.
   const bandOptions = useMemo(
     () => [...new Set(Object.values(radioBands))].sort(),
     [radioBands],
   );
+  // Distinct group names, for the inline assignment editor's datalist. Sorted
+  // numeric-aware to match how groupRadioRows() orders the group headers, so the
+  // pick list and the page read in the same order.
+  const knownGroups = useMemo(
+    () => [...new Set(Object.values(radioGroups).filter((g): g is string => !!g))]
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })),
+    [radioGroups],
+  );
 
   const handleTagSave = useCallback(async (ip: string, nickname: string) => {
     try {
       await radioTagsApi.set(ip, nickname);
-      setRadioTagsFull(prev => ({ ...prev, [ip]: { nickname, band: prev[ip]?.band ?? null } }));
+      setRadioTagsFull(prev => ({ ...prev, [ip]: { ...prev[ip], nickname, band: prev[ip]?.band ?? null, group: prev[ip]?.group ?? null } }));
       toast.success(nickname ? `Tag saved: ${nickname}` : 'Tag removed', { duration: 2000 });
     } catch { toast.error('Failed to save tag'); }
   }, []);
@@ -2162,9 +2480,20 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const handleBandSave = useCallback(async (ip: string, band: string) => {
     try {
       await radioTagsApi.setBand(ip, band);
-      setRadioTagsFull(prev => ({ ...prev, [ip]: { nickname: prev[ip]?.nickname ?? '', band: band || null } }));
+      setRadioTagsFull(prev => ({ ...prev, [ip]: { ...prev[ip], nickname: prev[ip]?.nickname ?? '', band: band || null, group: prev[ip]?.group ?? null } }));
       toast.success(band ? `Band tagged: ${band}` : 'Band tag removed', { duration: 2000 });
     } catch { toast.error('Failed to save band'); }
+  }, []);
+
+  const handleGroupSave = useCallback(async (ip: string, group: string) => {
+    try {
+      await radioTagsApi.setGroup(ip, group);
+      setRadioTagsFull(prev => ({
+        ...prev,
+        [ip]: { ...prev[ip], nickname: prev[ip]?.nickname ?? '', band: prev[ip]?.band ?? null, group: group || null },
+      }));
+      toast.success(group ? `Added to group: ${group}` : 'Removed from group', { duration: 2000 });
+    } catch { toast.error('Failed to save group'); }
   }, []);
 
   // ── Filters (band + partial IP) ─────────────────────────────────────────
@@ -2262,13 +2591,22 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   // tracks what's actually saved, so "Set as Default" can show whether they already match.
   const [radioLayout, setRadioLayout] = useState<RadioLayoutKind>(loadDefaultRadioLayout);
   const [defaultRadioLayout, setDefaultRadioLayout] = useState<RadioLayoutKind>(loadDefaultRadioLayout);
+  // How the radio lists are grouped. Persisted immediately rather than behind a
+  // "set as default" pin like the layout above: there is only one sensible
+  // answer per operator, and a grouping that resets on reload is just annoying.
+  const [groupKind, setGroupKindState] = useState<RadioGroupKind>(loadRadioGroupKind);
+  const setGroupKind = useCallback((kind: RadioGroupKind) => {
+    setGroupKindState(kind);
+    try { localStorage.setItem(RADIO_GROUP_KIND_STORAGE_KEY, kind); } catch { /* unavailable */ }
+  }, []);
   const handleSetDefaultLayout = useCallback(() => {
     try { localStorage.setItem(RADIO_LAYOUT_STORAGE_KEY, radioLayout); } catch { /* localStorage unavailable */ }
     setDefaultRadioLayout(radioLayout);
     toast.success(`${RADIO_LAYOUTS.find(l => l.key === radioLayout)?.label} set as your default layout`, { duration: 2500 });
   }, [radioLayout]);
 
-  const sharedCardProps = { radioTags, radioBands, isAdmin, onTagSave: handleTagSave, onBandSave: handleBandSave, onNavigateToSubscriber, hasActiveFilter, layout: radioLayout };
+  const sharedCardProps = { radioTags, radioBands, isAdmin, onTagSave: handleTagSave, onBandSave: handleBandSave, onNavigateToSubscriber, hasActiveFilter, layout: radioLayout,
+    radioGroups, knownGroups, groupKind, onGroupSave: handleGroupSave };
   const radioBlockProps = { blockedIps, onRequestBlock: setPendingBlockIp, onUnblock: handleUnblock };
   const gnbBlockProps = { blockedIps: blockedGnbIps, onRequestBlock: setPendingBlockGnbIp, onUnblock: handleUnblockGnb };
 
@@ -2286,8 +2624,14 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
           <p className="text-sm text-nms-text-dim mt-1">Radio Access Network — interface status, connected radios, and active UE sessions</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {/* Grouping — applies to every radio list below, 2G included. */}
+          <select aria-label="Group radios by" value={groupKind}
+            onChange={e => setGroupKind(e.target.value as RadioGroupKind)}
+            className="nms-input text-sm py-2 px-2.5 w-auto" title="Group the radio lists by">
+            {RADIO_GROUP_KINDS.map(g => <option key={g.key} value={g.key}>Group by: {g.label}</option>)}
+          </select>
           {/* Radio list layout — applies to every S1-MME/S1-U/N2/N3 radio list below. */}
-          <select value={radioLayout} onChange={e => setRadioLayout(e.target.value as RadioLayoutKind)}
+          <select aria-label="Radio list layout" value={radioLayout} onChange={e => setRadioLayout(e.target.value as RadioLayoutKind)}
             className="nms-input text-sm py-2 px-2.5 w-auto" title="Radio list layout">
             {RADIO_LAYOUTS.map(l => <option key={l.key} value={l.key}>{l.label}</option>)}
           </select>
@@ -2348,7 +2692,8 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
 
       {FEATURES.gsm && (
         <Gsm2GSection btsEntries={gsm2g.btsEntries} services={gsm2g.services} samples={gsm2g.samples} linkStatus={gsm2g.linkStatus} pdpContexts={gsm2g.pdpContexts} layout={radioLayout} onNavigateToSubscriber={onNavigateToSubscriber}
-          isAdmin={isAdmin} onRequestBlock={setPendingBlockBts} onUnblock={handleUnblockBts} />
+          isAdmin={isAdmin} onRequestBlock={setPendingBlockBts} onUnblock={handleUnblockBts}
+          radioGroups={radioGroups} knownGroups={knownGroups} groupKind={groupKind} onGroupSave={handleGroupSave} />
       )}
 
       {FEATURES.hnbgw && (
