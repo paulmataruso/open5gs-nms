@@ -4,6 +4,66 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.79] - 2026-11-03
+
+### Fixed — the DHCP subnet form read as "tell the server where your relay is"
+
+Reported by an operator adding a subnet: a "Relay addresses (optional)" field
+sat in the same grid as Gateway, DNS and Lease lifetime, and relaying is not
+configured here at all. You put `ip helper-address <this server>` on the far-end
+router, and the relay stamps its own address on the client's segment into
+`giaddr` on every request it forwards; Kea matches that against the subnet
+ranges by itself. Nothing on this page needs to know a relay's address.
+
+The field itself is a real Kea feature and is kept. It maps **extra** `giaddr`
+values onto a subnet, for the case Kea's own manual calls uncommon: a relay
+whose `giaddr` falls outside the subnet it serves — one sourcing from a loopback
+or transit address — or a shared network. On an ordinary `ip helper-address`
+setup it does nothing.
+
+So the bug was placement, not the capability. A field inline in the main form
+reads as a step in the normal flow however its help text is worded, which is
+exactly how this one was read. Both of the "how is this subnet reached"
+overrides — the relay addresses and the sibling "Pin to interface" — now sit
+behind a collapsed **Reachability overrides** disclosure, leaving the main grid
+as only the fields every subnet needs. The pin moved too because it is the same
+class of rarely-needed override, and `validateDhcpConfig` already treats the two
+as one pair. The relay field is relabelled "Match extra relay addresses", with
+help text leading with what `giaddr` already does.
+
+The Subnets card now states where relaying *is* configured, naming this host's
+own first bound interface address, which is the answer the page was missing.
+
+A subnet that already carries either override starts revealed, with an "in use"
+badge: collapsing a value that is live in Kea's own config would make the page
+disagree with the file it edits. An explicit collapse still wins after that.
+
+Deleting the field instead was considered and rejected. The page round-trips the
+host's `kea-dhcp4.conf` with no mirror in Mongo, so dropping `relayIps` from the
+model would make the next save silently delete an operator's hand-written
+`relay:` block — a data-loss bug in place of a presentation one.
+
+### Added — the DHCP server module is in the feature docs
+
+It shipped in 0.78 documented only in this file, which is not where anyone
+looks for what the product does. `README.md` and `docs/features.md` now both
+carry it: pools, static bindings, reservations-only, the `ogstun` refusal, why
+a relayed subnet needs nothing configured here, live leases, and the :67
+conflict report.
+
+TWAMP had the same gap and is fixed with it — it was absent from `README.md`
+entirely and had a section in `docs/features.md` that the table of contents
+never listed. SNMP's section had been appended below that file's own `Summary`
+and moves up with the other modules.
+
+
+### Changed — the DHCP nav item sits under DNS
+
+It was at the end of the add-on block, after SNMP. It belongs with the other
+network-services pages, directly below DNS (BIND9).
+
+---
+
 ## [v2.0-beta_0.78] - 2026-11-02
 
 ### Added — a DHCP server module (Kea DHCPv4)

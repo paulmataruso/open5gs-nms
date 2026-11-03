@@ -173,6 +173,37 @@ describe('DHCP module — wiring', () => {
     expect(DHCPCFG).toMatch(/out\.relay = \{ 'ip-addresses': \[\.\.\.s\.relayIps\] \}/);
   });
 
+  // ── Relaying is configured on the ROUTER, not on this page ───────────────
+  //
+  // From an operator reading the subnet form: "you set the DHCP relay on the
+  // far end network to point to my DHCP server". Exactly right, and the form
+  // implied otherwise — a "Relay addresses (optional)" field sat in the same
+  // grid as Gateway and DNS, which reads as a step in the normal flow whatever
+  // its help text says. The field is a real but uncommon Kea feature, so it is
+  // kept and moved rather than removed; what these pin is the placement.
+
+  test('the page says where relaying is actually configured', () => {
+    expect(PAGE).toMatch(/ip helper-address/);
+  });
+
+  test('both reachability overrides sit behind a disclosure, not in the field grid', () => {
+    const disclosure = PAGE.indexOf('Reachability overrides');
+    expect(disclosure).toBeGreaterThan(-1);
+    // Index order is the assertion: either input appearing BEFORE the
+    // disclosure means it is back in the grid above it.
+    expect(PAGE.indexOf('`relay-${s.id}`')).toBeGreaterThan(disclosure);
+    expect(PAGE.indexOf('`iface-pin-${s.id}`')).toBeGreaterThan(disclosure);
+    // A real button, per the a11y baseline — it is the only control here.
+    expect(PAGE).toMatch(/<button type="button" aria-expanded=\{reachVisible\(s\)\}/);
+  });
+
+  test('a subnet that already carries an override starts revealed', () => {
+    // Collapsing a value that is live in Kea's own config would make the page
+    // disagree with the file it edits. The explicit choice still wins.
+    expect(PAGE).toMatch(/reachOpen\[s\.id\] \?\? reachOverridden\(s\)/);
+    expect(PAGE).toMatch(/!!s\.iface \|\| \(s\.relayIps\?\.length \?\? 0\) > 0/);
+  });
+
   test('a remote subnet is reported as relayed rather than refused', () => {
     expect(PAGE).toMatch(/subnetReach\(/);
     expect(PAGE).toMatch(/Via DHCP relay/);

@@ -35,8 +35,10 @@ Detailed documentation for all Open5GS NMS features.
 27. [Charging Plans](#charging-plans)
 28. [Call History (CDR)](#call-history-cdr)
 29. [Traffic History](#traffic-history)
-30. [UE Signal Monitoring](#ue-signal-monitoring)
-31. [SNMP Monitoring](#snmp-monitoring)
+30. [TWAMP (Backhaul Link Quality)](#twamp-backhaul-link-quality)
+31. [UE Signal Monitoring](#ue-signal-monitoring)
+32. [DHCP Server (Kea DHCPv4)](#dhcp-server-kea-dhcpv4)
+33. [SNMP Monitoring](#snmp-monitoring)
 
 ---
 
@@ -2028,6 +2030,84 @@ radio's own metrics format.
 
 ---
 
+## DHCP Server (Kea DHCPv4)
+
+### What It Does
+
+Runs a DHCPv4 server on this host, managed from its own page: address
+pools per subnet with gateway, DNS servers, domain name and lease
+lifetime; static MAC-to-address bindings with optional hostnames; a
+reservations-only mode that answers reserved clients and ignores
+everything else; and the current leases read live from Kea's own lease
+file. Install, configure, start, stop and restart all happen from the
+page.
+
+Subnets are served either directly or through a relay, and the page
+tells you which it thinks each one is. A subnet with a local interface in
+its range is direct. A subnet with none is **relayed** — a remote segment
+whose own gateway carries `ip helper-address <this server>` — and that is
+reported as such rather than flagged as a mistake, because it needs
+nothing configured here: the relay puts its own address on the client's
+segment into `giaddr` on every request it forwards, and Kea's documented
+rule is that a relayed message is accepted through any interface and that
+`giaddr` selects the subnet.
+
+Two reachability overrides exist for the cases that fall outside that,
+kept behind a disclosure on the subnet form rather than in the main
+fields. **Match extra relay addresses** maps additional `giaddr` values
+onto a subnet, which Kea's own manual calls uncommon — needed when a
+relay's `giaddr` sits outside the subnet it serves, such as one sourcing
+from a loopback or transit address, and for shared networks. **Pin to
+interface** restricts a directly connected subnet to one local interface.
+
+### Components
+
+- **Backend**: `dhcp-config.ts` (the Kea JSON generator and parser, plus
+  validation), `dhcp-controller.ts` (status, interfaces, config,
+  leases, and the install/start/stop/restart lifecycle — all host work
+  through `safeNsenter`).
+- **Frontend**: `DhcpPage.tsx`, with `subnet-reach.ts` deciding whether a
+  subnet reads as direct, relayed, or unknown.
+
+### Design Notes
+
+Kea rather than the obvious alternatives. `isc-dhcp-server` is end of
+life upstream and still shipping in Ubuntu 24.04, so building on it means
+shipping an unmaintained daemon. `dnsmasq` is also a DNS server, and this
+deployment's BIND9 is shared infrastructure owned by three other modules
+— two daemons contending for :53 is not a trade worth making for DHCP.
+Kea's configuration is JSON, which makes generating it a data transform
+rather than a bespoke config-language writer, and makes round-tripping an
+operator's hand edits feasible at all.
+
+The host's `kea-dhcp4.conf` is the single source of truth, with no mirror
+in MongoDB — the same choice the Time Server page makes for
+`chrony.conf`, for the same reason: a second copy drifts, and the daemon
+only ever reads the file.
+
+Open5GS's own `ogstun` tunnels are refused as listen interfaces. Open5GS
+allocates UE addresses there itself from `smf.yaml`, so a second
+allocator on the same tunnel is a conflict with no upside.
+
+Status reports whatever else currently holds UDP/67, which is the single
+most common reason Kea will not start.
+
+### Current Status
+
+Beta. Opt-in (`ENABLE_DHCP_MODULE`, defaults disabled) — installing it
+binds UDP/67, so a careless subnet could start answering DHCP on a live
+segment, a bigger blast radius than a display toggle.
+
+---
+
+## SNMP Monitoring
+
+Install and manage a read-only Net-SNMP agent from the NMS. The module exports host health, 4G/5G UE and radio counts, Open5GS service health, `ogstun` counters, and standard `IF-MIB` interface data for PRTG and other SNMP managers. The generated Open5GS MIB can be downloaded directly from the page.
+
+See [SNMP monitoring](snmp-monitoring.md) for installation, OIDs, PRTG usage, and security guidance.
+
+---
+
 ## Summary
 
 Open5GS NMS provides a complete management solution for Open5GS deployments with:
@@ -2039,12 +2119,6 @@ Open5GS NMS provides a complete management solution for Open5GS deployments with
 - ✅ Production-ready safety features
 - ✅ Voice (IMS/VoLTE — confirmed on real iPhone hardware; VoWiFi — alpha) and SMS (SGs) modules, all optional
 - ✅ End-to-end validation via simulated test UEs, no physical radio required
-
-## SNMP Monitoring
-
-Install and manage a read-only Net-SNMP agent from the NMS. The module exports host health, 4G/5G UE and radio counts, Open5GS service health, `ogstun` counters, and standard `IF-MIB` interface data for PRTG and other SNMP managers. The generated Open5GS MIB can be downloaded directly from the page.
-
-See [SNMP monitoring](snmp-monitoring.md) for installation, OIDs, PRTG usage, and security guidance.
 
 ---
 

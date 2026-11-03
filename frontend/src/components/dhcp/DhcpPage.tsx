@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Network, Play, Square, RotateCcw, Download, Plus, Trash2, Save,
   AlertTriangle, Info, RefreshCw, Server, Pin, Clock, Cable, Waypoints, X,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import toast from 'react-hot-toast';
@@ -62,6 +63,27 @@ export function DhcpPage(): JSX.Element {
   const logRef = useRef<HTMLPreElement>(null);
 
   const dirty = JSON.stringify(config) !== JSON.stringify(saved);
+
+  // Which subnets have their reachability overrides revealed.
+  //
+  // The explicit choice wins once made, and the default is "open if one is
+  // already set" — hiding a value that is live in Kea's own config would make
+  // this page disagree with the file it edits, which is worse than the clutter
+  // the disclosure exists to remove.
+  const [reachOpen, setReachOpen] = useState<Record<number, boolean>>({});
+  const reachOverridden = (s: DhcpSubnet) => !!s.iface || (s.relayIps?.length ?? 0) > 0;
+  const reachVisible = (s: DhcpSubnet) => reachOpen[s.id] ?? reachOverridden(s);
+
+  // What the operator types on the far-end router. The first bound interface
+  // that actually holds an address: this is the address a relay points AT, so
+  // guessing is worse than saying nothing.
+  const helperTarget = (() => {
+    for (const name of config.interfaces) {
+      const ip = interfaces.find(i => i.name === name)?.cidr?.split('/')[0];
+      if (ip) return ip;
+    }
+    return null;
+  })();
 
   const refresh = useCallback(async () => {
     try {
@@ -356,6 +378,12 @@ export function DhcpPage(): JSX.Element {
               pool and gateway. Kea selects it from the relay's <span className="font-mono">giaddr</span>,
               so nothing has to match a bound interface.
             </p>
+            <p className="text-xs text-nms-text-dim mt-2">
+              Relaying itself is configured on the far-end router, not here:
+              <span className="font-mono"> ip helper-address {helperTarget ?? '<this server>'}</span> on
+              that segment's own gateway interface. Nothing on this page needs to know the relay's
+              address — it puts its own in every request it forwards.
+            </p>
           </div>
 
           {config.subnets.length === 0 && (
@@ -444,28 +472,67 @@ export function DhcpPage(): JSX.Element {
                     value={s.domainName ?? ''} disabled={!isAdmin}
                     onChange={e => patchSubnet(s.id, { domainName: e.target.value.trim() || undefined })} />
                 </div>
-                <div>
-                  <label htmlFor={`relay-${s.id}`} className="block text-xs text-nms-text-dim mb-1">Relay addresses (optional)</label>
-                  <input id={`relay-${s.id}`} className="nms-input font-mono" placeholder="192.168.50.1"
-                    value={(s.relayIps ?? []).join(', ')} disabled={!isAdmin}
-                    onChange={e => patchSubnet(s.id, { relayIps: e.target.value.split(',').map(x => x.trim()).filter(Boolean) })} />
-                  <p className="text-xs text-nms-text-dim/80 mt-1">
-                    Only needed when the relay's own address is outside this subnet. A relay that is
-                    this subnet's gateway is matched automatically.
-                  </p>
-                </div>
-                <div>
-                  <label htmlFor={`iface-pin-${s.id}`} className="block text-xs text-nms-text-dim mb-1">Pin to interface (optional)</label>
-                  <select id={`iface-pin-${s.id}`} className="nms-input" value={s.iface ?? ''} disabled={!isAdmin}
-                    onChange={e => patchSubnet(s.id, { iface: e.target.value || undefined })}>
-                    <option value="">Not pinned — any bound interface</option>
-                    {interfaces.filter(i => !i.blocked).map(i => <option key={i.name} value={i.name}>{i.name}</option>)}
-                  </select>
-                  <p className="text-xs text-nms-text-dim/80 mt-1">
-                    For directly connected clients on one segment. Leave unset on a relayed subnet —
-                    it has no local interface to pin to.
-                  </p>
-                </div>
+              </div>
+
+              {/* Deliberately NOT in the grid above. Both of these are overrides
+                  for cases Kea's own manual calls uncommon, and an inline field
+                  reads as a step in the normal flow however its help text is
+                  worded — which is how "Relay addresses" got read as "tell the
+                  server where your relay is", the reverse of how relaying works. */}
+              <div className="border-t border-nms-border pt-3">
+                <button type="button" aria-expanded={reachVisible(s)}
+                  onClick={() => setReachOpen(prev => ({ ...prev, [s.id]: !reachVisible(s) }))}
+                  className="flex items-center gap-1.5 text-xs text-nms-text-dim hover:text-nms-accent transition-colors">
+                  {reachVisible(s)
+                    ? <ChevronDown className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                    : <ChevronRight className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />}
+                  Reachability overrides
+                  {reachOverridden(s) && (
+                    <span className="inline-flex items-center whitespace-nowrap text-[10px] font-semibold px-1.5 py-0.5 rounded bg-nms-accent/10 text-nms-accent border border-nms-accent/30">
+                      in use
+                    </span>
+                  )}
+                </button>
+
+                {reachVisible(s) && (
+                  <div className="mt-3 space-y-3">
+                    <p className="text-xs text-nms-text-dim">
+                      An ordinary relayed subnet needs neither of these. Leave both empty unless
+                      something below describes your network.
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label htmlFor={`relay-${s.id}`} className="block text-xs text-nms-text-dim mb-1">
+                          Match extra relay addresses
+                        </label>
+                        <input id={`relay-${s.id}`} className="nms-input font-mono" placeholder="(empty)"
+                          value={(s.relayIps ?? []).join(', ')} disabled={!isAdmin}
+                          onChange={e => patchSubnet(s.id, { relayIps: e.target.value.split(',').map(x => x.trim()).filter(Boolean) })} />
+                        <p className="text-xs text-nms-text-dim/80 mt-1">
+                          Extra <span className="font-mono">giaddr</span> values Kea should map to this
+                          subnet. A relay sets <span className="font-mono">giaddr</span> to its own
+                          address on the client's segment, so a relay that is this subnet's gateway is
+                          already matched. Only needed when it is not — a relay sourcing from a
+                          loopback or transit address, or a shared network.
+                        </p>
+                      </div>
+                      <div>
+                        <label htmlFor={`iface-pin-${s.id}`} className="block text-xs text-nms-text-dim mb-1">
+                          Pin to interface
+                        </label>
+                        <select id={`iface-pin-${s.id}`} className="nms-input" value={s.iface ?? ''} disabled={!isAdmin}
+                          onChange={e => patchSubnet(s.id, { iface: e.target.value || undefined })}>
+                          <option value="">Not pinned — any bound interface</option>
+                          {interfaces.filter(i => !i.blocked).map(i => <option key={i.name} value={i.name}>{i.name}</option>)}
+                        </select>
+                        <p className="text-xs text-nms-text-dim/80 mt-1">
+                          Restricts this subnet to directly connected clients on one interface. A
+                          relayed subnet has no local interface to pin to, so leave it unset.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             );

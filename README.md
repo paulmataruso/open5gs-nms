@@ -294,6 +294,24 @@ managed in SASBench's own console, not here — one system, one place to change 
 
 ![DNS / FQDN Migration Wizard](docs/screenshots/dns-migration-wizard.png)
 
+### DHCP Server (Kea DHCPv4) *(Beta)*
+- **Address pools per subnet** — CIDR, one or more ranges, gateway, DNS servers, domain name, and lease lifetime, with a per-subnet override of the global default
+- **Static bindings** — reserve an address to a MAC, with an optional hostname; a reservations-only mode answers reserved clients and ignores everything else
+- **Chooses its own listen interfaces** — bind Kea to the interfaces you mean, with Open5GS's own `ogstun` tunnels refused outright (Open5GS allocates UE addresses there itself from `smf.yaml`, and a second allocator on the same tunnel conflicts with no upside)
+- **Relayed subnets work with nothing configured here** — a remote segment behind an `ip helper-address` on its own gateway is matched from the relay's `giaddr`, so the page reports such a subnet as relayed rather than flagging it as a mistake; extra `giaddr` values can be matched explicitly for the uncommon cases that need it
+- **Live leases** — current bindings read from Kea's own lease file, not a mirror
+- **Port :67 conflict reporting** — status names whatever else currently holds the port, which is the usual reason Kea will not start
+- **Full lifecycle** — install, configure, start, stop, and restart from the page; the host's `kea-dhcp4.conf` stays the single source of truth and hand edits round-trip
+- `ENABLE_DHCP_MODULE` defaults **disabled** (opt-in) — installing it binds UDP/67
+
+### TWAMP (Backhaul Link Quality) *(Beta)*
+- **Real RFC 5357 measurement, not ping** — round-trip time, jitter, packet loss, and one-way delay to CBRS radios and any other TWAMP-capable device
+- **Both directions, independently** — a client that polls operator-added targets on their own schedule, and an always-on reflector answering inbound tests from other devices
+- **TWAMP-Light and full TWAMP-Control** — Light (RFC 5357 Appendix I) is what real radios tend to speak
+- **History and dashboards** — retention-configurable history for both the targets and the reflector, plus a provisioned Grafana dashboard
+- One-way delay depends on both endpoints' clocks being synchronized; round-trip time and loss are unaffected by clock skew
+- `ENABLE_TWAMP_MODULE` defaults **disabled** (opt-in)
+
 ### Real-Time Logging
 - **Four log sources** — Open5GS systemd services, Docker containers, GenieACS access logs, and FRR, all streamed live via WebSocket
 - **Live Log Streaming** — Tail logs from any service, with multi-select service/container filtering
