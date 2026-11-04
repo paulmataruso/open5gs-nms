@@ -28,6 +28,11 @@ const CRASH_GUARD_PATCH_TEMPLATE = `${__dirname}/../../config/frr-patches/frr-ei
 const CRASH_GUARD_PATCH_HOST_PATH = `${BUILD_WORKDIR}/frr-eigrpd-crash-guard.patch`; // real host path, passed to the script as-is
 const CRASH_GUARD_PATCH_PROC_PATH = `/proc/1/root${CRASH_GUARD_PATCH_HOST_PATH}`;    // same file, /proc/1/root-prefixed for this container's own fs.copyFileSync
 
+// Every eigrpd patch beyond the crash-guard one, staged identically. Add a filename here
+// and to src/config/frr-patches/ and it is applied by every future build — there is no
+// second code path to remember.
+const EXTRA_EIGRPD_PATCH_FILES = ['frr-eigrpd-dangling-adv-router.patch'];
+
 // ─── State ──────────────────────────────────────────────────────────────────
 export type BuildStatus = 'idle' | FrrBuildStep | 'complete' | 'failed' | 'rolled_back';
 
@@ -133,6 +138,7 @@ function startBuild(targetTag: string, restoreConfigFrom: string | undefined, sn
   // it's verified against — buildFrrSourceScript() itself re-checks targetTag and no-ops the
   // patch step otherwise, this copy is harmless either way.
   let crashGuardPatchPath: string | undefined;
+  const extraEigrpdPatchPaths: string[] = [];
   if (targetTag === CRASH_GUARD_PATCH_TAG) {
     try {
       fs.copyFileSync(CRASH_GUARD_PATCH_TEMPLATE, CRASH_GUARD_PATCH_PROC_PATH);
@@ -140,10 +146,20 @@ function startBuild(targetTag: string, restoreConfigFrom: string | undefined, sn
     } catch (err) {
       logger.warn({ err: String(err) }, 'Failed to stage eigrpd crash-guard patch — build will proceed unpatched');
     }
+
+    // Deliberately throws rather than warning. A missing crash-guard patch above leaves a
+    // daemon that crashes loudly and gets restarted by watchfrr; a missing dangling-pointer
+    // patch leaves one that silently installs a gateway-less nexthop and blackholes part of
+    // a prefix, which is far harder to notice. Refusing to start the build is the safer
+    // failure, and the build script itself re-checks each file for the same reason.
+    for (const name of EXTRA_EIGRPD_PATCH_FILES) {
+      fs.copyFileSync(`${__dirname}/../../config/frr-patches/${name}`, `/proc/1/root${BUILD_WORKDIR}/${name}`);
+      extraEigrpdPatchPaths.push(`${BUILD_WORKDIR}/${name}`);
+    }
   }
 
   const script = buildFrrSourceScript({
-    targetTag, restoreConfigFrom, snapshotDir, crashGuardPatchPath,
+    targetTag, restoreConfigFrom, snapshotDir, crashGuardPatchPath, extraEigrpdPatchPaths,
     // Restoring a previous config already carries forward whatever protocol daemon was
     // enabled — only need to guarantee these two, which mgmtd (mandatory as of FRR 9.0+)
     // and zebra (always required) predate on older, pre-restore daemons files.

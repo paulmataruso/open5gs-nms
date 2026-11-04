@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Network, Play, Square, RotateCcw, Download, Plus, Trash2, Save,
   AlertTriangle, Info, RefreshCw, Server, Pin, Clock, Cable, Waypoints, X,
@@ -11,7 +11,8 @@ import {
   type DhcpConfig, type DhcpInterface, type DhcpLease, type DhcpStatus, type DhcpSubnet,
 } from '../../api/dhcp';
 import { useAuth } from '../../contexts/AuthContext';
-import { ifaceServesOwnRange, subnetReach } from './subnet-reach';
+import { activateOnKey } from '../../hooks/useKeyboardA11y';
+import { ifaceServesOwnRange, ipInAnyPool, subnetReach } from './subnet-reach';
 
 type Tab = 'subnets' | 'bindings' | 'leases' | 'setup';
 
@@ -36,6 +37,32 @@ function shortReason(reason: string | undefined): string {
   return r.length > 72 ? `${r.slice(0, 71)}…` : r;
 }
 
+/** Unix seconds -> local date and time. Lease stamps are absolute, not relative. */
+function absTime(unixSeconds: number): string {
+  if (!unixSeconds) return '—';
+  return new Date(unixSeconds * 1000).toLocaleString();
+}
+
+/** One labelled value in the lease detail grid. */
+function Detail({ label, children, mono, hint }: {
+  label: string;
+  children: React.ReactNode;
+  mono?: boolean;
+  hint?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[11px] uppercase tracking-wider text-nms-text-dim">{label}</dt>
+      <dd className={clsx('text-xs text-nms-text mt-0.5 break-words', mono && 'font-mono')}>
+        {children}
+      </dd>
+      {hint && <p className="text-[11px] text-nms-text-dim mt-0.5">{hint}</p>}
+    </div>
+  );
+}
+
+const DASH = <span className="text-nms-text-dim">—</span>;
+
 const LEASE_STATE_STYLE: Record<DhcpLease['state'], string> = {
   active:   'bg-nms-green/10 text-nms-green border-nms-green/30',
   declined: 'bg-nms-red/10 text-nms-red border-nms-red/30',
@@ -53,6 +80,10 @@ export function DhcpPage(): JSX.Element {
   const [config, setConfig] = useState<DhcpConfig>(EMPTY);
   const [saved, setSaved] = useState<DhcpConfig>(EMPTY);
   const [leases, setLeases] = useState<DhcpLease[]>([]);
+  // Which lease rows are expanded. Keyed by IP, which is the lease's identity
+  // in Kea's own file (one current row per address), so a 10s refresh that
+  // replaces the array leaves the open rows open.
+  const [openLeases, setOpenLeases] = useState<Record<string, boolean>>({});
   const [leaseFileExists, setLeaseFileExists] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -189,6 +220,49 @@ export function DhcpPage(): JSX.Element {
   }
 
   const allReservations = config.subnets.flatMap(s => s.reservations.map(r => ({ ...r, subnetId: s.id, subnet: s.subnet })));
+
+  /**
+   * Why a lease can't become a static binding, or null when it can.
+   *
+   * Each of these would otherwise fail at Save with a message pointing at the
+   * Bindings tab, which is a poor way to learn that the lease you clicked was
+   * never eligible. The validator still enforces all of it server-side; this
+   * only decides what the button says.
+   */
+  const bindingBlocker = (l: DhcpLease, subnet: DhcpSubnet | undefined): string | null => {
+    if (!subnet) return `Lease is in subnet id ${l.subnetId}, which is not in the saved configuration.`;
+    if (!l.mac) return 'Kea recorded no MAC for this lease, and a binding is keyed on the MAC.';
+    const macElsewhere = allReservations.find(r => r.mac === l.mac && r.ip !== l.ip);
+    if (macElsewhere) return `${l.mac} is already bound to ${macElsewhere.ip}. A MAC can hold only one address.`;
+    const ipTaken = allReservations.find(r => r.ip === l.ip && r.mac !== l.mac);
+    if (ipTaken) return `${l.ip} is already bound to ${ipTaken.mac}.`;
+    return null;
+  };
+
+  /**
+   * Stages a binding for a lease. Deliberately NOT an immediate write: the
+   * page's one save path is the Save button, and adding a second would mean
+   * two ways for this config to reach the host. The detail panel shows a Save
+   * control in place once staged, so the operator does not have to find
+   * another tab to finish what they started.
+   */
+  const pinLease = (l: DhcpLease, subnet: DhcpSubnet) => {
+    patchSubnet(subnet.id, {
+      reservations: [...subnet.reservations, {
+        mac: l.mac,
+        ip: l.ip,
+        // Carried over when the client offered one, so the binding keeps the
+        // name the lease was showing rather than appearing as an unnamed row.
+        hostname: l.hostname ?? undefined,
+      }],
+    });
+    const inPool = ipInAnyPool(subnet.pools, l.ip);
+    toast.success(
+      inPool
+        ? `Binding staged for ${l.ip}. It sits inside the dynamic pool — Save to apply, then narrow the pool to exclude it.`
+        : `Binding staged for ${l.ip}. Save to apply.`,
+    );
+  };
 
   return (
     <div className="p-4 space-y-4 md:p-6 md:space-y-6">
@@ -642,6 +716,7 @@ export function DhcpPage(): JSX.Element {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-xs text-nms-text-dim uppercase tracking-wider border-b border-nms-border">
+                    <th className="w-8 py-2 px-2" aria-label="Expand" />
                     <th className="text-left py-2 px-2 font-semibold">IP address</th>
                     <th className="text-left py-2 px-2 font-semibold">MAC</th>
                     <th className="text-left py-2 px-2 font-semibold">Hostname</th>
@@ -650,31 +725,166 @@ export function DhcpPage(): JSX.Element {
                   </tr>
                 </thead>
                 <tbody>
-                  {leases.map(l => (
-                    <tr key={l.ip} className="border-b border-nms-border/50">
-                      <td className="py-1.5 px-2 font-mono">
-                        <span className="flex items-center gap-1.5">
-                          {l.ip}
-                          {l.reserved && (
-                            <span title="Pinned by a static binding" aria-label="Pinned by a static binding">
-                              <Pin className="w-3 h-3 text-nms-accent" aria-hidden="true" />
-                            </span>
+                  {leases.map(l => {
+                    const open = !!openLeases[l.ip];
+                    const toggle = () => setOpenLeases(prev => ({ ...prev, [l.ip]: !prev[l.ip] }));
+                    // The subnet is resolved from the config the page already
+                    // holds: Kea's lease file records only the numeric id, and
+                    // "subnet 1" tells an operator nothing on its own.
+                    const subnet = config.subnets.find(s => s.id === l.subnetId);
+                    const binding = subnet?.reservations.find(r => r.ip === l.ip);
+                    // Read from the config being EDITED, not from l.reserved,
+                    // which reflects the file on the host. A binding staged a
+                    // moment ago is real to this page and not yet to Kea.
+                    const staged = !!binding;
+                    const blocker = staged ? null : bindingBlocker(l, subnet);
+                    return (
+                      // Key belongs on the fragment, which is the array element
+                      // here — on the inner <tr>s React still warns and cannot
+                      // reconcile the pair as one unit.
+                      <Fragment key={l.ip}>
+                        <tr
+                          onClick={toggle}
+                          onKeyDown={activateOnKey(toggle)}
+                          tabIndex={0}
+                          aria-expanded={open}
+                          className={clsx(
+                            'border-b border-nms-border/50 cursor-pointer transition-colors',
+                            open ? 'bg-nms-accent/5' : 'hover:bg-nms-surface-2/50',
                           )}
-                        </span>
-                      </td>
-                      <td className="py-1.5 px-2 font-mono text-nms-text-dim">{l.mac || '—'}</td>
-                      <td className="py-1.5 px-2">{l.hostname || <span className="text-nms-text-dim">—</span>}</td>
-                      <td className="py-1.5 px-2">
-                        <span className={clsx('text-xs font-semibold px-1.5 py-0.5 rounded border', LEASE_STATE_STYLE[l.state])}>
-                          {l.state}
-                        </span>
-                      </td>
-                      <td className="py-1.5 px-2 text-nms-text-dim">
-                        {l.state === 'active' ? `in ${humanDuration(l.expiresInSeconds)}`
-                          : l.state === 'expired' ? `${humanDuration(l.expiresInSeconds)} ago` : '—'}
-                      </td>
-                    </tr>
-                  ))}
+                        >
+                          <td className="py-1.5 px-2 text-nms-text-dim">
+                            {open
+                              ? <ChevronDown className="w-3.5 h-3.5" aria-hidden="true" />
+                              : <ChevronRight className="w-3.5 h-3.5" aria-hidden="true" />}
+                          </td>
+                          <td className="py-1.5 px-2 font-mono">
+                            <span className="flex items-center gap-1.5">
+                              {l.ip}
+                              {l.reserved && (
+                                <span title="Pinned by a static binding" aria-label="Pinned by a static binding">
+                                  <Pin className="w-3 h-3 text-nms-accent" aria-hidden="true" />
+                                </span>
+                              )}
+                            </span>
+                          </td>
+                          <td className="py-1.5 px-2 font-mono text-nms-text-dim">{l.mac || '—'}</td>
+                          <td className="py-1.5 px-2">{l.hostname || <span className="text-nms-text-dim">—</span>}</td>
+                          <td className="py-1.5 px-2">
+                            <span className={clsx('text-xs font-semibold px-1.5 py-0.5 rounded border', LEASE_STATE_STYLE[l.state])}>
+                              {l.state}
+                            </span>
+                          </td>
+                          <td className="py-1.5 px-2 text-nms-text-dim">
+                            {l.state === 'active' ? `in ${humanDuration(l.expiresInSeconds)}`
+                              : l.state === 'expired' ? `${humanDuration(l.expiresInSeconds)} ago` : '—'}
+                          </td>
+                        </tr>
+                        {open && (
+                          <tr className="border-b border-nms-border/50 bg-nms-surface-2/30">
+                            <td colSpan={6} className="px-4 py-3">
+                              <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                                <Detail label="Subnet">
+                                  {subnet
+                                    ? <span className="font-mono">{subnet.subnet}</span>
+                                    : <>subnet id {l.subnetId} <span className="text-nms-text-dim">(not in the saved config)</span></>}
+                                </Detail>
+                                <Detail label="Pool">
+                                  {l.poolId === null ? DASH : `pool ${l.poolId}`}
+                                </Detail>
+                                <Detail label="Static binding">
+                                  {l.reserved
+                                    ? <>Yes{binding?.hostname ? ` — ${binding.hostname}` : ''}</>
+                                    : <span className="text-nms-text-dim">No — assigned from the pool</span>}
+                                </Detail>
+
+                                <Detail label="Lease granted" hint="What Kea handed out, not the time left.">
+                                  {l.validLifetime > 0
+                                    ? `${humanDuration(l.validLifetime)} (${l.validLifetime}s)`
+                                    : DASH}
+                                </Detail>
+                                <Detail label="Obtained" mono>{absTime(l.obtainedAt)}</Detail>
+                                <Detail label="Expires" mono>{absTime(l.expiresAt)}</Detail>
+
+                                <Detail
+                                  label="Client identifier"
+                                  mono
+                                  hint={l.clientIdText
+                                    ? 'Decoded from DHCP option 61 — the device naming itself.'
+                                    : undefined}
+                                >
+                                  {l.clientIdText
+                                    ? <>
+                                        <span className="text-nms-text">{l.clientIdText}</span>
+                                        <span className="block text-[11px] text-nms-text-dim mt-0.5 break-all">{l.clientId}</span>
+                                      </>
+                                    : l.clientId
+                                      ? <span className="break-all">{l.clientId}</span>
+                                      : DASH}
+                                </Detail>
+                                <Detail label="DDNS records" hint="Whether Kea owned this name in DNS.">
+                                  {l.fqdnFwd || l.fqdnRev
+                                    ? [l.fqdnFwd && 'forward (A)', l.fqdnRev && 'reverse (PTR)'].filter(Boolean).join(' + ')
+                                    : <span className="text-nms-text-dim">None</span>}
+                                </Detail>
+                                <Detail label="Kea user context" mono>
+                                  {l.userContext ?? DASH}
+                                </Detail>
+                              </dl>
+
+                              {isAdmin && (
+                                <div className="mt-3 pt-3 border-t border-nms-border flex items-center gap-2 flex-wrap">
+                                  {staged ? (
+                                    <>
+                                      <span className="inline-flex items-center gap-1.5 text-xs text-nms-accent">
+                                        <Pin className="w-3.5 h-3.5" aria-hidden="true" />
+                                        {l.reserved && !dirty
+                                          ? 'Pinned by a static binding.'
+                                          : 'Binding staged — not applied until saved.'}
+                                      </span>
+                                      {dirty && (
+                                        <button onClick={save} disabled={saving}
+                                          className="nms-btn-primary flex items-center gap-1.5 text-xs disabled:opacity-40">
+                                          <Save className="w-3.5 h-3.5" /> {saving ? 'Saving…' : 'Save changes'}
+                                        </button>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        onClick={() => subnet && pinLease(l, subnet)}
+                                        disabled={!!blocker}
+                                        aria-label={`Pin ${l.ip} to ${l.mac || 'this client'} as a static binding`}
+                                        className="nms-btn border border-nms-border-strong text-nms-text-dim hover:text-nms-accent flex items-center gap-1.5 text-xs disabled:opacity-40 disabled:hover:text-nms-text-dim">
+                                        <Pin className="w-3.5 h-3.5" /> Make this a static binding
+                                      </button>
+                                      <span className="text-[11px] text-nms-text-dim">
+                                        {blocker ?? `Always give ${l.mac} the address ${l.ip}.`}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+
+                              {!l.detailsComplete && (
+                                // Deliberately explicit rather than silently blank. A row whose
+                                // field count disagrees with the header has shifted columns, and
+                                // presenting a shifted pool id as fact is worse than saying so.
+                                <p className="text-xs text-nms-amber mt-3 flex items-start gap-1.5">
+                                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+                                  <span>
+                                    Kea wrote this lease row with an unexpected number of fields, so the
+                                    columns after its state could not be read positionally. Pool, client
+                                    identifier, DDNS flags and user context are withheld rather than guessed.
+                                  </span>
+                                </p>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

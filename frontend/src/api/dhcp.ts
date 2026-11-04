@@ -79,6 +79,20 @@ export interface DhcpLease {
   subnetId: number;
   state: 'active' | 'declined' | 'expired' | 'released';
   reserved: boolean;
+  /** DHCP option 61, as Kea recorded it (colon-separated hex). */
+  clientId: string | null;
+  /** The same identifier decoded to text when it holds text — often the device naming itself. */
+  clientIdText: string | null;
+  /** Lease length Kea granted, in seconds. Not the time remaining. */
+  validLifetime: number;
+  /** Unix seconds when the client got this lease; 0 when it cannot be derived. */
+  obtainedAt: number;
+  fqdnFwd: boolean;
+  fqdnRev: boolean;
+  poolId: number | null;
+  userContext: string | null;
+  /** False when this lease row's later columns were shifted and withheld. */
+  detailsComplete: boolean;
 }
 
 export interface DhcpSaveResult {

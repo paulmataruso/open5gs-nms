@@ -4,6 +4,108 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.80] - 2026-11-04
+
+### Added — click a DHCP lease to see its details
+
+The leases table showed five columns and discarded the rest of what Kea
+records. Every lease row now expands: which subnet it came from (resolved from
+Kea's numeric `subnet_id` to the real CIDR), which pool, whether a static
+binding pins it, the lease length Kea **granted** as distinct from the time
+remaining, absolute obtained and expiry times, the DDNS forward/reverse flags,
+and Kea's own `user_context` verbatim.
+
+The client identifier is decoded. DHCP option 61 is stored as colon-separated
+hex, and per RFC 2132 a leading type byte of 0 means an opaque identifier,
+which in practice is very often ASCII the device chose for itself. The real
+lease on this deployment reads
+`00:63:69:73:63:6f:2d:30:30:64:61:...:56:6c:34:34:34`, which decodes to
+`cisco-00da.5571.d5dd-Vl444` — vendor, base MAC and the VLAN it asked from.
+The raw form is kept underneath. A type of 1 decodes to nothing, because that
+is a hardware address the MAC column already shows, and a non-printable
+payload is never rendered as control characters.
+
+Rows are keyboard-operable (`tabIndex`, `activateOnKey`, `aria-expanded`),
+deliberately without `role="button"` on a `<tr>`, which would destroy the
+table semantics. Open rows are keyed by IP — a lease's identity in Kea's own
+file — so the 10-second refresh does not collapse them.
+
+### Fixed — the lease CSV was split without regard for quoting
+
+`parseKeaLeases()` used `line.split(',')`. That is correct for every column up
+to `state`, which is why it went unnoticed: the one field that can contain a
+comma is `user_context`, holding Kea's own JSON, and it sits after `state`.
+Reading those later columns is what makes it matter — a naive split silently
+shifts `pool_id`. There is now an RFC4180 splitter handling quoted fields and
+doubled quotes, and when a row's field count disagrees with the header the
+detail view **says the columns were withheld** rather than presenting a
+shifted pool id as fact.
+
+### Added — turn a dynamic lease into a static binding
+
+A button on the expanded lease copies its MAC, address and hostname into a
+reservation on the matching subnet. It stages the change through the page's
+existing save path rather than writing immediately, so this config keeps one
+route to the host; the panel then offers Save in place instead of sending the
+operator to another tab.
+
+Leases that cannot become a binding explain why — a subnet absent from the
+saved config, a lease Kea recorded with no MAC, or a MAC or address already
+bound elsewhere — instead of failing at save. The validator still owns all of
+those rules.
+
+A dynamic lease is by definition inside a pool, which is exactly the
+arrangement the Bindings tab warns against, so pinning one says so and points
+at narrowing the pool. The pool test is `ipInAnyPool()` in `subnet-reach.ts`,
+reusing that module's validating `ipv4ToNum`: a hand-rolled
+`split('.').reduce()` returns a number for `10.0.2` and for `banana` and would
+place either inside a pool. The pool is not narrowed automatically — splitting
+a pool around a pinned address changes what every other client can be offered,
+which is a deliberate decision and not a side effect of pinning one device.
+
+### Fixed — eigrpd left freed neighbours in its topology and handed them to zebra
+
+`eigrp_topology_neighbor_down()` does not delete a dead neighbour's route
+descriptors. It hands each one to DUAL as a max-metric update and relies on
+the resulting state transition to remove it, and `eigrp_nbr_delete()` then
+frees the neighbour unconditionally. Any descriptor whose removal transition
+did not happen is left holding a dangling `adv_router`, which
+`show_ip_eigrp_route_descriptor()` prints — the changing garbage next hops —
+and which `eigrp_zebra_route_add()` reads: `if (te->adv_router->src.s_addr)`
+falls to `NEXTHOP_TYPE_IFINDEX` when freed memory happens to read zero, which
+is a kernel nexthop with **no gateway**, treated as on-link, blackholing part
+of a prefix under ECMP hashing.
+
+This deployment's own frr#943 crash-guard is implicated: skipping the FSM
+transition is precisely what leaves the descriptor behind, so the guard
+converted a crash into this. It reproduces on demand — one
+`clear ip eigrp neighbors` left 46 dangling descriptors and 16 of 29 prefixes
+corrupt, matching the production signature.
+
+`frr-eigrpd-dangling-adv-router.patch` neutralises those descriptors rather
+than removing them (removing them loses prefixes for good, measured as 29
+dropping to 13 after a flap, because the peer re-advertises nothing on the way
+back up), guards `eigrp_zebra_route_add()` so a gateway-less nexthop can never
+be installed, re-states routes when an adjacency reaches full state, and takes
+upstream FRRouting/frr#23827's `finishing` flag for the teardown case.
+Verified over 12 mixed cycles of clears and link flaps: corruption 16 to 0,
+all 29 prefixes retained, zero crashes, route table byte-identical.
+
+Both eigrpd patches are now applied by every source build from one list rather
+than per-patch plumbing, and `checkFrrCrashGuard()` checks both markers
+separately — a build predating either produces a binary that passes a
+single-marker check while missing the other. Full writeup:
+`docs/frr-eigrpd-dangling-adv-router-patch.md`.
+
+**This deployment has since migrated to OSPF** (2026-11-04, `eigrpd=no`), so
+none of the above is load-bearing here any more. It ships for deployments
+still running EIGRP. `EigrpHealthGuard`, added in this release to watch the
+kernel route table for the two traffic-affecting signatures, is correspondingly
+inert on this host — an empty EIGRP topology yields no findings, so it raises
+nothing and restarts nothing. It should be removed or repointed at OSPF.
+
+---
+
 ## [v2.0-beta_0.79] - 2026-11-03
 
 ### Fixed — the DHCP subnet form read as "tell the server where your relay is"

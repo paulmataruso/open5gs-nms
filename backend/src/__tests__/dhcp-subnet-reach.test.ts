@@ -1,5 +1,5 @@
 import {
-  ipv4ToNum, cidrNumRange, cidrContainsIp, subnetReach, ifaceServesOwnRange,
+  ipv4ToNum, cidrNumRange, cidrContainsIp, subnetReach, ifaceServesOwnRange, ipInAnyPool,
   type ReachIface,
 } from '../../../frontend/src/components/dhcp/subnet-reach';
 
@@ -114,5 +114,48 @@ describe('ifaceServesOwnRange', () => {
   test('false with no subnets at all, and for an interface with no address', () => {
     expect(ifaceServesOwnRange(ens20, [])).toBe(false);
     expect(ifaceServesOwnRange(IFACES.find(i => i.name === 'dummy-up')!, ['0.0.0.0/0'])).toBe(false);
+  });
+});
+
+// ── ipInAnyPool ───────────────────────────────────────────────────────────
+//
+// Decides whether pinning a lease as a static binding needs the in-pool
+// caution. A dynamic lease is always inside a pool, so the interesting cases
+// are the boundaries and the malformed input a hand-rolled split would accept.
+
+describe('ipInAnyPool', () => {
+  const POOLS = [{ start: '10.0.2.100', end: '10.0.2.200' }];
+
+  test('inside, and on both inclusive boundaries', () => {
+    expect(ipInAnyPool(POOLS, '10.0.2.150')).toBe(true);
+    expect(ipInAnyPool(POOLS, '10.0.2.100')).toBe(true);
+    expect(ipInAnyPool(POOLS, '10.0.2.200')).toBe(true);
+  });
+
+  test('just outside either end', () => {
+    expect(ipInAnyPool(POOLS, '10.0.2.99')).toBe(false);
+    expect(ipInAnyPool(POOLS, '10.0.2.201')).toBe(false);
+  });
+
+  test('any one of several pools is enough', () => {
+    const many = [{ start: '10.0.2.10', end: '10.0.2.20' }, ...POOLS];
+    expect(ipInAnyPool(many, '10.0.2.15')).toBe(true);
+    expect(ipInAnyPool(many, '10.0.2.50')).toBe(false);
+  });
+
+  test('no pools means nothing is in a pool', () => {
+    expect(ipInAnyPool([], '10.0.2.150')).toBe(false);
+  });
+
+  // The reason this is not a split().reduce(): that returns a number for both
+  // of these and would place them inside the pool.
+  test('malformed addresses are not inside anything', () => {
+    expect(ipInAnyPool(POOLS, '10.0.2')).toBe(false);
+    expect(ipInAnyPool(POOLS, 'banana')).toBe(false);
+    expect(ipInAnyPool(POOLS, '')).toBe(false);
+  });
+
+  test('a pool with a malformed bound is skipped, not guessed', () => {
+    expect(ipInAnyPool([{ start: '10.0.2.100', end: 'nope' }], '10.0.2.150')).toBe(false);
   });
 });

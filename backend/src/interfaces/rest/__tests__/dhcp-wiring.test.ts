@@ -230,4 +230,122 @@ describe('DHCP module — wiring', () => {
     for (const id of ids) expect(PAGE).toContain(`htmlFor="${id}"`);
     for (const t of tmpl) expect(PAGE).toContain('htmlFor={`' + t + '`}');
   });
+  // ── Lease detail rows ───────────────────────────────────────────────────
+
+  test('lease rows are keyboard-operable, not click-only', () => {
+    // A div/tr with onClick is unreachable by keyboard without these. The
+    // a11y baseline also forbids role="button" on a <tr> — it destroys the
+    // table semantics — so aria-expanded carries the state instead.
+    expect(PAGE).toMatch(/onKeyDown=\{activateOnKey\(toggle\)\}/);
+    expect(PAGE).toMatch(/tabIndex=\{0\}\s*\n\s*aria-expanded=\{open\}/);
+    expect(PAGE).not.toMatch(/<tr[^>]*role="button"/);
+  });
+
+  test('the expanded pair is keyed on the fragment, not the inner rows', () => {
+    // Keying the <tr>s instead leaves the array element itself unkeyed: React
+    // warns and cannot reconcile the summary and detail rows as one unit.
+    expect(PAGE).toMatch(/<Fragment key=\{l\.ip\}>/);
+    expect(PAGE).not.toMatch(/<tr\s+key=\{`\$\{l\.ip\}-detail`\}/);
+  });
+
+  test('open rows survive the 10s lease refresh', () => {
+    // Keyed by IP, which is a lease's identity in Kea's file (one current row
+    // per address). Keying by array index would reassign every open row as
+    // leases are added or re-sorted.
+    expect(PAGE).toMatch(/openLeases\[l\.ip\]/);
+    expect(PAGE).toMatch(/setOpenLeases\(prev => \(\{ \.\.\.prev, \[l\.ip\]: !prev\[l\.ip\] \}\)\)/);
+  });
+
+  test('the detail view resolves the numeric subnet id to a real CIDR', () => {
+    // Kea's lease file records only `subnet_id`. Showing "subnet 1" would make
+    // the operator go and look it up by hand.
+    expect(PAGE).toMatch(/config\.subnets\.find\(s => s\.id === l\.subnetId\)/);
+  });
+
+  test('a lease row with shifted columns says so instead of showing guessed values', () => {
+    // The withheld-fields path has to be visible in the UI, or a shifted pool
+    // id reads as fact. Backed by detailsComplete from the parser.
+    expect(PAGE).toMatch(/!l\.detailsComplete/);
+    const DHCPCFG = read('backend/src/domain/services/dhcp-config.ts');
+    expect(DHCPCFG).toMatch(/detailsComplete: complete/);
+    expect(DHCPCFG).toMatch(/const complete = f\.length === cols\.length/);
+  });
+
+  test('the lease CSV is split with quote handling, not a bare split', () => {
+    // user_context holds Kea's own JSON, which contains commas, and it sits
+    // after `state` — so a naive split silently shifts pool_id only once these
+    // columns are actually read.
+    const DHCPCFG = read('backend/src/domain/services/dhcp-config.ts');
+    expect(DHCPCFG).toMatch(/const f = splitLeaseRow\(lines\[i\]\)/);
+    expect(DHCPCFG).not.toMatch(/const f = lines\[i\]\.split\(','\)/);
+  });
+
+  test('the client identifier is decoded for display, and the raw form kept', () => {
+    expect(PAGE).toMatch(/l\.clientIdText/);
+    expect(PAGE).toMatch(/\{l\.clientId\}/);
+  });
+  // ── Dynamic lease -> static binding ─────────────────────────────────────
+
+  test('pinning a lease stages it through the one save path, not a second write', () => {
+    // A direct dhcpApi.saveConfig() here would give this config two ways to
+    // reach the host and let a half-edited page be written by an unrelated
+    // click. It goes through patchSubnet like every other edit on the page.
+    expect(PAGE).toMatch(/const pinLease = \(l: DhcpLease, subnet: DhcpSubnet\) => \{/);
+    expect(PAGE).toMatch(/patchSubnet\(subnet\.id, \{\s*\n\s*reservations: \[\.\.\.subnet\.reservations, \{/);
+    const pin = PAGE.slice(PAGE.indexOf('const pinLease'), PAGE.indexOf('const allReservations') + 1);
+    expect(pin).not.toMatch(/saveConfig|dhcpApi\./);
+  });
+
+  test('the button is admin-gated', () => {
+    // Asserted structurally, on the guard immediately opening the action row.
+    // A nearest-preceding-`isAdmin` search passes against the several other
+    // admin guards on this page and survives deleting this one — verified by
+    // replacing it with `true &&`, which left the whole suite green.
+    expect(PAGE).toMatch(
+      /\{isAdmin && \(\s*\n\s*<div className="mt-3 pt-3 border-t border-nms-border flex items-center gap-2 flex-wrap">/,
+    );
+    expect(PAGE).toContain('Make this a static binding');
+  });
+
+  test('staged state is read from the edited config, not the host-side flag', () => {
+    // l.reserved comes from the file on disk, so a just-staged binding would
+    // still offer the button and could be added twice.
+    expect(PAGE).toMatch(/const staged = !!binding;/);
+    expect(PAGE).toMatch(/const binding = subnet\?\.reservations\.find\(r => r\.ip === l\.ip\)/);
+  });
+
+  test('ineligible leases explain why instead of failing at save', () => {
+    // Each of these is a real validator rule (dhcp-config.ts): an unknown
+    // subnet, no MAC to key on, or a MAC/IP already bound elsewhere.
+    expect(PAGE).toMatch(/const bindingBlocker =/);
+    expect(PAGE).toMatch(/which is not in the saved configuration/);
+    expect(PAGE).toMatch(/a binding is keyed on the MAC/);
+    expect(PAGE).toMatch(/A MAC can hold only one address/);
+    expect(PAGE).toMatch(/disabled=\{!!blocker\}/);
+  });
+
+  test('the in-pool caution is surfaced, using the shared pure helper', () => {
+    // The Bindings tab's own guidance is to keep reservations out of the pool,
+    // and a dynamic lease is always in one — so pinning must say so. The check
+    // reuses ipInAnyPool rather than re-deriving IP maths in the component.
+    expect(PAGE).toMatch(/ipInAnyPool\(subnet\.pools, l\.ip\)/);
+    expect(PAGE).toMatch(/inside the dynamic pool/);
+    expect(PAGE).not.toMatch(/split\('\.'\)\.reduce/);
+    const REACH = read('frontend/src/components/dhcp/subnet-reach.ts');
+    expect(REACH).toMatch(/export function ipInAnyPool/);
+    // Still pure — the module is imported directly by a backend test.
+    expect(REACH).not.toMatch(/\bfrom 'react'|localStorage|window\.|document\./);
+  });
+
+  test('the validator still owns the rules the button pre-checks', () => {
+    const DHCPCFG = read('backend/src/domain/services/dhcp-config.ts');
+    expect(DHCPCFG).toMatch(/is reserved for two different MACs/);
+    expect(DHCPCFG).toMatch(/is reserved twice, for/);
+    expect(DHCPCFG).toMatch(/sits inside a dynamic pool/);
+  });
+
+  test('a staged binding offers Save in place rather than sending the operator to another tab', () => {
+    expect(PAGE).toMatch(/Binding staged — not applied until saved\./);
+    expect(PAGE).toMatch(/\{dirty && \(\s*\n\s*<button onClick=\{save\}/);
+  });
 });

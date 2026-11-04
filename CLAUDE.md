@@ -94,7 +94,23 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    crash-loops simultaneously. See `docs/troubleshooting.md`'s "DNS / BIND9 Issues"
    section for the full diagnostic playbook.
 
-7. **FRR `eigrpd` has a real, not-fully-resolved crash history.** A long-standing
+7. **FRR `eigrpd` — historical for this deployment: it migrated to OSPF on
+   2026-11-04 and `eigrpd=no` in `/etc/frr/daemons`.** Everything below is
+   retained because the patches still ship and still apply to anyone running
+   EIGRP, and because the debugging arc is the record of how the
+   dangling-`adv_router` bug was found — but none of it describes this host's
+   live routing any more. **Two things from that migration are worth carrying
+   forward.** The `/30`-vs-`/24` disagreement this pattern kept blaming for
+   EIGRP instability was real and the peer's side was `/24` all along: OSPF
+   refused the adjacency outright over it (`NetworkMask mismatch`, logged every
+   hello) where EIGRP had merely been unstable. And widening EIGRP's own
+   `network` statement to `/24` made the peer send `PEER-TERMINATION` every
+   ~20s, flapping the adjacency — so advertising a peer's own connected subnet
+   back at it is its own fault, distinct from the interface mask. Also:
+   `EigrpHealthGuard` is still wired in `index.ts` and is now inert (an empty
+   EIGRP topology yields no findings, so it raises nothing and restarts
+   nothing); it should be removed or repointed at OSPF.
+   **Original entry follows.** A long-standing A long-standing
    upstream FRR bug (FRRouting/frr#943) can crash `eigrpd` and take down every
    EIGRP-learned route — a full RAN outage on setups where EIGRP carries RAN-facing
    routes. This project ships a hand-built crash-guard patch
@@ -291,6 +307,48 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    not provable yet — it removes a confirmed, real misconfiguration of
    the same class as the 2026-09-25 trigger, but a 6th recurrence would
    mean the trigger lies elsewhere.
+   **ROOT-CAUSED AND PATCHED 2026-11-03, on the 7th occurrence. The
+   "no confirmed root cause" statements above are superseded for the
+   CORRUPTION itself — the trigger is still open.** Full writeup:
+   `docs/frr-eigrpd-dangling-adv-router-patch.md`. In short:
+   `eigrp_topology_neighbor_down()` does not delete a dead neighbour's
+   route descriptors — it hands each to DUAL and relies on the resulting
+   state transition to remove it — and `eigrp_nbr_delete()` then frees
+   the neighbour unconditionally. Any descriptor whose removal
+   transition did not happen is left with a dangling `adv_router`, which
+   `show_ip_eigrp_route_descriptor()` prints (`te->adv_router->src` —
+   the changing garbage next hops) and, worse,
+   `eigrp_zebra_route_add()` reads: `if (te->adv_router->src.s_addr)`
+   falls to `NEXTHOP_TYPE_IFINDEX` when freed memory reads zero, which
+   is **exactly** the via-less kernel nexthop documented above as
+   blackholing live radio traffic. Our own crash-guard is implicated:
+   skipping the FSM transition is what leaves the descriptor behind, so
+   the guard converts a crash into this. **It reproduces on demand** —
+   one `vtysh -c "clear ip eigrp neighbors"` left 46 dangling
+   descriptors and 16 of 29 prefixes corrupt, which is what finally made
+   this debuggable rather than waiting days per occurrence. Fixed by
+   neutralising rather than removing those descriptors (removing them
+   loses prefixes for good: 29 -> 13 after a flap, since the peer
+   re-advertises nothing on the way back up), plus a guard in
+   `eigrp_zebra_route_add()` so a gateway-less nexthop can never be
+   installed, plus one forced route re-add when an adjacency reaches
+   full state. That last part fixes a SEPARATE pre-existing bug found
+   the same session and present on the unpatched binary too: after a
+   link flap zebra holds the EIGRP route without installing it
+   (`Status: Changed`, `Flags: None`, no kernel route), so a transit
+   blip alone could cause the outage with no corruption anywhere.
+   **Two operational consequences.** `/usr/lib/frr/eigrpd` must now
+   carry TWO markers, and a build predating either passes a
+   single-marker check while missing the other —
+   `strings /usr/lib/frr/eigrpd | grep -c "frr#943 crash-guard"` and
+   `... grep -c "NMS dangling-adv_router"`, both non-zero
+   (`checkFrrCrashGuard()` checks both and names each missing one).
+   And `EigrpHealthGuard` now watches the KERNEL route table every 2
+   min and restarts frr by itself on a traffic-affecting fault, with a
+   15-min cooldown, a cap of 3 per 6h, and a deliberate refusal to act
+   on a corrupt topology alone — that refusal is the 2026-10-10 lesson
+   encoded, and a test pins it, so do not "improve" the guard to
+   restart on topology state.
 
 8. **MME hostname vs IP behavior** (4G-side version of gotcha #6): Open5GS MME also
    calls `getaddrinfo()` synchronously during config parse for SGs-AP peer addresses —
@@ -746,7 +804,15 @@ Full detail on any of these: `docs/features.md`.
     separate 4G/5G IPs; `.214` is stale, don't trust older notes citing it)
   - `10.0.2.48` — same Nokia AirScale Pico BBU, 5G NR side
   - `172.16.0.117` — Sercomm SCE5164-B48 gNB, B48, 5G NR
-  - EIGRP neighbor for the RAN-facing routes: `192.168.253.1` on `ens20`.
+  - **Transit peer for the RAN-facing routes: `192.168.253.1` on `ens20`, now
+    OSPF area 0, NOT EIGRP** (migrated 2026-11-04 — see pattern #7's header).
+    `ens20` is `192.168.253.2/24`; it was a `/30` until that migration, which
+    is why older notes here say `/30`. The peer's OSPF router-id is
+    `172.16.1.1`, it is the DR, Auth Null, hello 10 / dead 40.
+    `10.0.2.0/24` (the radios) and `172.16.1.0/24` are the two prefixes that
+    reach the kernel, because `ip protocol ospf route-map NMS_IN` permits only
+    `NMS_PL_MSC5W6D9` — a deliberate filter, not a fault. A large count of
+    `inactive` EIGRP/OSPF entries in `show ip route` is that filter working.
 - **SAS bands**: Baicells B48 CBRS (group `baicells`, 3550–3700 MHz, 20 MHz slots),
   Sercomm B48 CBRS (group `SC_Group`, 3616–3655 MHz). Sercomm FCC IDs start `P27-`.
 - **Backend port** 3001, **frontend** 8081 internally / nginx on 80 + 8888 externally,

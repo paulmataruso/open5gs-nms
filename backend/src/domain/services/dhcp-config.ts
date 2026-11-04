@@ -523,6 +523,39 @@ export interface DhcpLease {
   state: 'active' | 'declined' | 'expired' | 'released';
   /** True when a configured reservation pins this address. */
   reserved: boolean;
+
+  // ── detail fields ──────────────────────────────────────────────────────
+  // Everything below is read straight out of Kea's own lease row. It was all
+  // being parsed and discarded; a lease detail view is the first thing that
+  // needs it, and none of it is derived or guessed.
+
+  /** DHCP option 61 as Kea recorded it, or null when the client sent none. */
+  clientId: string | null;
+  /**
+   * The same identifier decoded to text, when it is text. Null otherwise.
+   * See decodeClientId() — the raw form is unreadable and the decoded form is
+   * often the device telling you exactly what it is.
+   */
+  clientIdText: string | null;
+  /** Lease length Kea GRANTED, in seconds — not the time remaining. */
+  validLifetime: number;
+  /** When the client got this lease: expiry minus the granted lifetime. */
+  obtainedAt: number;
+  /** DDNS: did Kea own the forward (A) record for this lease's name. */
+  fqdnFwd: boolean;
+  /** DDNS: did Kea own the reverse (PTR) record. */
+  fqdnRev: boolean;
+  /** Which pool inside the subnet served it; null before Kea 2.0. */
+  poolId: number | null;
+  /** Kea's own free-form JSON on the lease, verbatim. */
+  userContext: string | null;
+  /**
+   * False when this row had a different field count from the header, so the
+   * columns after `state` could not be trusted and were left null. See
+   * splitLeaseRow() — an unquoted comma inside user_context shifts everything
+   * after it, and silently showing shifted values is worse than showing none.
+   */
+  detailsComplete: boolean;
 }
 
 // Kea's memfile columns, in order, as of 2.4.x.
@@ -547,6 +580,65 @@ const LEASE_COLS = [
  * `reservedIps` marks addresses a reservation pins, so the UI can tell a static
  * binding apart from a dynamic lease of the same address.
  */
+/**
+ * Splits one lease row into fields, honouring RFC4180 double quoting.
+ *
+ * The naive `line.split(',')` this replaced is correct for every column up to
+ * `state`, which is why it went unnoticed: the fields that can contain a comma
+ * (`user_context`, holding Kea's own JSON) come after it. Reading those fields
+ * at all makes the quoting matter.
+ */
+/**
+ * Decodes a DHCP option 61 client identifier to text when it holds text.
+ *
+ * Kea records option 61 as colon-separated hex. Per RFC 2132 the first octet
+ * is a type: 1 means the rest is an Ethernet address (already shown as the
+ * MAC, so nothing to add), and 0 means an opaque identifier — which in
+ * practice is very often ASCII the device chose for itself. The real lease on
+ * this deployment reads
+ * `00:63:69:73:63:6f:2d:30:30:64:61:...:56:6c:34:34:34`, which is
+ * `cisco-00da.5571.d5dd-Vl444`: vendor, base MAC and the VLAN it asked from.
+ * That is worth showing; the hex is not.
+ *
+ * Returns null unless every payload byte is printable ASCII, so a binary
+ * identifier is never rendered as control characters.
+ */
+export function decodeClientId(raw: string | null): string | null {
+  if (!raw) return null;
+  const parts = raw.split(':').map(p => p.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  if (!parts.every(p => /^[0-9a-fA-F]{1,2}$/.test(p))) return null;
+
+  const bytes = parts.map(p => parseInt(p, 16));
+  // Type 1 is a hardware address, which the MAC column already shows.
+  if (bytes[0] === 1) return null;
+  const payload = bytes.slice(1);
+  if (payload.length === 0) return null;
+  if (!payload.every(b => b >= 0x20 && b <= 0x7e)) return null;
+  return String.fromCharCode(...payload);
+}
+
+export function splitLeaseRow(line: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }  // "" is an escaped quote
+        else quoted = false;
+      } else cur += ch;
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',') {
+      out.push(cur); cur = '';
+    } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
 export function parseKeaLeases(
   csv: string,
   nowSeconds: number,
@@ -566,12 +658,14 @@ export function parseKeaLeases(
   const idx = (name: string) => cols.indexOf(name);
   const iAddr = idx('address'), iMac = idx('hwaddr'), iLife = idx('valid_lifetime');
   const iExp = idx('expire'), iSub = idx('subnet_id'), iHost = idx('hostname'), iState = idx('state');
+  const iCid = idx('client_id'), iFwd = idx('fqdn_fwd'), iRev = idx('fqdn_rev');
+  const iCtx = idx('user_context'), iPool = idx('pool_id');
   if (iAddr === -1) return [];
 
   // Last row per address wins (property 1 above).
   const latest = new Map<string, string[]>();
   for (let i = start; i < lines.length; i++) {
-    const f = lines[i].split(',');
+    const f = splitLeaseRow(lines[i]);
     const addr = f[iAddr]?.trim();
     if (!addr || !isV4(addr)) continue;
     latest.set(addr, f);
@@ -588,6 +682,18 @@ export function parseKeaLeases(
     else if (rawState === 2 || expiresAt <= nowSeconds) state = 'expired';
     else state = 'active';
 
+    // A row whose field count does not match the header has shifted columns.
+    // Everything up to `state` is still positionally sound (those fields
+    // cannot contain a comma), so the lease stays usable — only the detail
+    // fields beyond it are withheld.
+    const complete = f.length === cols.length;
+    const field = (i: number) => (complete && i !== -1 ? (f[i] ?? '').trim() : '');
+    const flag = (i: number) => field(i) === '1';
+    const num = (i: number) => {
+      const raw = field(i);
+      return raw === '' || Number.isNaN(Number(raw)) ? null : Number(raw);
+    };
+
     out.push({
       ip,
       mac: normalizeMac(f[iMac] ?? ''),
@@ -597,6 +703,19 @@ export function parseKeaLeases(
       subnetId: Number(f[iSub] ?? 0),
       state,
       reserved: reservedIps.has(ip),
+      clientId: field(iCid) || null,
+      clientIdText: decodeClientId(field(iCid) || null),
+      validLifetime: lifetime,
+      // Only meaningful with both halves present. Kea writes expire as an
+      // absolute stamp and valid_lifetime as the granted length, so the start
+      // is their difference — but a released lease has lifetime 0, where that
+      // subtraction would report the expiry itself as the start.
+      obtainedAt: expiresAt > 0 && lifetime > 0 ? expiresAt - lifetime : 0,
+      fqdnFwd: flag(iFwd),
+      fqdnRev: flag(iRev),
+      poolId: num(iPool),
+      userContext: field(iCtx) || null,
+      detailsComplete: complete,
     });
   }
 

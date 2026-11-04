@@ -93,3 +93,24 @@ export function ifaceServesOwnRange(iface: ReachIface, subnetCidrs: string[]): b
   const addr = iface.cidr.split('/')[0];
   return subnetCidrs.some(c => cidrContainsIp(c, addr));
 }
+
+/**
+ * Is `ip` inside any of these pool ranges?
+ *
+ * Used to caution when a lease is pinned as a static binding: a dynamic lease
+ * is by definition inside a pool, which is exactly the arrangement the Bindings
+ * tab warns against, so the UI should say so rather than quietly create it.
+ *
+ * Reuses ipv4ToNum, which rejects malformed input — a hand-rolled
+ * `split('.').reduce()` returns a number for "10.0.0" and for "banana", and
+ * would place either inside a pool.
+ */
+export function ipInAnyPool(pools: { start: string; end: string }[], ip: string): boolean {
+  const n = ipv4ToNum(ip);
+  if (n === null) return false;
+  return pools.some(p => {
+    const a = ipv4ToNum(p.start);
+    const b = ipv4ToNum(p.end);
+    return a !== null && b !== null && a <= n && n <= b;
+  });
+}

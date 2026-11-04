@@ -1,6 +1,6 @@
 import {
   parseDhcpInterfaces, validateDhcpConfig, buildKeaConfig, parseKeaConfig,
-  parseKeaLeases, normalizeMac, reservedIpsOf,
+  parseKeaLeases, normalizeMac, reservedIpsOf, splitLeaseRow, decodeClientId,
   EMPTY_DHCP_CONFIG, DEFAULT_LEASE_LIFETIME,
   type DhcpConfig, type DhcpInterface,
 } from '../dhcp-config';
@@ -427,4 +427,113 @@ describe('parseKeaLeases', () => {
     ] });
     expect([...reservedIpsOf(cfg)].sort()).toEqual(['10.8.0.5', '172.16.0.10']);
   });
+
+  // ── detail fields, for the lease detail view ───────────────────────────
+
+  test('surfaces the detail fields Kea records, not just the summary ones', () => {
+    const csv = [HDR,
+      `10.0.0.7,aa:bb:cc:dd:ee:07,01:aa:bb:cc:dd:ee:07,7200,${NOW + 3600},4,1,1,printer,0,,2`,
+    ].join('\n');
+    expect(parseKeaLeases(csv, NOW)[0]).toMatchObject({
+      clientId: '01:aa:bb:cc:dd:ee:07',
+      validLifetime: 7200,
+      fqdnFwd: true,
+      fqdnRev: true,
+      poolId: 2,
+      userContext: null,
+      detailsComplete: true,
+    });
+  });
+
+  test('obtainedAt is the expiry minus the GRANTED lifetime, not the remaining time', () => {
+    // The distinction the detail view depends on: 7200s was granted, 3600s is
+    // left, so the client got this an hour ago, not two.
+    const csv = [HDR, `10.0.0.8,aa:bb:cc:dd:ee:08,,7200,${NOW + 3600},1,0,0,,0,,0`].join('\n');
+    expect(parseKeaLeases(csv, NOW)[0].obtainedAt).toBe(NOW - 3600);
+  });
+
+  test('a released lease reports no obtained time rather than a bogus one', () => {
+    // lifetime 0 would make the subtraction report the expiry as the start.
+    const csv = [HDR, `10.0.0.9,aa:bb:cc:dd:ee:09,,0,${NOW + 3600},1,0,0,,0,,0`].join('\n');
+    expect(parseKeaLeases(csv, NOW)[0].obtainedAt).toBe(0);
+  });
+
+  test('empty optional columns read as null, not as empty strings', () => {
+    const csv = [HDR, `10.0.0.10,aa:bb:cc:dd:ee:10,,3600,${NOW + 60},1,0,0,,0,,`].join('\n');
+    expect(parseKeaLeases(csv, NOW)[0]).toMatchObject({
+      clientId: null, userContext: null, poolId: null,
+    });
+  });
+
+  // ── the quoting hazard ─────────────────────────────────────────────────
+  //
+  // user_context holds Kea's own JSON, which contains commas. A naive
+  // split(',') shifts every column after it — and because user_context sits
+  // after `state`, that shift was invisible until these fields were read.
+
+  test('a quoted user_context containing commas does not shift pool_id', () => {
+    // Written as well-formed CSV: inside a quoted field, each " is doubled.
+    // Kea on this deployment writes user_context empty and unquoted, so this
+    // guards the format rather than today's data.
+    const ctx = '{"ISC":{"client-last-transaction-time":1,"relay-agent-info":"0a"}}';
+    const csv = [HDR,
+      `10.0.0.11,aa:bb:cc:dd:ee:11,,3600,${NOW + 600},1,0,0,host,0,"${ctx.replace(/"/g, '""')}",5`,
+    ].join('\n');
+    const l = parseKeaLeases(csv, NOW)[0];
+    expect(l.userContext).toBe(ctx);
+    expect(l.poolId).toBe(5);          // would be NaN/garbage on a naive split
+    expect(l.detailsComplete).toBe(true);
+  });
+
+  // ── client-id decoding ─────────────────────────────────────────────────
+
+  test('decodes the real client identifier from this deployment', () => {
+    // Verbatim from /var/lib/kea/kea-leases4.csv: a Cisco 3850 naming itself
+    // and the VLAN it asked from. The hex tells an operator nothing.
+    const cid = '00:63:69:73:63:6f:2d:30:30:64:61:2e:35:35:37:31:2e:64:35:64:64:2d:56:6c:34:34:34';
+    const csv = [HDR, `10.0.2.10,00:da:55:71:d5:dd,${cid},3600,${NOW + 600},1,0,0,dhi-3850-asx,0,,0`].join('\n');
+    const l = parseKeaLeases(csv, NOW)[0];
+    expect(l.clientId).toBe(cid);
+    expect(l.clientIdText).toBe('cisco-00da.5571.d5dd-Vl444');
+  });
+
+  test('a hardware-type client id decodes to nothing — the MAC column already shows it', () => {
+    expect(decodeClientId('01:aa:bb:cc:dd:ee:ff')).toBeNull();
+  });
+
+  test('a binary client id is not rendered as control characters', () => {
+    expect(decodeClientId('00:01:02:03')).toBeNull();
+  });
+
+  test('decodeClientId rejects anything that is not colon-separated hex', () => {
+    expect(decodeClientId(null)).toBeNull();
+    expect(decodeClientId('')).toBeNull();
+    expect(decodeClientId('not-hex')).toBeNull();
+    expect(decodeClientId('00')).toBeNull();        // type byte only, no payload
+    expect(decodeClientId('00:zz')).toBeNull();
+  });
+
+  test('an UNQUOTED comma withholds the shifted fields instead of showing garbage', () => {
+    // Nothing can recover the real columns here, so the lease is still listed
+    // with its trustworthy fields and the detail view is told not to trust the
+    // rest. Showing a shifted pool_id as fact would be worse.
+    const csv = [HDR,
+      `10.0.0.12,aa:bb:cc:dd:ee:12,,3600,${NOW + 600},1,0,0,host,0,{"a":1,"b":2},5`,
+    ].join('\n');
+    const l = parseKeaLeases(csv, NOW)[0];
+    expect(l.detailsComplete).toBe(false);
+    expect(l.poolId).toBeNull();
+    expect(l.userContext).toBeNull();
+    // The fields before `state` are positionally safe and must survive.
+    expect(l).toMatchObject({ ip: '10.0.0.12', mac: 'aa:bb:cc:dd:ee:12', hostname: 'host', state: 'active' });
+  });
+
+  test('splitLeaseRow handles quotes, escaped quotes and empty fields', () => {
+    expect(splitLeaseRow('a,b,c')).toEqual(['a', 'b', 'c']);
+    expect(splitLeaseRow('a,"b,c",d')).toEqual(['a', 'b,c', 'd']);
+    expect(splitLeaseRow('a,"say ""hi""",d')).toEqual(['a', 'say "hi"', 'd']);
+    expect(splitLeaseRow('a,,c')).toEqual(['a', '', 'c']);
+    expect(splitLeaseRow('')).toEqual(['']);
+  });
+
 });

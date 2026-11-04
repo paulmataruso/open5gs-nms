@@ -1,0 +1,308 @@
+diff --git a/eigrpd/eigrp_dump.c b/eigrpd/eigrp_dump.c
+index 8746f40..f9faddd 100644
+--- a/eigrpd/eigrp_dump.c
++++ b/eigrpd/eigrp_dump.c
+@@ -252,6 +252,10 @@ void show_ip_eigrp_route_descriptor(struct vty *vty, struct eigrp *eigrp,
+ 		*first = false;
+ 	}
+ 
++	/* NMS: a neutralised descriptor has no advertising router. */
++	if (!te->adv_router)
++		return;
++
+ 	if (te->adv_router == eigrp->neighbor_self)
+ 		vty_out(vty, "%-7s%s, %s\n", " ", "via Connected",
+ 			IF_NAME(te->ei));
+diff --git a/eigrpd/eigrp_neighbor.c b/eigrpd/eigrp_neighbor.c
+index 8024934..035be52 100644
+--- a/eigrpd/eigrp_neighbor.c
++++ b/eigrpd/eigrp_neighbor.c
+@@ -170,9 +170,27 @@ struct eigrp_neighbor *eigrp_nbr_lookup_by_addr_process(struct eigrp *eigrp,
+ void eigrp_nbr_delete(struct eigrp_neighbor *nbr)
+ {
+ 	eigrp_nbr_state_set(nbr, EIGRP_NEIGHBOR_DOWN);
+-	if (nbr->ei)
++	if (nbr->ei && !nbr->ei->eigrp->finishing) {
+ 		eigrp_topology_neighbor_down(nbr->ei->eigrp, nbr);
+ 
++		/*
++		 * DUAL above is not guaranteed to have removed every descriptor
++		 * naming this neighbour, and the XFREE below makes any survivor
++		 * a dangling pointer. See eigrp_topology_neighbor_purge().
++		 *
++		 * Unconditional, on every path that frees a neighbour. An
++		 * earlier version ran only while the interface stayed
++		 * operative, to avoid the prefix loss that removing
++		 * descriptors caused on a flap. That left the flap's own
++		 * descriptors dangling, and a later adjacency loss then
++		 * surfaced them as corruption anyway (measured: flap followed
++		 * by a clear gave 16 corrupt prefixes and three ECMP routes
++		 * for one destination). Neutralising instead of removing makes
++		 * the narrowing unnecessary.
++		 */
++		eigrp_topology_neighbor_purge(nbr->ei->eigrp, nbr, true);
++	}
++
+ 	/* Cancel all events. */ /* Thread lookup cost would be negligible. */
+ 	event_cancel_event(master, nbr);
+ 	eigrp_fifo_free(nbr->multicast_queue);
+diff --git a/eigrpd/eigrp_packet.c b/eigrpd/eigrp_packet.c
+index b660570..7a8b65a 100644
+--- a/eigrpd/eigrp_packet.c
++++ b/eigrpd/eigrp_packet.c
+@@ -638,6 +638,16 @@ void eigrp_read(struct event *event)
+ 				nbr->recv_sequence_number =
+ 					ntohl(eigrph->sequence);
+ 				eigrp_update_send_EOT(nbr);
++
++				/*
++				 * Re-state our routes to zebra. A link that
++				 * flapped leaves zebra holding a nexthop with
++				 * no gateway, and nothing else ever asks it
++				 * again. See
++				 * eigrp_topology_refresh_routing_table().
++				 */
++				eigrp_topology_refresh_routing_table(
++					nbr->ei->eigrp);
+ 			} else
+ 				eigrp_send_packet_reliably(nbr);
+ 		}
+diff --git a/eigrpd/eigrp_structs.h b/eigrpd/eigrp_structs.h
+index c24067b..3265802 100644
+--- a/eigrpd/eigrp_structs.h
++++ b/eigrpd/eigrp_structs.h
+@@ -66,6 +66,15 @@ struct eigrp {
+ 	struct eigrp_interface_hash_head eifs;
+ 	uint8_t passive_interface_default; /* passive-interface default */
+ 
++	/*
++	 * Set while eigrp_finish_final() dismantles the process. Instances are
++	 * freed one interface at a time, so a neighbour deleted on a later
++	 * interface would otherwise run DUAL over routes still pointing at an
++	 * instance freed earlier in that loop. Taken from upstream
++	 * FRRouting/frr#23827.
++	 */
++	bool finishing;
++
+ 	int fd;
+ 	unsigned int maxsndbuflen;
+ 
+diff --git a/eigrpd/eigrp_topology.c b/eigrpd/eigrp_topology.c
+index e59dcac..1d75134 100644
+--- a/eigrpd/eigrp_topology.c
++++ b/eigrpd/eigrp_topology.c
+@@ -506,6 +506,152 @@ void eigrp_topology_neighbor_down(struct eigrp *eigrp,
+ 	eigrp_update_send_all(eigrp, nbr->ei);
+ }
+ 
++/*
++ * NMS: find — and optionally remove — route descriptors that still name `nbr`
++ * as their advertising router.
++ *
++ * Why this is needed. eigrp_topology_neighbor_down() above does NOT delete a
++ * dead neighbour's descriptors; it hands each one to DUAL as a max-metric
++ * update and relies on the resulting state transition to remove it.
++ * eigrp_nbr_delete() then frees the neighbour unconditionally. Any descriptor
++ * whose removal transition did not happen is therefore left holding a
++ * dangling adv_router, which:
++ *
++ *   - show_ip_eigrp_route_descriptor() dereferences (te->adv_router->src),
++ *     printing whatever the freed allocation now contains — the "via
++ *     <changing garbage>" signature, and
++ *   - DUAL reads again on the next recompute, where it can be counted as a
++ *     successor and installed into zebra as a nexthop with no address.
++ *
++ * A skipped transition is not hypothetical here: this deployment carries a
++ * crash-guard for frr#943 that deliberately skips the FSM transition when a
++ * prefix has no feasible successor, which is precisely the transition that
++ * would have removed the descriptor.
++ *
++ * `purge` false logs without changing anything (the Phase 0 probe); true
++ * removes the descriptor and recomputes the prefix through the stock path, so
++ * a prefix that loses its last entry is withdrawn from zebra rather than left
++ * installed.
++ */
++/*
++ * NMS: re-issue every prefix's zebra route.
++ *
++ * Fixes a second, separate failure mode measured on this deployment: after the
++ * transit interface flaps, zebra keeps the EIGRP route in its RIB but never
++ * installs it into the kernel ("Status: Changed", "Flags: None", and no kernel
++ * route at all), because the nexthop object it still points at lost its
++ * gateway while the link was down — `ip nexthop show` reads
++ * "id N dev <if> scope host" with NO via address. That is the same via-less
++ * nexthop signature this deployment has seen blackhole live radio traffic.
++ *
++ * The peer re-advertises nothing on the way back up and the recomputed metric
++ * is unchanged, so DUAL never re-issues the route and zebra is never asked
++ * again. Forcing one re-add when an adjacency reaches full state builds a
++ * fresh nexthop and the route installs; measured as the difference between a
++ * missing route and "Flags: Selected, Status: Installed".
++ *
++ * Idempotent by construction: it only re-states routes EIGRP already owns,
++ * through the same stock path DUAL uses, so a healthy table is unchanged.
++ */
++void eigrp_topology_refresh_routing_table(struct eigrp *eigrp)
++{
++	struct eigrp_prefix_descriptor *pe;
++	struct route_node *rn;
++
++	for (rn = route_top(eigrp->topology_table); rn; rn = route_next(rn)) {
++		pe = rn->info;
++		if (!pe)
++			continue;
++
++		eigrp_topology_update_node_flags(eigrp, pe);
++		eigrp_update_routing_table(eigrp, pe);
++	}
++}
++
++unsigned int eigrp_topology_neighbor_purge(struct eigrp *eigrp,
++					   struct eigrp_neighbor *nbr,
++					   bool purge)
++{
++	struct listnode *node, *nnode;
++	struct eigrp_prefix_descriptor *pe;
++	struct eigrp_route_descriptor *entry;
++	struct route_node *rn;
++	unsigned int found = 0;
++
++	for (rn = route_top(eigrp->topology_table); rn; rn = route_next(rn)) {
++		pe = rn->info;
++		if (!pe)
++			continue;
++
++		bool touched = false;
++
++		/*
++		 * Pass 1: neutralise, do not remove.
++		 *
++		 * Removing the descriptor outright was tried and is wrong: the
++		 * peer re-advertises nothing after an interface flap, so the
++		 * prefix is lost for good (measured: 29 prefixes -> 13 on this
++		 * deployment's transit link, with no recovery short of
++		 * restarting frr). Keeping the descriptor and clearing the
++		 * dangling pointer fixes the use-after-free without discarding
++		 * topology state the peer will not resend.
++		 *
++		 * EIGRP_MAX_METRIC is what makes it inert, using the daemon's
++		 * own existing rules rather than a new special case:
++		 * eigrp_topology_update_node_flags() will not flag a
++		 * max-metric entry as a successor, and
++		 * show_ip_eigrp_route_descriptor() returns early on one, so it
++		 * neither reaches zebra nor prints.
++		 */
++		for (ALL_LIST_ELEMENTS(pe->entries, node, nnode, entry)) {
++			if (entry->adv_router != nbr)
++				continue;
++
++			found++;
++			zlog_warn("EIGRP AS: %u %pFX still references neighbour %pI4 after DUAL teardown%s (NMS dangling-adv_router)",
++				  eigrp->AS, &pe->destination, &nbr->src,
++				  purge ? " - neutralising" : "");
++
++			if (!purge)
++				continue;
++
++			entry->adv_router = NULL;
++			entry->reported_distance = EIGRP_MAX_METRIC;
++			entry->distance = EIGRP_MAX_METRIC;
++			entry->flags &= ~EIGRP_ROUTE_DESCRIPTOR_SUCCESSOR_FLAG;
++			entry->flags &= ~EIGRP_ROUTE_DESCRIPTOR_FSUCCESSOR_FLAG;
++			entry->flags &= ~EIGRP_ROUTE_DESCRIPTOR_INTABLE_FLAG;
++			touched = true;
++		}
++
++		if (!touched)
++			continue;
++
++		/*
++		 * Pass 2: keep at most one inert descriptor per prefix, so
++		 * repeated adjacency churn cannot grow the table without
++		 * bound. Never take the last entry: an empty prefix is the
++		 * prefix loss pass 1 exists to avoid.
++		 */
++		unsigned int inert = 0;
++
++		for (ALL_LIST_ELEMENTS(pe->entries, node, nnode, entry)) {
++			if (entry->adv_router)
++				continue;
++			inert++;
++			if (inert == 1 || pe->entries->count <= 1)
++				continue;
++			listnode_delete(pe->entries, entry);
++			XFREE(MTYPE_EIGRP_ROUTE_DESCRIPTOR, entry);
++		}
++
++		eigrp_topology_update_node_flags(eigrp, pe);
++		eigrp_update_routing_table(eigrp, pe);
++	}
++
++	return found;
++}
++
+ void eigrp_update_topology_table_prefix(struct eigrp *eigrp,
+ 					struct route_table *table,
+ 					struct eigrp_prefix_descriptor *prefix)
+diff --git a/eigrpd/eigrp_topology.h b/eigrpd/eigrp_topology.h
+index 426c290..fb13eb5 100644
+--- a/eigrpd/eigrp_topology.h
++++ b/eigrpd/eigrp_topology.h
+@@ -62,6 +62,10 @@ extern void eigrp_update_routing_table(struct eigrp *eigrp,
+ 				       struct eigrp_prefix_descriptor *pe);
+ extern void eigrp_topology_neighbor_down(struct eigrp *eigrp,
+ 					 struct eigrp_neighbor *neigh);
++extern void eigrp_topology_refresh_routing_table(struct eigrp *eigrp);
++extern unsigned int eigrp_topology_neighbor_purge(struct eigrp *eigrp,
++						  struct eigrp_neighbor *nbr,
++						  bool purge);
+ extern void
+ eigrp_update_topology_table_prefix(struct eigrp *eigrp,
+ 				   struct route_table *table,
+diff --git a/eigrpd/eigrp_zebra.c b/eigrpd/eigrp_zebra.c
+index 01fa9d0..f48098a 100644
+--- a/eigrpd/eigrp_zebra.c
++++ b/eigrpd/eigrp_zebra.c
+@@ -209,6 +209,16 @@ void eigrp_zebra_route_add(struct eigrp *eigrp, struct prefix *p,
+ 	for (ALL_LIST_ELEMENTS_RO(successors, node, te)) {
+ 		if (count >= MULTIPATH_NUM)
+ 			break;
++		/*
++		 * NMS: a descriptor with no advertising router describes no
++		 * reachable next hop, and the else-branch below would hand
++		 * zebra a NEXTHOP_TYPE_IFINDEX with no gateway -- the via-less
++		 * kernel nexthop that silently blackholes part of a prefix
++		 * under ECMP hashing. Skip it rather than install it.
++		 */
++		if (!te->adv_router || !te->ei)
++			continue;
++
+ 		api_nh = &api.nexthops[count];
+ 		zapi_nexthop_init(api_nh);
+ 
+diff --git a/eigrpd/eigrpd.c b/eigrpd/eigrpd.c
+index 9984508..e6b0e1a 100644
+--- a/eigrpd/eigrpd.c
++++ b/eigrpd/eigrpd.c
+@@ -257,6 +257,13 @@ void eigrp_finish_final(struct eigrp *eigrp)
+ 	struct eigrp_interface *ei;
+ 	struct eigrp_neighbor *nbr;
+ 
++	/*
++	 * The whole topology goes away below, so there is nothing for DUAL to
++	 * decide — and running it here reads instances freed earlier in this
++	 * loop. Upstream FRRouting/frr#23827.
++	 */
++	eigrp->finishing = true;
++
+ 	while (eigrp_interface_hash_count(&eigrp->eifs)) {
+ 		ei = eigrp_interface_hash_first(&eigrp->eifs);
+ 		while (eigrp_nbr_hash_count(&ei->nbr_hash_head)) {
+@@ -268,6 +275,7 @@ void eigrp_finish_final(struct eigrp *eigrp)
+ 
+ 	event_cancel(&eigrp->t_write);
+ 	event_cancel(&eigrp->t_read);
++	event_cancel(&eigrp->t_distribute);
+ 	close(eigrp->fd);
+ 
+ 	eigrp_interface_hash_fini(&eigrp->eifs);

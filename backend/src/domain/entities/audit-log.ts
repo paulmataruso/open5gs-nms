@@ -291,6 +291,8 @@ export type AuditAction =
   | 'cdr_kamailio_acc_enable'
   | 'cdr_kamailio_acc_disable'
   | 'ocs_reservation_guard_sweep'
+  | 'eigrp_health_guard_restart'
+  | 'eigrp_health_guard_suppressed'
   | 'pyhss_diameter_guard_restart'
   | 'fresh_host_bootstrap'
   | 'backup_restart_after_restore'

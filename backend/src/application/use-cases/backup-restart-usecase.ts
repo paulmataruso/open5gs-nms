@@ -539,19 +539,34 @@ export class BackupRestartUseCase {
   // the marker alone never could.
   private async checkFrrCrashGuard(): Promise<RestartStepResult> {
     const step = 'frr-crash-guard';
-    const label = 'FRR crash-guard patch (pattern #7)';
+    const label = 'FRR eigrpd patches (pattern #7)';
     try {
       const active = await this.hostExecutor.isServiceActive('frr').catch(() => false);
       if (!active) return { step, label, success: true, skipped: true, error: 'FRR is not running — nothing to check.' };
+      // Both eigrpd patches, checked independently. A build predating either one
+      // produces a binary that passes a single-marker check while missing the other,
+      // which is precisely how this project shipped an unpatched eigrpd for months.
+      // Each marker is a log string the patch itself introduces, so it can only be
+      // present if that patch's code is actually compiled in.
       const result = await this.hostExecutor.executeCommand(
-        'sh', ['-c', 'strings /usr/lib/frr/eigrpd 2>/dev/null | grep -qF "frr#943 crash-guard" && echo yes || echo no'],
+        'sh', ['-c',
+          'b=/usr/lib/frr/eigrpd; '
+          + 'strings $b 2>/dev/null | grep -qF "frr#943 crash-guard" && echo guard=yes || echo guard=no; '
+          + 'strings $b 2>/dev/null | grep -qF "NMS dangling-adv_router" && echo dangling=yes || echo dangling=no'],
         10000,
       );
-      const patched = result.stdout.trim() === 'yes';
-      if (patched) return { step, label, success: true, skipped: false };
+      const guard = /guard=yes/.test(result.stdout);
+      const dangling = /dangling=yes/.test(result.stdout);
+      if (guard && dangling) return { step, label, success: true, skipped: false };
+
+      const missing: string[] = [];
+      if (!guard)
+        missing.push('the crash-guard patch (frr#943) — exposed to the confirmed assertion-failure crash, which has already caused a real ~20-hour production outage once');
+      if (!dangling)
+        missing.push('the dangling-adv_router patch — a freed neighbour\'s route descriptors survive DUAL teardown, and eigrp_zebra_route_add() then reads them, installing either a garbage gateway or a gateway-LESS nexthop that silently blackholes part of a prefix under ECMP hashing');
       return {
         step, label, success: true, skipped: true,
-        error: 'This host\'s eigrpd does not have the crash-guard patch applied — it remains exposed to the confirmed assertion-failure crash (pattern #7), which has already caused a real ~20-hour production outage once. Not auto-applied (a real ~9-minute rebuild that stops/restarts FRR). Recommended: FRR Source Build page, target tag frr-10.6.1 — the patch is now applied automatically as part of that build.',
+        error: `This host's eigrpd is missing ${missing.length} of 2 patches: ${missing.join('; and ')}. Not auto-applied (a real ~9-minute rebuild that stops/restarts FRR). Recommended: FRR Source Build page, target tag frr-10.6.1 — both patches are applied automatically as part of that build.`,
       };
     } catch (err) {
       return { step, label, success: false, skipped: false, error: String(err) };

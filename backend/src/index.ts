@@ -79,6 +79,7 @@ import { PyhssDiameterGuard } from './application/use-cases/ims/pyhss-diameter-g
 import { CdrSyncMonitor } from './application/use-cases/cdr/cdr-sync-monitor';
 import { applyGtpuSocketBuffers } from './application/use-cases/host-tuning';
 import { OcsReservationGuard } from './application/use-cases/ocs/ocs-reservation-guard';
+import { EigrpHealthGuard } from './application/use-cases/frr/eigrp-health-guard';
 import { createOcsReservationGuardMetricsRegistry } from './application/use-cases/ocs/ocs-reservation-guard-metrics';
 import { OcsStatsMonitor } from './application/use-cases/ocs/ocs-stats-monitor';
 import { createOcsMetricsRegistry } from './application/use-cases/ocs/ocs-metrics';
@@ -352,6 +353,20 @@ async function main() {
   // hasn't configured OCS.
   const ocsReservationGuard = new OcsReservationGuard(logger, auditLogger);
   ocsReservationGuard.start();
+
+  // EIGRP forwarding-health guard (CLAUDE.md pattern #7). Watches the KERNEL
+  // route table for the two signatures that actually drop traffic — a nexthop
+  // in use with no gateway, and a required radio prefix EIGRP knows but has
+  // not installed — and restarts frr to repair them. Seven confirmed
+  // occurrences of this outage were each found by an operator noticing the
+  // network was down, twice at around 02:30, and fixed with that same command.
+  //
+  // On by default, and a no-op on a deployment that doesn't run FRR (the first
+  // check sees frr inactive and returns). It deliberately will not act on a
+  // corrupt topology alone, nor on an eigrpd missing the crash-guard patch —
+  // see the guard's own header for both reasons.
+  const eigrpHealthGuard = new EigrpHealthGuard(logger, auditLogger, hostExecutor);
+  eigrpHealthGuard.start();
   const ocsReservationGuardMetricsRegistry = createOcsReservationGuardMetricsRegistry(ocsReservationGuard);
 
   // SigScale OCS Prometheus exporter — same background-poller-feeds-a-

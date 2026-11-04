@@ -87,6 +87,14 @@ export interface FrrSourceBuildOptions {
   // CRASH_GUARD_PATCH_TAG — the patch's own line numbers are only verified against that
   // exact FRR release (see docs/frr-eigrpd-crash-guard-patch.md's "Known limitations").
   crashGuardPatchPath?: string;
+  // Real host paths to the remaining eigrpd patches, staged the same way and applied in
+  // order after the crash-guard one. A list rather than another single-purpose field: the
+  // crash-guard option above exists because the first patch arrived alone, and copying that
+  // plumbing per patch is how the second one ends up applied in one code path and not
+  // another — the exact gap that shipped an unpatched eigrpd for months (see above).
+  // Subject to the same CRASH_GUARD_PATCH_TAG restriction: these diffs are verified against
+  // one FRR release only.
+  extraEigrpdPatchPaths?: string[];
 }
 
 // Only verified to apply cleanly against this exact tag — a different FRR release can
@@ -180,13 +188,16 @@ cd ${tagDir}
 
 ${opts.targetTag === CRASH_GUARD_PATCH_TAG && opts.crashGuardPatchPath ? `
 echo "==STEP:applying_crash_guard_patch=="
-if [ ! -f "${opts.crashGuardPatchPath}" ]; then
-  echo "ERROR: eigrpd crash-guard patch not found at ${opts.crashGuardPatchPath} — aborting rather than building unpatched eigrpd. See docs/frr-eigrpd-crash-guard-patch.md."
+${[opts.crashGuardPatchPath, ...(opts.extraEigrpdPatchPaths ?? [])].map(patchPath => `
+if [ ! -f "${patchPath}" ]; then
+  echo "ERROR: eigrpd patch not found at ${patchPath} — aborting rather than building a partially patched eigrpd. See docs/frr-eigrpd-crash-guard-patch.md and docs/frr-eigrpd-dangling-adv-router-patch.md."
   exit 1
 fi
-patch -p1 --forward -i "${opts.crashGuardPatchPath}"
-echo "eigrpd crash-guard patch (frr#943) applied."
-`.trim() : `echo "Target tag ${opts.targetTag} != ${CRASH_GUARD_PATCH_TAG} (or no patch path given) — skipping eigrpd crash-guard patch, only verified against ${CRASH_GUARD_PATCH_TAG}."`}
+patch -p1 --forward -i "${patchPath}"
+echo "applied $(basename ${patchPath})"
+`.trim()).join('\n')}
+echo "eigrpd patches applied."
+`.trim() : `echo "Target tag ${opts.targetTag} != ${CRASH_GUARD_PATCH_TAG} (or no patch path given) — skipping eigrpd patches, only verified against ${CRASH_GUARD_PATCH_TAG}."`}
 
 ./bootstrap.sh
 start_heartbeat
