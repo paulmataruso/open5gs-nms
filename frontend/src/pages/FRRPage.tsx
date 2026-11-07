@@ -699,19 +699,21 @@ function UeSubnetPanel({ storedSubnets, hasRollback, onApplied }: {
     const toApply = discovered.filter(u => selected.has(u.subnet));
     await streamFetch(
       () => frrApi.applyUeSubnets(toApply),
-      `Applied ${toApply.length} UE subnet(s) — NAT removed, FORWARD rules added`
+      `Advertising ${toApply.length} UE subnet(s) — host NAT removed`
     );
   };
 
   const rollback = async () => {
     if (!confirm(
-      'Roll back UE subnet routing?\n\n' +
-      '• Removes iptables FORWARD rules\n' +
-      '• Restores NAT MASQUERADE rules that were removed\n' +
-      '• Removes UE subnets from FRR advertisement\n\n' +
-      'UEs will route via NAT again.'
+      'Switch the UE pools to host NAT?\n\n' +
+      '• Adds a MASQUERADE rule for each pool\n' +
+      '• Then withdraws the pools from FRR advertisement\n' +
+      '• Leaves ip_forward and the FORWARD accepts alone — every UE data\n' +
+      '  path needs those whether or not NAT is in use\n\n' +
+      'NAT binds new connections only, so connections established over the\n' +
+      'routed path will drop once the advertisement is withdrawn.'
     )) return;
-    await streamFetch(frrApi.rollbackUeSubnets, 'Rolled back — NAT restored, FORWARD rules removed');
+    await streamFetch(frrApi.rollbackUeSubnets, 'UE pools switched to host NAT');
   };
 
   const displaySubnets = didDiscover ? discovered : storedSubnets;
@@ -729,11 +731,12 @@ function UeSubnetPanel({ storedSubnets, hasRollback, onApplied }: {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {hasRollback && (
+          {storedSubnets.length > 0 && (
             <button onClick={rollback} disabled={applying}
+              aria-label="Switch the UE pools to host NAT"
               className="nms-btn-ghost flex items-center gap-1.5 text-xs text-amber-400 hover:text-amber-300">
               {applying ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-              Rollback (restore NAT)
+              Switch to host NAT
             </button>
           )}
           <button onClick={discover} disabled={discovering || applying}
@@ -745,15 +748,21 @@ function UeSubnetPanel({ storedSubnets, hasRollback, onApplied }: {
       </div>
 
       <p className="text-xs text-nms-text-dim">
-        Advertise UE IP pools via {'{'}EIGRP/OSPF/BGP{'}'} without NAT. On apply: existing MASQUERADE rules are removed and
-        stored for rollback, ip_forward is enabled, and FORWARD rules are added. One-click rollback restores everything.
+        A UE pool needs exactly one return path, and these are the two: <strong className="text-nms-text">routed</strong>,
+        where the pool is advertised via {'{'}EIGRP/OSPF/BGP{'}'} so the upstream router sends replies back here, or{' '}
+        <strong className="text-nms-text">host NAT</strong>, where the pool is MASQUERADEd to this host&apos;s egress
+        address and needs no upstream route at all. Applying selects routed and removes the NAT rules; switching to host
+        NAT adds them back and withdraws the advertisement. Either button leaves ip_forward and the per-tunnel FORWARD
+        accepts in place — those are required for any UE data path, NAT or not.
       </p>
 
-      {hasRollback && (
+      {storedSubnets.length > 0 && (
         <div className="flex items-start gap-2 text-xs bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2">
           <AlertTriangle className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
           <span className="text-amber-300">
-            Rollback available — NAT rules are stored and can be restored. Click <strong>Rollback (restore NAT)</strong> to reverse all changes.
+            These pools are currently <strong>routed</strong> — the upstream router must hold a route back to them.
+            Click <strong>Switch to host NAT</strong> to MASQUERADE them here instead
+            {hasRollback && ', restoring the exact rules that were removed when routing was applied'}.
           </span>
         </div>
       )}
@@ -791,7 +800,7 @@ function UeSubnetPanel({ storedSubnets, hasRollback, onApplied }: {
             Apply {selected.size > 0 ? `(${selected.size} subnet${selected.size > 1 ? 's' : ''})` : ''}
           </button>
           <p className="text-xs text-nms-text-dim">
-            Removes MASQUERADE rules · adds FORWARD rules · updates FRR
+            Removes MASQUERADE rules · advertises the pools in the live routing process
           </p>
         </div>
       )}

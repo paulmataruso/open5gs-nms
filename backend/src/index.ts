@@ -77,7 +77,9 @@ import { createImsRtpengineMetricsRegistry } from './application/use-cases/ims/i
 import { IpsecSaCleanup } from './application/use-cases/ims/ipsec-sa-cleanup';
 import { PyhssDiameterGuard } from './application/use-cases/ims/pyhss-diameter-guard';
 import { CdrSyncMonitor } from './application/use-cases/cdr/cdr-sync-monitor';
-import { applyGtpuSocketBuffers } from './application/use-cases/host-tuning';
+import {
+  applyGtpuSocketBuffers, applyUeDataPlaneTuning, applyNfMemoryPolicy,
+} from './application/use-cases/host-tuning';
 import { OcsReservationGuard } from './application/use-cases/ocs/ocs-reservation-guard';
 import { EigrpHealthGuard } from './application/use-cases/frr/eigrp-health-guard';
 import { createOcsReservationGuardMetricsRegistry } from './application/use-cases/ocs/ocs-reservation-guard-metrics';
@@ -344,6 +346,25 @@ async function main() {
   // to run Apply Config. Idempotent, and it never restarts an NF by itself.
   applyGtpuSocketBuffers(hostExecutor, logger)
     .catch(err => logger.warn({ err: String(err) }, 'GTP-U buffer tuning failed'));
+
+  // Queue depth and CPU placement for the UE data plane. Same reasoning as the
+  // socket buffers above, and same class of problem: measured 25,651 downlink
+  // packets dropped at ogstun's TX queue (the kernel unable to hand them to
+  // upfd), and all NIC receive processing pinned to a single core because the
+  // virtio device has one queue. Re-applied on every start because ogstun is
+  // recreated by upfd and these are per-netdev attributes. Never restarts an NF.
+  applyUeDataPlaneTuning(hostExecutor, ['ogstun', 'ogstun2'], logger)
+    .catch(err => logger.warn({ err: String(err) }, 'UE data-plane tuning failed'));
+
+  // Keeps the user plane out of swap. Measured on this deployment: upfd held
+  // MORE memory in swap (24,096 kB) than resident (20,956 kB) under the stock
+  // vm.swappiness=60, and the UPF forwards on one thread — so a major fault on
+  // a cold session-table page stalls the whole data plane for an SSD round
+  // trip. Applies the policy only; it never runs a swap cycle and never
+  // restarts an NF (see applyNfMemoryPolicy's own note on why).
+  applyNfMemoryPolicy(hostExecutor, logger)
+    .then(r => { if (r.reclaimHint) logger.warn({ hint: r.reclaimHint }, 'Swap still held by NFs'); })
+    .catch(err => logger.warn({ err: String(err) }, 'NF memory policy failed'));
 
   // Periodically clears stuck Gy/Ro reservations leaked by a real,
   // still-unresolved OCS rating-engine crash (ocs_rating:charge2 on session

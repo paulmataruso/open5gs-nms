@@ -780,6 +780,26 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
         </div>
       )}
 
+      {/* ── Section 6a: Session MTU ── */}
+      <div>
+        <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Session MTU</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <FieldWithTooltip
+            label="UE Link MTU (bytes)"
+            type="number"
+            value={smf.mtu ?? 1400}
+            onChange={(v) => updateSmf({ mtu: parseInt(v) || 1400 })}
+            tooltip={SMF_TOOLTIPS.mtu}
+          />
+        </div>
+        <p className="text-xs text-nms-text-dim mt-2">
+          Applying config also sets a TCP MSS clamp of{' '}
+          <span className="font-mono">{(smf.mtu ?? 1400) - 40}</span> on every UE tunnel
+          interface, derived from this value. The clamp is what protects handsets that
+          never request the link MTU, so they cannot be told this value directly.
+        </p>
+      </div>
+
       {/* ── Section 6b: Charging Trigger Function (CTF) ── */}
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Charging Trigger Function (CTF)</h3>

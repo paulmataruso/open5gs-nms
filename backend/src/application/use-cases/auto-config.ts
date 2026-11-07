@@ -1,5 +1,9 @@
 import pino from 'pino';
-import { applyGtpuSocketBuffers } from './host-tuning';
+import {
+  applyGtpuSocketBuffers, applyUeMssClamp, applyUeDataPlaneTuning, applyNfMemoryPolicy,
+  DEFAULT_UE_MTU,
+  planUeNatRules, ueNatRuleArgs, UeNatPool,
+} from './host-tuning';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -797,10 +801,11 @@ export class AutoConfigUseCase {
       //    now-untraceable manual one-off" — that was exactly the symptom.
       //
       // Neither is NAT-specific: forwarding and FORWARD-accept are required for
-      // ANY UE data path, including a routed deployment that advertises its UE
-      // pools over FRR/EIGRP instead of masquerading (which is what this very
-      // deployment does). Only the MASQUERADE rules below are genuinely
-      // optional, so only they stay behind the toggle.
+      // ANY UE data path, whether the pools are advertised into the routing
+      // protocol or MASQUERADEd here. (This deployment ran routed until
+      // 2026-11-06 and is now host-NATed — which is exactly why neither of
+      // these may be gated on the choice.) Only the MASQUERADE rules below are
+      // genuinely optional, so only they stay behind the toggle.
       //
       // Each rule is added idempotently (-C check before -A/-I) so re-running
       // Apply Config never piles up duplicates.
@@ -849,10 +854,45 @@ export class AutoConfigUseCase {
           await ensureRule('iptables', ['-C', 'FORWARD', '-o', dev, '-j', 'ACCEPT'], ['-A', 'FORWARD', '-o', dev, '-j', 'ACCEPT'], `FORWARD accept out ${dev}`);
         }
 
+        // TCP MSS clamp on the same devices. Required for ANY UE data path for
+        // the same reason as the accepts above, so it sits in this
+        // always-applied block rather than behind the NAT toggle — a routed
+        // deployment that NATs downstream on a core router needs it too.
+        //
+        // Derived from smf.yaml's own `mtu` so there is one source of truth: a
+        // clamp that disagrees with the advertised MTU is worse than none,
+        // because TCP would then negotiate a size the UE's own stack rejects.
+        const ueMtu = configs.smf?.mtu ?? DEFAULT_UE_MTU;
+        const mssResult = await applyUeMssClamp(this.hostExecutor, fwDevs, ueMtu, this.logger);
+
+        // Tun queue depth + receive steering + keeping the UPF's single
+        // forwarding thread off the NIC interrupt cores. Uses the same derived
+        // device list as the accepts and the clamp, so all three agree on what
+        // "a UE tunnel" is on this deployment.
+        const dpResult = await applyUeDataPlaneTuning(this.hostExecutor, fwDevs, this.logger);
+
+        // Swap policy for the traffic-carrying NFs. Same "prerequisite for any
+        // UE data path" argument as the clamp and the buffers above: the UPF
+        // forwards on one thread, and it had been left more than half swapped
+        // out by the stock vm.swappiness=60. Applies the policy only — it never
+        // runs a swap cycle, so it is safe to re-assert on every Apply Config.
+        const memResult = await applyNfMemoryPolicy(this.hostExecutor, this.logger);
+
         // Requires iptables-persistent / netfilter-persistent (installed as a
         // prerequisite). Idempotent, so the NAT block saving again is fine.
         await this.hostExecutor.executeCommand('netfilter-persistent', ['save']);
-        this.logger.info({ fwDevs }, 'Applied UE data-plane prerequisites (ip_forward + FORWARD accepts, persistent)');
+        this.logger.info(
+          {
+            fwDevs, ueMtu, mss: mssResult.mss,
+            txQueueLen: dpResult.txQueueLen.map(q => `${q.dev}:${q.after}`),
+            rpsMask: dpResult.rps?.mask, upfCpus: dpResult.upf?.cpuList,
+            nicCpus: dpResult.nicCpus,
+            swappiness: memResult.swappiness.after,
+            noSwapUnits: memResult.units.filter(u => u.swapMax === '0').length,
+            swapReclaimHint: memResult.reclaimHint,
+          },
+          'Applied UE data-plane prerequisites (ip_forward + FORWARD accepts + MSS clamp + queue/CPU tuning + swap policy, persistent)',
+        );
       } catch (err) {
         this.logger.error({ error: String(err) }, 'Failed to apply UE data-plane prerequisites');
         // Don't fail the whole operation.
@@ -868,24 +908,27 @@ export class AutoConfigUseCase {
           // Sourced from the same session pool subnets shown in the "UE IP
           // Address Pool" card above, so NAT always matches whatever pool is
           // actually configured rather than a separate, possibly-stale value.
-          const ipv4Subnet = input.sessionPools?.[0]?.subnet || input.sessionPoolIPv4Subnet || '10.45.0.0/16';
-          const ipv6Subnet = input.sessionPools?.[1]?.subnet || input.sessionPoolIPv6Subnet || '2001:db8:cafe::/48';
+          //
+          // One rule per pool, with the family taken from the subnet and the
+          // excluded device taken from the pool itself — see planUeNatRules()
+          // for why index-based v4/v6 assignment silently left a second IPv4
+          // pool with no NAT at all.
+          const natPools: UeNatPool[] = (input.sessionPools ?? []).length > 0
+            ? (input.sessionPools ?? []).map(p => ({ subnet: p.subnet, dev: p.dev }))
+            : [
+                { subnet: input.sessionPoolIPv4Subnet || '10.45.0.0/16', dev: natInterface },
+                { subnet: input.sessionPoolIPv6Subnet || '2001:db8:cafe::/48', dev: natInterface },
+              ];
 
-          // IPv4 MASQUERADE
-          await ensureRule(
-            'iptables',
-            ['-t', 'nat', '-C', 'POSTROUTING', '-s', ipv4Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
-            ['-t', 'nat', '-A', 'POSTROUTING', '-s', ipv4Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
-            'IPv4 NAT',
-          );
-
-          // IPv6 MASQUERADE
-          await ensureRule(
-            'ip6tables',
-            ['-t', 'nat', '-C', 'POSTROUTING', '-s', ipv6Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
-            ['-t', 'nat', '-A', 'POSTROUTING', '-s', ipv6Subnet, '!', '-o', natInterface, '-j', 'MASQUERADE'],
-            'IPv6 NAT',
-          );
+          const natRules = planUeNatRules(natPools, natInterface);
+          for (const rule of natRules) {
+            await ensureRule(
+              rule.bin,
+              ueNatRuleArgs('-C', rule),
+              ueNatRuleArgs('-A', rule),
+              `IPv${rule.family} NAT ${rule.subnet} (! -o ${rule.dev})`,
+            );
+          }
 
           // Allow inbound from tunnel interface (both address families)
           await ensureRule(
@@ -901,7 +944,10 @@ export class AutoConfigUseCase {
             'IPv6 tunnel INPUT accept',
           );
 
-          this.logger.info({ ipv4Subnet, ipv6Subnet, natInterface }, 'Configured NAT (IPv4 + IPv6)');
+          this.logger.info(
+            { natInterface, rules: natRules.map(r => `${r.subnet} ! -o ${r.dev}`) },
+            'Configured UE pool source NAT',
+          );
 
           await writeUpfSessionPoolAddressFix(this.hostExecutor, input.sessionPools ?? [], this.logger);
 

@@ -25,6 +25,16 @@ const nsenterSvc = async (cmd: string, args: string[] = [], timeoutMs = 20000): 
   });
 };
 
+import { parseLiveRoutingProcess, ueNetworkStatementCommands } from '../../application/use-cases/frr/ue-subnet-mode';
+import {
+  buildFrrConfig, liveProtocolOf, generateTransitNetplan, generateDummyNetplan,
+  generateEigrpTransitConfig, DEFAULT_FRR_LOG_LEVEL, FRR_LOG_LEVELS,
+} from '../../application/use-cases/frr/frr-config-generator';
+import type {
+  UeSubnet, MigrationPhase, FrrLogLevel, Protocol, ServiceMapping, RouteFilter, MigrationState,
+} from '../../application/use-cases/frr/frr-config-generator';
+import { planUeNatRules, ueNatRuleArgs } from '../../application/use-cases/host-tuning';
+
 const HOST_STATE_FILE = '/proc/1/root/etc/open5gs-nms/frr-migration-state.json';
 const HOST_FRR_CONF   = '/proc/1/root/etc/frr/frr.conf';
 const HOST_DAEMONS    = '/proc/1/root/etc/frr/daemons';
@@ -109,60 +119,14 @@ async function applyFrrConf(
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface UeSubnet {
-  subnet: string;
-  gateway?: string;
-  dnn?: string;
-  dev: string;
-}
-
-export type MigrationPhase =
-  | 'INIT' | 'BACKUP_CREATED' | 'FRR_INSTALLED' | 'TRANSIT_CONFIGURED'
-  | 'NEIGHBOR_UP' | 'DUMMY_INTERFACES_CREATED' | 'SERVICE_DUAL_STACK_ACTIVE'
-  | 'LEGACY_INTERFACES_REMOVED' | 'CUTOVER_COMPLETE';
-
-// FRR's own syslog-style severity levels — used for both "log syslog <level>" and
-// "log file ... <level>" in the generated frr.conf.
-export const FRR_LOG_LEVELS = [
-  'emergencies', 'alerts', 'critical', 'errors',
-  'warnings', 'notifications', 'informational', 'debugging',
-] as const;
-export type FrrLogLevel = typeof FRR_LOG_LEVELS[number];
-const DEFAULT_FRR_LOG_LEVEL: FrrLogLevel = 'informational';
-
-export type Protocol = 'eigrp' | 'ospf' | 'bgp';
-
-export interface ServiceMapping { service: string; ip: string; dummyName: string; }
-
-export interface RouteFilter {
-  id: string;
-  name: string;
-  direction: 'in' | 'out';
-  action: 'permit' | 'deny';
-  seq: number;
-  prefixes: string[]; // CIDR strings e.g. ["10.0.0.0/8", "172.16.0.0/12"]
-  description?: string;
-}
-
-export interface MigrationState {
-  phase: MigrationPhase;
-  protocol: Protocol | null;
-  protocolConfig: Record<string, any> | null;
-  mgmtInterface: string | null;
-  transitInterface: string | null;
-  transitCidr: string | null;
-  servicePlaneInterface: string | null;
-  serviceMappings: ServiceMapping[];
-  routeFilters: RouteFilter[];
-  routeFilterBackup?: RouteFilter[];
-  ueSubnets?: UeSubnet[];
-  ueSubnetsRollback?: { removedNatRules: string[] };
-  backupTimestamp: string | null;
-  log: Array<{ ts: string; phase: MigrationPhase; msg: string; ok: boolean }>;
-  updatedAt: string;
-  logLevel?: FrrLogLevel;
-}
+// Defined alongside the generators that consume them, and re-exported here so
+// existing importers of this module keep working.
+export {
+  FRR_LOG_LEVELS,
+} from '../../application/use-cases/frr/frr-config-generator';
+export type {
+  UeSubnet, MigrationPhase, FrrLogLevel, Protocol, ServiceMapping, RouteFilter, MigrationState,
+} from '../../application/use-cases/frr/frr-config-generator';
 
 // ─── State helpers ────────────────────────────────────────────────────────────
 
@@ -204,15 +168,37 @@ function syncOutFilterFromMappings(state: MigrationState): void {
 
 // ─── FRR config generators ────────────────────────────────────────────────────
 
-// Detect the installed FRR version string (e.g. "8.4.4") from vtysh output
+// Detect the installed FRR version string (e.g. "8.4.4", or
+// "10.6.1-open5gsnms1" for this project's own source build) from vtysh output.
+//
+// Captures the WHOLE version token, not just the x.y.z prefix. `show
+// running-config` renders `frr version` as the compiled-in version INCLUDING
+// any packager suffix — `10.6.1-open5gsnms1` here, set by the FRR source build's
+// --with-pkg-extra-version — but WITHOUT the trailing `-g<commit>` that `show
+// version` appends. Emitting a bare `10.6.1` therefore left a permanent
+// one-line difference between the generated config and the running one, so
+// every regeneration and every `frr-reload.py --test` reported a pending
+// change that would never go away. That is precisely the noise that hides a
+// real delta, which is the whole reason the dry-run check is worth having.
 async function detectFrrVersion(): Promise<string> {
   try {
     const { stdout } = await nsenter('vtysh', ['-c', 'show version']);
-    const m = stdout.match(/FRRouting\s+(\d+\.\d+\.\d+)/);
-    return m?.[1] ?? '9';
+    const m = stdout.match(/FRRouting\s+(\S+)/);
+    if (!m) return '9';
+    return stripFrrGitSuffix(m[1]);
   } catch {
     return '9';
   }
+}
+
+/**
+ * Drop the `-g<commit>` suffix `show version` adds (`-gUNKNOWN` when built
+ * outside a git checkout, as this project's source build is). Deliberately
+ * narrow — it must not eat a legitimate packager suffix that merely starts
+ * with "-g", so it matches only a real hash or the literal UNKNOWN.
+ */
+export function stripFrrGitSuffix(version: string): string {
+  return version.replace(/-g(?:[0-9a-f]{6,}|UNKNOWN)$/i, '');
 }
 
 // Get hostname for frr.conf
@@ -225,297 +211,85 @@ async function detectHostname(): Promise<string> {
   }
 }
 
-function frrHeader(version: string, hostname: string, logLevel: FrrLogLevel = DEFAULT_FRR_LOG_LEVEL): string[] {
-  return [
-    '!',
-    '! Generated by Open5GS NMS',
-    '!',
-    `frr version ${version}`,
-    'frr defaults traditional',
-    `hostname ${hostname}`,
-    `log syslog ${logLevel}`,
-    // FRR can log to multiple targets at once — file logging alongside syslog gives a
-    // grep/tail-able history (journalctl -u frr works but isn't file-based, so none of the
-    // NMS's log tooling — Unified Logs, Major Events — can currently see FRR at all).
-    // /var/log/frr is already owned by frr:frr (created by the frr package/build), so no
-    // permission setup is needed.
-    `log file /var/log/frr/frr.log ${logLevel}`,
-    'no ipv6 forwarding',
-    'service integrated-vtysh-config',
-    '!',
-  ];
-}
-
-// Generate EIGRP config for Phase 3 (transit only, no VSIs yet)
-function generateEigrpTransitConfig(cfg: Record<string, any>, transitNetCidr: string, version: string, hostname: string, mgmtIface: string, logLevel?: FrrLogLevel): string {
-  return [
-    ...frrHeader(version, hostname, logLevel),
-    `router eigrp ${cfg.as}`,
-    `  network ${transitNetCidr}`,
-    `  passive-interface ${mgmtIface}`,
-    'exit',
-    '!',
-    'end',
-  ].join('\n');
-}
-
-function generateEigrpConfig(cfg: Record<string, any>, services: ServiceMapping[], transitIface: string, version: string, hostname: string, mgmtIface: string, filters: RouteFilter[] = [], ueSubnets: UeSubnet[] = [], logLevel?: FrrLogLevel): string {
-  // FRR 8.4.x eigrpd bug: redistribute connected and redistribute static are both broken.
-  // Use explicit network statements for each VSI /32 instead.
-  const ueDev = [...new Set(ueSubnets.map(u => u.dev || 'ogstun'))];
-  const passiveIfaces = [
-    mgmtIface,
-    ...services.map(s => s.dummyName),
-    ...ueDev,
-  ].filter(Boolean);
-
-  const inFilters  = filters.filter(f => f.direction === 'in');
-  const outFilters = filters.filter(f => f.direction === 'out');
-  const hasFilters = inFilters.length > 0 || outFilters.length > 0;
-
-  const eigrpLines = [
-    `router eigrp ${cfg.as}`,
-    `  network ${cfg.transitCidr ?? '192.168.253.0/30'}`,
-    ...services.map(s => `  network ${s.ip}/32`),
-    ...ueSubnets.map(u => `  network ${u.subnet}`),
-    ...passiveIfaces.map(i => `  passive-interface ${i}`),
-  ];
-
-  // eigrpd does not implement distribute-list (still true as of FRR 10.x) — filtering is
-  // done at zebra RIB level instead (see generateEigrpFilterConfig for the
-  // "ip protocol eigrp route-map" approach)
-
-  eigrpLines.push('exit', '!');
-
-  const filterLines = generateEigrpFilterConfig(filters, transitIface);
-
-  return [
-    ...frrHeader(version, hostname, logLevel),
-    ...eigrpLines,
-    ...filterLines,
-    'end',
-  ].join('\n');
-}
-
-function generateOspfConfig(cfg: Record<string, any>, services: ServiceMapping[], transitIface: string, transitCidr: string, version: string, hostname: string, filters: RouteFilter[] = [], ueSubnets: UeSubnet[] = [], logLevel?: FrrLogLevel): string {
-  const ueDev = [...new Set(ueSubnets.map(u => u.dev || 'ogstun'))];
-  const allPassive = [...(cfg.passiveInterfaces ?? []), ...ueDev];
-  const lines = [
-    ...frrHeader(version, hostname, logLevel),
-    // NMS fix (2026-08-03): this used to be `router ospf ${cfg.processId}`.
-    // FRR removed multi-instance OSPF support entirely — `ospf multi-instance`
-    // isn't even a recognized command anymore on FRR 10.6.1 — so `router ospf
-    // <id>` unconditionally fails with "OSPF is not running in instance mode"
-    // and FRR's config loader silently drops the whole stanza, including the
-    // `network ... area ...` line nested inside it. The per-interface
-    // `ip ospf area` command below isn't gated by process ID and still
-    // applies, but with no live `router ospf` process behind it, the
-    // interface never actually sources Hellos — so the neighbor never came
-    // up on every wizard-driven OSPF apply. Confirmed live: dropping the
-    // process ID and using the plain `router ospf` form brings the neighbor
-    // to Full within seconds. Only the ID-less form is valid on this and any
-    // other modern (post-multi-instance-removal) FRR version.
-    'router ospf',
-    ...(cfg.routerId ? [`  ospf router-id ${cfg.routerId}`] : []),
-    ...allPassive.map((i: string) => `  passive-interface ${i}`),
-  ];
-
-  if (cfg.redistributeMethod === 'redistribute') {
-    lines.push('  redistribute connected route-map OPEN5GS_SERVICES');
-  } else {
-    lines.push(`  network ${transitCidr} area ${cfg.area}`);
-    for (const svc of services) lines.push(`  network ${svc.ip}/32 area ${cfg.area}`);
-  }
-  for (const u of ueSubnets) lines.push(`  network ${u.subnet} area ${cfg.area}`);
-  lines.push('exit', '!', `interface ${transitIface}`, `  ip ospf network ${cfg.networkType}`, `  ip ospf area ${cfg.area}`, '!');
-
-  if (cfg.redistributeMethod === 'redistribute') {
-    let seq = 10;
-    for (const svc of services) {
-      lines.push(`route-map OPEN5GS_SERVICES permit ${seq}`);
-      lines.push(`  match interface ${svc.dummyName}`);
-      seq += 10;
-    }
-    lines.push(`route-map OPEN5GS_SERVICES deny ${seq}`, '!');
-  }
-
-  // Wire NMS route filters via distribute-list on the OSPF process
-  const inFilters  = filters.filter(f => f.direction === 'in');
-  const outFilters = filters.filter(f => f.direction === 'out');
-  if (inFilters.length > 0 || outFilters.length > 0) {
-    // Re-open the router ospf block to add distribute-list
-    lines.push('router ospf');
-    if (inFilters.length > 0)  lines.push(`  distribute-list route-map NMS_IN in`);
-    if (outFilters.length > 0) lines.push(`  distribute-list route-map NMS_OUT out`);
-    lines.push('exit', '!');
-    lines.push(...generateRouteFilterConfig(filters, '', 'ospf'));
-  }
-
-  lines.push('end');
-  return lines.join('\n');
-}
-
-function generateBgpConfig(cfg: Record<string, any>, services: ServiceMapping[], version: string, hostname: string, filters: RouteFilter[] = [], ueSubnets: UeSubnet[] = [], logLevel?: FrrLogLevel): string {
-  const lines = [
-    ...frrHeader(version, hostname, logLevel),
-    `router bgp ${cfg.localAs}`,
-    ...(services.length > 0 ? [`  bgp router-id ${services[0].ip}`] : []),
-    `  neighbor ${cfg.peerIp} remote-as ${cfg.peerAs}`,
-    `  neighbor ${cfg.peerIp} description Open5GS-NMS`,
-    ...(cfg.ebgpMultihop > 1 ? [`  neighbor ${cfg.peerIp} ebgp-multihop ${cfg.ebgpMultihop}`] : []),
-    '  !',
-    '  address-family ipv4 unicast',
-    ...services.map(svc => `    network ${svc.ip}/32`),
-    ...ueSubnets.map(u => `    network ${u.subnet}`),
-    ...(cfg.nextHopSelf ? [`    neighbor ${cfg.peerIp} next-hop-self`] : []),
-    `    neighbor ${cfg.peerIp} activate`,
-    ...(filters.filter(f => f.direction === 'in').length > 0  ? [`    neighbor ${cfg.peerIp} route-map NMS_IN in`]  : []),
-    ...(filters.filter(f => f.direction === 'out').length > 0 ? [`    neighbor ${cfg.peerIp} route-map NMS_OUT out`] : []),
-    '  exit-address-family',
-    'exit',
-    '!',
-    ...generateRouteFilterConfig(filters, cfg.peerIp ?? '', 'bgp'),
-    'end',
-  ];
-  return lines.join('\n');
-}
-
+// The generators themselves live in application/use-cases/frr/frr-config-generator.ts
+// (pure, unit-tested, dry-runnable). This wrapper only supplies the two host
+// facts they deliberately refuse to read for themselves.
 async function generateFrrConfig(state: MigrationState): Promise<string> {
-  const { protocolConfig, serviceMappings, transitInterface, transitCidr, protocol, mgmtInterface } = state;
-  if (!protocolConfig || !transitInterface) return '';
-  const version  = await detectFrrVersion();
-  const hostname = await detectHostname();
-
-  // Derive the network address from the transit CIDR (e.g. 192.168.253.2/30 -> 192.168.253.0/30)
-  const transitNetCidr = (() => {
-    if (!transitCidr) return '192.168.253.0/30';
-    const [ip, prefix] = transitCidr.split('/');
-    const prefixLen = parseInt(prefix);
-    const ipParts = ip.split('.').map(Number);
-    const mask = ~((1 << (32 - prefixLen)) - 1) >>> 0;
-    const ipInt = ((ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3]) >>> 0;
-    const netInt = (ipInt & mask) >>> 0;
-    const net = [(netInt >>> 24) & 0xff, (netInt >>> 16) & 0xff, (netInt >>> 8) & 0xff, netInt & 0xff].join('.');
-    return `${net}/${prefixLen}`;
-  })();
-
-  const ueSubnets = state.ueSubnets ?? [];
-  const logLevel = state.logLevel ?? DEFAULT_FRR_LOG_LEVEL;
-  if (protocol === 'eigrp') return generateEigrpConfig({ ...protocolConfig, transitCidr: transitNetCidr }, serviceMappings, transitInterface, version, hostname, mgmtInterface ?? '', state.routeFilters ?? [], ueSubnets, logLevel);
-  if (protocol === 'ospf')  return generateOspfConfig(protocolConfig, serviceMappings, transitInterface, transitCidr ?? '', version, hostname, state.routeFilters ?? [], ueSubnets, logLevel);
-  if (protocol === 'bgp')   return generateBgpConfig(protocolConfig, serviceMappings, version, hostname, state.routeFilters ?? [], ueSubnets, logLevel);
-  return '';
+  return buildFrrConfig(state, {
+    version: await detectFrrVersion(),
+    hostname: await detectHostname(),
+  });
 }
 
-// For EIGRP (still true as of FRR 10.x): eigrpd does NOT implement distribute-list filtering at all.
-// The only working filter mechanism is zebra-level "ip protocol eigrp route-map"
-// which filters routes as they're installed into/from the kernel RIB.
-// IN  filter: controls what EIGRP-learned routes get installed into the kernel (received from Nexus)
-// OUT filter: controls what routes zebra redistributes back out — NOTE: for outbound advertisement
-//             filtering in EIGRP, the only real option at eigrpd level is to not advertise networks
-//             at all. The "network" statements are the outbound filter — only listed networks advertise.
-//             So for outbound, the network statements already act as an exact permit list.
-function generateEigrpFilterConfig(filters: RouteFilter[], transitIface: string): string[] {
-  if (!filters || filters.length === 0) return [];
+// ── Guard against regenerating over a protocol the state does not know about ──
+//
+// loadState() returns whatever the migration wizard last recorded. If anything
+// has been changed outside the wizard since — a hand-applied protocol
+// migration, for instance — then a generated config describes a DIFFERENT
+// router than the one running, and writing it is a self-inflicted outage.
+//
+// This is not hypothetical: between 2026-11-04 and 2026-11-06 this host ran
+// OSPF while the state still said "eigrp", so any endpoint that regenerated
+// frr.conf would have replaced a working OSPF process with an EIGRP one.
+//
+// Returns null when it is safe to proceed, or an operator-facing reason not to.
+async function frrRegenerationBlocker(state: MigrationState): Promise<string | null> {
+  const { stdout: running } = await nsenter('vtysh', ['-c', 'show running-config'])
+    .catch(() => ({ stdout: '' }));
+  const live = liveProtocolOf(running);
 
-  const inFilters  = filters.filter(f => f.direction === 'in').sort((a, b) => a.seq - b.seq);
-  const outFilters = filters.filter(f => f.direction === 'out').sort((a, b) => a.seq - b.seq);
+  // Nothing running yet (fresh install, or FRR down with no config): the
+  // generated config is the first one, so there is nothing to contradict.
+  if (!live) return null;
 
-  if (inFilters.length === 0 && outFilters.length === 0) return [];
-
-  const lines: string[] = ['!', '! Route filters (EIGRP — zebra RIB-level, eigrpd does not support distribute-list)'];
-
-  // Build prefix-lists and route-maps for each direction
-  for (const dir of ['in', 'out'] as const) {
-    const dirFilters = dir === 'in' ? inFilters : outFilters;
-    if (dirFilters.length === 0) continue;
-    const rmName = `NMS_${dir.toUpperCase()}`;
-    let seq = 5;
-    for (const f of dirFilters) {
-      const plName = `NMS_PL_${f.id.toUpperCase()}`;
-      if (f.description) lines.push(`! ${f.description}`);
-      for (const pfx of f.prefixes) {
-        lines.push(`ip prefix-list ${plName} seq ${seq} ${f.action} ${pfx}`);
-        seq += 5;
-      }
-      lines.push('!');
-      lines.push(`route-map ${rmName} ${f.action} ${f.seq}`);
-      if (f.description) lines.push(`  description ${f.description}`);
-      lines.push(`  match ip address prefix-list ${plName}`);
-      lines.push('!');
-    }
-    const lastSeq = (dirFilters[dirFilters.length - 1].seq ?? 10) + 10;
-    lines.push(`route-map ${rmName} deny ${lastSeq}`);
-    lines.push('!');
+  if (state.protocol && state.protocol !== live) {
+    return `stored routing protocol is "${state.protocol}" but FRR is running "${live}". `
+      + `Writing a generated config would replace the live ${live} process. `
+      + `Re-run the routing setup so the stored state matches the router, then retry.`;
   }
-
-  // Wire into zebra: "ip protocol eigrp route-map" filters EIGRP routes entering the kernel RIB
-  if (inFilters.length > 0) {
-    lines.push('! Apply inbound filter at zebra RIB level (controls routes learned from EIGRP neighbor)');
-    lines.push('ip protocol eigrp route-map NMS_IN');
-    lines.push('!');
-  }
-
-  if (outFilters.length > 0) {
-    lines.push('! Note: outbound EIGRP advertisement is controlled by "network" statements above.');
-    lines.push('! The NMS_OUT route-map is defined but outbound eigrpd filtering is not supported (still true as of FRR 10.x).');
-    lines.push('!');
-  }
-
-  return lines;
+  return null;
 }
 
-// For OSPF/BGP: full route-map support is available.
-function generateRouteFilterConfig(filters: RouteFilter[], peerIp: string, protocol: string): string[] {
-  if (!filters || filters.length === 0) return [];
-  const lines: string[] = ['!', '! Route filters'];
-
-  const inFilters  = filters.filter(f => f.direction === 'in').sort((a, b) => a.seq - b.seq);
-  const outFilters = filters.filter(f => f.direction === 'out').sort((a, b) => a.seq - b.seq);
-
-  for (const dir of ['in', 'out'] as const) {
-    const dirFilters = dir === 'in' ? inFilters : outFilters;
-    if (dirFilters.length === 0) continue;
-    const rmName = `NMS_${dir.toUpperCase()}`;
-
-    for (const f of dirFilters) {
-      const plName = `NMS_PL_${f.id.toUpperCase()}`;
-      for (let i = 0; i < f.prefixes.length; i++) {
-        lines.push(`ip prefix-list ${plName} seq ${(i + 1) * 5} ${f.action} ${f.prefixes[i]}`);
-      }
-      lines.push('!');
-      lines.push(`route-map ${rmName} ${f.action} ${f.seq}`);
-      if (f.description) lines.push(`  description ${f.description}`);
-      if (f.prefixes.length > 0) lines.push(`  match ip address prefix-list ${plName}`);
-      lines.push('!');
-    }
-
-    const lastSeq = (dirFilters[dirFilters.length - 1].seq ?? 10) + 10;
-    lines.push(`route-map ${rmName} deny ${lastSeq}`);
-    lines.push('!');
+// ── The ONE place a generated frr.conf is written ───────────────────────────
+//
+// Every regenerate-and-write path goes through here, so the staleness guard
+// and the empty-config guard cannot be forgotten at a call site that gets added
+// later. There were eight such sites and the guard would have had to be
+// repeated at each — which is precisely how this project has lost fixes before
+// (a correction living in one branch while another path deploys the old
+// behaviour; see CLAUDE.md's stale-artifact entries).
+//
+// Returns true when frr.conf was replaced.
+async function writeGeneratedFrrConf(
+  state: MigrationState,
+  config: string,
+  write: (s: string) => void = () => {},
+): Promise<boolean> {
+  // buildFrrConfig() returns '' for a state it cannot render (no
+  // protocolConfig, no transitInterface). Writing that straight out would
+  // truncate frr.conf and leave the router with no routing process at all —
+  // several call sites did exactly that with no check.
+  if (!config.trim()) {
+    const msg = 'Generated FRR config was empty — refusing to overwrite frr.conf.';
+    write(`${msg}\n`);
+    frrLogger.warn('Refused to write an empty frr.conf');
+    return false;
   }
 
-  return lines;
-}
-
-function generateTransitNetplan(iface: string, cidr: string): string {
-  return [
-    '# Generated by Open5GS NMS FRR migration',
-    'network:', '  version: 2', '  ethernets:',
-    `    ${iface}:`, `      addresses: [${cidr}]`, '',
-  ].join('\n');
-}
-
-function generateDummyNetplan(services: ServiceMapping[]): string {
-  const lines = [
-    '# Generated by Open5GS NMS FRR migration — service dummy interfaces',
-    'network:', '  version: 2', '  dummy-devices:',
-  ];
-  for (const svc of services) {
-    lines.push(`    ${svc.dummyName}:`, `      addresses: [${svc.ip}/32]`);
+  const blocker = await frrRegenerationBlocker(state);
+  if (blocker) {
+    const msg = `Refusing to write frr.conf: ${blocker}`;
+    write(`${msg}\n`);
+    frrLogger.warn({ blocker }, 'Blocked an frr.conf regeneration that disagreed with the live router');
+    return false;
   }
-  lines.push('');
-  return lines.join('\n');
+
+  if (fs.existsSync(HOST_FRR_CONF)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.copyFileSync(HOST_FRR_CONF, `${HOST_FRR_CONF}.backup-${ts}`);
+  }
+  fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+  return true;
 }
 
 // ─── Parsers ──────────────────────────────────────────────────────────────────
@@ -863,7 +637,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       write(config + '\n\n');
 
       write('Writing /etc/frr/frr.conf...\n');
-      fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+      await writeGeneratedFrrConf(state, config);
 
       // Deliberately still a full restart, unlike every other site below: this
       // is the wizard's initial bring-up, so the `router <protocol>` block is
@@ -948,7 +722,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
 
       // Now that VSIs exist, write the full FRR config with network statements for each /32
       const fullConfig = await generateFrrConfig(state);
-      fs.writeFileSync(HOST_FRR_CONF, fullConfig, 'utf-8');
+      await writeGeneratedFrrConf(state, fullConfig);
       // One /32 `network` statement per VSI — the exact change shape that
       // triggered frr#943 twice live, so this goes in incrementally.
       await applyFrrConf(() => { /* JSON route — no progress stream */ });
@@ -1258,7 +1032,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       });
       if (activeOut === 'active') {
         const config = await generateFrrConfig(state);
-        fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+        await writeGeneratedFrrConf(state, config);
         await applyFrrConf(() => { /* JSON route — no progress stream */ });
         // Give FRR a moment to settle before reporting success
         await new Promise(r => setTimeout(r, 2000));
@@ -1290,7 +1064,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       saveState(state);
       // Reload FRR with previous filters
       const config = await generateFrrConfig(state);
-      fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+      await writeGeneratedFrrConf(state, config);
       await applyFrrConf(() => { /* JSON route — no progress stream */ });
       await auditLogger.log({ action: 'frr_neighbor_config', user, details: 'route filters rolled back', success: true });
       res.json({ success: true, state, filters: state.routeFilters });
@@ -1387,7 +1161,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       write(config + '\n\n');
 
       write('Writing /etc/frr/frr.conf...\n');
-      fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+      await writeGeneratedFrrConf(state, config);
 
       // Enable correct daemon
       // Tracked so the apply below only pays for a full restart when the daemon
@@ -1445,11 +1219,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         return res.status(400).json({ success: false, error: 'FRR is not configured yet — complete the routing setup first' });
       }
 
-      if (fs.existsSync(HOST_FRR_CONF)) {
-        const ts = new Date().toISOString().replace(/[:.]/g, '-');
-        fs.copyFileSync(HOST_FRR_CONF, `${HOST_FRR_CONF}.backup-${ts}`);
-      }
-      fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+      await writeGeneratedFrrConf(state, config);
 
       await nsenter('vtysh', ['-b']);
 
@@ -1485,6 +1255,60 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
     }
   });
 
+  // ── UE subnet mode helpers ──────────────────────────────────────────────────
+  // Shared by apply (routed) and rollback (host-NAT), which are the two halves
+  // of one mutually-exclusive choice. See ue-subnet-mode.ts for why the routing
+  // protocol is read from FRR rather than from the stored migration state.
+
+  const frrIsActive = () =>
+    nsenter('systemctl', ['is-active', 'frr'])
+      .then(r => r.stdout.trim() === 'active')
+      .catch(() => false);
+
+  // Edits only the UE `network` statements, against the already-established
+  // adjacency. Deliberately NOT a frr.conf regeneration + reload: the stored
+  // state's protocol can be stale (it is, on this deployment), and a wholesale
+  // rewrite is the documented frr#943 trigger.
+  const applyUeNetworkStatements = async (
+    subnets: string[], op: 'add' | 'remove', write: (s: string) => void,
+  ): Promise<void> => {
+    if (subnets.length === 0) return;
+
+    const { stdout: running } = await nsenter('vtysh', ['-c', 'show running-config'])
+      .catch(() => ({ stdout: '' }));
+    const proc = parseLiveRoutingProcess(running);
+    if (!proc) {
+      write('\nNo routing process found in FRR\u2019s running config — no advertisement to change.\n');
+      return;
+    }
+
+    const cmds = ueNetworkStatementCommands(proc, subnets, op);
+    write(`\n${op === 'add' ? 'Advertising' : 'Withdrawing'} ${subnets.length} UE subnet(s) in "${proc.routerLine}"...\n`);
+
+    const args: string[] = [];
+    for (const c of cmds) args.push('-c', c);
+    await nsenter('vtysh', args);
+    for (const c of cmds) {
+      if (/(^|\s)network\s/.test(c)) write(`  ${c}\n`);
+    }
+
+    // Persist without a restart. integrated-vtysh-config means this rewrites
+    // frr.conf from the RUNNING config, so it cannot resurrect stale state.
+    await nsenter('vtysh', ['-c', 'write memory']);
+    write('  Persisted to /etc/frr/frr.conf (write memory — no restart).\n');
+  };
+
+  const persistIptables = async (write: (s: string) => void) => {
+    write('\nPersisting iptables rules to /etc/iptables/rules.v4...\n');
+    try {
+      const { stdout: savedRules } = await nsenter('iptables-save', []);
+      fs.writeFileSync('/proc/1/root/etc/iptables/rules.v4', savedRules, 'utf-8');
+      write('Saved.\n');
+    } catch (e) {
+      write(`Warning: could not persist iptables rules: ${String(e)}\n`);
+    }
+  };
+
   // ── POST /api/frr/ue-subnets/apply ───────────────────────────────────────────
   // Save selected UE subnets, remove NAT MASQUERADE rules, add FORWARD rules,
   // update FRR config. Stores removed NAT rules in state for one-click rollback.
@@ -1497,6 +1321,18 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
 
     try {
       const subnets: UeSubnet[] = req.body.subnets ?? [];
+
+      // Checked before anything is touched. Switching a pool from host-NAT to
+      // routed means removing its MASQUERADE rule and adding the matching
+      // advertisement; doing the first without the second leaves UEs attached
+      // with no return path at all, so a dead FRR aborts the whole operation
+      // rather than half-applying it.
+      if (subnets.length > 0 && !(await frrIsActive())) {
+        write('FRR is not running — refusing to remove NAT before the routes that replace it can be advertised.\n');
+        write('Start FRR and re-run this apply.\n');
+        res.end();
+        return;
+      }
 
       write(`Saving ${subnets.length} UE subnet(s) to state...\n`);
       const state = loadState();
@@ -1573,30 +1409,12 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       state.ueSubnetsRollback = { removedNatRules };
       saveState(state);
 
-      // ── 4. Regenerate and reload FRR ────────────────────────────────────────
-      const frrActive = await new Promise<boolean>(resolve => {
-        const c = exec(`nsenter -t 1 -m -u -i -p -- systemctl is-active frr`);
-        let out = ''; c.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-        c.on('close', () => resolve(out.trim() === 'active'));
-      });
-
-      if (frrActive) {
-        write('\nRegenerating FRR config...\n');
-        const config = await generateFrrConfig(state);
-        if (fs.existsSync(HOST_FRR_CONF)) {
-          const ts = new Date().toISOString().replace(/[:.]/g, '-');
-          fs.copyFileSync(HOST_FRR_CONF, `${HOST_FRR_CONF}.backup-${ts}`);
-        }
-        fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
-        write('Written /etc/frr/frr.conf\n');
-        // UE-subnet `network` statements are the precise change that triggered
-        // frr#943 twice live (2026-08-26) when applied by restart — never
-        // restart here just to pick up a prefix change.
-        const how = await applyFrrConf(write);
-        write(`FRR ${how}.\n`);
-      } else {
-        write('FRR is not running — config saved but not applied.\n');
-      }
+      // ── 4. Advertise the pools in the live routing process ─────────────────
+      // UE-subnet `network` statements are the precise change that triggered
+      // frr#943 twice live (2026-08-26) when applied by restart — so this is a
+      // targeted vtysh edit against the established adjacency, never a
+      // regenerate-and-reload.
+      await applyUeNetworkStatements(subnets.map(u => u.subnet), 'add', write);
 
       await auditLogger.log({ action: 'frr_ue_subnets', user, details: subnets.map(u => u.subnet).join(', ') || 'cleared', success: true });
       write('\nDone.\n');
@@ -1622,81 +1440,70 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       const rollback = state.ueSubnetsRollback;
       const activeSubnets = state.ueSubnets ?? [];
 
-      // ── 1. Remove FORWARD rules for each active tunnel interface ─────────
-      const devs = [...new Set(activeSubnets.map(u => u.dev || 'ogstun'))];
-      if (devs.length > 0) {
-        write('Removing iptables FORWARD rules...\n');
-        for (const dev of devs) {
-          await nsenter('iptables', ['-D', 'FORWARD', '-i', dev, '-j', 'ACCEPT']).then(() => {
-            write(`  Removed: -D FORWARD -i ${dev} -j ACCEPT\n`);
-          }).catch(() => {
-            write(`  -i ${dev} rule not found (already gone).\n`);
-          });
-          await nsenter('iptables', ['-D', 'FORWARD', '-o', dev, '-j', 'ACCEPT']).then(() => {
-            write(`  Removed: -D FORWARD -o ${dev} -j ACCEPT\n`);
-          }).catch(() => {
-            write(`  -o ${dev} rule not found (already gone).\n`);
-          });
+      if (activeSubnets.length > 0 && !(await frrIsActive())) {
+        write('FRR is not running — refusing to switch modes while the advertisements cannot be withdrawn.\n');
+        write('Start FRR and re-run this rollback.\n');
+        res.end();
+        return;
+      }
+
+      // ── 1. Install host NAT for every pool about to stop being advertised ──
+      // Built from the pools themselves, NOT from whatever the matching apply
+      // happened to remove: `removedNatRules` is empty on any deployment that
+      // was never NATed to begin with, which made this endpoint withdraw the
+      // routes and put nothing in their place — UEs attached, addressed, and
+      // unreachable. Same planner and same rule shape as auto-config.ts, so
+      // the two owners cannot disagree about what a NATed pool looks like.
+      const natRules = planUeNatRules(activeSubnets);
+      if (natRules.length > 0) {
+        write('Installing host NAT (MASQUERADE) for the UE pools...\n');
+        for (const rule of natRules) {
+          const exists = await nsenter(rule.bin, ueNatRuleArgs('-C', rule)).then(() => true).catch(() => false);
+          if (exists) {
+            write(`  Already present: -s ${rule.subnet} ! -o ${rule.dev} -j MASQUERADE\n`);
+          } else {
+            await nsenter(rule.bin, ueNatRuleArgs('-A', rule));
+            write(`  Added: -s ${rule.subnet} ! -o ${rule.dev} -j MASQUERADE\n`);
+          }
         }
       }
 
-      // ── 2. Restore NAT MASQUERADE rules ──────────────────────────────────
+      // Plus anything the apply recorded verbatim, in case it carried a
+      // selector the planner would not reproduce (a hand-written egress, an
+      // extra match). Deduplicated by the -C check above and below.
       if (rollback && rollback.removedNatRules.length > 0) {
-        write('\nRestoring NAT MASQUERADE rules...\n');
+        write('\nRestoring NAT rules recorded by the previous apply...\n');
         for (const rule of rollback.removedNatRules) {
           const ruleArgs = rule.trim().split(/\s+/).slice(2); // args after "-A POSTROUTING"
-          // Check it doesn't already exist before re-adding
           const exists = await nsenter('iptables', ['-t', 'nat', '-C', 'POSTROUTING', ...ruleArgs]).then(() => true).catch(() => false);
           if (exists) {
-            write(`  Already exists: ${rule}\n`);
+            write(`  Already present: ${rule}\n`);
           } else {
             await nsenter('iptables', ['-t', 'nat', '-A', 'POSTROUTING', ...ruleArgs]);
             write(`  Restored: ${rule}\n`);
           }
         }
-      } else {
-        write('\nNo NAT rules were stored — nothing to restore.\n');
       }
 
-      // Persist iptables rules so changes survive reboot (iptables-persistent)
-      write('\nPersisting iptables rules to /etc/iptables/rules.v4...\n');
-      try {
-        const { stdout: savedRules } = await nsenter('iptables-save', []);
-        fs.writeFileSync('/proc/1/root/etc/iptables/rules.v4', savedRules, 'utf-8');
-        write('Saved.\n');
-      } catch (e) {
-        write(`Warning: could not persist iptables rules: ${String(e)}\n`);
-      }
+      await persistIptables(write);
 
-      // ── 3. Clear UE subnets from state and regenerate FRR config ─────────
+      // ── 2. Withdraw the advertisements, now that NAT carries the traffic ───
+      // Order matters: a MASQUERADE rule only binds NEW connections, so adding
+      // it first lets new flows move across while established ones still use
+      // the routed path, rather than breaking both at the same instant.
+      await applyUeNetworkStatements(activeSubnets.map(u => u.subnet), 'remove', write);
+
+      // ── 3. Clear the routed-mode state ─────────────────────────────────────
+      // The per-tun FORWARD accepts are deliberately NOT removed. They are not
+      // part of this choice: auto-config.ts asserts them for ANY UE data path,
+      // NAT or routed, because the FORWARD chain's policy is DROP (Docker sets
+      // it) and without them every UE packet is dropped no matter how correct
+      // routing and NAT are. Removing them here — as this endpoint used to —
+      // turned a mode switch into a total data-plane outage.
       state.ueSubnets = [];
       state.ueSubnetsRollback = undefined;
       saveState(state);
-      write('\nCleared UE subnets from state.\n');
-
-      const frrActive = await new Promise<boolean>(resolve => {
-        const c = exec(`nsenter -t 1 -m -u -i -p -- systemctl is-active frr`);
-        let out = ''; c.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-        c.on('close', () => resolve(out.trim() === 'active'));
-      });
-
-      if (frrActive) {
-        write('Regenerating FRR config (UE subnets removed)...\n');
-        const config = await generateFrrConfig(state);
-        if (fs.existsSync(HOST_FRR_CONF)) {
-          const ts = new Date().toISOString().replace(/[:.]/g, '-');
-          fs.copyFileSync(HOST_FRR_CONF, `${HOST_FRR_CONF}.backup-${ts}`);
-        }
-        fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
-        write('Written /etc/frr/frr.conf\n');
-        // UE-subnet `network` statements are the precise change that triggered
-        // frr#943 twice live (2026-08-26) when applied by restart — never
-        // restart here just to pick up a prefix change.
-        const how = await applyFrrConf(write);
-        write(`FRR ${how}.\n`);
-      } else {
-        write('FRR is not running — config cleared from state.\n');
-      }
+      write('\nCleared UE subnets from state — the pools are now host-NATed.\n');
 
       await auditLogger.log({ action: 'frr_ue_subnets', user, details: 'rollback', success: true });
       write('\nRollback complete.\n');
@@ -1786,7 +1593,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
 
           saveState(state);
           const config = await generateFrrConfig(state);
-          fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+          await writeGeneratedFrrConf(state, config);
           // Best-effort, as before: the interface and state are already
           // committed, so a failure here must not fail the whole request.
           await applyFrrConf(() => { /* JSON route */ })
@@ -1826,7 +1633,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         saveState(state);
         if (state.protocol && state.transitInterface && state.protocolConfig) {
           const config = await generateFrrConfig(state);
-          fs.writeFileSync(HOST_FRR_CONF, config, 'utf-8');
+          await writeGeneratedFrrConf(state, config);
           await applyFrrConf(() => { /* JSON route */ })
             .catch(err => frrLogger.warn({ err: String(err) }, 'frr apply failed after dummy delete'));
         }

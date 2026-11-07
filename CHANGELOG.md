@@ -4,6 +4,165 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.81] - 2026-11-07
+
+### Fixed — the user plane was running more than half of itself out of swap
+
+Measured on this deployment: `upfd` held **24,096 kB in swap against 20,936 kB
+resident** and `sgwud` 23,120 against 11,032, under the stock
+`vm.swappiness=60`, with 1.87 GB swapped across 336 processes. Open5GS's UPF
+forwards on **one** thread, so a major fault on a cold session-table page
+stalls the whole data plane for an SSD round trip rather than one connection's
+worth of it.
+
+`applyNfMemoryPolicy()` sets `vm.swappiness=10` in
+`/etc/sysctl.d/99-open5gs-dataplane-memory.conf` and drops `MemorySwapMax=0`
+into a `10-nms-memory.conf` unit override for the six traffic-carrying NFs
+(upfd, sgwud, smfd, sgwcd, amfd, mmed). It runs at backend start and from Apply
+Config's always-applied prerequisites block.
+
+Two things it deliberately does not do. It **never restarts an NF** —
+`systemctl daemon-reload` re-applies cgroup properties to already-running
+units, confirmed live: all six `memory.swap.max` went to 0 with every
+`ActiveEnterTimestamp` unchanged. And it **never runs a swap cycle**, because
+reclaiming the already-parked pages is a one-time ~2 GB, 90-second I/O burst
+that must not repeat on every backend start; it is surfaced as a `reclaimHint`
+to run once by hand instead. Verification reads the cgroup's own
+`memory.swap.max` rather than `systemctl show`, which echoes the drop-in back
+whether or not it ever reached a cgroup — `MemorySwapMax=` requires cgroup v2
+and systemd ignores it on v1, where the read returns null and the result warns
+rather than claiming success. No `MemoryMax` is set anywhere, so refusing swap
+cannot turn into a cgroup OOM kill.
+
+5G download on this deployment went from ~100 Mbps to 220. A backend rebuild
+immediately afterwards created real pressure and pushed 170 MB out of
+redis/mariadb/asterisk while all six NFs stayed at `VmSwap: 0`. Swappiness is
+10 rather than 0 so swap remains a relief valve for everything that tolerates
+it.
+
+### Added — queue depth, receive steering and user-plane CPU placement
+
+25,651 downlink packets (0.34%) had been dropped at `ogstun`'s TX queue — the
+kernel unable to hand them to upfd — at the stock `txqueuelen` of 500.
+`applyUeDataPlaneTuning()` raises the UE tunnel devices to 10,000, persisted
+through a udev rule because upfd recreates `ogstun` on every restart.
+
+It also places the two single-threaded forwarders: `upfd` and `sgwud` each get
+a `CPUAffinity=` drop-in over a **disjoint** share of the cores that are not
+carrying NIC interrupts, plus `Nice=-10`. `sgwud` had no affinity drop-in at
+all before this. The hot cores come from the real per-CPU counts in
+`/proc/interrupts`, because `smp_affinity_list` reports *permitted* affinity —
+`0-7` for every NIC IRQ here — and so says nothing about where the work lands.
+Note that `msi_irqs` lives on the **PCI parent** of a virtio device, not on
+`/sys/class/net/<if>/device`. As with the swap policy, this is applied by
+`daemon-reload` with no NF restart.
+
+**RPS is applied only to a device with exactly one receive queue**, and
+anything else is recorded in `rpsSkipped`. Steering is the right answer for the
+single-queue virtio NIC this deployment has (`ethtool -l` reports a pre-set
+maximum `Combined` of 1, so `ethtool -L` cannot help and raising it is a
+hypervisor-side change), but writing a narrow CPU mask to all N queues of a
+real multiqueue NIC would funnel every hardware queue back onto a handful of
+cores and silently undo RSS — with every sysfs write returning success.
+
+For planning: once out of swap, upfd sits **pegged at 102–104% of one core**
+through a real speed test with zero new TX drops and zero new `RcvbufErrors`,
+so ~220 Mbps per process is this hardware's ceiling rather than a tuning gap,
+and the only ways past it are more upfd processes or faster cores. An earlier
+~139 Mbps/core figure in this project's notes was about 2× too pessimistic and
+should not be planned around — dividing lifetime CPU by lifetime packets folds
+in all the idle epoll/PFCP/timer work a mostly-idle UPF does.
+
+### Added — a TCP MSS clamp on the UE tunnels, derived from the SMF's own MTU
+
+Apply Config now clamps TCP MSS on every UE tunnel device. It sits in the
+always-applied prerequisites block alongside `ip_forward` and the FORWARD
+accepts, not behind the NAT toggle, for the same reason those do: a routed
+deployment that NATs downstream on a core router needs the clamp just as much.
+
+The value is derived from `smf.yaml`'s own `mtu` so there is a single source of
+truth. A clamp that disagrees with the advertised link MTU is worse than none,
+because TCP would then negotiate a segment size the UE's stack rejects. Stale
+rules from a previous MTU are found by their own comment marker and removed
+rather than left to accumulate.
+
+The SMF editor gained the matching field. `mtu` has been in the SMF config
+entity and has had a written tooltip for some time, but no control ever
+rendered it, so the only way to change it was to edit the YAML. The field
+states the clamp it implies, because the clamp is what protects handsets that
+never ask for the link MTU and therefore cannot be told this value directly.
+
+### Fixed — a second IPv4 UE pool silently got no NAT at all
+
+The NAT block assigned address families by **list index**: `sessionPools[0]`
+became the IPv4 MASQUERADE rule and `sessionPools[1]` the IPv6 one. This
+deployment runs two IPv4 pools (`internet` on `ogstun`, `ims` on `ogstun2`), so
+the second pool was handed to `ip6tables` as an IPv6 subnet, which fails, and
+no IPv4 rule was ever written for it.
+
+`planUeNatRules()` now derives the family from the subnet itself and the
+excluded device from the pool that owns it, emitting one rule per pool. A pool
+on its own tunnel device is excluded with `! -o <its own dev>` rather than a
+single global interface, so inter-pool traffic is not masqueraded.
+
+### Fixed — regenerating frr.conf would have written EIGRP over a working OSPF config
+
+`frr-migration-state.json` recorded `"protocol": "eigrp"` while the host had
+been running OSPF since 2026-11-04. Any regeneration would have installed an
+EIGRP stanza over a working config. Rather than correct the field:
+
+- The pure generators moved to
+  `application/use-cases/frr/frr-config-generator.ts`, so they are unit-tested
+  and can be **dry-run against the real router** —
+  `/usr/lib/frr/frr-reload.py --test <file>` prints the delta without applying
+  it, and is now the expected check for any frr.conf change.
+- `writeGeneratedFrrConf()` is the only path that writes frr.conf; eight call
+  sites previously each had to remember the checks. It refuses an empty config,
+  and refuses when the stored protocol disagrees with the protocol read out of
+  the live `show running-config`.
+
+Three real generator bugs were why generated never matched running. OSPF
+emitted `distribute-list route-map NMS_IN in`, a form **ospfd does not
+implement** (its only one is `distribute-list ACCESSLIST4_NAME out <source>`,
+verified against the binary) — so inbound filtering never worked, and OSPF now
+uses the same zebra `ip protocol ospf route-map` mechanism the EIGRP path
+always used. Passive interfaces were emitted inside the process as
+`passive-interface X`, but ospfd stores the flag on the interface and renders
+`interface X` / `ip ospf passive`, so a reload wanted 14 `no interface` lines.
+And OSPF was handed the raw host CIDR where EIGRP got the masked network,
+producing `network 192.168.253.2/24` instead of `.0/24`.
+
+`detectFrrVersion()` captured only `x.y.z`, while `show running-config` renders
+the packager suffix (`10.6.1-open5gsnms1`, from this project's own FRR source
+build) and `show version` adds a `-g<commit>` on top. The version line
+therefore never matched and every dry run reported a pending change that could
+never clear — exactly the noise that hides a real delta. `stripFrrGitSuffix()`
+is narrow on purpose, so it cannot eat a genuine `-gnu`-style suffix.
+
+Regenerating frr.conf is now a provable no-op. Verified by a real apply, not
+only a dry run: config installed and `systemctl reload frr` — no restart,
+adjacency uptime unbroken, kernel route table byte-identical, zero FRR errors.
+The guard was tested negatively too: with `protocol` forced back to `eigrp` it
+generated a 73-line EIGRP config and refused to write it.
+
+### Changed — the UE subnet panel offers two modes instead of apply-and-rollback
+
+A UE pool needs exactly one return path, and there are two ways to give it one:
+advertise the pool into the routing protocol, or MASQUERADE it to this host's
+egress address. The panel framed the second as "Rollback (restore NAT)", which
+reads as undoing a mistake rather than selecting the other valid mode — and it
+only appeared when a stored rollback existed, so a deployment that had never
+applied routing had no way to reach it from the page at all.
+
+Both are now presented as modes. The NAT button appears whenever there are
+stored subnets, restoring the exact removed rules when it has them. The copy
+also corrects what each button does: neither touches `ip_forward` or the
+per-tunnel FORWARD accepts, which every UE data path needs regardless, and
+switching to NAT adds the MASQUERADE rules **before** withdrawing the
+advertisement, because MASQUERADE binds new connections only.
+
+---
+
 ## [v2.0-beta_0.80] - 2026-11-04
 
 ### Added — click a DHCP lease to see its details
