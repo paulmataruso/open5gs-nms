@@ -20,11 +20,12 @@ Base URL (direct backend): `http://YOUR_SERVER:3001/api`
 7. [Interface Status](#interface-status)
 8. [Backup & Restore](#backup--restore)
 9. [Auto-Config](#auto-config)
-10. [SUCI Keys](#suci-keys)
-11. [Audit Log](#audit-log)
-12. [Docker](#docker)
-13. [WebSocket](#websocket)
-14. [Additional Feature Modules](#additional-feature-modules)
+10. [Auto-Configuration from `.env`](#auto-configuration-from-env)
+11. [SUCI Keys](#suci-keys)
+12. [Audit Log](#audit-log)
+13. [Docker](#docker)
+14. [WebSocket](#websocket)
+15. [Additional Feature Modules](#additional-feature-modules)
 
 ---
 
@@ -916,6 +917,106 @@ Apply the auto-configuration wizard. Backs up current configs, writes MME, SGW-U
   "updatedFiles": ["mme.yaml", "sgwu.yaml", "amf.yaml", "upf.yaml", "smf.yaml"]
 }
 ```
+
+---
+
+## Auto-Configuration from `.env`
+
+Distinct from `/api/auto-config` above, which is the manual wizard. These drive the
+`AUTOCONFIG_*` env-var feature: one declared address range, and the deployment
+addresses and configures itself.
+
+### `GET /api/autoconfig/status`
+
+Current settings, which modules would be installed, the live run state, and the
+recorded manifest. Answers from the first second of a run, which takes well over an
+hour on a host that builds from source.
+
+**Response `200`**
+```json
+{
+  "enabled": true,
+  "request": {
+    "interfaceName": null,
+    "startIp": "172.16.0.100",
+    "gateway": "172.16.0.1",
+    "subnet": "255.255.255.0",
+    "secgwPoolSize": 8,
+    "collisionCheck": "ping+arp"
+  },
+  "modules": ["ims", "smsOverSgs", "vowifi", "syslog"],
+  "unknownModules": [],
+  "run": {
+    "status": "running",
+    "startedAt": "2026-11-08T08:30:00.000Z",
+    "currentPhase": "install-modules",
+    "phases": [
+      { "name": "detect-interface", "ok": true, "detail": "Using eth0 (/24 from the host)" },
+      { "name": "allocate", "ok": true, "detail": "10 services + an 8-address SecGW pool; probed 26 of 154 candidate(s) in 1 pass(es); 1 address(es) skipped as already in use" },
+      { "name": "bind-addresses", "ok": true, "detail": "Bound 18 new address(es) (18 total) on eth0; persisted to /proc/1/root/etc/netplan/99-nms-autoconfig.yaml" },
+      { "name": "core-addresses", "ok": true, "detail": "amf-ngap: applied-live, upf-n3: applied-live, mme-s1mme: applied-live, sgwu-s1u: applied-live" }
+    ],
+    "errors": []
+  },
+  "manifest": { "rev": 1, "appliedAt": "...", "services": [], "secgwPool": [] }
+}
+```
+
+Phase order is fixed: `detect-interface`, `allocate`, `bind-addresses`,
+`core-addresses`, `install-modules`, `module-addresses`, `dns-listen`,
+`fqdn-migration`, `manifest`. `dns-listen` runs after the module install because BIND
+is installed by it, and `fqdn-migration` is **skipped** rather than attempted if DNS is
+not confirmed listening — migrating the core onto FQDNs with no resolver crash-loops
+every network function.
+
+### `GET /api/autoconfig/plan`
+
+Dry run. Probes and allocates, changes nothing. Mirrors a real run exactly, including
+whether collision checking is on, so the preview cannot show addresses a run would not
+produce.
+
+**Response `200`**
+```json
+{
+  "interfaceName": "eth0",
+  "plan": {
+    "network": "172.16.0.0",
+    "prefix": 24,
+    "gateway": "172.16.0.1",
+    "services": [
+      { "key": "amfNgap", "label": "AMF N2/NGAP", "ports": "sctp/38412", "fqdnLabel": "amf", "ip": "172.16.0.101" }
+    ],
+    "secgwPool": ["172.16.0.120", "172.16.0.121"],
+    "secgwPoolCidr": "172.16.0.120/29",
+    "allAddresses": ["172.16.0.101"],
+    "skipped": ["172.16.0.100"]
+  },
+  "ipPlanEntries": [{ "service": "amf-ngap", "ip": "172.16.0.101" }],
+  "collisionCheck": "ping+arp",
+  "addressesProbed": 26,
+  "candidatesAvailable": 154,
+  "probeReport": "Probed 26 address(es); 1 already in use:\n  172.16.0.100    answered both",
+  "probeMethodsUnavailable": [],
+  "dryRun": true
+}
+```
+
+**Response `400`** — settings invalid, or not enough free addresses in the range. The
+body carries `errors` plus the `probeReport`, so the reason is specific.
+
+### `POST /api/autoconfig/start`
+
+Triggers a run. Returns immediately; poll `/status`.
+
+Forces past `AUTOCONFIG_ENABLED`, which governs the boot-time run only — so an
+operator can preview with `/plan` and then run it without editing `.env` and
+restarting the backend, and without arming it for every future boot. The addressing
+variables are still required.
+
+**Response `200`** — `{ "started": true, "run": { ... } }`
+
+**Response `409`** — a run is already in progress, or the addressing variables are not
+all set.
 
 ---
 

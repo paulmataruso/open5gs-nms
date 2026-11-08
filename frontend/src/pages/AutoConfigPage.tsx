@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Settings, Zap, AlertCircle, FileText, List, Globe, Network } from 'lucide-react';
-import { autoConfigApi, AutoConfigInput, PlmnConfig, configApi } from '../api';
+import { autoConfigApi, AutoConfigInput, AutoConfigResult, PlmnConfig, configApi } from '../api';
 import { DiffViewer } from '../components/DiffViewer';
 import { PlmnInput } from '../components/config/PlmnInput';
 import { LabelWithTooltip } from '../components/common/UniversalTooltipWrappers';
@@ -207,9 +207,20 @@ export const AutoConfigPage: React.FC = () => {
         setPreviewData(null);
         setPreviewDiffs(null);
       } else {
-        toast.error(`❌ ${result.message}\n${result.errors?.join('\n') || ''}`);
+        toast.error(`❌ ${result.message}\n${result.errors?.join('\n') || ''}`, { duration: 15000 });
       }
-    } catch { toast.error('Failed to apply auto-configuration'); }
+    } catch (err) {
+      // The backend returns HTTP 400 with a full AutoConfigResult body when
+      // an apply is refused or a restart fails, and axios rejects on 4xx —
+      // so without reading the error body the operator would only ever see
+      // the generic message below, losing the list of NFs that stayed down.
+      const body = (err as { response?: { data?: AutoConfigResult } })?.response?.data;
+      if (body?.message) {
+        toast.error(`❌ ${body.message}\n${body.errors?.join('\n') || ''}`, { duration: 15000 });
+      } else {
+        toast.error('Failed to apply auto-configuration');
+      }
+    }
     finally { setLoading(false); }
   };
 

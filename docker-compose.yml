@@ -138,6 +138,36 @@ services:
       - SAS_ADMIN_PASSWORD=${SAS_ADMIN_PASSWORD:-admin}
       - SASBENCH_DIR=${SASBENCH_DIR:-/opt/sasbench}
       - SASBENCH_CONTEXT=${SASBENCH_CONTEXT:-https://github.com/paulmataruso/SASBench.git#e244bb825178d57e3adeeaaebb2941b3fab5fea9}
+      # ── Auto-Configuration (env-driven) ─────────────────────────────────
+      # Declare an address range and the whole deployment addresses and
+      # configures itself on `docker compose up`. Off unless explicitly
+      # enabled. See .env.example for what each one does.
+      - AUTOCONFIG_ENABLED=${AUTOCONFIG_ENABLED:-false}
+      - AUTOCONFIG_START_IP=${AUTOCONFIG_START_IP:-}
+      - AUTOCONFIG_GW=${AUTOCONFIG_GW:-}
+      - AUTOCONFIG_SUBNET=${AUTOCONFIG_SUBNET:-}
+      - AUTOCONFIG_INTERFACE=${AUTOCONFIG_INTERFACE:-}
+      - AUTOCONFIG_SECGW_POOL_SIZE=${AUTOCONFIG_SECGW_POOL_SIZE:-8}
+      - AUTOCONFIG_SKIP_IP_CHECK=${AUTOCONFIG_SKIP_IP_CHECK:-false}
+      - AUTOCONFIG_MODULES=${AUTOCONFIG_MODULES:-enabled}
+      # The module flags must reach the BACKEND too, not just the frontend
+      # build. Auto-Configuration decides what to install from these, so if
+      # they are only passed as frontend build args every flag reads as absent
+      # here and the run silently falls back to each module's default instead
+      # of honouring what the operator set.
+      - ENABLE_IMS_MODULE=${ENABLE_IMS_MODULE:-true}
+      - ENABLE_SMS_MODULE=${ENABLE_SMS_MODULE:-true}
+      - ENABLE_VOWIFI_MODULE=${ENABLE_VOWIFI_MODULE:-true}
+      - ENABLE_SYSLOG_MODULE=${ENABLE_SYSLOG_MODULE:-true}
+      - ENABLE_GSM_MODULE=${ENABLE_GSM_MODULE:-false}
+      - ENABLE_ASTERISK_2G_MODULE=${ENABLE_ASTERISK_2G_MODULE:-false}
+      - ENABLE_HNBGW_MODULE=${ENABLE_HNBGW_MODULE:-false}
+      - ENABLE_SECGW_MODULE=${ENABLE_SECGW_MODULE:-false}
+      - ENABLE_OCS_MODULE=${ENABLE_OCS_MODULE:-false}
+      - ENABLE_MMS_MODULE=${ENABLE_MMS_MODULE:-false}
+      - ENABLE_PSTN_MODULE=${ENABLE_PSTN_MODULE:-false}
+      - ENABLE_VECTORCORE_SMSC_MODULE=${ENABLE_VECTORCORE_SMSC_MODULE:-false}
+      - ENABLE_TWAMP_MODULE=${ENABLE_TWAMP_MODULE:-false}
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3001/api/health', r => { process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s

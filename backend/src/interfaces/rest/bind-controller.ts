@@ -112,7 +112,12 @@ export function insertIntoOptionsBlock(raw: string, line: string): string | null
   return null; // Unbalanced braces — refuse rather than guess.
 }
 
-function readForwarders(): string[] {
+/**
+ * Exported so Auto-Configuration can ensure forwarders exist without writing
+ * `named.conf.options` itself — the same rule that applies to `listen-on`.
+ * BIND is shared infrastructure and this file is its only writer.
+ */
+export function readForwarders(): string[] {
   if (!fs.existsSync(NAMED_OPTIONS_PATH)) return [];
   const raw = stripStockForwardersComment(fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8'));
   const m = raw.match(/forwarders\s*\{([^}]*)\}\s*;/);
@@ -120,7 +125,7 @@ function readForwarders(): string[] {
   return m[1].split(';').map(s => s.trim()).filter(s => IP_RE.test(s));
 }
 
-function writeForwarders(forwarders: string[]): void {
+export function writeForwarders(forwarders: string[]): void {
   const block = `forwarders { ${forwarders.map(f => `${f};`).join(' ')} };`;
   let raw = fs.existsSync(NAMED_OPTIONS_PATH) ? fs.readFileSync(NAMED_OPTIONS_PATH, 'utf-8') : 'options {\n};\n';
   raw = stripStockForwardersComment(raw);

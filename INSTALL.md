@@ -31,15 +31,28 @@ Complete step-by-step installation instructions for deploying the Open5GS Networ
 
 ### Hardware Requirements
 
-**Minimum:**
+Sizing follows which optional modules you install, not subscriber count.
+
+**Core only** — the 17 Open5GS NFs plus the NMS stack, no optional modules:
 - CPU: 2 cores
 - RAM: 4 GB
 - Disk: 20 GB free space
 
-**Recommended:**
+**Every optional module installed** — IMS/VoLTE, PSTN, 2G/3G, VoWiFi, SecGW,
+OCS, MMS/SMSC, TWAMP:
 - CPU: 4 cores
-- RAM: 8 GB
-- Disk: 50 GB free space (for logs and backups)
+- RAM: 12 GB, **or** 8 GB with at least 4 GB of swap
+- Disk: 60 GB free space
+
+> **Swap matters on an 8 GB host.** This script creates none, and several
+> modules compile on the host: the Kamailio 6.0.8 rebuild, FRR, rtpengine's
+> kernel module, strongSwan for SecGW, the Osmocom builds, and Open5GS itself
+> on a CPU without AVX. A compile wants about 2.5 GB free while it runs; with
+> every module up there is less than that, and the OOM killer stops the
+> compiler without writing anything to the build log — the build just ends
+> mid-file. The NMS refuses to start a from-source build below that threshold
+> and tells you what to free; stopping the three IMS CSCFs releases roughly
+> 3 GB and the build stops them anyway before installing.
 
 ### Network Requirements
 
@@ -276,6 +289,73 @@ MONGO_BACKUP_PATH=/etc/open5gs/backups/mongodb
 LOG_LEVEL=info
 HOST_SYSTEMCTL_PATH=/usr/bin/systemctl
 ```
+
+**Auto-Configuration (optional) — address the whole deployment from `.env`:**
+
+If you have a free block of addresses on this host's existing LAN, you can have the
+deployment address and configure itself instead of doing it by hand afterwards:
+
+```bash
+AUTOCONFIG_ENABLED=true
+AUTOCONFIG_START_IP=172.16.0.100    # allocation walks upward from here
+AUTOCONFIG_GW=172.16.0.1            # your existing gateway; never allocated
+AUTOCONFIG_SUBNET=255.255.255.0
+```
+
+> **⚠ This takes 1.5–4 hours on a first install. Plan for it.**
+>
+> Enabling this means the first start installs and compiles a complete mobile
+> core. Measured end to end on 8 cores / 12 GB, on a CPU without AVX (so
+> Open5GS and MongoDB take the source-build path described below):
+>
+> | Stage | Time | What dominates it |
+> |---|---|---|
+> | Host bootstrap | ~20 min | Open5GS compiled from source, Docker images built |
+> | Auto-Configuration run | ~60 min | 13 module installs — four are source builds (VoWiFi, Security Gateway, Osmocom, Kamailio modules) plus the srsRAN test image |
+> | **Total to ready-for-service** | **~1.5 hr** | |
+> | A later re-run | ~13 min | everything cached |
+>
+> On fewer cores, a slower disk, or a slow link to the package mirrors, budget
+> **2–4 hours**. A CPU **with** AVX installs Open5GS from apt instead of
+> compiling it, which removes a large part of the bootstrap.
+>
+> The run does **not** block the NMS — it happens in the background, so the web
+> interface answers within seconds of `docker compose up` and reports which
+> module is installing. You can watch it, log in, and use the rest of the NMS
+> while it works.
+>
+> If you would rather not wait, leave `AUTOCONFIG_ENABLED=false` and configure
+> only the modules you actually need from their own pages. Nothing else in the
+> NMS depends on this feature.
+
+On `docker compose up` this confirms each address is free (ICMP **and** ARP, skipping
+anything already in use), binds the free ones as secondary addresses on the interface
+that owns your default route, persists them in a netplan drop-in, writes them into all
+17 core NFs and every module, installs the modules, and migrates the core onto FQDNs.
+
+It needs one address per service plus the Security Gateway pool — **18 free addresses**
+at the default pool size of 8. See `.env.example` for the full service list and for
+`AUTOCONFIG_MODULES`, `AUTOCONFIG_INTERFACE`, `AUTOCONFIG_SECGW_POOL_SIZE` and
+`AUTOCONFIG_SKIP_IP_CHECK`.
+
+Before enabling it, you can see exactly what it would do without changing anything:
+
+```bash
+curl -s localhost:3001/api/autoconfig/plan | python3 -m json.tool
+```
+
+and once it is running:
+
+```bash
+curl -s localhost:3001/api/autoconfig/status | python3 -m json.tool
+```
+
+The run happens in the background, so the NMS is reachable and reporting progress
+throughout — on a host that has to build from source it takes well over an hour.
+
+This targets a **single interface on a flat layer-2 segment**. For a dummy-interface or
+routed (layer-3) design, leave it off and use the Auto-Configuration Wizard and the FRR
+page after first login instead.
 
 ### Step 3: Create Backup Directories
 

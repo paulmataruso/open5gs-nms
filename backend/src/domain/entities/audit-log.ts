@@ -162,6 +162,9 @@ export type AuditAction =
   | 'speedtest_stop'
   | 'ip_plan_save'
   | 'ip_plan_apply'
+  // Auto-Configuration: one env-driven run that allocates an address range,
+  // binds it, configures every module and migrates the core onto FQDNs.
+  | 'autoconfig_run'
   | 'vowifi_install'
   | 'vowifi_configure'
   | 'vowifi_start'

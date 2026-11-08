@@ -127,6 +127,54 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![Auto-Configuration Wizard](docs/screenshots/auto-config-wizard.png)
 
+### Auto-Configuration from `.env`
+Declare a free block of addresses on your existing LAN, and the deployment addresses
+and configures itself on `docker compose up`.
+
+```ini
+AUTOCONFIG_ENABLED=true
+AUTOCONFIG_START_IP=172.16.0.100
+AUTOCONFIG_GW=172.16.0.1
+AUTOCONFIG_SUBNET=255.255.255.0
+```
+
+> ### ⚠ Budget 1.5–4 hours for the first run
+>
+> This installs and compiles a complete mobile core. Measured end to end on
+> 8 cores / 12 GB with a CPU that has no AVX (so Open5GS builds from source):
+> **~20 min** host bootstrap, **~60 min** for the Auto-Configuration run —
+> almost all of it installing 13 modules, four of which are source builds —
+> for **~1.5 hours** total before the deployment is ready for service. On
+> fewer cores or a slower disk, budget **2–4 hours**. A CPU with AVX skips
+> the Open5GS compile and is considerably faster.
+>
+> The run is **non-blocking**: the web interface is up and reporting progress
+> within seconds of `docker compose up`, and `GET /api/autoconfig/status`
+> names the module currently installing. Re-runs take ~13 minutes because
+> everything is cached. If you don't want to wait, leave it off — nothing
+> else in the NMS depends on it.
+
+- **Every address confirmed free first** — by ICMP echo *and* ARP. Both, because a
+  host firewalling ICMP is silent to ping while still owning the address. An address
+  either probe answers is skipped and the next one is tried; so is one whose probe
+  could not be run, since "nothing is there" and "we failed to look" are
+  indistinguishable and only one of them is safe to act on.
+- **Single interface, layer 2** — service addresses are bound as secondary addresses
+  on the one NIC that owns your default route, persisted in a netplan drop-in that
+  leaves your management addressing alone. For a dummy-interface or routed (layer-3)
+  design, use the Auto-Configuration Wizard and the FRR page instead.
+- **Configures the whole deployment** — writes the addresses into all 17 core NFs and
+  every module, installs the modules in dependency order, and migrates the core onto
+  FQDNs.
+- **Preview before committing** — `GET /api/autoconfig/plan` probes and allocates but
+  changes nothing, so you can see exactly which addresses you would get and which are
+  already occupied. Progress during a run is on `GET /api/autoconfig/status`.
+- **Re-runs are safe** — the allocation is recorded and pinned, so a later
+  `docker compose up` re-binds the same addresses rather than re-probing and
+  potentially re-addressing a working deployment.
+- `AUTOCONFIG_SKIP_IP_CHECK=true` skips collision detection and allocates
+  consecutively, for operators who already know the range is free.
+
 ### Backup & Restore
 - **Automatic Backups** — Created before every configuration change; configurable retention policy
 - **Selective Restore** — Restore config only, database only, both, or specific NFs
@@ -583,15 +631,26 @@ See **[docs/deployment.md](docs/deployment.md)** for full nginx SSL configuratio
 
 ## 📋 System Requirements
 
-### Minimum
+What you need depends on which optional modules you install, far more than on
+subscriber count.
+
+### Core only — the 17 NFs plus the NMS stack
 - **CPU:** 2 cores
 - **RAM:** 4GB
 - **Disk:** 20GB free space
 
-### Recommended
+### Every optional module installed
+IMS/VoLTE, PSTN, 2G/3G, VoWiFi, SecGW, OCS, MMS/SMSC, TWAMP:
 - **CPU:** 4 cores
-- **RAM:** 8GB
-- **Disk:** 50GB free space (for logs and backups)
+- **RAM:** 12GB, **or** 8GB with at least 4GB of swap
+- **Disk:** 60GB free space (for source trees, logs and backups)
+
+**Add swap on an 8GB host if you will use any from-source build** (the Kamailio
+6.0.8 rebuild, FRR, rtpengine's kernel module, strongSwan, the Osmocom builds,
+or Open5GS itself on a CPU without AVX). A compile needs about 2.5GB free while
+it runs, and with the full module set up there is less than that — the OOM
+killer then stops the compiler without writing anything to the build log.
+`bootstrap-fresh-host.sh` creates no swap.
 
 ### Network
 - Static IP address or DHCP reservation recommended

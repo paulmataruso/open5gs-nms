@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { parseMemInfo, checkBuildMemory, canResetBuildState, BUILD_STALE_AFTER_MS,
+  otherActiveSourceBuilds, SOURCE_BUILD_STATE_FILES } from '../../domain/services/build-resources';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -335,6 +337,50 @@ export function createKamailioSourceBuildRouter(logger: pino.Logger, auditLogger
       return res.status(409).json({ ok: false, error: `A build is already in progress (status: ${current.status})` });
     }
 
+    // Another module's from-source build already running? They share
+    // /var/lib/apt/lists/lock during their dependency step and share the
+    // host's memory, and each controller only ever knew about its own build.
+    // See otherActiveSourceBuilds().
+    const otherBuilds = otherActiveSourceBuilds('kamailio', Object.fromEntries(
+      Object.entries(SOURCE_BUILD_STATE_FILES).map(([n, f]) => {
+        try { return [n, JSON.parse(fs.readFileSync(`/proc/1/root${f}`, 'utf-8')) as { status: string }]; }
+        catch { return [n, null]; }
+      }),
+    ));
+    if (otherBuilds.length > 0 && req.body?.force !== true) {
+      return res.status(409).json({
+        ok: false,
+        error: `A from-source build is already running for: ${otherBuilds.join(', ')}. ` +
+          `They contend for the apt lock and for memory, so run them one at a time. ` +
+          `Pass force=true to override.`,
+        otherBuilds,
+      });
+    }
+
+    // Memory pre-flight. A build killed for memory leaves no error in its own
+    // log — it stops mid-compile — so refuse up front instead of failing
+    // silently ~10 minutes in. See build-resources.ts for the real incident.
+    const force = req.body?.force === true;
+    let memVerdict;
+    try {
+      memVerdict = checkBuildMemory(parseMemInfo(fs.readFileSync('/proc/1/root/proc/meminfo', 'utf-8')));
+    } catch {
+      memVerdict = undefined;   // cannot measure -> do not block
+    }
+    if (memVerdict && !memVerdict.ok && !force) {
+      return res.status(507).json({
+        ok: false,
+        error: memVerdict.message,
+        availableMb: memVerdict.availableMb,
+        swapFreeMb: memVerdict.swapFreeMb,
+        requiredMb: memVerdict.requiredMb,
+      });
+    }
+    if (memVerdict?.degraded) {
+      logger.warn({ availableMb: memVerdict.availableMb, swapFreeMb: memVerdict.swapFreeMb },
+        'Starting a from-source build with memory only covered by swap');
+    }
+
     try {
       const ts = new Date().toISOString().replace(/[:.]/g, '-');
       const snapshotPath = `/etc/open5gs-nms/kamailio-source-build-snapshots/${ts}`; // real host path
@@ -376,10 +422,20 @@ export function createKamailioSourceBuildRouter(logger: pino.Logger, auditLogger
     }
   });
 
-  router.post('/state/reset', requireAdmin, (_req: Request, res: Response) => {
+  router.post('/state/reset', requireAdmin, (req: Request, res: Response) => {
     const state = loadState();
-    if (!['complete', 'failed', 'rolled_back'].includes(state.status)) {
-      return res.status(409).json({ ok: false, error: `Cannot reset while status is ${state.status}` });
+    // A build that died without writing a terminal status used to wedge this
+    // module permanently: /start refused ("already in progress") and /reset
+    // refused ("cannot reset while status is ..."). See canResetBuildState().
+    const verdict = canResetBuildState(state.status, state.startedAt ?? null, {
+      force: (req.body as { force?: boolean } | undefined)?.force === true,
+    });
+    if (!verdict.allowed) {
+      return res.status(409).json({
+        ok: false,
+        error: `Cannot reset while a build is running (status: ${state.status}, started ${state.startedAt}). ` +
+          `It is treated as stale after ${Math.round(BUILD_STALE_AFTER_MS / 3600000)}h; pass force=true to reset now.`,
+      });
     }
     saveState({
       status: 'idle', currentStepLabel: '', targetTag: null,

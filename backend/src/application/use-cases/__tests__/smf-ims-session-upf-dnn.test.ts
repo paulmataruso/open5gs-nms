@@ -186,3 +186,53 @@ parameter:
     });
   });
 });
+
+describe('the INSERT path is scoped to smf.session[] too', () => {
+  // The replace path was hardened after a document-wide `dnn: ims` search
+  // destroyed a real smf.yaml (2026-10-11). The insert path kept a
+  // document-wide `^\s*session:` search, which is the same bug class:
+  // `session:` is an ordinary key under other NFs, so on a combined or
+  // unusually-ordered file the ims entry could land in somebody else's block.
+  it('inserts under smf:, not under an earlier NF that also has session:', () => {
+    const raw = [
+      'upf:',
+      '  session:',
+      '    - subnet: 10.44.0.0/16',
+      '      gateway: 10.44.0.1',
+      'smf:',
+      '  session:',
+      '    - subnet: 10.45.0.0/16',
+      '      gateway: 10.45.0.1',
+      '  mtu: 1400',
+      '',
+    ].join('\n');
+    const out = updateSmfImsSession(raw, '10.0.0.5');
+    const lines = out.split('\n');
+    const imsLine = lines.findIndex(l => /dnn:\s*ims/.test(l));
+    const smfLine = lines.findIndex(l => /^smf:\s*$/.test(l));
+    const upfLine = lines.findIndex(l => /^upf:\s*$/.test(l));
+
+    expect(imsLine).toBeGreaterThan(-1);
+    // The ims entry must be after `smf:`...
+    expect(imsLine).toBeGreaterThan(smfLine);
+    // ...and the upf block must be untouched.
+    expect(upfLine).toBeGreaterThan(-1);
+    expect(out).toContain('    - subnet: 10.44.0.0/16');
+    const upfBlock = out.slice(out.indexOf('upf:'), out.indexOf('smf:'));
+    expect(upfBlock).not.toMatch(/dnn:\s*ims/);
+  });
+
+  it('still inserts correctly on an ordinary single-NF file', () => {
+    const raw = 'smf:\n  session:\n    - subnet: 10.45.0.0/16\n      gateway: 10.45.0.1\n  mtu: 1400\n';
+    const out = updateSmfImsSession(raw, '10.0.0.5');
+    expect(out).toMatch(/dnn:\s*ims/);
+    expect(out).toContain('10.46.0.0/24');
+    expect((out.match(/dnn:\s*ims/g) ?? []).length).toBe(1);
+  });
+
+  it('leaves a file with no smf session block alone rather than guessing', () => {
+    const raw = 'upf:\n  session:\n    - subnet: 10.44.0.0/16\n';
+    const out = updateSmfImsSession(raw, '10.0.0.5');
+    expect(out).not.toMatch(/dnn:\s*ims/);
+  });
+});

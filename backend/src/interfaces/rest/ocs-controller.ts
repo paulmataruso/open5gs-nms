@@ -199,7 +199,52 @@ function readMccMnc(): { mcc: string; mnc: string } {
   return { mcc, mnc };
 }
 
+/**
+ * Reads SMF's OWN freeDiameter realm out of smf.conf.
+ *
+ * This is what makes Gy routable, and getting it wrong breaks ALL 4G data —
+ * reproduced live on a clean host 2026-11-08. Open5GS SMF puts its own realm
+ * in the Gy CCR's `Destination-Realm`:
+ *
+ *   AVP: 'Destination-Realm'(283) l=8 f=-M val="localdomain"
+ *
+ * so if OCS presents a DIFFERENT Origin-Realm, freeDiameter has no peer in the
+ * realm the request is addressed to and the CCR is undeliverable:
+ *
+ *   smf: ERROR DIAMETER Result Code(3002)
+ *   smf: Gy CCA Initial Diameter failure: res=3002
+ *   smf: Unexpected Diameter Result Code 3002/-1, defaulting to severe network failure
+ *
+ * and because SMF treats a failed Gy CCA-Initial as FATAL to the whole Create
+ * Session Response (see this module's header), every 4G PDN session is torn
+ * down ~100ms after the bearer is created. The UE attaches and immediately
+ * loses its session, with nothing in the MME log naming charging at all.
+ *
+ * This only ever worked on this project's reference host because that host had
+ * run the DNS/FQDN Migration Wizard, which rewrites smf.conf's Identity/Realm
+ * to the PLMN realm — making the PLMN-derived guess below accidentally correct
+ * there and wrong on every stock deployment. Confirmed by the fix: realigning
+ * the realm moved the result code 3002 -> 5030 (USER_UNKNOWN), i.e. the CCR
+ * now reaches OCS and is answered on its merits.
+ */
+export function readSmfDiameterRealmFromText(raw: string): string | null {
+  const m = raw.match(/^\s*Realm\s*=\s*"([^"]+)"/m);
+  return m ? (m[1].trim() || null) : null;
+}
+
+function readSmfDiameterRealm(): string | null {
+  if (!fs.existsSync(HOST_SMF_CONF)) return null;
+  try {
+    return readSmfDiameterRealmFromText(fs.readFileSync(HOST_SMF_CONF, 'utf-8'));
+  } catch { return null; }
+}
+
 function defaultRealm(): string {
+  // SMF's actual realm wins — it is the one the CCR is addressed to.
+  const smfRealm = readSmfDiameterRealm();
+  if (smfRealm) return smfRealm;
+  // No smf.conf yet (OCS configured before the core). Fall back to the PLMN
+  // realm, which is what the DNS/FQDN migration will set SMF to anyway.
   const { mcc, mnc } = readMccMnc();
   return `epc.mnc${mnc.padStart(3, '0')}.mcc${mcc}.3gppnetwork.org`;
 }
@@ -741,6 +786,74 @@ async function isCodecOrServiceActive(unit: string): Promise<boolean> {
   } catch { return false; }
 }
 
+/**
+ * Pulls the open-peer count out of isGyPeerOpen()'s Erlang output.
+ *
+ * Kept separate and pure so the contract between the Erlang snippet and this
+ * side is testable without a live OCS node. Returns 0 for anything it cannot
+ * read, which is the safe direction: a status badge should say "not open"
+ * when it does not know, never "open".
+ */
+export function parseGyPeerCount(erlOutput: string): number {
+  const m = /GYPEERS=(\d+)/.exec(erlOutput);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+/**
+ * True when the Gy peer is ACTUALLY up, asked of OCS itself.
+ *
+ * This used to grep SMF's own log for `<originHost>.*STATE_OPEN`, which is a
+ * false negative on a real deployment — confirmed live on a clean host
+ * 2026-11-07, where the Gy peer was fully established and the OCS page still
+ * showed it down. Two independent reasons that grep cannot work:
+ *
+ *  1. Open5GS's bundled freeDiameter logs `CONNECTED TO '<peer>'` at INFO and
+ *     only emits the `STATE_*` transitions at a higher verbosity that is off
+ *     by default — measured on the live host: 16 "CONNECTED TO" lines, zero
+ *     containing "STATE_".
+ *  2. There is no disconnect counterpart in that log at all (zero
+ *     "DISCONNECTED" lines), so even matching "CONNECTED TO" could only ever
+ *     answer "was a connection made at some point", never "is it up now" —
+ *     which is the question the status badge claims to answer.
+ *
+ * OCS knows the real answer: `diameter:service_info(Svc, connections)`
+ * returns each live connection with its watchdog state, and `okay` is the
+ * state that means capabilities were exchanged and the peer is usable. The
+ * service name is the full `{Name, Addr, Port}` tuple OCS registers, not the
+ * bare atom (a bare atom returns `undefined`, which would read as "down").
+ */
+async function isGyPeerOpen(bindIp: string): Promise<boolean> {
+  try {
+    const nodeName = await getOcsNodeName();
+    const addrTuple = `{${bindIp.split('.').join(',')}}`;
+    const svc = `{ocs_diameter_acct_service,${addrTuple},${DIAMETER_ACCT_PORT}}`;
+    const out = await runOcsEval([
+      `Conns = rpc:call('${nodeName}', diameter, service_info, [${svc}, connections]),`,
+      // Count connections whose watchdog has reached `okay`. Anything else
+      // (initial/suspect/down/reopen, or a non-list reply such as the atom
+      // `undefined` from a wrong service name) is deliberately not "open".
+      `Open = case Conns of`,
+      `  L when is_list(L) ->`,
+      `    length([C || C <- L, is_list(C),`,
+      `      case lists:keyfind(watchdog, 1, C) of`,
+      `        {watchdog, {_, _, okay}} -> true;`,
+      `        _ -> false`,
+      `      end]);`,
+      `  _ -> 0`,
+      `end,`,
+      `io:fwrite("GYPEERS=~p~n", [Open]),`,
+      `init:stop().`,
+    ].join('\n'));
+    return parseGyPeerCount(out) > 0;
+  } catch {
+    // OCS down, RPC refused, cookie mismatch — report not-open rather than
+    // throwing, same convention as the rest of this status endpoint.
+    return false;
+  }
+}
+
 // ── Install / Configure ─────────────────────────────────────────────────
 
 export async function installOcs(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
@@ -860,12 +973,7 @@ export async function configureOcs(
     // Best-effort, informational only — matches this project's "verify,
     // don't just trust success" convention without making Configure hang
     // waiting on freeDiameter's own retry/backoff timers.
-    let gyPeerOpen = false;
-    try {
-      const { stdout } = await nsenter('bash', ['-c',
-        `grep "${state.originHost}.*STATE_" /var/log/open5gs/smf.log 2>/dev/null | tail -1`]);
-      gyPeerOpen = stdout.includes('STATE_OPEN');
-    } catch { /* non-fatal — status endpoint will report current state on next poll */ }
+    const gyPeerOpen = await isGyPeerOpen(state.bindIp);
 
     writeState({ ...state, configuredWithVersion: getAppVersion() });
     return { success: true, gyPeerOpen, defaultOfferId: state.defaultOfferId };
@@ -951,11 +1059,8 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
       let gyPeerOpen = false;
       if (fs.existsSync(HOST_SMF_CONF) && state) {
         gyPeerWired = fs.readFileSync(HOST_SMF_CONF, 'utf-8').includes(`"${state.originHost}"`);
-        try {
-          const { stdout } = await nsenter('bash', ['-c',
-            `grep "${state.originHost}.*STATE_" /var/log/open5gs/smf.log 2>/dev/null | tail -1`]);
-          gyPeerOpen = stdout.includes('STATE_OPEN');
-        } catch { /* SMF log not reachable right now — report false, not fatal */ }
+        // Asked of OCS, not grepped out of SMF's log — see isGyPeerOpen().
+        if (serviceActive) gyPeerOpen = await isGyPeerOpen(state.bindIp);
       }
 
       let httpHealthy = false;

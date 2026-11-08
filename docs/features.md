@@ -16,29 +16,30 @@ Detailed documentation for all Open5GS NMS features.
 8. [SUCI Key Management](#suci-key-management)
 9. [Service Management](#service-management)
 10. [Auto-Configuration Wizard](#auto-configuration-wizard)
-11. [Real-Time Logging](#real-time-logging)
-12. [Backup & Restore](#backup--restore)
-13. [Audit Trail](#audit-trail)
-14. [IMS / VoLTE](#ims--volte)
-15. [2G GSM (Osmocom)](#2g-gsm-osmocom)
-16. [3G UMTS (OsmoHNBGW)](#3g-umts-osmohnbgw)
-17. [PSTN / Voice Gateway](#pstn--voice-gateway)
-18. [VoWiFi (ePDG)](#vowifi-epdg)
-19. [SMS over SGs](#sms-over-sgs)
-20. [MMS](#mms)
-21. [UE Validation](#ue-validation)
-22. [Security Gateway (SecGW)](#security-gateway-secgw)
-23. [RF Planning](#rf-planning)
-24. [IP Plan Tool](#ip-plan-tool)
-25. [RAN Kill Switches (Dashboard)](#ran-kill-switches-dashboard)
-26. [SigScale OCS (Online Charging, Diameter Gy + Ro)](#sigscale-ocs-online-charging-diameter-gy--ro)
-27. [Charging Plans](#charging-plans)
-28. [Call History (CDR)](#call-history-cdr)
-29. [Traffic History](#traffic-history)
-30. [TWAMP (Backhaul Link Quality)](#twamp-backhaul-link-quality)
-31. [UE Signal Monitoring](#ue-signal-monitoring)
-32. [DHCP Server (Kea DHCPv4)](#dhcp-server-kea-dhcpv4)
-33. [SNMP Monitoring](#snmp-monitoring)
+11. [Auto-Configuration from `.env`](#auto-configuration-from-env)
+12. [Real-Time Logging](#real-time-logging)
+13. [Backup & Restore](#backup--restore)
+14. [Audit Trail](#audit-trail)
+15. [IMS / VoLTE](#ims--volte)
+16. [2G GSM (Osmocom)](#2g-gsm-osmocom)
+17. [3G UMTS (OsmoHNBGW)](#3g-umts-osmohnbgw)
+18. [PSTN / Voice Gateway](#pstn--voice-gateway)
+19. [VoWiFi (ePDG)](#vowifi-epdg)
+20. [SMS over SGs](#sms-over-sgs)
+21. [MMS](#mms)
+22. [UE Validation](#ue-validation)
+23. [Security Gateway (SecGW)](#security-gateway-secgw)
+24. [RF Planning](#rf-planning)
+25. [IP Plan Tool](#ip-plan-tool)
+26. [RAN Kill Switches (Dashboard)](#ran-kill-switches-dashboard)
+27. [SigScale OCS (Online Charging, Diameter Gy + Ro)](#sigscale-ocs-online-charging-diameter-gy--ro)
+28. [Charging Plans](#charging-plans)
+29. [Call History (CDR)](#call-history-cdr)
+30. [Traffic History](#traffic-history)
+31. [TWAMP (Backhaul Link Quality)](#twamp-backhaul-link-quality)
+32. [UE Signal Monitoring](#ue-signal-monitoring)
+33. [DHCP Server (Kea DHCPv4)](#dhcp-server-kea-dhcpv4)
+34. [SNMP Monitoring](#snmp-monitoring)
 
 ---
 
@@ -493,6 +494,245 @@ Creates complete configuration for:
 - TAI lists
 - PLMN support lists
 - Default security algorithms
+
+---
+
+## Auto-Configuration from `.env`
+
+Declares the deployment's addressing once, in `.env`, and brings the whole thing up on
+`docker compose up`. Distinct from the Auto-Configuration Wizard above, which is driven
+from a form and covers the core network functions only.
+
+### Scope
+
+A **single interface on a flat layer-2 segment** — the common case, where the upstream
+gateway already reaches every address on the subnet. Service addresses become secondary
+addresses on the one NIC that owns the default route. It deliberately does not build a
+dummy-interface or routed (layer-3) design; those remain the Auto-Configuration Wizard
+and the FRR page.
+
+### Settings
+
+```ini
+AUTOCONFIG_ENABLED=true
+AUTOCONFIG_START_IP=172.16.0.100     # allocation walks upward from here
+AUTOCONFIG_GW=172.16.0.1             # excluded from allocation outright
+AUTOCONFIG_SUBNET=255.255.255.0      # or /24; must be contiguous
+AUTOCONFIG_INTERFACE=                # empty = whichever owns the default route
+AUTOCONFIG_SECGW_POOL_SIZE=8
+AUTOCONFIG_MODULES=enabled           # enabled | all | ims,ocs,...
+AUTOCONFIG_SKIP_IP_CHECK=false
+```
+
+### What gets an address
+
+Ten services, allocated in this fixed order, each taking the next **free** address — so
+an occupied address shifts everything after it down by one rather than failing the run.
+
+| Order | Service | Ports |
+|---|---|---|
+| 1 | AMF N2/NGAP | sctp/38412 |
+| 2 | UPF N3 GTP-U | udp/2152 |
+| 3 | MME S1-MME | sctp/36412 |
+| 4 | SGW-U S1-U GTP-U | udp/2152 |
+| 5 | P-CSCF + rtpengine | udp/5060 + RTP range |
+| 6 | VectorCore MMSC MM1 | tcp/8002 |
+| 7 | BIND DNS | 53 |
+| 8 | ePDG (VoWiFi) | udp/500, 4500, 2123, 2152 |
+| 9 | Security Gateway | udp/500, 4500 |
+| 10 | PSTN external trunk | udp/5060 |
+
+Plus `AUTOCONFIG_SECGW_POOL_SIZE` addresses for the Security Gateway's per-radio tunnel
+pool. That pool is the one allocation that cannot skip: the gateway's Configure takes a
+single **CIDR**, and each radio is later handed one address out of it, so the pool needs
+a free run that is also **CIDR-aligned** — a `/29` must start on a multiple of 8. A
+block containing even one occupied address is rejected and the next aligned block is
+tried, because a pool expressed as a CIDR covering an occupied address would eventually
+hand that address to a radio.
+
+### Confirming an address is free
+
+Every candidate gets **ICMP echo and ARP**, and is treated as in use if **either**
+answers. Both, because a host with a local firewall dropping ICMP is completely silent
+to ping while still owning the address — ping alone would report it free, and binding a
+duplicate breaks the *other* machine, where nobody is looking. On-link, a host must
+answer ARP to be reachable at all, which makes ARP the stronger signal.
+
+An address whose probe could not be run is also treated as in use: "nothing is there"
+and "we failed to look" are indistinguishable, and only one of them is safe to act on.
+Probing is capped at 8 concurrent and widens only as far as the allocation actually
+needs, so a wide subnet is not swept address by address.
+
+`iputils-arping` gives real duplicate-address detection; without it the ARP signal is
+inferred from the kernel's neighbour table instead, which is weaker but still catches an
+ICMP-silent host. The status endpoint reports which methods were available.
+
+**What probing cannot see: a device that is switched off.** Liveness detection asks
+whether anything answers *now*. A radio, server or appliance that is powered down,
+unplugged or otherwise off the segment answers neither probe, so its address is
+genuinely free at that moment and will be allocated. Observed in testing: a 5G
+femtocell's address was taken while the unit was off the air.
+
+Nothing can close that gap from the host — there is no signal to read. If the subnet
+contains reserved addresses for equipment that is not always on, either start the range
+above them, or exclude them by leaving them outside `AUTOCONFIG_START_IP`'s upward walk.
+`GET /api/autoconfig/plan` lists exactly what would be taken, which is the cheapest way
+to check against your own address records before committing.
+
+### Phases
+
+| Phase | What it does |
+|---|---|
+| `detect-interface` | The NIC owning the default route, or `AUTOCONFIG_INTERFACE` |
+| `allocate` | Probe, then assign each service the next free address |
+| `bind-addresses` | `ip addr add` live, then persist a netplan drop-in |
+| `core-addresses` | Push the core addresses through the IP Plan apply path |
+| `install-modules` | Install the selected modules in dependency order |
+| `configure-modules` | Configure each installed module from the allocated plan |
+| `module-addresses` | Push the module addresses the same way |
+| `dns-listen` | Merge the DNS address into BIND's `listen-on`, then confirm it answers |
+| `fqdn-migration` | DNS/FQDN Migration phases A, B and C |
+| `manifest` | Record the allocation |
+
+Three things here are load-bearing.
+
+`configure-modules` exists because the install step is deliberately install-only — the
+module bootstrap expects Configure to run afterwards from a *restore*, once each
+module's state JSON is on disk. On a fresh host there is no such state, so without this
+phase the modules sit installed and dark, and the `module-addresses` step cannot help:
+with no saved config it only records an address rather than applying it. Every bind
+address comes from the plan and a missing one is a hard error, never a fall back to the
+module's own default — several of those collide on a real deployment (VoWiFi's default
+ePDG address is the one BIND uses; SecGW's default gateway is where ePDG actually runs).
+2G is configured with a **virtual** BTS and GPRS off, because a real BTS transmits on
+real spectrum and an unattended run must never switch that on.
+
+One timing surprise worth knowing: `install-modules` does not end when the last module
+does. The module bootstrap finishes with an unconditional **UE Validation** step that
+pulls the UERANSIM image and builds the srsRAN 4G one, and that build takes 20+ minutes
+on its own. It is not affected by `AUTOCONFIG_MODULES` — even a single-module run pays
+it. `GET /api/autoconfig/status` reports the module actually in progress under
+`active.bootstrap`, so a long silence there reads as `ueValidation` rather than as a
+hang.
+
+`dns-listen` runs **after** the module install, because BIND is shared infrastructure
+installed by that step. It also re-reads BIND's config and then **confirms BIND answers**
+on both loopback and the service address — a listen-on change alters which sockets
+`named` binds, so a written file is not evidence that anything resolves.
+
+It also ensures BIND has **forwarders**, which matters more than it sounds. The module
+bootstrap points `/etc/resolv.conf` at BIND, and Ubuntu ships the `forwarders` block
+commented out, so BIND recurses from the root hints for every external name. That works
+until it doesn't: on a cold cache under a burst of parallel lookups it returns SERVFAIL,
+which Go reports as `server misbehaving` — and a real `docker compose build` on a freshly
+auto-configured host died on `lookup registry-1.docker.io on 127.0.0.1:53: server
+misbehaving`, then succeeded minutes later once the cache was warm.
+
+Forwarders are taken from the resolvers the host was already using, discovered from
+systemd-resolved's own view and the DHCP leases, falling back to public resolvers only if
+none can be found. Two exclusions are mandatory, because either one makes BIND forward to
+itself and stops resolution completely: **loopback** (which is where the resolver fix has
+just pointed the host, so `/run/systemd/resolve/resolv.conf` genuinely lists it) and
+**this feature's own allocated addresses**. IPv4 only — `bind-controller.ts`'s own
+`readForwarders()` filters to IPv4, so a v6 entry would read back as absent and be
+rewritten on every run. Existing forwarders are **left alone**: an operator who set them
+chose those servers.
+
+External resolution is then checked and reported, but deliberately does **not** gate the
+FQDN migration. That gate protects the migration, which needs only this host's own zones;
+an air-gapped deployment should still get its FQDNs. A failure is raised as a loud error
+instead, because every later `apt` and `docker pull` depends on it.
+
+`fqdn-migration` is **skipped rather than attempted** when that confirmation fails.
+Every 5GC network function resolves its own advertise FQDN synchronously at startup and
+aborts if it cannot, so migrating onto FQDNs with no resolver crash-loops all of them at
+once. A core left on IP addresses is a working deployment; a half-migrated one is not.
+
+### How long it takes
+
+**A first run is a 1.5–4 hour job.** It installs and compiles a complete mobile core,
+and the dominant cost is not this feature's own work — it is the module source builds.
+
+Measured end to end on 8 cores / 12 GB, on a CPU without AVX (so Open5GS and MongoDB
+take the source-build path):
+
+| Phase | Measured | Notes |
+|---|---|---|
+| `detect-interface` | <0.1 s | |
+| `allocate` | 0.1–18 s | 18 s cold, probing 50 candidates; instant when the manifest is reused |
+| `bind-addresses` | 2.4 s | |
+| `core-addresses` | 6.0 s | |
+| `install-modules` | **~58 min cold**, 11.5 min warm | 13 modules; four are source builds, plus the srsRAN test image |
+| `configure-modules` | 100 s | all 13 configured |
+| `retry-installs` | 0 s | skipped unless an install needed a configure first |
+| `module-addresses` | 3.0 s | |
+| `dns-listen` | 0.2 s | |
+| `fqdn-migration` | 6.0 s | |
+| `manifest` | <0.1 s | |
+| **Total** | **~62 min cold, 13.4 min warm** | plus ~21 min of host bootstrap before it |
+
+So every phase except `install-modules` finishes in about two minutes combined — the
+wait is the module source builds, not this feature's own work. On
+fewer cores, a slower disk, or a slow package mirror, budget **2–4 hours**. A CPU with
+AVX installs Open5GS from apt rather than compiling it, removing a large part of the
+bootstrap.
+
+The run is **non-blocking** — it is started after `app.listen()`, so the NMS answers
+within seconds of `docker compose up` and `GET /api/autoconfig/status` reports the
+module currently installing. Blocking startup would have meant an unreachable NMS, and
+no status, for the entire hour.
+
+### Re-running
+
+The allocation is recorded to `/etc/open5gs-nms/autoconfig-manifest.json` and **pinned**
+there. A later `docker compose up` re-binds the same addresses instead of probing again
+— otherwise a host that happened to answer one probe could move a service onto a
+different address and silently re-address a working deployment on nothing more than a
+reboot. Changing any `AUTOCONFIG_*` setting re-allocates deliberately, releasing the
+previous run's addresses first so they are not stranded.
+
+Binding diffs against what is already present rather than flushing the interface:
+`ip addr flush` on a real NIC would drop the management address the NMS itself is
+reached on. A failure partway through binding rolls back only what that attempt added.
+
+**`AUTOCONFIG_ENABLED=true` means "ensure this deployment is configured", not
+"reconfigure on every start."** Left in `.env`, it would otherwise re-run everything
+each time the backend starts — a `docker compose restart backend`, a container
+crash-restart or an NMS upgrade would each cost the better part of an hour and restart
+the CSCFs, which drops every registered UE's IPsec SA. So a boot-time run is **skipped**
+when the manifest records the same request with *every* phase green, and
+`GET /api/autoconfig/status` says so under `bootRun` rather than reporting a bare
+`idle`. A manifest with any failed phase does **not** skip — something was left undone,
+and retrying it on the next start is the point. `POST /api/autoconfig/start` always
+forces a run.
+
+Addresses this feature already owns are recognised from the manifest **and** the netplan
+drop-in, and are excluded from probing rather than treated as occupied. Without that, a
+run interrupted after binding would leave 18 addresses that answer both probes with
+nothing recording them as ours — the next run would read them as a third party's,
+allocate a fresh set alongside, and strand the first. The drop-in is written at bind
+time specifically so it survives an interruption that never reaches the manifest.
+
+### Skipping the collision check
+
+`AUTOCONFIG_SKIP_IP_CHECK=true` allocates straight up from the start address with no
+probing — deterministic, contiguous, no probe time, no ARP or ICMP on the segment. The
+trade is real: nothing then prevents binding an address another host already owns. The
+gateway and the interface's own existing addresses are still excluded either way, since
+those are conflicts the host declared rather than ones that have to be discovered.
+
+### Implementation
+
+- **Pure**: `autoconfig-plan.ts` (validation, candidates, allocation),
+  `autoconfig-apply.ts` (netplan text, IP Plan mapping, manifest, probe window),
+  `address-liveness.ts` (probe combination)
+- **Host I/O**: `secondary-address.ts` (probes, `ip addr`, netplan persistence)
+- **Orchestration**: `autoconfig/autoconfig-orchestrator.ts` — drives
+  `IpPlanApplyUseCase` and `FreshHostBootstrapUseCase` rather than reimplementing
+  either, plus `autoconfig/module-initial-config.ts` for the one thing neither
+  provides on a fresh host: a module's first Configure
+- **API**: `autoconfig-controller.ts` — `GET /status`, `GET /plan` (dry run),
+  `POST /start`
 
 ---
 

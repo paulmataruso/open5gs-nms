@@ -85,6 +85,28 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Runs systemctl and THROWS on a nonzero exit.
+ *
+ * IHostExecutor.executeCommand() resolves with `{ exitCode }` on failure
+ * rather than rejecting, so a bare `await` of it cannot fail and the routes
+ * below used to answer `{ success: true }` for a service that never started.
+ * Same defect as the one fixed in auto-config.ts's restart loop; see
+ * auto-config-preflight.ts's header for the incident that surfaced it.
+ */
+async function systemctlOrThrow(
+  hostExecutor: IHostExecutor,
+  args: string[],
+): Promise<void> {
+  const r = await hostExecutor.executeCommand('systemctl', args);
+  if (r.exitCode !== 0) {
+    throw new Error(
+      `systemctl ${args.join(' ')} failed (exit ${r.exitCode}): ` +
+      `${(r.stderr || r.stdout || 'no output').trim()}`,
+    );
+  }
+}
+
 // Extracted so the cross-module Fix-All orchestrator (module-fixall-usecase.ts) can
 // invoke the same install logic in-process — write() is the only side-channel.
 export async function installTwamp(write: (s: string) => void): Promise<{ success: boolean; error?: string }> {
@@ -236,11 +258,11 @@ export async function configureTwampServer(
 
       fs.writeFileSync(`${HOST_ROOT}${TWAMP_SERVER_UNIT_PATH}`, serverSystemdUnit(execArgsParts.join(' ')), 'utf-8');
       await hostExecutor.executeCommand('systemctl', ['daemon-reload']);
-      await hostExecutor.executeCommand('systemctl', ['enable', '--now', TWAMP_SERVER_UNIT]);
+      await systemctlOrThrow(hostExecutor, ['enable', '--now', TWAMP_SERVER_UNIT]);
       // Config is baked into ExecStart, not hot-reloadable — a Configure
       // re-run always restarts to pick up the new args, same reasoning as
       // every other module's config-file-based restart-on-Configure.
-      await hostExecutor.executeCommand('systemctl', ['restart', TWAMP_SERVER_UNIT]);
+      await systemctlOrThrow(hostExecutor, ['restart', TWAMP_SERVER_UNIT]);
 
       const prevState = readTwampState() ?? {};
       writeTwampState({
@@ -652,7 +674,7 @@ export function createTwampRouter(
   router.post('/server/start', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      await hostExecutor.executeCommand('systemctl', ['start', TWAMP_SERVER_UNIT]);
+      await systemctlOrThrow(hostExecutor, ['start', TWAMP_SERVER_UNIT]);
       await auditLogger.log({ action: 'twamp_server_start', user, details: 'started', success: true });
       res.json({ success: true });
     } catch (err) {
@@ -663,7 +685,7 @@ export function createTwampRouter(
   router.post('/server/stop', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      await hostExecutor.executeCommand('systemctl', ['stop', TWAMP_SERVER_UNIT]);
+      await systemctlOrThrow(hostExecutor, ['stop', TWAMP_SERVER_UNIT]);
       await auditLogger.log({ action: 'twamp_server_stop', user, details: 'stopped', success: true });
       res.json({ success: true });
     } catch (err) {
@@ -674,7 +696,7 @@ export function createTwampRouter(
   router.post('/server/restart', requireAdmin, async (req: Request, res: Response) => {
     const user = (req as any).user?.username ?? 'unknown';
     try {
-      await hostExecutor.executeCommand('systemctl', ['restart', TWAMP_SERVER_UNIT]);
+      await systemctlOrThrow(hostExecutor, ['restart', TWAMP_SERVER_UNIT]);
       await auditLogger.log({ action: 'twamp_server_restart', user, details: 'restarted', success: true });
       res.json({ success: true });
     } catch (err) {

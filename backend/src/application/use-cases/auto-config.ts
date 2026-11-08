@@ -4,6 +4,9 @@ import {
   DEFAULT_UE_MTU,
   planUeNatRules, ueNatRuleArgs, UeNatPool,
 } from './host-tuning';
+import {
+  parseHostAddresses, findUnbindableAddresses, unbindableAddressMessage,
+} from './auto-config-preflight';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -471,6 +474,37 @@ export class AutoConfigUseCase {
     const updatedFiles: string[] = [];
 
     try {
+      // Step 0: Pre-flight — refuse a bind address this host does not hold,
+      // BEFORE touching anything. Open5GS aborts at startup on a bind to a
+      // missing address, so writing such a config produces dead NFs and no
+      // way for them to recover on their own. See auto-config-preflight.ts
+      // for the real incident this comes from and what is deliberately not
+      // checked (remote SGW-U addresses, pool gateways, `dev:` bindings).
+      const addrProbe = await this.hostExecutor.executeCommand('ip', ['-o', 'addr', 'show']);
+      if (addrProbe.exitCode === 0) {
+        const hostAddresses = parseHostAddresses(addrProbe.stdout);
+        const unbindable = findUnbindableAddresses(input, hostAddresses);
+        if (unbindable.length > 0) {
+          const message = unbindableAddressMessage(unbindable, hostAddresses);
+          this.logger.warn({ unbindable, hostAddresses }, 'Auto-config refused: unbindable address');
+          await this.auditLogger.log({
+            user, action: 'config_apply', target: 'auto_config',
+            details: `Auto-configuration refused — unbindable address: ${unbindable.map(u => `${u.field}=${u.address}`).join(', ')}`,
+            success: false,
+          });
+          return {
+            success: false,
+            message,
+            updatedFiles: [],
+            errors: unbindable.map(u => `${u.field}: ${u.address} is not an address on this host`),
+          };
+        }
+      } else {
+        // Could not read the host's addresses — proceed rather than block, but
+        // say so, since the restart check below is still a real backstop.
+        this.logger.warn({ stderr: addrProbe.stderr }, 'Could not enumerate host addresses; skipping bind pre-flight');
+      }
+
       // Step 1: Create backup first
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
       const backupDir = `${this.backupPath}/pre-autoconfig-${timestamp}`;
@@ -479,7 +513,7 @@ export class AutoConfigUseCase {
       await this.hostExecutor.createDirectory(backupDir);
       
       // Backup configs that will be modified
-      const filesToBackup = ['mme.yaml', 'sgwu.yaml', 'sgwc.yaml', 'amf.yaml', 'upf.yaml', 'smf.yaml'];
+      const filesToBackup = ['mme.yaml', 'sgwu.yaml', 'sgwc.yaml', 'amf.yaml', 'upf.yaml', 'smf.yaml', 'nrf.yaml'];
       for (const file of filesToBackup) {
         const sourcePath = `/etc/open5gs/${file}`;
         const destPath = `${backupDir}/${file}`;
@@ -658,6 +692,38 @@ export class AutoConfigUseCase {
         configs.amf.rawYaml = raw;
         await this.configRepo.saveAmf(configs.amf);
         updatedFiles.push('amf.yaml');
+      }
+
+      // Update NRF (serving PLMN).
+      //
+      // Found on a clean host 2026-11-08, and it broke 5G outright: nrf.yaml
+      // carries its own `nrf.serving[].plmn_id`, which ships as Open5GS's
+      // stock test PLMN 999/70. This wizard updated amf/mme/smf/upf/sgwc/sgwu
+      // but never nrf.yaml, so a fresh install ended up with every NF on the
+      // operator's real PLMN and the NRF still serving 999/70.
+      //
+      // The failure gives no hint where it is: the NRF answers NF-Discover
+      // with its own 500 ("server callback error"), the SCP turns that into a
+      // 400 back to the AMF, and the UE just gets
+      //   Registration reject [95]
+      // for every attach. Reproduced and then confirmed fixed live — with
+      // nrf.yaml corrected, two UERANSIM UEs went straight from rejected to
+      // `Registration complete` plus an established PDU session.
+      //
+      // Uses plmn5g (the NRF is 5G-only), falling back to plmn4g so a
+      // 4G-only deployment that still runs the 5G SBI NFs does not end up
+      // with an empty serving list.
+      const nrfPlmns = input.plmn5g.length > 0 ? input.plmn5g : input.plmn4g;
+      if (configs.nrf && applyPlmn && nrfPlmns.length > 0) {
+        this.logger.info({ plmnCount: nrfPlmns.length }, 'Updating NRF serving PLMN');
+        const raw = configs.nrf.rawYaml as any;
+        if (!raw.nrf) raw.nrf = {};
+        raw.nrf.serving = nrfPlmns.map(plmn => ({
+          plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+        }));
+        configs.nrf.rawYaml = raw;
+        await this.configRepo.saveNrf(configs.nrf);
+        updatedFiles.push('nrf.yaml');
       }
 
       // Update UPF (5G User Plane)
@@ -972,18 +1038,39 @@ export class AutoConfigUseCase {
         'amf.yaml': 'open5gs-amfd',
         'upf.yaml': 'open5gs-upfd',
         'smf.yaml': 'open5gs-smfd',
+        // Restarting the NRF makes every other NF re-register, which they do
+        // by themselves on their own retry timer — so this does not need the
+        // whole core restarted alongside it.
+        'nrf.yaml': 'open5gs-nrfd',
       };
       const servicesToRestart = dedupedFiles
         .map(f => FILE_TO_SERVICE[f])
         .filter((s): s is string => Boolean(s));
 
       this.logger.info({ servicesToRestart }, 'Restarting Open5GS services');
+      // IHostExecutor.executeCommand() RESOLVES on a failed command — it
+      // returns { exitCode } rather than throwing (see LocalHostExecutor's
+      // catch block, which maps the error to a result). So a bare
+      // try/catch around it is dead code for command failure, and the only
+      // way to know a restart failed is to read exitCode. This loop used to
+      // do neither, which is how an apply reported
+      // "Restarted: open5gs-mmed, open5gs-sgwud, ..." with those units dead
+      // (reproduced on a clean host 2026-11-07, 4 of 6 NFs down).
+      const failedServices: Array<{ service: string; error: string }> = [];
       for (const service of servicesToRestart) {
         try {
-          await this.hostExecutor.executeCommand('systemctl', ['restart', service]);
-          this.logger.info({ service }, 'Restarted service');
+          const r = await this.hostExecutor.executeCommand('systemctl', ['restart', service]);
+          if (r.exitCode !== 0) {
+            const error = (r.stderr || r.stdout || `exit code ${r.exitCode}`).trim();
+            failedServices.push({ service, error });
+            this.logger.error({ service, exitCode: r.exitCode, error }, 'Failed to restart service');
+          } else {
+            this.logger.info({ service }, 'Restarted service');
+          }
         } catch (err) {
-          this.logger.warn({ service, error: String(err) }, 'Failed to restart service');
+          // Retained for a genuine transport/spawn fault, which does reject.
+          failedServices.push({ service, error: String(err) });
+          this.logger.error({ service, error: String(err) }, 'Failed to restart service');
         }
       }
 
@@ -993,9 +1080,35 @@ export class AutoConfigUseCase {
         user,
         action: 'config_apply',
         target: 'auto_config',
-        details: `Auto-configuration applied: ${plmnSummary}`,
-        success: true,
+        details: failedServices.length > 0
+          ? `Auto-configuration applied with ${failedServices.length} failed restart(s): ${plmnSummary}`
+          : `Auto-configuration applied: ${plmnSummary}`,
+        success: failedServices.length === 0,
       });
+
+      // The config files ARE written either way, so a partial failure must
+      // say so rather than read as "nothing happened" — the operator needs
+      // to know both that the YAML changed and which NFs did not come back.
+      if (failedServices.length > 0) {
+        const restarted = servicesToRestart.filter(s => !failedServices.some(f => f.service === s));
+        this.logger.error(
+          { backupDir, updatedFiles: dedupedFiles, failedServices },
+          'Auto-configuration wrote config but one or more NFs failed to restart',
+        );
+        return {
+          success: false,
+          message:
+            `Configuration was written (${dedupedFiles.join(', ')}) but ` +
+            `${failedServices.length} of ${servicesToRestart.length} service(s) failed to restart: ` +
+            `${failedServices.map(f => f.service).join(', ')}. ` +
+            `${restarted.length > 0 ? `Restarted successfully: ${restarted.join(', ')}. ` : ''}` +
+            `Check \`journalctl -u <unit>\` — a bind to an address this host does not hold is the ` +
+            `usual cause. Backup to roll back to: ${backupDir}`,
+          backupCreated: backupDir,
+          updatedFiles: dedupedFiles,
+          errors: failedServices.map(f => `${f.service}: ${f.error}`),
+        };
+      }
 
       this.logger.info({ backupDir, updatedFiles: dedupedFiles }, 'Auto-configuration completed successfully');
 

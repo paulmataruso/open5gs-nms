@@ -4,6 +4,228 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.82] - 2026-11-08
+
+### Added — Auto-Configuration from `.env`: declare an address range, get a working deployment
+
+Set three variables and the deployment addresses and configures itself on
+`docker compose up`:
+
+```ini
+AUTOCONFIG_ENABLED=true
+AUTOCONFIG_START_IP=172.16.0.100
+AUTOCONFIG_GW=172.16.0.1
+AUTOCONFIG_SUBNET=255.255.255.0
+```
+
+**Budget 1.5–4 hours for a first run.** Measured end to end on 8 cores / 12 GB
+with no AVX (so Open5GS compiles): ~20 min host bootstrap, ~60 min for the run
+itself — almost entirely `install-modules`, which installs 13 modules including
+four source builds and the srsRAN test image. A re-run is ~13 min. The run is
+non-blocking: started after `app.listen()`, so the NMS answers within seconds
+and `GET /api/autoconfig/status` names the module currently installing.
+Blocking startup would have meant an unreachable NMS, and no progress to look
+at, for the whole hour.
+
+Scope is deliberately **one interface on a flat layer-2 segment** — service
+addresses become secondary addresses on the NIC owning the default route,
+persisted in a netplan drop-in that leaves the management address alone. It does
+not build a dummy-interface or routed design; those remain the
+Auto-Configuration Wizard and the FRR page.
+
+Eleven phases: `detect-interface`, `allocate`, `bind-addresses`,
+`core-addresses`, `install-modules`, `configure-modules`, `retry-installs`,
+`module-addresses`, `dns-listen`, `fqdn-migration`, `manifest`. The orchestrator
+owns little on purpose — it drives `IpPlanApplyUseCase` (per-module address
+apply, already dependency-ordered) and `FreshHostBootstrapUseCase` (install
+order) rather than growing second copies that would drift.
+
+**Duplicate-address detection is ICMP *and* ARP, OR-combined.** Ping alone is
+not evidence of absence: a host firewalling ICMP is silent to ping while still
+owning the address. The reverse also happens — measured three times on the
+development network, `172.16.0.111` answered ICMP with no ARP reply — so
+neither probe alone is sufficient. An address either probe answers is skipped;
+so is one whose probe could not be run, because "nothing is there" and "we
+failed to look" are indistinguishable and only one is safe to act on. `arping
+-D` **inverts its exit code** (1 = duplicate, 0 = free), so the verdict comes
+from its stdout, never its status.
+
+**Probing cannot see a device that is switched off.** A powered-down radio
+answers neither probe, so its address reads as free and will be taken. There is
+no signal to read. `GET /api/autoconfig/plan` previews the whole allocation
+without changing anything, which is the cheap way to check against your own
+address records first. `AUTOCONFIG_SKIP_IP_CHECK=true` skips detection entirely
+for an operator who knows the range is free; the gateway and the interface's own
+addresses are still excluded either way, since those are declared conflicts
+rather than discovered ones.
+
+The Security Gateway pool is the one allocation that cannot skip: Configure
+takes a single CIDR and hands each radio one address out of it, so it needs an
+**aligned, entirely free** run. A block containing one occupied address is
+rejected outright — a CIDR covering an occupied address would eventually hand it
+to a radio.
+
+`AUTOCONFIG_ENABLED=true` means "ensure this deployment is configured", not
+"reconfigure on every start": a boot run is skipped when the manifest records
+the same request with every phase green, so a `docker compose restart backend`
+no longer costs an hour and a CSCF restart. `POST /api/autoconfig/start` always
+forces.
+
+### Fixed — ten real failures found by running it on clean hosts
+
+- **`configure-modules` had to be built at all.** The module bootstrap is
+  deliberately install-only — it expects Configure to arrive afterwards from a
+  *restore*, once each module's state JSON exists. On a fresh host with no
+  backup there is no such state, so the modules were left installed and dark
+  (IMS reported `installed: true` with 4 of 11 services up and every CSCF
+  down), and `IpPlanApplyUseCase` could not close the gap either: with no saved
+  config it returns `saved-for-later`, recording an address without applying it.
+
+- **Asterisk-2G could never install on a fresh host.** Its install requires GSM
+  to be *configured* (`verifyGsmSipConnReady()` wants a concrete local SIP
+  address), which under install-then-configure only happens later. Added a
+  generic `retry-installs` phase after the configures, retried once.
+
+- **An interrupted run stranded its own addresses.** With no manifest yet
+  written, the next run probed them, got an answer — from us — treated them as a
+  third party's and allocated a fresh set alongside: 37 addresses on one NIC
+  after two runs. The manifest is now written as soon as the addresses are
+  bound, and ownership is read from the manifest *and* the netplan drop-in, with
+  owned addresses excluded from probing rather than treated as occupied.
+
+- **`dns-listen` claimed "confirmed listening" on the strength of a file
+  write.** A `listen-on` change alters which sockets `named` binds, so the phase
+  now re-reads the config (`rndc reconfig`, preferred over a restart so the
+  resolver is not dropped) and confirms BIND answers on **both** loopback and
+  the service address before setting the flag that gates the FQDN migration.
+  That migration is **skipped rather than attempted** when the flag is false:
+  every 5GC NF resolves its own advertise FQDN synchronously at startup and
+  aborts if it cannot, so migrating with no resolver crash-loops all of them.
+
+- **The MM1 MSISDN proxy's Go build had a 20-second budget.** It inherited the
+  MMS module's default `nsenter` timeout. A cold Go build cache does not fit in
+  20 s, `execFile` killed it, and a killed process writes no stderr — so the
+  error read as `Command failed: ... go build ...` with nothing after it,
+  indistinguishable from a compile error, and it passed on any retry because the
+  cache was then warm. It therefore failed **only on a first install**. Now a
+  10-minute budget, and the message says when a failure produced no compiler
+  output rather than presenting emptiness as a verdict.
+
+- **BIND had no forwarders, so external resolution was a coin flip.** The module
+  bootstrap points `/etc/resolv.conf` at BIND and Ubuntu ships the `forwarders`
+  block commented out, leaving BIND to recurse from the root hints for every
+  external name. On a cold cache under parallel load that SERVFAILs: a real
+  `docker compose build` on a freshly auto-configured host died on `lookup
+  registry-1.docker.io on 127.0.0.1:53: server misbehaving`, then succeeded
+  minutes later with a warm cache. `dns-listen` now sets forwarders from the
+  resolvers the host was already using (discovered from systemd-resolved and the
+  DHCP leases, public fallback only if none are found), **excluding loopback and
+  this feature's own addresses** — either would make BIND forward to itself and
+  stop resolution entirely. Existing forwarders are left alone. External
+  resolution is checked and reported but deliberately does not gate the FQDN
+  migration, which needs only this host's own zones.
+
+- **`bootstrap-fresh-host.sh` lost a race with cloud-init.** A freshly booted
+  cloud image is still running unattended-upgrades, so the script died on step 1
+  with `debconf: DbDriver "config": /var/cache/debconf/config.dat is locked by
+  another process`. Its whole purpose is a fresh host, which makes that the
+  normal case. Added `wait_for_apt()`, which polls all four locks (debconf's
+  `config.dat` is taken separately from dpkg's frontend lock) and warns rather
+  than dying after 10 minutes.
+
+- **An interrupted run could be mistaken for a completed one.** The manifest
+  written at address-binding time recorded the phases finished so far — three
+  green ones and nothing else — which `canSkipBootRun()` reads as "every phase
+  green". The next boot therefore skipped the work the interrupted run never
+  did. It now records a single explicit not-ok `in-progress` phase, overwritten
+  with the real phase list only when the run actually reaches the end.
+
+- **`retry-installs` judged modules it had not retried.** The module bootstrap
+  always runs bind9 first and ueValidation last regardless of the requested
+  list, so their results appeared in the retry's own verdict. Measured on a
+  clean host: asterisk2g retried and installed correctly, ueValidation reported
+  a failure of its own with the srsRAN image in fact present, and the phase
+  reported FAIL on the strength of it. The phase now judges only the modules it
+  asked to retry.
+
+- **A successful retry still left the run marked failed.** On any fresh host
+  Asterisk-2G's first install attempt fails — it needs GSM configured — so
+  `install-modules` is expected to fail and `retry-installs` is expected to fix
+  it. Leaving the earlier phase marked failed meant the manifest permanently
+  recorded a failed phase, `canSkipBootRun()` never skipped, and every backend
+  restart re-ran the whole hour-long sequence. The phase is now amended to ok
+  once every failed install has succeeded, and its detail keeps the first
+  attempt's text so the record still shows a retry was needed.
+
+### Fixed — `updateSmfImsSession()`'s insert path was document-wide
+
+The *replace* path was scoped to `smf.session[]` after a document-wide search
+destroyed a user's `smf.yaml` (2026-10-11). The *insert* path kept a bare
+`^\s*session:` search — the same bug class — so on a combined or
+unusually-ordered file the IMS entry could land under another NF's session
+block. Now scoped through `findSmfSessionRange()`; the 12 existing regression
+tests still pass and three new ones fail against the old code.
+
+### Fixed — a wrong-version `cdp.so` left every CSCF crash-looping
+
+IMS Install patches Kamailio's `cdp` module from source to widen its process
+table. It selected the source tree with `ls -d /tmp/kamailio-*/src | head -1`,
+which is lexical order, not relevance: a leftover `kamailio-5.7.4` tree from
+another build path sorted ahead of the `kamailio-5.8.8+ubuntu24.04` tree the
+step had just fetched, so `cdp.so` was compiled from 5.7.4 source against a
+5.8.8 core. Kamailio hard-refuses a module whose compiled-in version differs
+from the core (`ksr_version_control(): module version mismatch`) and exits 255,
+so P-CSCF, I-CSCF and S-CSCF all crash-looped and IMS was completely dead —
+registration and calling alike.
+
+Three changes, deliberately layered so the outcome does not depend on getting
+the selection right:
+
+- Stale trees are removed before fetching. They are throwaway build trees, so
+  deleting them costs nothing, and leaving them is how the wrong one gets
+  picked.
+- The tree is selected by the upstream version actually installed, and must
+  contain `src/modules/cdp/cdp_mod.c`, rather than by whatever sorts first.
+- **The built artifact is checked against the running core before deployment.**
+  This is the invariant that matters regardless of how a wrong tree might be
+  chosen: the step now reads the version out of the compiled `cdp.so`, compares
+  it with `kamailio -v`, and refuses to deploy a mismatch — turning a dead IMS
+  into a failed install step that names the cause.
+
+### Changed
+
+- `iputils-ping` and `iputils-arping` are installed by
+  `bootstrap-fresh-host.sh`. Without arping the ARP signal is inferred from the
+  kernel neighbour table instead, which is weaker but still catches an
+  ICMP-silent host; the status endpoint reports which methods were available.
+- The `ENABLE_*_MODULE` flags now reach the **backend** container, not only the
+  frontend build. Auto-Configuration decides what to install from them, and as
+  frontend-only build args every flag read as absent — silently installing each
+  module's default set rather than what the operator asked for. A wiring test
+  pins this.
+- `IMS_CONFIGURE_DEFAULTS` is exported from `ims-controller.ts` and shared with
+  its own `POST /configure` route, so the route and Auto-Configuration cannot
+  default differently for the same deployment.
+
+### Verified
+
+A clean Proxmox VM (8 cores / 12 GB, no AVX) brought up entirely from `.env`:
+**11 of 11 phases green, 18 of 18 host-level checks, 0 failed units**. 18/18
+Open5GS NFs active with AMF/MME/UPF/SGW-U/DNS each listening on their allocated
+address, BIND answering on loopback and the service address, the 5GC FQDN zone
+resolving, 48 project services up, IMS 11/11, and all 13 modules installed with
+12 configured (syslog skipped — log destinations are not implied by an address
+range). Checks were made against host state, not the run's own report.
+
+`retry-installs` has now been exercised live, which earlier runs could not do —
+their hosts had GSM already configured, so its trigger never fired. On a host
+where GSM was unconfigured at install time it behaved as designed:
+`install-modules` failed on asterisk2g, `retry-installs` installed and
+configured it, the earlier phase was amended to ok, and the run completed with
+every phase green and the boot-run skip correctly armed.
+
+---
+
 ## [v2.0-beta_0.81] - 2026-11-07
 
 ### Fixed — the user plane was running more than half of itself out of swap

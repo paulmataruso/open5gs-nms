@@ -18,7 +18,8 @@ Common issues and solutions for Open5GS NMS deployment and operation.
 10. [Performance Issues](#performance-issues)
 11. [Database Issues](#database-issues)
 12. [SMF/UPF Session Counter Corruption](#smfupf-session-counter-corruption)
-13. [Getting More Help](#getting-more-help)
+13. [Auto-Configuration (`AUTOCONFIG_*`) Issues](#auto-configuration-autoconfig_-issues)
+14. [Getting More Help](#getting-more-help)
 
 ---
 
@@ -1509,6 +1510,109 @@ sudo systemctl restart open5gs-*
 # Restart NMS
 docker compose restart
 ```
+
+---
+
+## Auto-Configuration (`AUTOCONFIG_*`) Issues
+
+### It looks like nothing is happening
+
+Check the run, not the logs:
+
+```bash
+curl -s localhost:3001/api/autoconfig/status | python3 -m json.tool
+```
+
+`run.currentPhase` names the phase and `active.bootstrap.currentModule` names the module
+being installed. **A long silence on `install-modules` is normal** — it is ~50 minutes on
+a first run, and it does not finish when the last module does: the module bootstrap ends
+with an unconditional UE Validation step that builds the srsRAN image, which alone takes
+20+ minutes. If `currentModule` reads `ueValidation`, it is working, not hung.
+
+### It says `disabled`, or `complete` with no phases
+
+- `enabled: false` in the status means `AUTOCONFIG_ENABLED` is not `true`. Note the
+  module flags and `AUTOCONFIG_*` must reach the **backend container** — if you added
+  them only to a shell environment rather than `.env`, Compose never passed them through.
+- `complete` with an empty `phases` array and a `bootRun.reason` is a deliberate skip:
+  a previous run already did this with the same settings. `POST /api/autoconfig/start`
+  forces a re-run.
+
+### `allocate` fails with "not enough free addresses"
+
+The body of `GET /api/autoconfig/plan` carries the probe report, which names every
+address found occupied and which probe saw it. Two causes are common:
+
+- **The Security Gateway pool needs a CIDR-aligned, entirely free run** (8 consecutive
+  addresses starting on a multiple of 8, at the default size). A single occupied address
+  disqualifies the whole block. Services themselves skip freely; only the pool cannot.
+- **Something you forgot is answering.** `answered icmp` with no ARP reply usually means
+  the address is reachable through a router rather than on-link.
+
+### An address was taken that belongs to equipment of mine
+
+**Probing only sees what is switched on.** A radio or server that is powered down
+answers neither probe, so its address reads as free. There is no signal to read, so
+nothing can prevent this from the host. Either start the range above your reserved
+addresses, or run `GET /api/autoconfig/plan` — which changes nothing — and compare it
+with your own address records before enabling the feature.
+
+### `asterisk2g` fails to install with "osmo-sip-connector has no concrete local SIP address"
+
+Expected on a fresh host, and handled. Asterisk-2G's *install* requires GSM to be
+*configured*, which only happens in `configure-modules` — after every install. The
+`retry-installs` phase re-attempts it once after the configures and then configures it.
+If it fails a second time, that is a real failure: configure GSM from its own page and
+retry.
+
+### `fqdn-migration` was skipped
+
+Deliberate. It only runs when `dns-listen` confirmed BIND answering on **both** loopback
+and the allocated DNS address. Every 5GC network function resolves its own advertise
+FQDN synchronously at startup and aborts if it cannot, so migrating the core onto FQDNs
+with no resolver would crash-loop all of them at once. The deployment stays on IP
+addresses, which works. Fix the `dns-listen` failure and re-run.
+
+### SMF will not start: "Overlapping subnets ... 10.46.0.1/24 and 10.46.0.1/24"
+
+`smf.yaml` has the IMS session pool twice. Open5GS refuses to start on overlapping
+subnets. Remove one of the duplicate blocks from `smf.session[]` and
+`systemctl reset-failed open5gs-smfd && systemctl restart open5gs-smfd`:
+
+```yaml
+    - subnet: 10.46.0.0/24
+      gateway: 10.46.0.1
+      dnn: ims
+      dns:
+        - <your P-CSCF address>
+```
+
+### `apt` or `docker pull` fails with "server misbehaving" after Auto-Configuration
+
+`resolv.conf` now points at BIND, and Ubuntu ships BIND's `forwarders` block commented
+out — so BIND recurses from the root hints for every external name and can SERVFAIL on a
+cold cache under parallel load. Go reports that as `server misbehaving`.
+
+`dns-listen` sets forwarders from the host's own resolvers to prevent this. Check what it
+chose:
+
+```bash
+sudo grep -A4 '^\s*forwarders' /etc/bind/named.conf.options
+dig +short @127.0.0.1 registry-1.docker.io A        # should return addresses
+```
+
+If the list is empty, or contains `127.0.0.1` or one of this deployment's own service
+addresses, BIND is forwarding to itself and nothing external will resolve — set it to a
+real upstream resolver via the DNS/BIND9 page and `rndc reconfig`. Auto-Configuration
+excludes both of those automatically; a hand-edited file may not.
+
+### A build fails with no compiler output at all
+
+An error that ends at `Command failed: ... go build ...` with nothing after it was
+**killed**, not rejected by the compiler — a timeout or the OOM killer. Check free
+memory. Source builds here want ~2.5 GB available; `/api/frr/source-build` and friends
+pre-flight that, and the MM1 proxy build has a 10-minute budget because a cold Go cache
+does not fit in 20 seconds.
 
 ---
 

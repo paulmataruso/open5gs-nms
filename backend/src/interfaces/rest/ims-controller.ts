@@ -1966,8 +1966,16 @@ export function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: strin
       lines.splice(startIdx, endIdx - startIdx, ...kept);
     }
   } else {
-    // No ims session — add a minimal one to the session list
-    const sessionIdx = lines.findIndex(l => /^\s*session:\s*$/.test(l));
+    // No ims session — add a minimal one to the session list.
+    //
+    // Scoped with findSmfSessionRange() for exactly the reason the REPLACE
+    // branch above is: a bare `^\s*session:` search is document-wide, and
+    // `session:` is an ordinary key under other NFs too, so on a combined or
+    // unusually-ordered file this could insert the ims entry into somebody
+    // else's block. That is the same bug class as the 2026-10-11 incident
+    // documented above — it was fixed for the replace path and left here.
+    const insertRange = findSmfSessionRange(lines);
+    const sessionIdx = insertRange ? insertRange.start - 1 : -1;
     if (sessionIdx >= 0) {
       const sessionIndent = (lines[sessionIdx].match(/^(\s*)/) ?? ['', ''])[1].length;
       let insertIdx = sessionIdx + 1;
@@ -2774,6 +2782,31 @@ INSERT IGNORE INTO version (table_name, table_version) VALUES ('messages','1');`
 // or the PLMN migration use-case) must pass a fully-populated input. Defaults for
 // the manual-UI path live only in the thin route wrapper.
 export type ImsConfigureFullInput = ImsConfigureInput & { mcc: string; mnc: string };
+
+/**
+ * Default IMS bind addresses and ports.
+ *
+ * Exported so the POST /configure route and Auto-Configuration share ONE
+ * source. Auto-Configuration supplies real addresses for `pcscfIp`,
+ * `rtpEngineIp` and `dnsIp` from its own allocation and takes the ports and
+ * the two loopback CSCF addresses from here; duplicating these literals into
+ * that code path is exactly how the two would silently drift apart.
+ *
+ * `rtpEngineIp` and `dnsIp` are deliberately absent: the route derives them
+ * (from `pcscfIp` and from BIND's own listen-on list respectively), and a
+ * default here would invite a caller to use a coincidental value — the real
+ * bug this file's own comment above records.
+ */
+export const IMS_CONFIGURE_DEFAULTS = {
+  pcscfIp: '10.0.1.178',
+  pcscfPort: 5060,
+  icscfIp: '127.0.1.1',
+  icscfPort: 4060,
+  scscfIp: '127.0.1.2',
+  scscfPort: 6060,
+  rtpPortMin: 20000,
+  rtpPortMax: 30000,
+} as const;
 
 // Reads back the full current config from .ims-config.json (written as a side
 // effect of every configureIms() call) — lets the PLMN migration use-case build
@@ -4257,10 +4290,30 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
       'deb-src http://security.ubuntu.com/ubuntu/ ${CODENAME}-security main restricted universe multiverse\n' +
       'EOF\n' +
       'apt-get update -q\n' +
+      // Clear any previous source tree before fetching.
+      //
+      // Real failure, 2026-11-08: another build path had left
+      // /tmp/kamailio-5.7.4 behind (Ubuntu's own version) alongside the
+      // 5.8.8 tree this step fetches. These are throwaway build trees, so
+      // removing them is free, and leaving them is how the wrong one gets
+      // picked.
+      'rm -rf /tmp/kamailio-*\n' +
       'cd /tmp && apt-get source "kamailio=$KVER" -q\n' +
-      'SRCDIR=$(ls -d /tmp/kamailio-*/src 2>/dev/null | head -1 | sed "s|/src$||")\n' +
-      '[ -z "$SRCDIR" ] && echo "ERROR: kamailio source not found" && exit 1\n' +
-      'echo "Source dir: $SRCDIR"\n' +
+      // Select the tree by the version actually fetched, NOT by whatever
+      // sorts first. The old `ls -d /tmp/kamailio-*/src | head -1` picked
+      // kamailio-5.7.4 over kamailio-5.8.8+ubuntu24.04 — lexical order, not
+      // relevance — and built cdp.so from 5.7.4 source against a 5.8.8 core.
+      // Kamailio refuses a module whose version does not match
+      // (`ksr_version_control(): module version mismatch`), so all three
+      // CSCFs crash-looped and IMS was completely dead.
+      'KUPSTREAM=$(echo "$KVER" | sed "s/[+-].*//")\n' +
+      'SRCDIR=""\n' +
+      'for d in /tmp/kamailio-*/; do\n' +
+      '  [ -f "${d}src/modules/cdp/cdp_mod.c" ] || continue\n' +
+      '  case "$d" in *"$KUPSTREAM"*) SRCDIR="${d%/}"; break;; esac\n' +
+      'done\n' +
+      '[ -z "$SRCDIR" ] && echo "ERROR: no kamailio source tree matching $KUPSTREAM (installed $KVER) under /tmp" && exit 1\n' +
+      'echo "Source dir: $SRCDIR (matched installed version $KVER)"\n' +
       'CDP_MOD_C="$SRCDIR/src/modules/cdp/cdp_mod.c"\n' +
       'sed -i "s/register_procs(2 + config->workers/register_procs(3 + config->workers/g" "$CDP_MOD_C"\n' +
       'sed -i "s/cfg_register_child(2 + config->workers/cfg_register_child(3 + config->workers/g" "$CDP_MOD_C"\n' +
@@ -4280,6 +4333,26 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
       // process holding the old inode keeps seeing consistent old bytes until
       // it restarts, and nothing can observe a partial file.
       'cp "$SRCDIR/src/modules/cdp/cdp.so" "$CDP_SO.new"\n' +
+      // Refuse to deploy a module built against a different Kamailio.
+      //
+      // This is the invariant that actually matters, independent of HOW a
+      // wrong source tree might be chosen: Kamailio hard-refuses a module
+      // whose compiled-in version differs from the core
+      // (`ksr_version_control(): module version mismatch`) and exits 255, so
+      // deploying one crash-loops every CSCF that loads it. Checking the
+      // built artifact costs nothing and turns a dead IMS into a failed
+      // install step that says why.
+      'BUILT_V=$(strings "$CDP_SO.new" | grep -oE "kamailio [0-9]+\\.[0-9]+\\.[0-9]+" | head -1 | awk \'{print $2}\')\n' +
+      'CORE_V=$(kamailio -v 2>/dev/null | grep -oE "kamailio [0-9]+\\.[0-9]+\\.[0-9]+" | head -1 | awk \'{print $2}\')\n' +
+      'if [ -n "$BUILT_V" ] && [ -n "$CORE_V" ] && [ "$BUILT_V" != "$CORE_V" ]; then\n' +
+      '  rm -f "$CDP_SO.new"\n' +
+      '  echo "ERROR: built cdp.so reports kamailio $BUILT_V but the core is $CORE_V."\n' +
+      '  echo "       Refusing to deploy it — Kamailio would reject the module and every CSCF"\n' +
+      '  echo "       loading it would crash-loop. The source tree used ($SRCDIR) does not match"\n' +
+      '  echo "       the installed kamailio $KVER."\n' +
+      '  exit 1\n' +
+      'fi\n' +
+      'echo "Built cdp.so reports kamailio ${BUILT_V:-unknown}; core is ${CORE_V:-unknown}."\n' +
       'mv "$CDP_SO.new" "$CDP_SO"\n' +
       'sha256sum "$CDP_SO" | awk \'{print $1}\' > "$MARKER"\n' +
       'echo "✅ cdp.so patched successfully (marker records its hash; restart Kamailio to load it)."'
@@ -4358,7 +4431,56 @@ export async function installIms(write: (s: string) => void): Promise<{ success:
     // this project's own long-lived reference host where some earlier step
     // had already pulled them in for something else). Confirmed live: adding
     // these three and re-running the pip install below fixed it.
-    const basePyhssDepsExitCode = await spawnStream('DEBIAN_FRONTEND=noninteractive apt-get install -y libmariadb-dev default-libmysqlclient-dev pkg-config build-essential 2>&1');
+    //
+    // Split into TWO apt invocations, 2026-11-07, after a real clean-host
+    // failure: on Ubuntu 24.04 with mariadb-server already installed (which
+    // this same Install puts there a few steps earlier),
+    // `default-libmysqlclient-dev` is NOT installable —
+    //   default-libmysqlclient-dev : Depends: libmysqlclient-dev but it is not installable
+    // because MySQL 8.0's libmysqlclient-dev conflicts with the MariaDB
+    // packages in place. apt refuses to install ANY package named in a command
+    // line when one of them is unsatisfiable, so that single name silently
+    // took `libmariadb-dev`, `pkg-config` and `build-essential` down with it.
+    // pip then failed to build mysqlclient's C extension
+    // ("Can not find valid pkg-config name"), and because that failure happens
+    // during pip's RESOLUTION phase, pip installed NOTHING AT ALL from
+    // requirements.txt — so every one of PyHSS's four services crash-looped on
+    // `ModuleNotFoundError: No module named 'redis'` / `'tzlocal'`.
+    //
+    // This is the exact cascade the rtpengine comment earlier in this file
+    // already documents, repeated in a second apt line. Hence: the packages
+    // that MUST succeed go in their own invocation, and the MySQL-flavoured
+    // one (wanted for `mysql_config` specifically — see the 2026-09-23 note
+    // above, which is still a real need on a host WITHOUT MariaDB) is attempted
+    // separately and allowed to fail. mysqlclient accepts either a working
+    // `pkg-config mariadb` or `mysql_config`, so one of the two suffices.
+    const basePyhssDepsExitCode = await spawnStream(
+      'DEBIAN_FRONTEND=noninteractive apt-get install -y libmariadb-dev pkg-config build-essential 2>&1',
+    );
+    write('\n=== Optional: MySQL-flavoured client dev headers ===\n');
+    const mysqlDevExitCode = await spawnStream(
+      'DEBIAN_FRONTEND=noninteractive apt-get install -y default-libmysqlclient-dev 2>&1 || true',
+    );
+    if (mysqlDevExitCode !== 0) {
+      write('ℹ️  default-libmysqlclient-dev is not installable here (normal when MariaDB\n' +
+            '   is installed — MySQL 8.0 dev headers conflict with it). Continuing:\n' +
+            '   libmariadb-dev provides the pkg-config "mariadb" entry mysqlclient also accepts.\n');
+    }
+    // Verify what pip will actually need, rather than trusting apt's exit code
+    // — the whole point of the split above is that apt can report success for
+    // a line that did not deliver what the next step depends on.
+    const mysqlBuildableCheck = await spawnStream(
+      'if pkg-config --exists mariadb || pkg-config --exists mysqlclient || command -v mysql_config >/dev/null 2>&1; then\n' +
+      '  echo "✅ mysqlclient has a usable client library (pkg-config mariadb/mysqlclient or mysql_config)."\n' +
+      'else\n' +
+      '  echo "⚠️  Neither pkg-config mariadb/mysqlclient nor mysql_config is present — pip will fail to build mysqlclient, and because that failure happens during pip resolution NOTHING in requirements.txt gets installed. Install libmariadb-dev by hand and re-run Install."\n' +
+      '  exit 1\n' +
+      'fi',
+    );
+    if (mysqlBuildableCheck !== 0) {
+      write('\n⚠️ WARNING: the MySQL/MariaDB client dev headers are missing — the PyHSS pip\n' +
+            'install below will fail and PyHSS will not start. See the message above.\n');
+    }
     // --break-system-packages (PEP 668) is only understood by pip >= 23.0.1 -
     // older pip3 (as shipped on some fresh hosts) rejects it outright with
     // "no such option: --break-system-packages" and the whole install never
@@ -5492,15 +5614,15 @@ export function createImsRouter(
       // every deployment regardless of anything else configured.
       const bindListenIp = readListenOn().find(ip => ip !== '127.0.0.1');
       const {
-        pcscfIp    = '10.0.1.178',
-        pcscfPort  = 5060,
-        icscfIp    = '127.0.1.1',
-        icscfPort  = 4060,
-        scscfIp    = '127.0.1.2',
-        scscfPort  = 6060,
+        pcscfIp    = IMS_CONFIGURE_DEFAULTS.pcscfIp,
+        pcscfPort  = IMS_CONFIGURE_DEFAULTS.pcscfPort,
+        icscfIp    = IMS_CONFIGURE_DEFAULTS.icscfIp,
+        icscfPort  = IMS_CONFIGURE_DEFAULTS.icscfPort,
+        scscfIp    = IMS_CONFIGURE_DEFAULTS.scscfIp,
+        scscfPort  = IMS_CONFIGURE_DEFAULTS.scscfPort,
         rtpEngineIp = pcscfIp,
-        rtpPortMin  = 20000,
-        rtpPortMax  = 30000,
+        rtpPortMin  = IMS_CONFIGURE_DEFAULTS.rtpPortMin,
+        rtpPortMax  = IMS_CONFIGURE_DEFAULTS.rtpPortMax,
         dnsIp       = bindListenIp ?? '127.0.0.1',
         additionalPlmns = [],
       } = req.body as Partial<ImsConfigureInput>;

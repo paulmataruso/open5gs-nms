@@ -20,6 +20,8 @@ import { SubscriberManagementUseCase } from './application/use-cases/subscriber-
 import { TopologyUseCase } from './application/use-cases/topology';
 import { BackupRestoreUseCase } from './application/use-cases/backup-restore';
 import { FreshHostBootstrapUseCase } from './application/use-cases/fresh-host-bootstrap-usecase';
+import { AutoconfigOrchestrator } from './application/use-cases/autoconfig/autoconfig-orchestrator';
+import { createAutoconfigRouter } from './interfaces/rest/autoconfig-controller';
 import { BackupRestartUseCase } from './application/use-cases/backup-restart-usecase';
 import { FullRestoreOrchestratorUseCase } from './application/use-cases/full-restore-orchestrator-usecase';
 import { DnsMigrationUseCase } from './application/use-cases/dns-migration-usecase';
@@ -649,6 +651,20 @@ async function main() {
     logger,
     auditLogger,
   );
+  // Auto-Configuration (env-driven): allocates an operator-declared address
+  // range, binds it on the single L2 interface, pushes it into every module's
+  // config and migrates the core onto FQDNs. Drives ipPlanApplyUseCase and
+  // freshHostBootstrapUseCase rather than duplicating either.
+  const autoconfigOrchestrator = new AutoconfigOrchestrator(
+    ipPlanApplyUseCase,
+    freshHostBootstrapUseCase,
+    dnsMigrationUseCase,
+    subscriberRepo,
+    hostExecutor,
+    config.mongodbUri,
+    logger,
+    auditLogger,
+  );
   const logStreamingUseCase = new LogStreamingUseCase(hostExecutor, logger);
   const dockerLogExecutor = new DockerLogExecutor(logger);
   const dockerLogStreamingUseCase = new DockerLogStreamingUseCase(dockerLogExecutor, logger);
@@ -783,6 +799,7 @@ async function main() {
   app.use('/api/apn-profiles', createApnProfileRouter(apnProfileUseCase, logger, auditLogger));
   app.use('/api/femto/nr', createSercommNRRouter(config.genieacsNbiUrl, logger, auditLogger, config.backupPath));
   app.use('/api/auto-config', createAutoConfigRouter(autoConfigUseCase));
+  app.use('/api/autoconfig', createAutoconfigRouter(autoconfigOrchestrator, logger));
   app.use('/api/tun-interfaces', createTunRouter(tunUseCase, logger));
 
   app.use('/api/interface-status', createInterfaceRouter(hostExecutor, logger, activeSessionsUseCase, configRepo, baicellsUeCounts));
@@ -923,6 +940,26 @@ async function main() {
     child.on('error', (err) => {
       mmePatchLogger.warn({ err: String(err) }, 'Failed to spawn MME patch check');
     });
+  }
+
+  // Auto-Configuration (env-driven), fire-and-forget after listen().
+  //
+  // Deliberately NOT awaited before the server is reachable: on a host that
+  // has to build Open5GS and Kamailio from source this run takes well over an
+  // hour, and blocking startup would leave the NMS unreachable -- and showing
+  // no progress at all -- for that whole time. Starting it here means
+  // GET /api/autoconfig/status answers from the first second.
+  //
+  // A no-op unless AUTOCONFIG_ENABLED=true, and idempotent after that: the
+  // manifest pins the allocation, so a later `docker compose up` re-binds the
+  // same addresses rather than probing and re-allocating different ones.
+  {
+    const started = autoconfigOrchestrator.start('autoconfig-startup');
+    if (started.started) {
+      logger.info('Auto-Configuration: run started (track it at GET /api/autoconfig/status)');
+    } else {
+      logger.info({ reason: started.reason }, 'Auto-Configuration: not starting');
+    }
   }
 
   // ── Authenticated WebSocket upgrade ──────────────────────────────────────────

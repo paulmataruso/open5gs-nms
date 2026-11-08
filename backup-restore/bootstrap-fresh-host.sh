@@ -79,15 +79,48 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------------------
+# Wait for any other package operation to finish before touching apt.
+#
+# This script's whole purpose is a FRESH host, which is exactly when something
+# else is already running apt: a cloud image boots straight into cloud-init
+# and unattended-upgrades. Hitting that race fails on the very first step with
+# `debconf: DbDriver "config": /var/cache/debconf/config.dat is locked by
+# another process` (observed on a clean Ubuntu 24.04 cloud image) — an
+# unhelpful error for a condition that clears itself in a minute.
+wait_for_apt() {
+  local waited=0 limit=600
+  while :; do
+    # fuser exits 0 while ANY of these is held. dpkg's frontend lock and
+    # debconf's own config.dat are both needed, and they are taken separately.
+    if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+               /var/lib/apt/lists/lock /var/cache/debconf/config.dat \
+               >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ $waited -ge $limit ]]; then
+      warn "Package locks still held after ${limit}s — continuing anyway; if this fails, re-run once the other apt finishes."
+      return 0
+    fi
+    [[ $waited -eq 0 ]] && log "Waiting for another package operation to finish (cloud-init/unattended-upgrades on a fresh boot)..."
+    sleep 5
+    waited=$((waited + 5))
+  done
+}
+wait_for_apt
+
 log "1/10 — System packages"
 # iptables-persistent prompts interactively to save current rules unless
 # preseeded — required for a truly non-interactive run.
 debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v4 boolean true"
 debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v6 boolean true"
 apt-get update -qq
+# iputils-arping is for Auto-Configuration's duplicate-address detection.
+# Without it that check falls back to inferring from the kernel's neighbour
+# table, which works but is weaker than real ARP duplicate-address detection.
 apt-get install -y -qq \
   iptables-persistent conntrack tshark python3 python3-pip chrony \
-  curl gnupg ca-certificates lsb-release software-properties-common
+  curl gnupg ca-certificates lsb-release software-properties-common \
+  iputils-ping iputils-arping
 
 # frr/frr-pythontools pulled out of the combined install above and made
 # conditional — real, 2026-09-23 incident: this project's own FRR Source

@@ -99,6 +99,22 @@ export const BUILD_APT_DEPS = [
   'build-essential', 'dpkg-dev', 'bison', 'flex', 'pkg-config',
   'libxml2-dev', 'libmnl-dev', 'libsctp-dev', 'uuid-dev',
   'libjansson-dev', 'libssl-dev', 'libpcre2-dev', 'libunistring-dev', 'libcurl4-openssl-dev',
+  // json-c, NOT jansson — two different JSON libraries, and Kamailio needs
+  // both. Real clean-host build failure 2026-11-08: the `json` module's
+  // json_funcs.c does `#include <json.h>`, and the whole build died at
+  //   json_funcs.c:26:10: fatal error: json.h: No such file or directory
+  //   make[1]: *** [Makefile:510: modules] Error 1
+  // after ~10 minutes of compiling. libjansson-dev was already here and is
+  // genuinely needed by other modules, which is why its presence made this
+  // look covered. The apt `kamailio-json-modules` package was installed, so
+  // the module is in the enabled set and cannot simply be skipped.
+  //
+  // Note json-c 0.17 (Ubuntu 24.04) installs ONLY /usr/include/json-c/json.h
+  // — there is no compat /usr/include/json.h any more. The bare
+  // `#include <json.h>` resolves because the module's own Makefile asks
+  // pkg-config, which yields `-I/usr/include/json-c`; so the -dev package is
+  // what matters, not a header at a fixed path.
+  'libjson-c-dev',
 ];
 
 export const KAMAILIO_BUILD_STEPS = [

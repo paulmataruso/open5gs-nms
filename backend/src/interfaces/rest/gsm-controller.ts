@@ -11,6 +11,7 @@ import { cidrRange, numToIp } from '../../domain/services/ip-utils';
 import {
   upsertVtyDirectives, OwnedDirective,
   upsertVtyPathDirectives, removeVtyPathNode, ownedDirectivesFromGenerated,
+  prunedDirectivesFor,
 } from '../../domain/services/vty-config-ownership';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { detectMainInterface } from '../../infrastructure/network/main-interface';
@@ -1126,6 +1127,19 @@ function warnOnUnmodelledLoss(path: string, oldContent: string, newContent: stri
 // Directives whose key is NOT simply "everything but the last word" — each of
 // these would otherwise key on a VALUE, so a file holding a different value
 // would fail to match and the directive would be appended as a duplicate.
+/**
+ * Directive families osmobscCfg() owns COMPLETELY, so a leftover is a bug
+ * rather than preserved operator config. Each is pruned when the generated
+ * output has no counterpart at the same path — see prunedDirectivesFor().
+ *
+ * Deliberately narrow. `gprs *` is here because the generator emits the whole
+ * block or none of it (btsBlock()'s `gprsLines`), and a half-present block
+ * does not parse. Do NOT add a family an operator may legitimately hand-tune.
+ */
+const OSMO_BSC_OWNED_FAMILIES: RegExp[] = [
+  /^gprs (nsvc|nsei|cell|mode|routing area code|network-control-order)\b/,
+];
+
 const OSMO_BSC_KEY_TOKENS = [
   { match: /^meas-feed destination\b/, tokens: 2 },
   { match: /^mgw remote-ip\b/, tokens: 2 },
@@ -1174,6 +1188,13 @@ function writeOsmoBscCfg(
   for (let i = desiredBtsCount; i < desiredBtsCount + 16; i++) {
     merged = removeVtyPathNode(merged, ['network', `bts ${i}`]);
   }
+  // Prune the directive families this generator owns end to end BEFORE the
+  // upsert, so a family it has stopped emitting cannot leave invalid
+  // leftovers. Real outage: with `gprs mode none` the stale
+  // `gprs nsvc 0 remote ip ...` lines made osmo-bsc reject the whole file
+  // ("% GPRS is not enabled on BTS 0"), taking 2G down. See
+  // prunedDirectivesFor().
+  merged = upsertVtyPathDirectives(merged, prunedDirectivesFor(merged, generated, OSMO_BSC_OWNED_FAMILIES));
   merged = upsertVtyPathDirectives(merged, ownedDirectivesFromGenerated(generated, OSMO_BSC_KEY_TOKENS));
   writeHostCfg(path, merged);
 }
@@ -1440,7 +1461,31 @@ export async function configureGsm(input: ConfigureGsmInput): Promise<{ eigrpApp
   // type — apply it to every BTS here (enabled → chosen mode on all,
   // disabled → 'none' on all) so it isn't also buried per-BTS.
   const perBtsMode: BtsEntry['gprsMode'] = state.gprsEnabled ? (state.gprsMode ?? 'gprs') : 'none';
-  for (const b of state.btsEntries) b.gprsMode = perBtsMode;
+  for (const b of state.btsEntries) {
+    // osmo-bts-virtual advertises NO GPRS support in its OML feature vector —
+    // not EGPRS, not even plain GPRS. Setting a mode it cannot do does not
+    // degrade gracefully: osmo-bsc reads the feature vector, declares the
+    // whole BTS config invalid and drops the BTS, forever. Reproduced on a
+    // clean host 2026-11-08 at ~28 drops a minute:
+    //
+    //   DNM  ERROR bts.c:503 (bts=0) GPRS mode set to 'egprs', but BTS does not support it
+    //   DLINP NOTICE bts_ipaccess_nanobts.c:703 (bts=0) BTS config invalid, dropping BTS!
+    //
+    // and identically for 'gprs'. The BTS never reaches OML, so 2G is dead
+    // from a setting the Setup tab presents as a simple toggle. Clamp rather
+    // than reject: the toggle is module-wide and a deployment may legitimately
+    // mix a real GPRS-capable BTS with a virtual one used for protocol tests,
+    // and the SGSN/GGSN side stays configured either way.
+    b.gprsMode = b.backend === 'virtual' ? 'none' : perBtsMode;
+  }
+  const clampedVirtual = state.gprsEnabled && state.btsEntries.some(b => b.backend === 'virtual');
+  if (clampedVirtual) {
+    cfgLogger.warn(
+      { btsCount: state.btsEntries.filter(b => b.backend === 'virtual').length },
+      'GPRS left off for the virtual BTS backend — osmo-bts-virtual reports no GPRS support, ' +
+      'and osmo-bsc drops a BTS whose configured GPRS mode exceeds its feature vector',
+    );
+  }
   state.sgsnGtpLocalIp = input.sgsnGtpLocalIp || state.sgsnGtpLocalIp;
   state.ggsnGtpBindIp  = sanitizeGgsnGtpIp(input.ggsnGtpBindIp || state.ggsnGtpBindIp);
   state.ggsnApn        = input.ggsnApn        || state.ggsnApn;

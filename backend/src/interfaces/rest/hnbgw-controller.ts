@@ -141,7 +141,37 @@ export interface HnbgwState {
   sgsnIuPsPointCode: string;
   mgwBindIp: string;
   mgwRtpBindIp: string;
+  // MGCP CLIENT local (source) port for this instance.
+  //
+  // Real collision found live on a clean host 2026-11-08: osmo-hnbgw's
+  // compiled-in default MGCP client local port is 2728 — the SAME port the 2G
+  // module configures for osmo-bsc (`mgw local-port 2728` in osmobscCfg()).
+  // Whichever daemon starts first wins the socket and the other dies with
+  //   unable to bind socket: 127.0.0.1:2728: Address already in use
+  //   MGW (single) connect failed at (127.0.0.1:2427)
+  // which on this host meant installing the 3G module silently took osmo-bsc
+  // down — i.e. all of 2G — with a message that names neither module.
+  //
+  // It is invisible to `ss -lnup`, which is the trap: the MGCP client CONNECTS
+  // its UDP socket, so it shows as ESTAB and `-l` filters it out entirely.
+  // Use `ss -nupa | grep :2728` when chasing this class of thing.
+  //
+  // Convention on this host: osmo-msc 2727, osmo-bsc 2728, osmo-hnbgw 2729.
+  // Same "give every instance its own port" rule as the dedicated MGW's
+  // VTY/CTRL binds below — just missed for the MGCP client.
+  mgcpLocalPort: number;
 }
+
+/**
+ * MGCP client local (source) port for osmo-hnbgw.
+ *
+ * Its own compiled-in default is 2728, which collides with the port the 2G
+ * module gives osmo-bsc. Normalised here rather than only in configureHnbgw()
+ * so a state file written before this field existed can never reach the
+ * generator and emit `mgw local-port undefined` — which osmo-hnbgw rejects,
+ * turning a silent port clash into a hard parse failure.
+ */
+export const HNBGW_MGCP_LOCAL_PORT = 2729;
 
 // Lets sms-controller.ts defer to this module before deleting the Osmocom
 // configs, hlr.db, or apt-purging osmo-stp/hlr/msc -- 3G UMTS reuses the exact
@@ -150,6 +180,8 @@ export interface HnbgwState {
 export function isHnbgwInstalled(): boolean {
   return fs.existsSync(HOST_STATE);
 }
+
+export const HNBGW_STATE_DEFAULTS_FOR_TEST = (): HnbgwState => ({ ...HNBGW_STATE_DEFAULTS });
 
 const HNBGW_STATE_DEFAULTS: HnbgwState = {
   rncId: 1,
@@ -160,6 +192,7 @@ const HNBGW_STATE_DEFAULTS: HnbgwState = {
   sgsnIuPsPointCode: '0.23.4',
   mgwBindIp: '127.0.1.8',
   mgwRtpBindIp: '127.0.1.8',
+  mgcpLocalPort: HNBGW_MGCP_LOCAL_PORT,
 };
 
 export function loadHnbgwState(): HnbgwState {
@@ -192,6 +225,8 @@ function writeHostCfg(path: string, content: string): void {
 // sub-node the manual shows (its own text warns of exactly this: "Previous
 // versions of OsmoHNBGW didn't have the mgw VTY node... historically the
 // MGW related commands where placed under the mgcp VTY node").
+export function osmoHnbgwCfgForTest(state: HnbgwState): string { return osmoHnbgwCfg(state); }
+
 function osmoHnbgwCfg(state: HnbgwState): string {
   return `log stderr
  logging filter all 1
@@ -216,6 +251,8 @@ hnbgw
  iups
   remote-addr sgsn
  mgcp
+  mgw local-ip 127.0.0.1
+  mgw local-port ${Number.isFinite(state.mgcpLocalPort) ? state.mgcpLocalPort : HNBGW_MGCP_LOCAL_PORT}
   mgw remote-ip ${state.mgwBindIp}
   mgw remote-port 2427
   mgw reset-endpoint rtpbridge/*
@@ -360,6 +397,7 @@ export async function installHnbgw(write: (s: string) => void, force = false): P
 export interface ConfigureHnbgwInput {
   rncId?: number; iuhLocalIp?: string; iuhLocalPort?: number; hnbgwPointCode?: string;
   mscPointCode?: string; sgsnIuPsPointCode?: string; mgwBindIp?: string; mgwRtpBindIp?: string;
+  mgcpLocalPort?: number;
 }
 
 // Writes osmo-hnbgw.cfg/osmo-mgw-hnbgw.cfg + the IuPS cs7 block it merges
@@ -377,6 +415,12 @@ export async function configureHnbgw(input: ConfigureHnbgwInput): Promise<{ succ
   state.sgsnIuPsPointCode = input.sgsnIuPsPointCode || state.sgsnIuPsPointCode;
   state.mgwBindIp = input.mgwBindIp || state.mgwBindIp;
   state.mgwRtpBindIp = input.mgwRtpBindIp || state.mgwRtpBindIp;
+  if (input.mgcpLocalPort != null) state.mgcpLocalPort = input.mgcpLocalPort;
+  // A state file written before mgcpLocalPort existed has no value for it,
+  // and leaving it undefined would emit `mgw local-port undefined` — which
+  // osmo-hnbgw rejects outright. Fall back to the default rather than
+  // trusting the persisted object's shape.
+  if (!Number.isFinite(state.mgcpLocalPort)) state.mgcpLocalPort = HNBGW_MGCP_LOCAL_PORT;
   saveHnbgwState(state);
 
   const result = await regenerateHnbgwConfigs(state);
@@ -472,6 +516,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
         sgsnIuPsPointCode: body.sgsnIuPsPointCode as string | undefined,
         mgwBindIp: body.mgwBindIp as string | undefined,
         mgwRtpBindIp: body.mgwRtpBindIp as string | undefined,
+        mgcpLocalPort: body.mgcpLocalPort != null ? Number(body.mgcpLocalPort) : undefined,
       });
       if (!result.success) {
         await auditLogger.log({ action: 'hnbgw_configure', user, details: result.error || 'unknown error', success: false });

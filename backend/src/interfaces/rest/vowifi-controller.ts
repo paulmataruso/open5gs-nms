@@ -44,8 +44,8 @@ const HOST_EPDG_CERT_DIR    = `${HOST_EPDG_CONFIG_DIR}/certs`;
 const LOG_FILE              = '/var/log/open5gs-nms/vowifi-install.log'; // bind-mounted, host-visible
 
 const DUMMY_IF_NAME = 'dummy-epdg';
-const DEFAULT_EPDG_IP = '10.0.1.180';
-const DEFAULT_AAA_LISTEN_IP = '127.0.0.11';
+export const DEFAULT_EPDG_IP = '10.0.1.180';
+export const DEFAULT_AAA_LISTEN_IP = '127.0.0.11';
 // Dedicated loopback source address for the ePDG's own SWm Diameter/SCTP connection to
 // VectorCore AAA — deliberately NOT the same as epdgIp. Confirmed live 2026-08-01: an
 // SCTP association sourced from a real/dummy-interface address (epdgIp) to a loopback

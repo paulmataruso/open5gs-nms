@@ -79,6 +79,15 @@ function isImsConfigured(): boolean {
 // Host-real paths (as used by nsenter'd commands, not /proc/1/root-prefixed).
 const VC_DIR    = '/opt/vectorcore';
 const VC_BIN    = `${VC_DIR}/bin/mmsc`;
+/**
+ * Budget for compiling the MM1 MSISDN proxy.
+ *
+ * Generous on purpose: this is a real Go toolchain invocation, and on a fresh
+ * host the build cache is empty. The module's default 20s nsenter timeout is
+ * not a compile budget — it killed the build on every fresh deployment while
+ * passing on warm-cache retries.
+ */
+const MM1_PROXY_BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const VC_ETC    = `${VC_DIR}/etc`;
 const VC_CFG    = `${VC_ETC}/mmsc.yaml`;
 const VC_DATA   = `${VC_DIR}/data`;
@@ -877,12 +886,31 @@ export async function configureMms(
       // every Configure so a change to the generated source always takes
       // effect, same as VectorCore's own config file above.
       fs.writeFileSync(`${HOST_ROOT}${MM1_PROXY_SRC}`, mm1MsisdnProxyGo(), 'utf-8');
+      // MM1_PROXY_BUILD_TIMEOUT_MS, not the helper's 20s default.
+      //
+      // Real failure, 2026-11-08: a Go compile does not fit in 20 seconds on
+      // a COLD build cache, which is precisely the state of a fresh
+      // deployment. execFile killed it, and because a killed process writes
+      // no stderr the error read as `Command failed: ... go build ...` with
+      // nothing after it — indistinguishable from a compile error, and it
+      // passed on any retry because the cache was then warm.
       const proxyBuild = await nsenter('bash', ['-c',
         `export PATH=/usr/local/go/bin:$PATH && export GOCACHE=${VC_DIR}/.gocache && ` +
         `cd ${VC_DIR} && go build -o ${MM1_PROXY_BIN} ${MM1_PROXY_SRC}`,
-      ]).catch(err => ({ stdout: '', stderr: String(err) }));
+      ], MM1_PROXY_BUILD_TIMEOUT_MS).catch(err => ({ stdout: '', stderr: String(err) }));
       if (!fs.existsSync(`${HOST_ROOT}${MM1_PROXY_BIN}`)) {
-        return { success: false, error: `Failed to compile MM1 MSISDN proxy: ${proxyBuild.stderr}` };
+        // Say so when the failure produced no output at all, rather than
+        // presenting an empty reason as if the compiler had rejected the code.
+        const why = proxyBuild.stderr.trim();
+        const looksKilled = /Command failed/.test(why) && !/\.go:\d+|syntax error|cannot find|undefined:/.test(why);
+        return {
+          success: false,
+          error: `Failed to compile MM1 MSISDN proxy: ${why || '(no output)'}` +
+            (looksKilled
+              ? ` — no compiler output, so this was almost certainly killed rather than a code error ` +
+                `(timeout is ${MM1_PROXY_BUILD_TIMEOUT_MS / 1000}s; check free memory too).`
+              : ''),
+        };
       }
       fs.writeFileSync(`${HOST_ROOT}${MM1_PROXY_UNIT_PATH}`, mm1ProxySystemdUnit(), 'utf-8');
       await writeMmsIpMsisdnMap(subscriberRepo);

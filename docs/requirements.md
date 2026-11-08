@@ -17,9 +17,15 @@ Detailed system requirements for deploying and running the Open5GS Network Manag
 
 ## Hardware Requirements
 
-### Minimum Configuration
+What a deployment needs depends far more on **which optional modules are
+installed** than on how many subscribers it serves. The core is modest; the
+optional modules are not, and the from-source builds several of them run are
+the single largest demand on the machine.
 
-Suitable for testing and small deployments (1-10 subscribers):
+### Core Configuration
+
+The 17 Open5GS NFs plus the NMS stack (backend, frontend, nginx, MongoDB,
+Prometheus, Grafana, GenieACS, SASBench) and no optional modules:
 
 | Component | Specification |
 |-----------|---------------|
@@ -28,16 +34,43 @@ Suitable for testing and small deployments (1-10 subscribers):
 | **Disk** | 20GB free space |
 | **Network** | 100 Mbps Ethernet |
 
-### Recommended Configuration
+Measured on a clean install: about 2.4GB of RAM in use and 14GB of disk.
 
-For production deployments (10-100 subscribers):
+### Full Configuration
+
+Every optional module installed and running — IMS/VoLTE (three Kamailio CSCFs,
+PyHSS, MariaDB, Redis, rtpengine), PSTN Gateway and Asterisk-2G, 2G GSM and
+3G UMTS (nine Osmocom daemons), VoWiFi/ePDG, SecGW, SigScale OCS, VectorCore
+MMSC and SMSC, TWAMP:
 
 | Component | Specification |
 |-----------|---------------|
 | **CPU** | 4+ cores (x86_64) |
-| **RAM** | 8GB+ |
-| **Disk** | 50GB+ free space (SSD recommended) |
+| **RAM** | 12GB, **or** 8GB with at least 4GB of swap |
+| **Disk** | 60GB+ free space (SSD recommended) |
 | **Network** | 1 Gbps Ethernet |
+
+Measured with all of the above running: about 6GB of RAM in use and 25GB of
+disk. That leaves under 2GB free on an 8GB host, which is not enough headroom
+to also compile anything — see the swap note below.
+
+### Swap
+
+**Provide swap if the machine has 8GB of RAM and you intend to use any
+from-source build.** `bootstrap-fresh-host.sh` does not create swap.
+
+Several modules build from source on the host: the Kamailio 6.0.8 rebuild
+(needed for VoNR), the FRR crash-guard build, rtpengine's kernel module,
+strongSwan for SecGW, osmo-sip-connector and osmo-hnbgw, and Open5GS itself on
+a host without AVX. A compile needs roughly **2.5GB of memory free at the time
+it runs**. With the full module set up and no swap there is less than that, and
+the Linux OOM killer stops the compiler without writing anything to the build
+log — the build simply ends mid-file.
+
+The NMS now refuses to start a from-source build below that threshold and says
+what to free (`force=true` overrides it). Stopping the three IMS CSCFs releases
+roughly 3GB and is what the build does anyway before installing, so it is the
+cheapest way to make room on a tight host.
 
 ### Enterprise Configuration
 
@@ -61,14 +94,22 @@ For large-scale deployments (100+ subscribers):
 - 2GB for NMS containers (frontend + backend + nginx)
 - 2GB+ for Open5GS services (scales with number of active UEs)
 - Additional memory needed for MongoDB and system overhead
+- Each IMS CSCF holds a large shared-memory segment; the three together
+  account for roughly 3GB
+- From-source builds need about 2.5GB free while they run, on top of
+  everything already resident
 
 **Disk:**
 - SSD strongly recommended for production (faster config writes, log access)
 - Space needed for:
-  - Docker images (~2GB)
+  - Docker images (~3.5GB, more with the UE Validation images)
   - Configuration backups (~10MB per backup, grows over time)
   - MongoDB backups (~size of subscriber database)
   - System logs (~1-5GB depending on verbosity)
+  - Source trees kept under `/opt` by the from-source builds (~4GB in total
+    across Open5GS, Kamailio, strongSwan, VectorCore and the Osmocom builds) —
+    these are retained deliberately so a rebuild is incremental and a rollback
+    has something to roll back to
 
 ---
 
@@ -189,6 +230,32 @@ sudo systemctl restart systemd-resolved
 **Localhost Requirement:**
 - MongoDB must be accessible on `127.0.0.1:27017`
 - Open5GS services must be on localhost or accessible
+
+**If using Auto-Configuration from `.env`:**
+- **18 free addresses** on the host's existing subnet at the default Security Gateway
+  pool size of 8 — one per service (10) plus the pool. A different
+  `AUTOCONFIG_SECGW_POOL_SIZE` changes the total to `10 + size`.
+- They need not be contiguous. Each service takes the next free address, so an
+  occupied one shifts the rest down by one rather than failing the run.
+- The Security Gateway pool is the exception: it must be a **CIDR-aligned, entirely
+  free run** (8 addresses starting on a multiple of 8), because the gateway takes a
+  single CIDR and hands each radio one address out of it.
+- `iputils-arping` for real duplicate-address detection. Without it the ARP signal is
+  inferred from the kernel neighbour table instead — weaker, but still catches a host
+  that answers ARP while filtering ICMP. `bootstrap-fresh-host.sh` installs it.
+- A **single interface** carrying the subnet. This feature binds secondary addresses on
+  the NIC that owns the default route; it does not build a dummy-interface or routed
+  (layer-3) design.
+- **Time, and a lot of it.** A first run installs and compiles a complete mobile core:
+  measured at **~1.5 hours** on 8 cores / 12 GB without AVX (~20 min host bootstrap plus
+  ~60 min for the run, almost all of it module source builds), and **2–4 hours** on fewer
+  cores or a slower disk. A CPU with AVX skips the Open5GS compile and is much faster.
+  The run is non-blocking — the NMS is reachable throughout — and a later re-run takes
+  ~13 minutes because everything is cached. See `docs/features.md` for the per-phase
+  breakdown.
+- **Disk headroom for the source builds.** The module set pulls several source trees and
+  builds a ~725 MB srsRAN test image; the 60 GB "Full" figure above already accounts for
+  this, but a 20 GB "Core" host will not fit it.
 
 ### Port Requirements
 
