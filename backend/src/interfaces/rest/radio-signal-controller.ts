@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { isOnlineSignalUe } from '../../domain/services/radio-signal-presence';
+import { parseBaicellsUes, signalNumber as finite, type RadioMeasurement as NormalizedSignal } from '../../domain/services/baicells-signal';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'crypto';
 import * as http from 'http';
 import * as https from 'https';
@@ -26,31 +28,9 @@ interface RadioRow {
   enabled: number;
   allow_self_signed: number;
   updated_at: number;
-}
-
-interface NormalizedSignal {
-  ueId: string;
-  imsi?: string;
-  rsrp?: number;
-  rsrq?: number;
-  rssi?: number;
-  sinr?: number;
-  snr?: number;
-  dlMcs?: number;
-  ulMcs?: number;
-  bler?: number;
-  dlMbps?: number;
-  ulMbps?: number;
-  txPower?: number;
-  pathLoss?: number;
-  primaryDlCqi?: number;
-  secondaryDlCqi?: number;
-  sampledAt?: number;
-}
-
-function finite(value: unknown): number | undefined {
-  const n = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(n) ? n : undefined;
+  last_polled_at?: number | null;
+  last_error?: string | null;
+  ue_count?: number | null;
 }
 
 function first(obj: Record<string, any>, ...keys: string[]): any {
@@ -120,27 +100,6 @@ function requestRadio(radio: RadioRow, path: string, form?: URLSearchParams, coo
     req.on('error', reject);
     req.end(form?.toString());
   });
-}
-
-function parseBaicellsUes(text: string): NormalizedSignal[] {
-  const results: NormalizedSignal[] = [];
-  for (const match of text.matchAll(/LTE_UE_SPEED_STATISTICS:="([^"]*)"/g)) {
-    if (!match[1] || match[1] === 'NULL') continue;
-    for (const entry of match[1].split(';').filter(Boolean)) {
-      const parsed = entry.match(/^([^[]+)\[([^\]]*)\]$/);
-      if (!parsed) continue;
-      const fields = parsed[2].split(':');
-      const imsi = /^\d{14,16}$/.test(fields[0] ?? '') ? fields[0] : undefined;
-      results.push({
-        ueId: parsed[1].trim(), imsi,
-        dlMbps: finite(fields[2]), ulMbps: finite(fields[3]),
-        sinr: finite(fields[6]), ulMcs: finite(fields[9]), dlMcs: finite(fields[10]),
-        primaryDlCqi: finite(fields[7]), secondaryDlCqi: finite(fields[8]),
-        txPower: finite(fields[12]), bler: finite(fields[13]), pathLoss: finite(fields[18]), sampledAt: Date.now(),
-      });
-    }
-  }
-  return results;
 }
 
 async function fetchBaicells(radio: RadioRow): Promise<NormalizedSignal[]> {
@@ -226,16 +185,21 @@ export function createRadioSignalRouter(
   for (const column of ['password_cipher', 'password_iv', 'password_tag']) {
     if (!radioColumns.has(column)) db.exec(`ALTER TABLE signal_radios ADD COLUMN ${column} TEXT`);
   }
+  for (const [column, type] of [['last_polled_at', 'INTEGER'], ['last_error', 'TEXT'], ['ue_count', 'INTEGER']]) {
+    if (!radioColumns.has(column)) db.exec('ALTER TABLE signal_radios ADD COLUMN ' + column + ' ' + type);
+  }
   const sampleColumns = new Set((db.prepare('PRAGMA table_info(signal_samples)').all() as Array<{ name: string }>).map(c => c.name));
   for (const column of ['tx_power', 'path_loss', 'primary_dl_cqi', 'secondary_dl_cqi']) {
     if (!sampleColumns.has(column)) db.exec(`ALTER TABLE signal_samples ADD COLUMN ${column} REAL`);
   }
 
+  if (!sampleColumns.has('details_json')) db.exec('ALTER TABLE signal_samples ADD COLUMN details_json TEXT');
   const router = Router();
   const publicRadio = (row: RadioRow) => ({
     id: row.id, name: row.name, vendor: row.vendor, baseUrl: row.base_url,
     username: row.username, passwordConfigured: !!(row.password_cipher || row.password_env), metricsPath: row.metrics_path,
     enabled: !!row.enabled, allowSelfSigned: !!row.allow_self_signed,
+    lastPolledAt: row.last_polled_at ?? null, lastError: row.last_error ?? null, ueCount: row.ue_count ?? null,
   });
 
   // Read-only — viewer role must be able to monitor this page (its own
@@ -319,48 +283,55 @@ export function createRadioSignalRouter(
     if (!radio) { res.status(404).json({ error: 'Radio not found' }); return; }
     const ues = extractUes(req.body);
     const insert = db.prepare(`INSERT INTO signal_samples
-      (radio_id,ue_id,imsi,sampled_at,rsrp,rsrq,rssi,sinr,snr,dl_mcs,ul_mcs,bler,dl_mbps,ul_mbps,tx_power,path_loss,primary_dl_cqi,secondary_dl_cqi)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      (radio_id,ue_id,imsi,sampled_at,rsrp,rsrq,rssi,sinr,snr,dl_mcs,ul_mcs,bler,dl_mbps,ul_mbps,tx_power,path_loss,primary_dl_cqi,secondary_dl_cqi,details_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const tx = db.transaction((items: NormalizedSignal[]) => items.forEach(ue => insert.run(
       radio.id, ue.ueId, ue.imsi ?? null, ue.sampledAt ?? Date.now(), ue.rsrp ?? null, ue.rsrq ?? null,
-      ue.rssi ?? null, ue.sinr ?? ue.snr ?? null, ue.snr ?? null, ue.dlMcs ?? null, ue.ulMcs ?? null,
+      ue.rssi ?? null, ue.sinr ?? null, ue.snr ?? null, ue.dlMcs ?? null, ue.ulMcs ?? null,
       ue.bler ?? null, ue.dlMbps ?? null, ue.ulMbps ?? null, ue.txPower ?? null, ue.pathLoss ?? null,
-      ue.primaryDlCqi ?? null, ue.secondaryDlCqi ?? null,
+      ue.primaryDlCqi ?? null, ue.secondaryDlCqi ?? null, JSON.stringify(ue.details ?? {}),
     )));
     tx(ues);
     res.json({ success: true, ingested: ues.length });
   });
 
-  router.post('/poll', requireAdmin, async (_req, res) => {
+  const collectMeasurements = async () => {
     const radios = db.prepare('SELECT * FROM signal_radios WHERE enabled = 1').all() as RadioRow[];
-    const activeByIp = new Map<string, string[]>();
-    for (const ue of await activeSessions.getActive4GUEs()) {
-      if (!ue.radioIp || !ue.imsi || !isIP(ue.ip)) continue;
-      activeByIp.set(ue.radioIp, [...(activeByIp.get(ue.radioIp) ?? []), ue.imsi]);
-    }
     const results = await Promise.all(radios.map(async radio => {
       try {
         const ues = radio.vendor === 'baicells' ? await fetchBaicells(radio) : await fetchGeneric(radio);
-        const coreImsis = [...new Set(activeByIp.get(new URL(radio.base_url).hostname) ?? [])];
-        if (ues.length === coreImsis.length) ues.forEach((ue, index) => { ue.imsi ||= coreImsis[index]; });
         const insert = db.prepare(`INSERT INTO signal_samples
-          (radio_id,ue_id,imsi,sampled_at,rsrp,rsrq,rssi,sinr,snr,dl_mcs,ul_mcs,bler,dl_mbps,ul_mbps,tx_power,path_loss,primary_dl_cqi,secondary_dl_cqi)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+          (radio_id,ue_id,imsi,sampled_at,rsrp,rsrq,rssi,sinr,snr,dl_mcs,ul_mcs,bler,dl_mbps,ul_mbps,tx_power,path_loss,primary_dl_cqi,secondary_dl_cqi,details_json)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
         const tx = db.transaction(() => ues.forEach(ue => insert.run(
           radio.id, ue.ueId, ue.imsi ?? null, ue.sampledAt ?? Date.now(), ue.rsrp ?? null, ue.rsrq ?? null,
-          ue.rssi ?? null, ue.sinr ?? ue.snr ?? null, ue.snr ?? null, ue.dlMcs ?? null, ue.ulMcs ?? null,
+          ue.rssi ?? null, ue.sinr ?? null, ue.snr ?? null, ue.dlMcs ?? null, ue.ulMcs ?? null,
           ue.bler ?? null, ue.dlMbps ?? null, ue.ulMbps ?? null, ue.txPower ?? null, ue.pathLoss ?? null,
-          ue.primaryDlCqi ?? null, ue.secondaryDlCqi ?? null,
+          ue.primaryDlCqi ?? null, ue.secondaryDlCqi ?? null, JSON.stringify(ue.details ?? {}),
         )));
         tx();
+        db.prepare('UPDATE signal_radios SET last_polled_at=?, last_error=NULL, ue_count=? WHERE id=?').run(Date.now(), ues.length, radio.id);
         return { radioId: radio.id, success: true, count: ues.length };
       } catch (err) {
+        db.prepare('UPDATE signal_radios SET last_polled_at=?, last_error=? WHERE id=?').run(Date.now(), String(err), radio.id);
         logger.warn({ radioId: radio.id, err: String(err) }, 'Radio signal poll failed');
         return { radioId: radio.id, success: false, error: String(err) };
       }
     }));
     db.prepare('DELETE FROM signal_samples WHERE sampled_at < ?').run(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    res.json({ results });
+    return { results };
+  };
+
+  // Multiple viewers share one collection, avoiding simultaneous radio logins.
+  let collection: ReturnType<typeof collectMeasurements> | null = null;
+  router.post('/poll', requireAdmin, async (_req, res) => {
+    try {
+      collection ??= collectMeasurements().finally(() => { collection = null; });
+      res.json(await collection);
+    } catch (err) {
+      logger.warn({ err: String(err) }, 'Radio collection failed');
+      res.status(502).json({ error: 'Radio collection failed' });
+    }
   });
 
   router.post('/wake', requireAdmin, async (req, res) => {
@@ -394,33 +365,91 @@ export function createRadioSignalRouter(
     const since = Date.now() - Math.min(Math.max(Number(req.query.hours) || 24, 1), 168) * 3600000;
     const radios = db.prepare('SELECT * FROM signal_radios ORDER BY name').all() as RadioRow[];
     const samples = db.prepare('SELECT * FROM signal_samples WHERE sampled_at >= ? ORDER BY sampled_at ASC').all(since) as any[];
-    const subscribers = await subscriberRepo.findAllFull();
+    let coreAvailable = true;
+    const [subscribers, active] = await Promise.all([
+      subscriberRepo.findAllFull(),
+      activeSessions.getActive4GUEs().catch(err => {
+        coreAvailable = false;
+        logger.warn({ err: String(err) }, 'UE signal core enrichment unavailable');
+        return [];
+      }),
+    ]);
+    const activeByImsi = new Map(active.map(ue => [ue.imsi, ue]));
+
     const subscriberByImsi = new Map(subscribers.map(s => [s.imsi, s]));
+    const sampleKey = (sample: any) => sample.radio_id + ':' + (sample.imsi ? 'imsi:' + sample.imsi : 'ue:' + sample.ue_id);
     const latestByKey = new Map<string, any>();
-    for (const sample of samples) latestByKey.set(`${sample.radio_id}:${sample.ue_id}`, sample);
+    for (const sample of samples) latestByKey.set(sampleKey(sample), sample);
     const historyByKey = new Map<string, any[]>();
     for (const sample of samples) {
-      const key = `${sample.radio_id}:${sample.ue_id}`;
+      const key = sampleKey(sample);
       const list = historyByKey.get(key) ?? [];
       list.push({ sampledAt: sample.sampled_at, rsrp: sample.rsrp, rsrq: sample.rsrq, rssi: sample.rssi, sinr: sample.sinr, bler: sample.bler });
       historyByKey.set(key, list);
     }
     const radioById = new Map(radios.map(r => [r.id, r]));
+    const subscriberInfo = (imsi?: string | null) => {
+      const sub = imsi ? subscriberByImsi.get(imsi) : undefined;
+      const live = imsi ? activeByImsi.get(imsi) : undefined;
+      return {
+        imeisv: sub?.imeisv, simType: sub?.simType, subscriberStatus: sub?.subscriber_status,
+        msisdns: sub?.msisdn ?? [], cmState: live?.cmState, mmState: live?.mmState,
+        coreIp: live?.ip, coreRadioIp: live?.radioIp, coreSessions: live?.sessions ?? [],
+        sessions: sub?.slice.flatMap(slice => slice.session.map(session => ({
+          apn: session.name, type: session.type, sst: slice.sst, sd: slice.sd,
+          ipv4: session.ue?.ipv4, ipv6: session.ue?.ipv6, qos: session.qos,
+          ambr: session.ambr, ipv4FramedRoutes: session.ipv4_framed_routes,
+          ipv6FramedRoutes: session.ipv6_framed_routes,
+        }))) ?? [],
+      };
+    };
     const ues = [...latestByKey.entries()].map(([key, sample]) => {
       const sub = sample.imsi ? subscriberByImsi.get(sample.imsi) : undefined;
       const radio = radioById.get(sample.radio_id);
       return {
-        radioId: sample.radio_id, radioName: radio?.name ?? sample.radio_id, vendor: radio?.vendor ?? 'generic',
+        ...subscriberInfo(sample.imsi),
+        source: 'radio', radioUrl: radio?.base_url,
+        radioId: sample.radio_id, radioName: radio?.name ?? sample.radio_id, vendor: String(radio?.vendor ?? 'generic'),
         ueId: sample.ue_id, imsi: sample.imsi, iccid: sub?.iccid, msisdn: sub?.msisdn?.[0], nickname: sub?.nickname,
         sampledAt: sample.sampled_at, rsrp: sample.rsrp, rsrq: sample.rsrq, rssi: sample.rssi,
         sinr: sample.sinr, snr: sample.snr, dlMcs: sample.dl_mcs, ulMcs: sample.ul_mcs,
         bler: sample.bler, dlMbps: sample.dl_mbps, ulMbps: sample.ul_mbps,
         txPower: sample.tx_power, pathLoss: sample.path_loss, primaryDlCqi: sample.primary_dl_cqi,
-        secondaryDlCqi: sample.secondary_dl_cqi, history: historyByKey.get(key) ?? [],
+        secondaryDlCqi: sample.secondary_dl_cqi,
+        details: (() => { try { return JSON.parse(sample.details_json ?? '{}'); } catch { return {}; } })(), history: historyByKey.get(key) ?? [],
       };
-    }).filter(ue => !search || [ue.ueId, ue.imsi, ue.iccid, ue.msisdn, ue.nickname, ue.radioName]
+    });
+    const measuredImsis = new Set(ues.map(ue => ue.imsi).filter(Boolean));
+    // Provisioned/registered UEs remain visible even while the radio has no RF sample.
+    // Only a reported IMSI links a radio observation to a subscriber.
+    const knownImsis = new Set([...subscribers.map(sub => sub.imsi), ...active.map(ue => ue.imsi)]);
+    for (const imsi of knownImsis) {
+      if (measuredImsis.has(imsi)) continue;
+      const sub = subscriberByImsi.get(imsi);
+      const live = activeByImsi.get(imsi);
+      const radio = radios.find(r => new URL(r.base_url).hostname === live?.radioIp);
+      ues.push({
+        ...subscriberInfo(imsi), source: 'subscriber', radioUrl: radio?.base_url,
+        radioId: radio?.id ?? '', radioName: radio?.name ?? live?.radioIp ?? 'No radio measurement',
+        vendor: radio?.vendor ?? 'core', ueId: 'subscriber:' + imsi, imsi,
+        nickname: sub?.nickname, iccid: sub?.iccid, msisdn: sub?.msisdn?.[0],
+        sampledAt: null, history: [], details: {},
+        rsrp: null, rsrq: null, rssi: null, sinr: null, snr: null, dlMcs: null, ulMcs: null,
+        bler: null, dlMbps: null, ulMbps: null, txPower: null, pathLoss: null,
+        primaryDlCqi: null, secondaryDlCqi: null,
+      });
+    }
+    const presenceNow = Date.now();
+    const onlineUes = ues.filter(ue => {
+      const radio = radioById.get(ue.radioId);
+      return isOnlineSignalUe(ue, radio ? {
+        enabled: !!radio.enabled, lastError: radio.last_error,
+        lastPolledAt: radio.last_polled_at, ueCount: radio.ue_count,
+      } : undefined, presenceNow);
+    });
+    const filtered = onlineUes.filter(ue => !search || [ue.ueId, ue.imsi, ue.iccid, ue.msisdn, ue.nickname, ue.radioName]
       .some(value => String(value ?? '').toLowerCase().includes(search)));
-    res.json({ radios: radios.map(publicRadio), ues });
+    res.json({ radios: radios.map(publicRadio), ues: filtered, coreAvailable, onlineOnly: true, collectedAt: presenceNow });
   });
 
   return router;
