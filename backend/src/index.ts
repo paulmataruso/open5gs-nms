@@ -46,6 +46,8 @@ import { createSeppRouter } from './interfaces/rest/sepp-controller';
 import { createBackupRouter } from './interfaces/rest/backup-controller';
 import { createDnsMigrationRouter } from './interfaces/rest/dns-migration-controller';
 import { createPlmnMigrationRouter } from './interfaces/rest/plmn-migration-controller';
+import { createUeDiagnosticsRouter } from './interfaces/rest/ue-diagnostics-controller';
+import { UeDiagnosticsUseCase } from './application/use-cases/ue-diagnostics';
 import { createPcapRouter } from './interfaces/rest/pcap-controller';
 import { EsimGeneratorUseCase } from './application/use-cases/esim-generator';
 import { createEsimRouter } from './interfaces/rest/esim-controller';
@@ -788,6 +790,7 @@ async function main() {
   app.use('/api/dns-migration', createDnsMigrationRouter(dnsMigrationUseCase));
   app.use('/api/plmn-migration', createPlmnMigrationRouter(plmnMigrationUseCase));
   app.use('/api/pcap', createPcapRouter(pcapUseCase, auditLogger, logger));
+  app.use('/api/ue-diagnostics', createUeDiagnosticsRouter(new UeDiagnosticsUseCase(pcapUseCase, activeSessionsUseCase, subscriberRepo, hostExecutor), auditLogger));
   app.use('/api/esim', createEsimRouter(esimGeneratorUseCase, auditLogger, logger));
   app.use('/api/femto', createFemtoRouter(logger));
   app.use('/api/rf-planning', createRfPlanningRouter(logger));

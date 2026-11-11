@@ -89,6 +89,7 @@ export interface PcapManifest {
    */
   autostopSeconds?: number;
   autostopFilesizeKb?: number;
+  ueDiagnostics?: { imsi?: string; addresses: string[] };
 }
 
 export interface DecodePreset {
@@ -503,6 +504,7 @@ export class PcapUseCase {
     label?: string;
     autostopSeconds?: number;
     autostopFilesizeKb?: number;
+    ueDiagnostics?: { imsi?: string; addresses: string[] };
   }): Promise<PcapManifest> {
     if (!input.interfaces || input.interfaces.length === 0) {
       throw new Error('At least one interface must be selected');
@@ -548,6 +550,7 @@ export class PcapUseCase {
       bpf,
       unitName,
       status: 'starting',
+      ...(input.ueDiagnostics ? { ueDiagnostics: input.ueDiagnostics } : {}),
       startedAt: new Date().toISOString(),
       ...(input.autostopSeconds ? { autostopSeconds: input.autostopSeconds } : {}),
       ...(input.autostopFilesizeKb ? { autostopFilesizeKb: input.autostopFilesizeKb } : {}),
@@ -764,9 +767,8 @@ export class PcapUseCase {
     if (!pdmlR.stdout.includes('<packet>')) throw new Error(`Frame ${frameNumber} not found in this capture`);
 
     const tree = parsePacketTree(pdmlR.stdout);
-    // -x's output is "<one-line summary>\n<hex dump>" per packet — strip that
-    // leading summary line since the tree above already covers it structurally.
-    const hex = hexR.exitCode === 0 ? hexR.stdout.split('\n').slice(1).join('\n').trim() : '';
+    // Keep every byte row; tshark versions differ in whether -x includes a summary.
+    const hex = hexR.exitCode === 0 ? hexR.stdout.split('\n').filter(line => /^\s*[0-9a-fA-F]{4,8}\s{2}/.test(line)).join('\n').trim() : '';
     return { tree, hex };
   }
 

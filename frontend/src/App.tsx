@@ -29,6 +29,7 @@ const IMSPage = lazy(() => import('./pages/IMSPage').then(m => ({ default: m.IMS
 const LogsPage = lazy(() => import('./pages/LogsPage').then(m => ({ default: m.LogsPage })));
 const MetricsPage = lazy(() => import('./components/metrics/MetricsPage').then(m => ({ default: m.MetricsPage })));
 const OcsPage = lazy(() => import('./pages/OcsPage').then(m => ({ default: m.OcsPage })));
+const UeDiagnosticsPage = lazy(() => import('./pages/UeDiagnosticsPage').then(m => ({ default: m.UeDiagnosticsPage })));
 const PcapPage = lazy(() => import('./components/pcap/PcapPage').then(m => ({ default: m.PcapPage })));
 const PstnGatewayPage = lazy(() => import('./pages/PstnGatewayPage').then(m => ({ default: m.PstnGatewayPage })));
 const RANPage = lazy(() => import('./components/ran/RANPage').then(m => ({ default: m.RANPage })));
@@ -162,6 +163,8 @@ function App(): JSX.Element {
         return FEATURES.twamp ? <TwampPage onNavigate={navigate} /> : <DashboardPage />;
       case 'validation':
         return FEATURES.validation ? <ValidationPage /> : <DashboardPage />;
+      case 'ue-diagnostics':
+        return FEATURES.pcap ? <UeDiagnosticsPage /> : <DashboardPage />;
       case 'pcap':
         return FEATURES.pcap ? <PcapPage /> : <DashboardPage />;
       case 'users':
