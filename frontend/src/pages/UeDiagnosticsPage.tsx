@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ArrowDown, ArrowUp, Download, Play, RefreshCw, Search, Square } from 'lucide-react';
+import { Activity, ArrowDown, ArrowUp, Download, Play, RefreshCw, Search, Square, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { ueDiagnosticsApi, type DiagnosticTarget, type DiagnosticSnapshot } from '../api/ueDiagnostics';
 import { pcapApi, type HostInterface, type PcapManifest, type PacketTreeNode } from '../api/pcap';
@@ -42,14 +42,15 @@ export function UeDiagnosticsPage():JSX.Element {
  const selectedTarget=targets.find(t=>t.imsi===target);
  const load=useCallback(async()=>{
   try{const data=await ueDiagnosticsApi.overview();setTargets(data.targets);setInterfaces(data.interfaces);setCaptures(data.captures);
-   setCaptureId(previous=>previous || data.captures.find(running)?.id || data.captures[0]?.id || '');
+   setCaptureId(previous=>data.captures.some(c=>c.id===previous)?previous:data.captures.find(running)?.id || data.captures[0]?.id || '');
   }catch(e){setError(message(e));}
  },[]);
  useEffect(()=>{if(!admin)return;void load();const timer=setInterval(()=>{if(document.visibilityState==='visible')void load();},10000);return()=>clearInterval(timer);},[admin,load]);
  useEffect(()=>{
-  if(!admin || !captureId)return;
+  if(!admin)return;
   const seq=++requestSeq.current;let cancelled=false,inFlight=false,live=true;
-  setSnapshot(null);setFrame(null);setTree([]);setHex('');++detailSeq.current;
+  setSnapshot(null);setFrame(null);setTree([]);setHex('');setDetailError('');setDetailLoading(false);++detailSeq.current;
+  if(!captureId){setLoading(false);return;}
   const refresh=async()=>{
    if(inFlight || cancelled)return;inFlight=true;setLoading(true);
    try{const next=await ueDiagnosticsApi.snapshot(captureId,appliedFilter);if(!cancelled && seq===requestSeq.current){setSnapshot(next);live=next.live;setError('');}}
@@ -72,6 +73,16 @@ export function UeDiagnosticsPage():JSX.Element {
   setBusy(true);
   try{await ueDiagnosticsApi.stop(id);await load();setRevision(r=>r+1);toast.success('Capture stopped. PCAPNG is ready to download.');}
   catch(e){setError(message(e));}finally{setBusy(false);}
+ };
+ const removeCapture=async(capture:PcapManifest)=>{
+  if(busy || running(capture))return;
+  if(!window.confirm('Permanently delete this capture and its PCAPNG file? Download it first if you need to keep a copy.'))return;
+  setBusy(true);setError('');
+  try{await pcapApi.delete(capture.id);
+   setCaptures(previous=>previous.filter(c=>c.id!==capture.id));
+   if(captureId===capture.id){++requestSeq.current;++detailSeq.current;setCaptureId('');setSnapshot(null);setFrame(null);setTree([]);setHex('');}
+   await load();toast.success('Capture deleted');
+  }catch(e){setError(message(e));}finally{setBusy(false);}
  };
  const selectPacket=async(number:number)=>{
   const seq=++detailSeq.current;setFrame(number);setTree([]);setHex('');setDetailLoading(true);setDetailError('');
@@ -104,6 +115,6 @@ export function UeDiagnosticsPage():JSX.Element {
     :<div className="overflow-x-auto max-h-[440px]"><table className="w-full text-xs"><thead className="text-nms-text-dim sticky top-0 bg-nms-surface"><tr>{['Frame','Time','Source','Destination','Protocol','Bytes','Info'].map(h=><th className="p-2 text-left" key={h}>{h}</th>)}</tr></thead><tbody>{snapshot?.packets.map(p=><tr key={p.frameNumber} className={'border-t border-nms-border '+(frame===p.frameNumber?'bg-nms-accent/10':'hover:bg-nms-surface-2')}><td className="p-2"><button onClick={()=>void selectPacket(p.frameNumber)} className="text-nms-accent underline" aria-label={'Inspect packet '+p.frameNumber}>{p.frameNumber}</button></td><td className="p-2 whitespace-nowrap">{new Date(p.timeEpoch*1000).toLocaleTimeString()}</td><td className="p-2 font-mono whitespace-nowrap">{endpoint(p.src,p.srcPort)}</td><td className="p-2 font-mono whitespace-nowrap">{endpoint(p.dst,p.dstPort)}</td><td className="p-2">{p.protocol}</td><td className="p-2">{p.length}</td><td className="p-2 min-w-64">{p.info}</td></tr>)}</tbody></table>{!snapshot?.packets.length && <p className="text-center py-10 text-nms-text-dim">No packets match the current display filter.</p>}{snapshot?.truncated && <p className="text-xs text-nms-text-dim p-2">Showing the latest 500 matching packets. The download contains the full capture.</p>}</div>}
   </section>
   {frame!==null && <section className="nms-card"><h2 className="font-semibold mb-3">Packet {frame} · protocol details & bytes</h2>{detailLoading?<p className="text-xs text-nms-text-dim">Decoding packet…</p>:detailError?<p role="alert" className="text-xs text-nms-red">{detailError}</p>:<div className="grid xl:grid-cols-2 gap-4"><div className="max-h-96 overflow-auto"><PacketDetailTree tree={tree}/></div><pre className="bg-nms-bg p-3 rounded-xl text-[11px] overflow-auto max-h-96">{hex}</pre></div>}</section>}
-  <section className="nms-card"><h2 className="font-semibold mb-3">Saved UE captures</h2>{!captures.length?<p className="text-sm text-nms-text-dim">No UE diagnostic captures yet.</p>:<div className="space-y-2">{captures.map(c=><div key={c.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-nms-border p-3"><button className="text-left min-w-0" onClick={()=>setCaptureId(c.id)}><div className="text-xs font-semibold break-words">{c.label}</div><div className="text-[11px] text-nms-text-dim mt-1">{new Date(c.startedAt).toLocaleString()} · {c.status} · {bytes(c.sizeBytes ?? 0)}</div></button>{running(c)?<button onClick={()=>void stop(c.id)} disabled={busy} className="nms-btn-ghost text-xs">Stop</button>:<a className="nms-btn-ghost text-xs inline-flex items-center gap-2" href={pcapApi.downloadUrl(c.id)}><Download className="w-3 h-3"/>PCAPNG</a>}</div>)}</div>}</section>
+  <section className="nms-card"><h2 className="font-semibold mb-3">Saved UE captures</h2>{!captures.length?<p className="text-sm text-nms-text-dim">No UE diagnostic captures yet.</p>:<div className="space-y-2">{captures.map(c=><div key={c.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-nms-border p-3"><button className="text-left min-w-0" onClick={()=>setCaptureId(c.id)}><div className="text-xs font-semibold break-words">{c.label}</div><div className="text-[11px] text-nms-text-dim mt-1">{new Date(c.startedAt).toLocaleString()} · {c.status} · {bytes(c.sizeBytes ?? 0)}</div></button>{running(c)?<button onClick={()=>void stop(c.id)} disabled={busy} className="nms-btn-ghost text-xs">Stop</button>:<div className="flex items-center gap-2"><a className="nms-btn-ghost text-xs inline-flex items-center gap-2" href={pcapApi.downloadUrl(c.id)}><Download className="w-3 h-3"/>PCAPNG</a><button onClick={()=>void removeCapture(c)} disabled={busy} aria-label={"Delete capture "+c.id} className="nms-btn-ghost text-xs inline-flex items-center gap-2 text-nms-red disabled:opacity-50"><Trash2 className="w-3 h-3"/>Delete</button></div>}</div>)}</div>}</section>
  </div>;
 }
