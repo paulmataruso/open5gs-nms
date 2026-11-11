@@ -2143,14 +2143,18 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
   );
 
   const updateSession = (sliceIdx: number, sessIdx: number, updates: Partial<SubscriberSession>) => {
-    const newSlices = [...form.slice];
-    newSlices[sliceIdx] = {
-      ...newSlices[sliceIdx],
-      session: newSlices[sliceIdx].session.map((s, i) => 
-        i === sessIdx ? { ...s, ...updates } : s
-      )
-    };
-    setForm({ ...form, slice: newSlices });
+    // DNN selection queues both a name change and a profile QoS change.
+    // Merge each into the latest state so React batching preserves both.
+    setForm(current => {
+      const newSlices = [...current.slice];
+      newSlices[sliceIdx] = {
+        ...newSlices[sliceIdx],
+        session: newSlices[sliceIdx].session.map((s, i) =>
+          i === sessIdx ? { ...s, ...updates } : s
+        )
+      };
+      return { ...current, slice: newSlices };
+    });
   };
 
   const addSession = (sliceIdx: number, template?: SubscriberSession) => {
