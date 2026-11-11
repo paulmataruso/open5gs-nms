@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import axios from 'axios';
 import { Save, AlertTriangle, RefreshCw, Shield, FileText, Layout, Plus, X, BookOpen, Network } from 'lucide-react';
 import { useConfigStore } from '../../stores';
 import { configApi } from '../../api';
@@ -721,7 +722,8 @@ export function ConfigPage(): JSX.Element {
         toast.error('Apply failed');
       }
     } catch (err) {
-      toast.error('Apply failed');
+      const message = axios.isAxiosError<{ error?: string }>(err) ? err.response?.data?.error : undefined;
+      toast.error(message || 'Apply failed');
     } finally {
       setApplying(false);
     }
