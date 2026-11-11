@@ -1,3 +1,4 @@
+import { createImsAudioLookup } from './application/use-cases/ue-ims-audio';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -790,7 +791,7 @@ async function main() {
   app.use('/api/dns-migration', createDnsMigrationRouter(dnsMigrationUseCase));
   app.use('/api/plmn-migration', createPlmnMigrationRouter(plmnMigrationUseCase));
   app.use('/api/pcap', createPcapRouter(pcapUseCase, auditLogger, logger));
-  app.use('/api/ue-diagnostics', createUeDiagnosticsRouter(new UeDiagnosticsUseCase(pcapUseCase, activeSessionsUseCase, subscriberRepo, hostExecutor), auditLogger));
+  app.use('/api/ue-diagnostics', createUeDiagnosticsRouter(new UeDiagnosticsUseCase(pcapUseCase, activeSessionsUseCase, subscriberRepo, hostExecutor, createImsAudioLookup(subscriberRepo.getDb())), auditLogger));
   app.use('/api/esim', createEsimRouter(esimGeneratorUseCase, auditLogger, logger));
   app.use('/api/femto', createFemtoRouter(logger));
   app.use('/api/rf-planning', createRfPlanningRouter(logger));

@@ -7,8 +7,20 @@ export function createUeDiagnosticsRouter(diagnostics:UeDiagnosticsUseCase,audit
   const router=Router();
   router.use(requireAdmin);
   router.get('/dependencies',async(_req,res)=>{try{res.json(await diagnostics.dependencies());}catch(e){res.status(500).json({error:String(e)});}});
-  router.post('/dependencies/install',async(_req,res)=>{try{res.json(await diagnostics.installDependencies());}catch(e){res.status(500).json({error:e instanceof Error?e.message:String(e)});}});
+  router.post('/dependencies/install',async(req,res)=>{
+    const user=req.user?.username??'unknown';
+    try{const status=await diagnostics.installDependencies();await audit.log({action:'pcap_tools_install',user,success:true});res.json(status);}
+    catch(e){const error=e instanceof Error?e.message:String(e);await audit.log({action:'pcap_tools_install',user,success:false,details:error});res.status(500).json({error});}
+  });
   router.get('/captures/:id/audio',async(req,res)=>{try{res.set('Cache-Control','no-store');res.json(await diagnostics.audio(req.params.id,String(req.query.stream??''),Number(req.query.after??0)));}catch(e){res.status(400).json({error:e instanceof Error?e.message:String(e)});}});
+  // SRTP material belongs in a transient POST body, never query strings or logs.
+  router.post('/captures/:id/audio',async(req,res)=>{
+    try{
+      res.set('Cache-Control','no-store');
+      const {stream='',after=0,codec='auto',octetAlign='auto',hfOnly='auto',srtp,autoKey=true}=req.body??{};
+      res.json(await diagnostics.audio(req.params.id,String(stream),Number(after),{codec,octetAlign,hfOnly,srtp,autoKey:autoKey===true}));
+    }catch(e){res.status(400).json({error:e instanceof Error?e.message:String(e)});}
+  });
   router.get('/overview',async(_req,res)=>{
     try{res.json(await diagnostics.overview());}
     catch(error){res.status(500).json({error:error instanceof Error?error.message:String(error)});}

@@ -1,4 +1,8 @@
-import { audioWindow, parseRtp } from './ue-audio';
+import { SrtpDecoder } from './ue-srtp';
+import type { ImsAudioLookup } from './ue-ims-audio';
+import { renderAudio, parseRtp, type AudioOptions, type RtpPacket, streamKey } from './ue-audio';
+import { parseSdp, resolveCodec, sdesKeys } from './ue-audio-sdp';
+import { codecTools, readAudioCapture } from './ue-codec-runtime';
 import { isIP } from 'net';
 import type { IHostExecutor } from '../../domain/interfaces/host-executor';
 import type { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
@@ -47,14 +51,15 @@ export function diagnosticSummary(packets: DiagnosticPacket[], running: boolean,
 
 export class UeDiagnosticsUseCase {
   private starting = false;
+  private audioCaptures=new Map<string,{at:number;promise:Promise<RtpPacket[]>}>();
   private installing:Promise<unknown>|undefined;
   private snapshots = new Map<string, {at:number; promise:Promise<unknown>}>();
   constructor(private pcap:PcapUseCase,private active:ActiveSessionsUseCase,
-    private subscribers:ISubscriberRepository,private executor:IHostExecutor) {}
-  async dependencies() {
+    private subscribers:ISubscriberRepository,private executor:IHostExecutor,private imsAudio?:ImsAudioLookup) {}
+  async dependencies(force=false) {
     const check=async(host:boolean,command:string)=>{try{const r=await (host?this.executor.executeCommand(command,['--version'],5000,{expectedFailure:true}):this.executor.executeLocalCommand(command,['--version'],5000));return r.exitCode===0;}catch{return false;}};
-    const [tshark,dumpcap]=await Promise.all([check(false,'tshark'),check(true,'dumpcap')]);
-    return {tshark,dumpcap,ready:tshark&&dumpcap,audioCodecs:['PCMU / G.711 μ-law','PCMA / G.711 A-law'],installing:!!this.installing};
+    const [tshark,dumpcap,codecs]=await Promise.all([check(false,'tshark'),check(true,'dumpcap'),codecTools(force)]);
+    return {tshark,dumpcap,...codecs,ready:tshark&&dumpcap&&codecs.amr&&codecs.amrWb&&codecs.evs,audioCodecs:['PCMU / G.711 μ-law','PCMA / G.711 A-law',...(codecs.amr?['AMR']:[]),...(codecs.amrWb?['AMR-WB']:[]),...(codecs.evs?['EVS primary / AMR-WB IO']:[])],srtpSuites:['AES_CM_128_HMAC_SHA1_80','AES_CM_128_HMAC_SHA1_32'],installing:!!this.installing};
   }
   async installDependencies() {
     if(this.installing)return this.installing;
@@ -66,18 +71,51 @@ export class UeDiagnosticsUseCase {
       };
       if(!status.tshark)await install(false);
       if(!status.dumpcap)await install(true);
-      const result=await this.dependencies();if(!result.ready)throw new Error('Capture tools are still unavailable after installation');return result;
+      if(!status.amr || !status.amrWb || !status.evs){const codecs=await this.executor.executeLocalCommand('python3',['tools/ue-codec-install.py'],600000);if(codecs.exitCode!==0)throw new Error('Audio codec installation failed: '+(codecs.stderr||codecs.stdout).slice(-1500));}
+      const result=await this.dependencies(true);if(!result.ready)throw new Error('Capture tools are still unavailable after installation');return {...result,installing:false};
     })();
     try{return await this.installing;}finally{this.installing=undefined;}
   }
-  async audio(id:string,stream:string,after:number) {
+  async audio(id:string,stream:string,after:number,options:AudioOptions={}) {
     if(!Number.isInteger(after)||after<0 || stream.length>512)throw new Error('Invalid audio cursor or stream');
-    const capture=await this.requireCapture(id);const path=await this.pcap.getDownloadPath(id);
-    const args=['-n','-r',path,'--enable-heuristic','rtp_udp','-Y','rtp && !icmp && !icmpv6','-T','fields',...['frame.number','frame.time_epoch','_ws.col.Source','_ws.col.Destination','udp.srcport','udp.dstport','rtp.ssrc','rtp.p_type','rtp.timestamp','rtp.payload'].flatMap(f=>['-e',f]),'-E','separator=\t','-E','occurrence=l'];
-    const result=await this.executor.executeLocalCommand('tshark',args,15000);
-    const live=['running','starting'].includes(capture.status);
-    if(result.exitCode!==0 && !(live && /cut short in the middle|less data was read than was expected/i.test(result.stderr)))throw new Error(result.stderr.split('\n').filter(l=>!l.startsWith('Running as user')).join('\n') || 'RTP decoding failed');
-    return {...audioWindow(parseRtp(result.stdout),stream,after),live};
+    const capture=await this.requireCapture(id);const live=['running','starting'].includes(capture.status);
+    let entry=this.audioCaptures.get(id);
+    if(!entry || Date.now()-entry.at>1500){
+      if(this.audioCaptures.size>=4)this.audioCaptures.delete(this.audioCaptures.keys().next().value!);
+      const promise=this.readAudioPackets(id,live);entry={at:Infinity,promise};this.audioCaptures.set(id,entry);
+      const current=entry;void promise.then(()=>{if(this.audioCaptures.get(id)===current)current.at=Date.now();},()=>{if(this.audioCaptures.get(id)===current)this.audioCaptures.delete(id);});
+    }
+    let packets=await entry.promise;
+    const target=(stream?packets.find(p=>streamKey(p)===stream):packets.find(p=>['PCMU','PCMA','AMR','AMR-WB','EVS'].includes(p.description?.codec??''))??packets[0]);
+    let keySource=options.srtp?'manual':'none';let effectiveOptions=options;
+    if(target && options.autoKey!==false){
+      const id=streamKey(target);
+      const ims=await this.imsAudio?.(target).catch(()=>undefined);
+      if(ims?.description && (!target.description || target.description.codec.startsWith('PT '))){
+        packets=packets.map(p=>streamKey(p)===id?{...p,streamId:id,description:ims.description}:p);
+      }
+      if(!options.srtp){
+        const path=await this.pcap.getDownloadPath(capture.id);
+        const sdp=await readAudioCapture(['-n','-r',path,'-Y','sdp','-T','pdml']);
+        const candidates=[...sdesKeys(sdp.stdout,target).map(srtp=>({srtp,source:'captured SDP'})),...(ims?.keys??[]).map(srtp=>({srtp,source:'IMS SIP trace'}))];
+        if(target.raw)for(const candidate of candidates){
+          const decoder=new SrtpDecoder(candidate.srtp);
+          try{decoder.decode(Buffer.from(target.raw,'hex'));effectiveOptions={...options,srtp:candidate.srtp};keySource=candidate.source;break;}catch{/* A key for another direction/session must never produce audio. */}finally{decoder.destroy();}
+        }
+      }
+    }
+    return {...await renderAudio(packets,stream || (target?streamKey(target):''),after,effectiveOptions,await codecTools()),live,keySource};
+  }
+  private async readAudioPackets(id:string,live:boolean){
+    const path=await this.pcap.getDownloadPath(id);
+    const base=['-n','-r',path,'--enable-heuristic','rtp_udp'];
+    const [rtp,sdp]=await Promise.all([
+      readAudioCapture([...base,'-Y','rtp && !icmp && !icmpv6','-T','fields',...['frame.number','frame.time_epoch','_ws.col.Source','_ws.col.Destination','udp.srcport','udp.dstport','rtp.ssrc','rtp.p_type','rtp.timestamp','rtp.payload','udp.payload','srtp.enc_payload'].flatMap(f=>['-e',f]),'-E','separator=\t','-E','occurrence=l']),
+      readAudioCapture([...base,'-Y','sdp','-T','pdml']),
+    ]);
+    for(const result of [rtp,sdp])if(result.exitCode!==0 && !(live && /cut short in the middle|less data was read than was expected/i.test(result.stderr)))throw new Error('Unable to read RTP/SDP. Check the capture tools and file.');
+    const mappings=parseSdp(sdp.stdout);
+    return parseRtp(rtp.stdout).map(p=>({...p,description:resolveCodec(mappings,p)}));
   }
   async targets() {
     const [four,five,subscribers] = await Promise.all([this.active.getActive4GUEs(),this.active.getActive5GUEs(),this.subscribers.findAllFull()]);

@@ -1,3 +1,4 @@
+jest.mock('../ue-codec-runtime',()=>({codecTools:async()=>({ffmpeg:true,amr:true,amrWb:true,evs:true})}));
 import { decodeG711, parseRtp, audioWindow, streamKey } from '../ue-audio';
 import { UeDiagnosticsUseCase } from '../ue-diagnostics';
 describe('UE audio',()=>{

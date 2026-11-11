@@ -43,6 +43,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
        -o Dpkg::Options::="--force-overwrite" \
        tshark \
+       ffmpeg \
     # Python deps come from Debian, not pypi, so the image builds on a host with
     # no route to pypi.org (issue #36 — a real report: pypi timed out and the
     # whole build failed, blocking the entire product over two optional
