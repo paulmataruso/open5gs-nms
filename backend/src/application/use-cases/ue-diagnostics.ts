@@ -1,3 +1,4 @@
+import { audioWindow, parseRtp } from './ue-audio';
 import { isIP } from 'net';
 import type { IHostExecutor } from '../../domain/interfaces/host-executor';
 import type { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
@@ -46,9 +47,38 @@ export function diagnosticSummary(packets: DiagnosticPacket[], running: boolean,
 
 export class UeDiagnosticsUseCase {
   private starting = false;
+  private installing:Promise<unknown>|undefined;
   private snapshots = new Map<string, {at:number; promise:Promise<unknown>}>();
   constructor(private pcap:PcapUseCase,private active:ActiveSessionsUseCase,
     private subscribers:ISubscriberRepository,private executor:IHostExecutor) {}
+  async dependencies() {
+    const check=async(host:boolean,command:string)=>{try{const r=await (host?this.executor.executeCommand(command,['--version'],5000,{expectedFailure:true}):this.executor.executeLocalCommand(command,['--version'],5000));return r.exitCode===0;}catch{return false;}};
+    const [tshark,dumpcap]=await Promise.all([check(false,'tshark'),check(true,'dumpcap')]);
+    return {tshark,dumpcap,ready:tshark&&dumpcap,audioCodecs:['PCMU / G.711 μ-law','PCMA / G.711 A-law'],installing:!!this.installing};
+  }
+  async installDependencies() {
+    if(this.installing)return this.installing;
+    this.installing=(async()=>{
+      const status=await this.dependencies();
+      const install=async(host:boolean)=>{
+        const run=(args:string[],timeout:number)=>host?this.executor.executeCommand('env',['DEBIAN_FRONTEND=noninteractive','apt-get',...args],timeout):this.executor.executeLocalCommand('env',['DEBIAN_FRONTEND=noninteractive','apt-get',...args],timeout);
+        for(const args of [['update'],['install','-y','--no-install-recommends','tshark']]){const r=await run(args,180000);if(r.exitCode!==0)throw new Error('Dependency installation failed: '+(r.stderr||r.stdout).slice(-1500));}
+      };
+      if(!status.tshark)await install(false);
+      if(!status.dumpcap)await install(true);
+      const result=await this.dependencies();if(!result.ready)throw new Error('Capture tools are still unavailable after installation');return result;
+    })();
+    try{return await this.installing;}finally{this.installing=undefined;}
+  }
+  async audio(id:string,stream:string,after:number) {
+    if(!Number.isInteger(after)||after<0 || stream.length>512)throw new Error('Invalid audio cursor or stream');
+    const capture=await this.requireCapture(id);const path=await this.pcap.getDownloadPath(id);
+    const args=['-n','-r',path,'--enable-heuristic','rtp_udp','-Y','rtp && !icmp && !icmpv6','-T','fields',...['frame.number','frame.time_epoch','_ws.col.Source','_ws.col.Destination','udp.srcport','udp.dstport','rtp.ssrc','rtp.p_type','rtp.timestamp','rtp.payload'].flatMap(f=>['-e',f]),'-E','separator=\t','-E','occurrence=l'];
+    const result=await this.executor.executeLocalCommand('tshark',args,15000);
+    const live=['running','starting'].includes(capture.status);
+    if(result.exitCode!==0 && !(live && /cut short in the middle|less data was read than was expected/i.test(result.stderr)))throw new Error(result.stderr.split('\n').filter(l=>!l.startsWith('Running as user')).join('\n') || 'RTP decoding failed');
+    return {...audioWindow(parseRtp(result.stdout),stream,after),live};
+  }
   async targets() {
     const [four,five,subscribers] = await Promise.all([this.active.getActive4GUEs(),this.active.getActive5GUEs(),this.subscribers.findAllFull()]);
     const byImsi = new Map(subscribers.map(sub=>[sub.imsi,sub]));
@@ -117,7 +147,7 @@ export class UeDiagnosticsUseCase {
   private async readSnapshot(id:string,filter:string) {
     const capture=await this.requireCapture(id);
     const path=await this.pcap.getDownloadPath(id);
-    const args=['-n','-r',path,'-d','tcp.port==7777,http2'];
+    const args=['-n','-r',path,'--enable-heuristic','rtp_udp','-d','tcp.port==7777,http2'];
     if(filter.trim())args.push('-Y',filter.trim());
     args.push('-T','fields','-e','frame.number','-e','frame.time_epoch','-e','_ws.col.Source','-e','_ws.col.Destination',
       '-e','_ws.col.Protocol','-e','frame.len','-e','tcp.srcport','-e','tcp.dstport','-e','udp.srcport','-e','udp.dstport','-e','_ws.col.Info',

@@ -6,6 +6,9 @@ import { requireAdmin } from './middleware/auth-middleware';
 export function createUeDiagnosticsRouter(diagnostics:UeDiagnosticsUseCase,audit:IAuditLogger):Router {
   const router=Router();
   router.use(requireAdmin);
+  router.get('/dependencies',async(_req,res)=>{try{res.json(await diagnostics.dependencies());}catch(e){res.status(500).json({error:String(e)});}});
+  router.post('/dependencies/install',async(_req,res)=>{try{res.json(await diagnostics.installDependencies());}catch(e){res.status(500).json({error:e instanceof Error?e.message:String(e)});}});
+  router.get('/captures/:id/audio',async(req,res)=>{try{res.set('Cache-Control','no-store');res.json(await diagnostics.audio(req.params.id,String(req.query.stream??''),Number(req.query.after??0)));}catch(e){res.status(400).json({error:e instanceof Error?e.message:String(e)});}});
   router.get('/overview',async(_req,res)=>{
     try{res.json(await diagnostics.overview());}
     catch(error){res.status(500).json({error:error instanceof Error?error.message:String(error)});}
