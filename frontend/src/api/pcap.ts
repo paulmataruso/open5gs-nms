@@ -50,6 +50,9 @@ export interface PcapManifest {
   stoppedAt?: string;
   sizeBytes?: number;
   error?: string;
+  autostopSeconds?: number;
+  autostopFilesizeKb?: number;
+  ueDiagnostics?: { imsi?: string; addresses: string[] };
 }
 
 export interface DecodePreset {
