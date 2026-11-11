@@ -13,6 +13,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { FEATURES } from '../../config/features';
 import type { Subscriber, SubscriberListItem, SubscriberSession, PccRule, FramedRouteEntry } from '../../types';
 import toast from 'react-hot-toast';
+import { copySubscriberProfile, copiedValueConflict } from './copySubscriberProfile';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import { activateOnKey, useEscapeKey } from '../../hooks/useKeyboardA11y';
 
@@ -2089,13 +2090,34 @@ function SIMGeneratorDialog({ onClose }: {
   );
 }
 
-function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
+function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged, copySource }: {
   sub: Subscriber; onSave: (s: Subscriber) => Promise<void>; onCancel: () => void; isNew: boolean;
-  plans?: ChargingPlan[]; onPlanChanged?: () => void;
+  plans?: ChargingPlan[]; onPlanChanged?: () => void; copySource?: Subscriber;
 }): JSX.Element {
   const [form, setForm] = useState<Subscriber>(sub);
   const [saving, setSaving] = useState(false);
-  const save = async () => { setSaving(true); try { await onSave(form); } finally { setSaving(false); } };
+
+  const copiedSessions = copySource?.slice.flatMap(slice => slice.session) ?? [];
+  const originalValues = (field: 'ipv4' | 'ipv6' | 'ipv4_framed_routes' | 'ipv6_framed_routes') =>
+    copiedSessions.flatMap(session => field === 'ipv4' || field === 'ipv6'
+      ? [session.ue?.[field] ?? ''] : session[field] ?? []);
+  const conflict = (value: string | string[] | undefined, original: string | string[] | undefined) =>
+    !!copySource && copiedValueConflict(value, original);
+  const imsiConflict = conflict(form.imsi, copySource?.imsi);
+  const iccidConflict = conflict(form.iccid, copySource?.iccid);
+  const msisdnConflict = conflict(form.msisdn, copySource?.msisdn);
+  const imeiConflict = conflict(form.imeisv, copySource?.imeisv);
+  const addressConflict = (value: string | string[] | undefined, field: 'ipv4' | 'ipv6' | 'ipv4_framed_routes' | 'ipv6_framed_routes') =>
+    conflict(value, originalValues(field));
+  const copyConflicts = imsiConflict || iccidConflict || msisdnConflict || imeiConflict || form.slice.some(slice =>
+    slice.session.some(session => addressConflict(session.ue?.ipv4, 'ipv4') || addressConflict(session.ue?.ipv6, 'ipv6')
+      || addressConflict(session.ipv4_framed_routes, 'ipv4_framed_routes') || addressConflict(session.ipv6_framed_routes, 'ipv6_framed_routes')));
+  const uniqueField = (invalid: boolean) => ({
+    'aria-invalid': invalid || undefined,
+    style: invalid ? { borderColor: '#f87171', boxShadow: '0 0 0 1px #f87171' } : undefined,
+    title: invalid ? 'Change this copied value or clear this optional field before creating the subscriber.' : undefined,
+  });
+  const save = async () => { if (copyConflicts || (copySource && !form.imsi.trim())) return; setSaving(true); try { await onSave(form); } finally { setSaving(false); } };
 
   // Charging plan selector — independent of the rest of this form/save flow
   // (plans live in their own nms_charging_plans collection, never on the
@@ -2216,6 +2238,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
         <button aria-label="Close" onClick={onCancel} className="text-nms-text-dim hover:text-nms-text"><X className="w-4 h-4" /></button>
       </div>
 
+      {copySource && <p className="mb-4 text-xs text-nms-text-dim">Profile copied from {copySource.imsi}. Fields outlined in red must be changed. Optional phone numbers, device identity, UE addresses and routed subnets can also be cleared. Authentication keys may remain the same.</p>}
       <div className="space-y-6">
         {/* Basic Info */}
         <div>
@@ -2223,7 +2246,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <label className="nms-label">IMSI *</label>
-              <input aria-label="IMSI *"
+              <input aria-label="IMSI *" {...uniqueField(imsiConflict)}
                 className="nms-input font-mono text-sm"
                 value={form.imsi}
                 onChange={e => setForm({...form, imsi: e.target.value})}
@@ -2246,7 +2269,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">ICCID</label>
-              <input aria-label="ICCID" 
+              <input aria-label="ICCID" {...uniqueField(iccidConflict)}
                 className="nms-input font-mono text-sm" 
                 value={(form as any).iccid || ''}
                 onChange={e => setForm({...form, iccid: e.target.value || undefined} as any)} 
@@ -2266,7 +2289,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">MSISDN</label>
-              <input aria-label="MSISDN" 
+              <input aria-label="MSISDN" {...uniqueField(msisdnConflict)}
                 className="nms-input font-mono text-sm" 
                 value={form.msisdn?.join(', ') || ''}
                 onChange={e => setForm({...form, msisdn: e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} 
@@ -2275,10 +2298,11 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
             </div>
             <div>
               <label className="nms-label">IMEISV (auto-generated on first attach)</label>
-              <input aria-label="IMEISV (auto-generated on first attach)"
+              <input aria-label="IMEISV (auto-generated on first attach)" {...uniqueField(imeiConflict)}
                 className="nms-input font-mono text-sm bg-nms-surface-2/50"
-                value={form.imeisv || 'Not yet attached'}
-                disabled
+                value={form.imeisv || ''}
+                onChange={e => setForm({ ...form, imeisv: e.target.value || undefined })}
+                disabled={!copySource}
                 placeholder="Auto-generated"
               />
             </div>
@@ -2646,7 +2670,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">UE IPv4 Address</label>
-                      <input aria-label="UE IPv4 Address"
+                      <input aria-label="UE IPv4 Address" {...uniqueField(addressConflict(sess.ue?.ipv4, 'ipv4'))}
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv4 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv4: e.target.value || undefined } })}
@@ -2664,7 +2688,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">UE IPv6 Address</label>
-                      <input aria-label="UE IPv6 Address"
+                      <input aria-label="UE IPv6 Address" {...uniqueField(addressConflict(sess.ue?.ipv6, 'ipv6'))}
                         className="nms-input font-mono text-sm"
                         value={sess.ue?.ipv6 || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, { ue: { ...sess.ue, ipv6: e.target.value || undefined } })}
@@ -2703,7 +2727,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                   <div className="grid grid-cols-2 gap-3 mb-3">
                     <div>
                       <label className="nms-label">Framed Routes IPv4</label>
-                      <input aria-label="Framed Routes IPv4"
+                      <input aria-label="Framed Routes IPv4" {...uniqueField(addressConflict(sess.ipv4_framed_routes, 'ipv4_framed_routes'))}
                         className="nms-input font-mono text-sm"
                         value={sess.ipv4_framed_routes?.join(', ') || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2718,7 +2742,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
                     </div>
                     <div>
                       <label className="nms-label">Framed Routes IPv6</label>
-                      <input aria-label="Framed Routes IPv6"
+                      <input aria-label="Framed Routes IPv6" {...uniqueField(addressConflict(sess.ipv6_framed_routes, 'ipv6_framed_routes'))}
                         className="nms-input font-mono text-sm"
                         value={sess.ipv6_framed_routes?.join(', ') || ''}
                         onChange={e => updateSession(sliceIdx, sessIdx, {
@@ -2973,7 +2997,7 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged }: {
           </p>
         )}
         <div className="flex gap-3 pt-3 border-t border-nms-border">
-          <button onClick={save} disabled={saving || framedRouteOverflow} className="nms-btn-primary flex items-center gap-2">
+          <button onClick={save} disabled={saving || framedRouteOverflow || copyConflicts || (!!copySource && !form.imsi.trim())} className="nms-btn-primary flex items-center gap-2">
             <Save className="w-4 h-4" />
             {isNew ? 'Create' : 'Update'}
           </button>
@@ -3126,6 +3150,14 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
   }, [sortedSubscribers, groups, collapsedGroups]);
 
   const [showForm, setShowForm] = useState(false);
+  const [newSub, setNewSub] = useState<Subscriber>(() => structuredClone(DEFAULT_SUB));
+  const [copySource, setCopySource] = useState<Subscriber | undefined>(undefined);
+  const [newFormKey, setNewFormKey] = useState(0);
+  const [copyingImsi, setCopyingImsi] = useState<string | null>(null);
+  const newFormRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (showForm) newFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [showForm, newFormKey]);
   const [editImsi, setEditImsi] = useState<string|null>(null);
   const [editSub, setEditSub] = useState<Subscriber|null>(null);
   const [si, setSi] = useState('');
@@ -3315,7 +3347,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
               <button onClick={() => setShowGenerator(true)} className="nms-btn-ghost flex items-center gap-1.5" title="SIM Generator">
                 <CreditCard className="w-4 h-4 shrink-0" /><span className="hidden sm:inline">SIM Generator</span>
               </button>
-              <button onClick={() => { setShowForm(true); setEditImsi(null); }} className="nms-btn-primary flex items-center gap-1.5">
+              <button onClick={() => { setNewSub(structuredClone(DEFAULT_SUB)); setCopySource(undefined); setNewFormKey(k => k + 1); setShowForm(true); setEditImsi(null); setEditSub(null); }} className="nms-btn-primary flex items-center gap-1.5">
                 <Plus className="w-4 h-4 shrink-0" /><span className="hidden xs:inline">Add Subscriber</span>
               </button>
             </>
@@ -3383,8 +3415,10 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
       )}
 
       {showForm && !isViewer && (
-        <SubForm 
-          sub={DEFAULT_SUB} 
+        <div ref={newFormRef}>
+        <SubForm key={newFormKey}
+          sub={newSub}
+          copySource={copySource}
           onSave={async s => {
             try {
               const result = await subscriberApi.create(s);
@@ -3399,6 +3433,7 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
           onCancel={() => setShowForm(false)} 
           isNew 
         />
+        </div>
       )}
 
       {editSub && editImsi && (
@@ -3836,6 +3871,30 @@ export function SubscriberPage({ initialImsiToEdit }: SubscriberPageProps = {}):
                             <Unlink className="w-3.5 h-3.5" />
                           </button>
                         )}
+                        <button aria-label="Copy subscriber profile"
+                          title="Copy profile to a new subscriber"
+                          disabled={copyingImsi !== null}
+                          onClick={async () => {
+                            setCopyingImsi(sub.imsi);
+                            try {
+                              const source = await subscriberApi.get(sub.imsi);
+                              setNewSub(copySubscriberProfile(source));
+                              setCopySource(source);
+                              setNewFormKey(k => k + 1);
+                              setEditImsi(null);
+                              setEditSub(null);
+                              setShowForm(true);
+                              toast.success('Profile copied. Change the fields outlined in red.');
+                            } catch {
+                              toast.error('Failed to copy subscriber profile');
+                            } finally {
+                              setCopyingImsi(null);
+                            }
+                          }}
+                          className="text-nms-text-dim hover:text-nms-accent disabled:opacity-50"
+                        >
+                          <Copy className="w-4 h-4 inline" />
+                        </button>
                         <button aria-label="Edit subscriber"
                           onClick={async () => {
                             try {
