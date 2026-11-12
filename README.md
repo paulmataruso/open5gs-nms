@@ -103,6 +103,16 @@ Open5GS NMS simplifies the management of Open5GS deployments by providing:
 
 ![UE Signal Add Radio](docs/screenshots/ue-signal-add-radio.png)
 
+### Cell Broadcast
+
+- Manage OsmoCBC installation and service state from NMS.
+- Compose LTE broadcast messages for several PLMN/TAC pairs or named zones.
+- Connect external services through revocable, zone-scoped API keys.
+- Review message scope before sending and track accepted, rejected or uncertain requests.
+
+See [Cell Broadcast setup and API](docs/cell-broadcast.md) for the companion MME
+build, TAI targeting and installation requirements.
+
 ### Network Topology Visualization
 - **Interactive Diagram** - JointJS-based professional network topology
 - **Real-Time Status** - Color-coded service indicators (green=active, red=inactive)

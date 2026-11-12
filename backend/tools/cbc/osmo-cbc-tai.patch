@@ -1,0 +1,148 @@
+diff --git a/include/osmocom/cbc/cbc_message.h b/include/osmocom/cbc/cbc_message.h
+index b42d0f2..4bdd115 100644
+--- a/include/osmocom/cbc/cbc_message.h
++++ b/include/osmocom/cbc/cbc_message.h
+@@ -47,6 +47,7 @@ struct smscb_message {
+ 
+ enum cbc_message_scope {
+ 	CBC_MSG_SCOPE_PLMN,
++	CBC_MSG_SCOPE_TAI,
+ 	/* FIXME: more local/regional scopes than PLMN-wide */
+ };
+ 
+@@ -80,7 +81,8 @@ struct cbc_message {
+ 	uint16_t num_bcast;		/* number of broadcasts requested (0=unlimited) */
+ 
+ 	enum cbc_message_scope scope;
+-	/* FIXME: data for other scopes than PLMN-wide */
++	unsigned int num_scope_tais;
++	struct osmo_tracking_area_id scope_tais[16];
+ 
+ 	/* SMSCB message with id, serial, dcs, pages, ... */
+ 	struct smscb_message msg;
+diff --git a/src/cbc_message.c b/src/cbc_message.c
+index f17ab75..5f60325 100644
+--- a/src/cbc_message.c
++++ b/src/cbc_message.c
+@@ -45,7 +45,8 @@ static bool is_peer_in_scope(const struct cbc_peer *peer, const struct cbc_messa
+ 	switch (cbcmsg->scope) {
+ 	case CBC_MSG_SCOPE_PLMN:
+ 		return true;
+-	/* FIXME: differnt scopes */
++	case CBC_MSG_SCOPE_TAI:
++		return peer->proto == CBC_PEER_PROTO_SBcAP;
+ 	default:
+ 		OSMO_ASSERT(0);
+ 	}
+diff --git a/src/rest_api.c b/src/rest_api.c
+index 3af50e6..f0b2342 100644
+--- a/src/rest_api.c
++++ b/src/rest_api.c
+@@ -23,6 +23,7 @@
+ #include <string.h>
+ #include <stdlib.h>
+ #include <errno.h>
++#include <limits.h>
+ #include <pthread.h>
+ 
+ #include <jansson.h>
+@@ -54,6 +55,7 @@ static int json_get_integer(int *out, json_t *parent, const char *key)
+ 		return -ENOENT;
+ 	if (!json_is_integer(jtmp))
+ 		return -EINVAL;
++	if (json_integer_value(jtmp)<INT_MIN || json_integer_value(jtmp)>INT_MAX) return -ERANGE;
+ 	*out = json_integer_value(jtmp);
+ 	return 0;
+ }
+@@ -524,10 +526,27 @@ static int json2cbc_message(struct cbc_message *out, void *ctx, json_t *in, cons
+ 		return -EINVAL;
+ 	}
+ 
+-	if ((jtmp = json_object_get(jtmp, "scope_plmn"))) {
++	if (!json_is_object(jtmp) || json_object_size(jtmp)!=1) { *errstr="Exactly one scope required"; return -EINVAL; }
++    if (json_object_get(jtmp,"scope_plmn")) {
+ 		out->scope = CBC_MSG_SCOPE_PLMN;
+-	} else {
+-		*errstr = "CBCMSG only 'scope_plmn' supported";
++	 } else if ((jtmp=json_object_get(jtmp,"scope_tais"))) {
++        size_t k, n=json_array_size(jtmp);
++        if (!json_is_array(jtmp) || n<1 || n>16) { *errstr="scope_tais needs 1..16 TAIs";return -EINVAL; }
++        for (k=0;k<n;k++) {
++            json_t *t=json_array_get(jtmp,k); const char *plmn=json_get_string(t,"plmn");
++            size_t i,len=plmn?strlen(plmn):0; unsigned int mcc=0,mnc=0;
++            if (len!=5 && len!=6) { *errstr="Invalid PLMN";return -EINVAL; }
++            for(i=0;i<len;i++) {
++                if(plmn[i]<'0'||plmn[i]>'9') { *errstr="Invalid PLMN";return -EINVAL; }
++                if(i<3)mcc=mcc*10+plmn[i]-'0';else mnc=mnc*10+plmn[i]-'0';
++            }
++            if(json_get_integer_range(&tmp,t,"tac",0,65535)) { *errstr="Invalid TAC";return -EINVAL; }
++            out->scope_tais[k].plmn.mcc=mcc;out->scope_tais[k].plmn.mnc=mnc;
++            out->scope_tais[k].plmn.mnc_3_digits=len==6;out->scope_tais[k].tac=tmp;
++        }
++        out->scope=CBC_MSG_SCOPE_TAI;out->num_scope_tais=n;
++    } else {
++        *errstr="CBCMSG only scope_plmn or scope_tais supported";
+ 		return -EINVAL;
+ 	}
+ 
+@@ -644,7 +663,14 @@ err:
+ }
+ 
+ 
++static int api_cb_nms_capabilities(const struct _u_request *req, struct _u_response *resp, void *data)
++{
++    ulfius_set_string_body_response(resp,200,"{\"protocol\":1,\"scope_tais\":true,\"max_tais\":16}");
++    return U_CALLBACK_COMPLETE;
++}
++
+ static const struct _u_endpoint api_endpoints[] = {
++	{ "GET", PREFIX, "/nms-capabilities", 0, &api_cb_nms_capabilities, NULL },
+ 	/* create/update a message */
+ 	{ "POST", PREFIX, "/message", 0, &api_cb_message_post, NULL },
+ 	{ "DELETE", PREFIX, "/message/:message_id", 0, &api_cb_message_del, NULL },
+diff --git a/src/sbcap_msg.c b/src/sbcap_msg.c
+index f9fa70a..d98300e 100644
+--- a/src/sbcap_msg.c
++++ b/src/sbcap_msg.c
+@@ -81,6 +81,19 @@ static void msgb_put_sbcap_cell_list(const struct cbc_message *cbcmsg, void *voi
+ }
+ #endif
+ 
++static void fill_scope_tais(SBcAP_List_of_TAIs_t *list,const struct cbc_message *m)
++{
++    unsigned int i;
++    for(i=0;i<m->num_scope_tais;i++) {
++        struct SBcAP_List_of_TAIs__Member *t=CALLOC(1,sizeof(*t));
++        t->tai.pLMNidentity.buf=MALLOC(3);t->tai.pLMNidentity.size=3;
++        osmo_plmn_to_bcd(t->tai.pLMNidentity.buf,&m->scope_tais[i].plmn);
++        t->tai.tAC.buf=MALLOC(2);t->tai.tAC.size=2;
++        osmo_store16be(m->scope_tais[i].tac,t->tai.tAC.buf);
++        ASN_SEQUENCE_ADD(&list->list,t);
++    }
++}
++
+ /* generate a SBc-AP WRITE-REPLACE WARNING REQUEST from our internal representation.
+  * 3GPP TS 36.413 9.1.13.1
+  */
+@@ -128,6 +141,10 @@ SBcAP_SBC_AP_PDU_t *sbcap_gen_write_replace_warning_req(void *ctx, const struct
+ 	ASN_SEQUENCE_ADD(as_pdu, ie);
+ 
+ 	switch (cbcmsg->scope) {
++
++	case CBC_MSG_SCOPE_TAI:
++        ie=sbcap_alloc_Write_Replace_Warning_Request_IE(14,SBcAP_Criticality_reject,SBcAP_Write_Replace_Warning_Request_IEs__value_PR_List_of_TAIs);
++        fill_scope_tais(&ie->value.choice.List_of_TAIs,cbcmsg);ASN_SEQUENCE_ADD(as_pdu,ie);break;
+ 	case CBC_MSG_SCOPE_PLMN:
+ 		break; /* Nothing to be done :*/
+ #if 0
+@@ -287,6 +304,10 @@ SBcAP_SBC_AP_PDU_t *sbcap_gen_stop_warning_req(void *ctx, const struct cbc_messa
+ 	ASN_SEQUENCE_ADD(as_pdu, ie);
+ 
+ 	switch (cbcmsg->scope) {
++
++	case CBC_MSG_SCOPE_TAI:
++        ie=sbcap_alloc_Stop_Warning_Request_IE(14,SBcAP_Criticality_reject,SBcAP_Stop_Warning_Request_IEs__value_PR_List_of_TAIs);
++        fill_scope_tais(&ie->value.choice.List_of_TAIs,cbcmsg);ASN_SEQUENCE_ADD(as_pdu,ie);break;
+ 	case CBC_MSG_SCOPE_PLMN:
+ 		break; /* Nothing to be done :*/
+ #if 0
