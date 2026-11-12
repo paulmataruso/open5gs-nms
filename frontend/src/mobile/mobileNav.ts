@@ -23,6 +23,7 @@ import { NAV_ITEMS, type NavItem } from '../components/common/navItems';
  * MobilePageId.
  */
 export const MOBILE_PAGE_IDS = [
+  'cell-broadcast',
   'dashboard',
   'ran',
   'services',

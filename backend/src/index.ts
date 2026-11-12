@@ -1,3 +1,5 @@
+import { CellBroadcastUseCase } from './application/use-cases/cell-broadcast';
+import { createCellBroadcastRouters } from './interfaces/rest/cell-broadcast-controller';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -774,7 +776,10 @@ async function main() {
   app.use('/api/auth', createAuthRouter(authLoginUseCase, authLogoutUseCase, logger, authMiddleware));
 
   // ── Auth middleware ── all routes below this line are protected
+  const cellBroadcastRouters = createCellBroadcastRouters(new CellBroadcastUseCase(authRepo.getDb(), hostExecutor, configRepo), auditLogger);
+  app.use('/api/cell-broadcast/v1', cellBroadcastRouters.external);
   app.use('/api', authMiddleware);
+  app.use('/api/cell-broadcast', cellBroadcastRouters.admin);
 
   // API Routes — GET routes open to all authenticated users
   // requireAdmin middleware applied before routers that have write operations
