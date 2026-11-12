@@ -3,6 +3,7 @@ import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { Plus, X, Shield } from 'lucide-react';
 import { FieldWithTooltip } from '../FieldsWithTooltips';
 import { MME_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
+import { MmeMobilitySection } from './MmeMobilitySection';
 
 interface Props {
   configs: AllConfigs;
@@ -162,6 +163,11 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
           tooltip={MME_TOOLTIPS.gtpc_server}
         />
       </div>
+
+      <MmeMobilitySection
+        peers={Array.isArray(mme.gtpc?.client?.mme) ? mme.gtpc.client.mme : mme.gtpc?.client?.mme ? [mme.gtpc.client.mme] : []}
+        onChange={(peers) => updateMme({ gtpc: { ...mme.gtpc, client: { ...mme.gtpc?.client, mme: peers } } })}
+      />
 
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">GTP-C Clients</h3>

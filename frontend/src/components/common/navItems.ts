@@ -39,6 +39,7 @@ export const NAV_ITEMS: NavItem[] = [
   ...(FEATURES.ueSignal ? [{ id: 'radio-signal', label: '4G/5G UE Signal', icon: Wifi }] : []),
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
+  { id: 'core-pool', label: 'High Availability', icon: Network },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },
   { id: 'radio-config', label: 'Radio Provisioning', icon: RadioTower },
   ...(FEATURES.rfPlanning ? [{ id: 'rf-planning', label: 'RF Planning', icon: Calculator }] : []),

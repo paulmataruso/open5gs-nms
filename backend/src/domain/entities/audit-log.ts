@@ -1,4 +1,5 @@
 export type AuditAction =
+  | 'ha_node_save' | 'ha_node_remove' | 'ha_ue_rebalance'
   | 'config_load'
   | 'config_save'
   | 'config_apply'
