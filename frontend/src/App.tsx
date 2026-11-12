@@ -14,6 +14,7 @@ import { MobilePage } from './mobile/mobilePages';
 // Route-level code splitting. These pages pull in the heavy dependencies
 // (jointjs, leaflet, recharts, monaco), so importing them statically meant a
 // single ~2.9 MB bundle shipped to anyone who just opened the dashboard.
+const HighAvailabilityPage = lazy(() => import('./pages/HighAvailabilityPage').then(m => ({ default: m.HighAvailabilityPage })));
 const ApnProfilesPage = lazy(() => import('./pages/ApnProfilesPage').then(m => ({ default: m.ApnProfilesPage })));
 const AutoConfigPage = lazy(() => import('./pages/AutoConfigPage').then(m => ({ default: m.AutoConfigPage })));
 const BackupPage = lazy(() => import('./pages/BackupPage').then(m => ({ default: m.BackupPage })));
@@ -100,6 +101,8 @@ function App(): JSX.Element {
         return <RANPage onNavigateToSubscriber={handleNavigateToSubscriber} />;
       case 'services':
         return <ServicesPage onNavigate={navigate} />;
+      case 'core-pool':
+        return <HighAvailabilityPage />;
       case 'config':
         return <ConfigPage />;
       case 'apn-profiles':

@@ -16,6 +16,7 @@ import { isMobilePageId, type MobilePageId } from './mobileNav';
  * destination that renders blank at runtime.
  */
 
+const HighAvailabilityPage = lazy(() => import('../pages/HighAvailabilityPage').then(m => ({ default: m.HighAvailabilityPage })));
 const MobileDashboardPage = lazy(() => import('./MobileDashboardPage').then(m => ({ default: m.MobileDashboardPage })));
 const MobileRanPage = lazy(() => import('./MobileRanPage').then(m => ({ default: m.MobileRanPage })));
 const MobileServicesPage = lazy(() => import('./MobileServicesPage').then(m => ({ default: m.MobileServicesPage })));
@@ -30,6 +31,7 @@ const MobileCallHistoryPage = lazy(() => import('./MobileCallHistoryPage').then(
 type MobilePageProps = { onNavigate: (tab: string) => void };
 
 const MOBILE_PAGES: Record<MobilePageId, (p: MobilePageProps) => JSX.Element> = {
+  'core-pool': () => <HighAvailabilityPage />,
   'dashboard': ({ onNavigate }) => <MobileDashboardPage onNavigate={onNavigate} />,
   'ran': () => <MobileRanPage />,
   'services': () => <MobileServicesPage />,
