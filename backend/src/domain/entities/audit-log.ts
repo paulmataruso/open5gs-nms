@@ -1,4 +1,5 @@
 export type AuditAction =
+  | 'cbc_operation'
   | 'config_load'
   | 'config_save'
   | 'config_apply'
