@@ -752,7 +752,7 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
     per-file helpers — that's exactly the pattern that hid this bug for as
     long as it went unnoticed.
 
-## Feature inventory (as of v2.0-beta_0.81, 2026-11-08)
+## Feature inventory (as of v2.0-beta_0.82, 2026-11-16)
 
 | Feature | Status | Key backend files | Key frontend files |
 |---|---|---|---|
