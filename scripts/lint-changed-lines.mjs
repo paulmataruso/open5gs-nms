@@ -67,6 +67,13 @@ const WORKSPACES = [
     args: ['.', '--ext', 'ts,tsx', '--report-unused-disable-directives'] },
 ];
 
+// Say what is actually being compared. A wrong base is the one failure mode
+// here that produces a plausible-looking red build rather than an obvious
+// error: the gate reports real findings, in real files, that simply are not
+// the contributor's. Printing the resolved merge-base and the file count makes
+// that visible in the log instead of silent.
+console.log(`Comparing HEAD against ${base} (merge-base ${mergeBase.slice(0, 9)}).`);
+
 // Added line numbers per file, read from the BODY of a -U0 diff rather than
 // its hunk headers.
 const diff = git('diff', '-U0', `${mergeBase}...HEAD`, '--', '*.ts', '*.tsx');
