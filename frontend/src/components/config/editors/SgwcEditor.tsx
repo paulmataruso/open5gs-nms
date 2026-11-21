@@ -52,6 +52,16 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
   const fullYaml = configs.sgwc as any;
   const sgwc = fullYaml?.sgwc || {};
 
+  // These two must stay ABOVE the early return below. React identifies a hook
+  // by call ORDER, so a hook after a conditional return is called on some
+  // renders and not others: sgwc.gtpc.server appearing or vanishing while this
+  // tab stays mounted (a reload, or an Apply that rewrites configs) then throws
+  // "Rendered more/fewer hooks than during the previous render" and takes the
+  // whole config page down. Both initialisers are constants, so hoisting them
+  // changes nothing else.
+  const [selectedSgwcAddress, setSelectedSgwcAddress] = useState<string>('');
+  const [showTopology, setShowTopology] = useState(false);
+
   if (!sgwc?.gtpc?.server || sgwc.gtpc.server.length === 0) {
     return <div className="text-nms-text-dim">Loading SGW-C configuration...</div>;
   }
@@ -77,8 +87,6 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
   const hasRoutableAddress = routableAddresses.length > 0;
   const remoteSgwuCount = sgwuClients.filter(c => !isLocalSgwu(c.address)).length;
 
-  const [selectedSgwcAddress, setSelectedSgwcAddress] = useState<string>('');
-  const [showTopology, setShowTopology] = useState(false);
   const effectiveSgwcAddress = selectedSgwcAddress || routableAddresses[0] || '';
 
   // ── Updaters ──────────────────────────────────────────────────────────────

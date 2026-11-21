@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { Shield, RefreshCw, ExternalLink } from 'lucide-react';
 import { sasApi, type SasStatus, type SasCbsd } from '../api/sas';
 import {
-  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MSheet, MFacts,
-  MEmpty, MIconButton, MLoading, fmtAgo,
+  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MSheet, MFacts, MEmpty, MIconButton,
+  MLoading,
 } from './MobileKit';
+import { fmtAgo } from './format';
 
 /**
  * CBRS SAS, built for a phone.

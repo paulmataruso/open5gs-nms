@@ -56,6 +56,9 @@ export const SyslogForwardingModal: React.FC<Props> = ({ onClose }) => {
     }
   };
 
+  // Mount-only on purpose: status is read once when the modal opens, and
+  // re-read by the actions that change it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { fetchStatus(); }, []);
 
   useEffect(() => {

@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "node scripts/check-breakpoints.mjs && tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint:json": "eslint . --ext ts,tsx --report-unused-disable-directives -f json"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

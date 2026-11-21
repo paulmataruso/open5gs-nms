@@ -9,7 +9,7 @@ import { useSubscriberStore, useSuciStore } from '../../stores';
 import { subscriberApi, subscriberGroupsApi, chargingPlansApi } from '../../api';
 import type { SubscriberGroup, ChargingPlan } from '../../api';
 import { apnProfilesApi, type ApnProfileListEntry } from '../../api/apnProfiles';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
 import { FEATURES } from '../../config/features';
 import type { Subscriber, SubscriberListItem, SubscriberSession, PccRule, FramedRouteEntry } from '../../types';
 import toast from 'react-hot-toast';

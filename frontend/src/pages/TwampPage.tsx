@@ -885,6 +885,11 @@ function TargetHistoryView({ timeRange, reloadKey, retentionDays }: HistoryViewP
     } finally {
       setLoading(false);
     }
+  // reloadKey is load-bearing and must NOT be removed: it is unused inside the
+  // callback BY DESIGN. Bumping it changes this callback's identity, which the
+  // effect below depends on, which is what makes the Refresh control refetch.
+  // Dropping it would leave Refresh doing nothing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeRange, reloadKey]);
 
   useEffect(() => { loadSummary(); }, [loadSummary]);
@@ -901,6 +906,11 @@ function TargetHistoryView({ timeRange, reloadKey, retentionDays }: HistoryViewP
     } finally {
       setSeriesLoading(false);
     }
+  // reloadKey is load-bearing and must NOT be removed: it is unused inside the
+  // callback BY DESIGN. Bumping it changes this callback's identity, which the
+  // effect below depends on, which is what makes the Refresh control refetch.
+  // Dropping it would leave Refresh doing nothing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeRange, reloadKey]);
 
   useEffect(() => { if (selectedTargetId) loadSeries(selectedTargetId); }, [selectedTargetId, loadSeries]);
@@ -1188,6 +1198,11 @@ function ReflectorHistoryView({ timeRange, reloadKey, retentionDays }: HistoryVi
     } finally {
       setLoading(false);
     }
+  // reloadKey is load-bearing and must NOT be removed: it is unused inside the
+  // callback BY DESIGN. Bumping it changes this callback's identity, which the
+  // effect below depends on, which is what makes the Refresh control refetch.
+  // Dropping it would leave Refresh doing nothing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeRange, reloadKey]);
 
   useEffect(() => { load(); }, [load]);
@@ -1204,6 +1219,11 @@ function ReflectorHistoryView({ timeRange, reloadKey, retentionDays }: HistoryVi
     } finally {
       setPeerLoading(false);
     }
+  // reloadKey is load-bearing and must NOT be removed: it is unused inside the
+  // callback BY DESIGN. Bumping it changes this callback's identity, which the
+  // effect below depends on, which is what makes the Refresh control refetch.
+  // Dropping it would leave Refresh doing nothing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeRange, reloadKey]);
 
   useEffect(() => { if (selectedPeerIp) loadPeerSeries(selectedPeerIp); }, [selectedPeerIp, loadPeerSeries]);

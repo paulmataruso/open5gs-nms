@@ -3,7 +3,11 @@
   "parserOptions": {
     "ecmaVersion": 2022,
     "sourceType": "module",
-    "project": "./tsconfig.json"
+    // tsconfig.eslint.json, not tsconfig.json: the production compile excludes
+    // the test files, and a file outside the parser's project is a FATAL error,
+    // not a skipped one. Pointing at the production config meant all 120 test
+    // files fataled and none was ever linted. See that file's own comment.
+    "project": "./tsconfig.eslint.json"
   },
   "plugins": ["@typescript-eslint"],
   "extends": [
@@ -15,7 +19,19 @@
     "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
     "@typescript-eslint/explicit-function-return-type": "warn",
     "@typescript-eslint/no-explicit-any": "error",
-    "no-console": "error"
+    "no-console": "error",
+
+    // `while (true)` with an internal `break` is the correct shape for a loop
+    // whose exit condition is not known at the top: the Overpass endpoint
+    // scheduler in domain/rf/osm-buildings.ts and the Mongo pagination loop in
+    // subscriber-controller.ts. Neither is dead code or an inverted test, and
+    // ESLint 9 changed this rule's own default to stop flagging them
+    // (checkLoops: "allExceptWhileTrue") — 8.57 takes only a boolean here and
+    // rejects that string as a schema error. The useful half of the rule is
+    // untouched: a constant condition in an `if`, ternary or `&&` is still an
+    // error. Kept identical to frontend/.eslintrc.cjs on purpose — one policy,
+    // two workspaces. Tighten to "allExceptWhileTrue" at the ESLint 9 migration.
+    "no-constant-condition": ["error", { "checkLoops": false }]
   },
   "ignorePatterns": ["dist", "node_modules"]
 }

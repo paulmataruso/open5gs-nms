@@ -84,6 +84,9 @@ export function PlmnMigrationTab(): JSX.Element {
     } catch { /* ignore */ }
   };
 
+  // Mount-only on purpose: the backup list is loaded once when the tab opens,
+  // and refreshed explicitly by the actions that change it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { loadBackups(); }, []);
 
   const handleLoadPlan = async () => {

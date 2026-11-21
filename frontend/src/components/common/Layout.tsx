@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import { ChevronLeft, ChevronRight, EyeOff } from 'lucide-react';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
 import { NmsLogo, NmsLogoMark } from './NmsLogo';
 import { UserMenu } from './UserMenu';
 import { NAV_ITEMS } from './navItems';
