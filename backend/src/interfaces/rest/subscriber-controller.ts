@@ -235,7 +235,7 @@ export function createSubscriberRouter(
   });
 
   router.post('/bulk-add-apn', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { sessions, overwrite = false, sst = 1, sd, imsis } = req.body as { sessions: any[]; overwrite?: boolean; sst?: number; sd?: string; imsis?: string[] };
     if (!sessions?.length) return res.status(400).json({ error: 'sessions array is required' });
     try {
@@ -248,7 +248,7 @@ export function createSubscriberRouter(
   });
 
   router.post('/auto-assign-msisdn', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { startingNumber, overwrite = false, imsis } = req.body as { startingNumber: string; overwrite?: boolean; imsis?: string[] };
     if (!startingNumber) return res.status(400).json({ error: 'startingNumber is required' });
     try {

@@ -147,7 +147,7 @@ export function createSpeedtestRouter(logger: pino.Logger, auditLogger: IAuditLo
 
   // POST /api/speedtest/start  { bindIp, httpPort, httpsPort, enableHttps }
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const bindIp = validateBindIp(req.body?.bindIp);
       const httpPort = validatePort(req.body?.httpPort, 'HTTP port');
@@ -187,7 +187,7 @@ export function createSpeedtestRouter(logger: pino.Logger, auditLogger: IAuditLo
 
   // POST /api/speedtest/stop
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await docker(['rm', '-f', CONTAINER_NAME]).catch(() => {});
       await auditLogger.log({ action: 'speedtest_stop', user, details: 'stopped', success: true });

@@ -286,7 +286,7 @@ export function createVowifiValidationRouter(
   });
 
   router.post('/run', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (testRunning) {
       return res.status(409).json({ success: false, error: 'A VoWiFi validation test is already running.' });
     }

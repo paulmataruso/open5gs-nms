@@ -80,7 +80,7 @@ export function createCdrRouter(
   });
 
   router.put('/settings', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { retentionDays } = req.body as { retentionDays?: number };
     if (!Number.isFinite(retentionDays) || retentionDays! < MIN_CDR_RETENTION_DAYS || retentionDays! > MAX_CDR_RETENTION_DAYS) {
       return res.status(400).json({ success: false, error: `retentionDays must be between ${MIN_CDR_RETENTION_DAYS} and ${MAX_CDR_RETENTION_DAYS}` });
@@ -101,7 +101,7 @@ export function createCdrRouter(
   // interval" convenience this project already gives other background
   // pollers (e.g. OCS's own manual /sync-subscribers).
   router.post('/sync-now', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await syncMonitor.syncNow();
       await auditLogger.log({ action: 'cdr_sync_force_run', user, details: 'manual sync', success: true });
@@ -118,7 +118,7 @@ export function createCdrRouter(
   // No availability guard needed (unlike voice-charging's OCS dependency) —
   // this only touches the already-running scscf MySQL database.
   router.post('/kamailio-acc', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { enabled } = req.body as { enabled?: boolean };
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ success: false, error: 'enabled must be a boolean' });

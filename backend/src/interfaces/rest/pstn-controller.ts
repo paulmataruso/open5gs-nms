@@ -1677,7 +1677,7 @@ export function createPstnRouter(
   // PoC: verifies codec_amr.so actually loads afterward (Phase 0's gate
   // condition) rather than just trusting the package installed cleanly.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!(await isImsInstalled())) {
       return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. PSTN Gateway is built entirely on top of IMS\'s Kamailio signaling chain.' });
     }
@@ -1694,7 +1694,7 @@ export function createPstnRouter(
 
   // POST /api/pstn/configure — body: { asteriskIp?, echoTestNumber? }
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const asteriskIp = (req.body.asteriskIp as string) || DEFAULT_ASTERISK_IP;
     const echoTestNumber = req.body.echoTestNumber as string | undefined;
     const result = await configurePstn({ asteriskIp, echoTestNumber }, mongoUri, subscriberRepo, hostExecutor);
@@ -1729,7 +1729,7 @@ export function createPstnRouter(
 
   // POST /api/pstn/extensions — body: { extension, subscriberImsi, label? }
   router.post('/extensions', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { subscriberImsi, label } = req.body as { extension?: string; subscriberImsi?: string; label?: string };
     const rawExtension = req.body.extension as string | undefined;
     if (!rawExtension || !EXTENSION_INPUT_RE.test(rawExtension)) {
@@ -1775,7 +1775,7 @@ export function createPstnRouter(
 
   // DELETE /api/pstn/extensions/:extension
   router.delete('/extensions/:extension', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const extension = decodeURIComponent(req.params.extension);
     try {
       await withExtensions(mongoUri, col => col.deleteOne({ extension }));
@@ -1816,7 +1816,7 @@ export function createPstnRouter(
 
   // POST /api/pstn/did-mappings — body: { did, subscriberImsi, label? }
   router.post('/did-mappings', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { subscriberImsi, label } = req.body as { did?: string; subscriberImsi?: string; label?: string };
     const rawDid = req.body.did as string | undefined;
     if (!rawDid || !EXTENSION_INPUT_RE.test(rawDid)) {
@@ -1851,7 +1851,7 @@ export function createPstnRouter(
   // editor uses this instead of delete+re-add, which would otherwise lose
   // the row's position/history for a simple value change.
   router.put('/did-mappings/:did', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const currentDid = decodeURIComponent(req.params.did);
     const rawDid = (req.body.did as string | undefined) ?? currentDid;
     if (!EXTENSION_INPUT_RE.test(rawDid)) {
@@ -1887,7 +1887,7 @@ export function createPstnRouter(
 
   // DELETE /api/pstn/did-mappings/:did
   router.delete('/did-mappings/:did', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const did = decodeURIComponent(req.params.did);
     try {
       await withDidMappings(mongoUri, col => col.deleteOne({ did }));
@@ -1929,7 +1929,7 @@ export function createPstnRouter(
   // erroring, since "change what this subscriber presents outbound" is the
   // expected edit path (there's no meaningful "second outbound caller ID").
   router.post('/outbound-caller-ids', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { subscriberImsi, label } = req.body as { subscriberImsi?: string; label?: string };
     const rawCallerId = req.body.callerId as string | undefined;
     if (!rawCallerId || !EXTENSION_INPUT_RE.test(rawCallerId)) {
@@ -1968,7 +1968,7 @@ export function createPstnRouter(
   // has their own entry (1:1 by design — see OutboundCallerId's own
   // comment) rather than silently clobbering it.
   router.put('/outbound-caller-ids/:imsi', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const currentImsi = decodeURIComponent(req.params.imsi);
     const rawCallerId = req.body.callerId as string | undefined;
     if (!rawCallerId || !EXTENSION_INPUT_RE.test(rawCallerId)) {
@@ -2005,7 +2005,7 @@ export function createPstnRouter(
 
   // DELETE /api/pstn/outbound-caller-ids/:imsi
   router.delete('/outbound-caller-ids/:imsi', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const subscriberImsi = decodeURIComponent(req.params.imsi);
     try {
       await withOutboundCallerIds(mongoUri, col => col.deleteOne({ subscriberImsi }));
@@ -2029,7 +2029,7 @@ export function createPstnRouter(
   // configure-and-apply, matching the higher blast radius of opening a real
   // port to the outside world.
   router.post('/external-trunk/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = readPstnState();
     if (!state) {
       return res.status(400).json({ success: false, error: 'PSTN Gateway is not configured yet — configure it first.' });
@@ -2077,7 +2077,7 @@ export function createPstnRouter(
   });
 
   router.post('/external-trunk/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = readPstnState();
     if (!state?.externalTrunk) {
       return res.status(400).json({ success: false, error: 'Configure the external trunk (bind IP, provider host/CIDR) before enabling it.' });
@@ -2094,7 +2094,7 @@ export function createPstnRouter(
   });
 
   router.post('/external-trunk/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = readPstnState();
     if (!state?.externalTrunk) {
       return res.status(400).json({ success: false, error: 'External trunk is not configured.' });
@@ -2111,7 +2111,7 @@ export function createPstnRouter(
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', 'asterisk']);
       await ensureNativeRtpBridgeSuspended();
@@ -2130,7 +2130,7 @@ export function createPstnRouter(
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', 'asterisk']);
       await auditLogger.log({ action: 'pstn_stop', user, details: 'asterisk stopped', success: true });
@@ -2141,7 +2141,7 @@ export function createPstnRouter(
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', 'asterisk']);
       await ensureNativeRtpBridgeSuspended();
@@ -2172,7 +2172,7 @@ export function createPstnRouter(
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path, content } = req.body as { path: string; content: string };
     if (!PSTN_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
     try {
@@ -2186,7 +2186,7 @@ export function createPstnRouter(
   });
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const services = (req.body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);
@@ -2201,7 +2201,7 @@ export function createPstnRouter(
   // POST /api/pstn/disable — remove the dispatcher entry (S-CSCF stops routing
   // PSTN-bound calls to Asterisk) without uninstalling Asterisk itself.
   router.post('/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await clearDispatcherEntry();
       await auditLogger.log({ action: 'pstn_disable', user, details: 'dispatcher entry removed', success: true });
@@ -2214,7 +2214,7 @@ export function createPstnRouter(
 
   // POST /api/pstn/enable — restore the dispatcher entry using the last-configured Asterisk IP
   router.post('/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = readPstnState();
       if (!state) return res.status(400).json({ success: false, error: 'No saved config — use Configure first.' });
@@ -2233,7 +2233,7 @@ export function createPstnRouter(
   // pstnEnabled/dispatcher-wiring toggle, an unrelated concern on the same
   // page. See setCrossRanCalling() for the full orchestration.
   router.post('/cross-ran/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const result = await setCrossRanCalling(true, mongoUri, subscriberRepo);
     await auditLogger.log({ action: 'pstn_cross_ran_enable', user, details: result.error ?? 'enabled', success: result.success });
     if (!result.success) return res.status(400).json({ success: false, error: result.error, collisions: result.collisions });
@@ -2241,7 +2241,7 @@ export function createPstnRouter(
   });
 
   router.post('/cross-ran/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const result = await setCrossRanCalling(false, mongoUri, subscriberRepo);
     await auditLogger.log({ action: 'pstn_cross_ran_disable', user, details: result.error ?? 'disabled', success: result.success });
     if (!result.success) return res.status(400).json({ success: false, error: result.error });
@@ -2250,7 +2250,7 @@ export function createPstnRouter(
 
   // POST /api/pstn/uninstall
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

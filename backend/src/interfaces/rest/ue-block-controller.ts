@@ -24,7 +24,7 @@ export const createUeBlockRouter = (
   });
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -51,7 +51,7 @@ export const createUeBlockRouter = (
   // persistent per-UE nftables blackhole that survives any future re-attach.
   router.post('/:imsi', requireAdmin, async (req: Request, res: Response) => {
     const imsi = decodeURIComponent(req.params.imsi);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!IMSI_RE.test(imsi)) {
       res.status(400).json({ error: 'Invalid IMSI' });
       return;
@@ -84,7 +84,7 @@ export const createUeBlockRouter = (
 
   router.delete('/:imsi', requireAdmin, async (req: Request, res: Response) => {
     const imsi = decodeURIComponent(req.params.imsi);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await ueBlockService.unblock(imsi);
       logger.info({ imsi, user }, 'UE unblocked');

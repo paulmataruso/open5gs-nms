@@ -1437,7 +1437,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const preState = loadState();
     if (preState.installStatus === 'installing') {
       res.status(409).json({ success: false, error: 'An install is already in progress.' });
@@ -1455,7 +1455,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const body = req.body ?? {};
     const result = await configureSecgw({
       gatewayIp: typeof body.gatewayIp === 'string' ? body.gatewayIp : '',
@@ -1474,7 +1474,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // epc zone via the DNS/FQDN Migration Wizard) gets set up AFTER SecGW was already
   // configured, since Configure's own attempt above is silent/best-effort.
   router.post('/dns-record', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       if (!state.gatewayIp) {
@@ -1498,7 +1498,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['enable', '--now', SERVICE_NAME], 20000);
       await auditLogger.log({ action: 'secgw_start', user, details: 'Started strongSwan', success: true });
@@ -1510,7 +1510,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['disable', '--now', SERVICE_NAME], 20000);
       await auditLogger.log({ action: 'secgw_stop', user, details: 'Stopped strongSwan', success: true });
@@ -1522,7 +1522,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', SERVICE_NAME], 20000);
       await nsenter('swanctl', ['--load-all'], 15000).catch(() => {});
@@ -1545,7 +1545,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/radios', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       if (!state.configured || !state.gatewayIp || !state.gatewayFqdn) {
@@ -1686,7 +1686,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // into cert mode, deletes the old one when switching out of it). Not allowed on a
   // revoked radio — add a new one instead, same rule rotate-credential already applies.
   router.put('/radios/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -1856,7 +1856,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // the conf.d file, --load-all, --terminate the IKE_SA), just without the
   // cert-revoke/status='revoked' step.
   router.post('/radios/:id/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -1882,7 +1882,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // settings (identical to what add/edit would generate) and loads it, so the
   // radio can reconnect without touching its certificate/PSK.
   router.post('/radios/:id/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -1907,7 +1907,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.delete('/radios/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -1946,7 +1946,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // its staging/bundle directory) — works on a radio in any status, including one
   // that was never revoked first (does the same live teardown inline in that case).
   router.delete('/radios/:id/permanent', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const idx = state.radios.findIndex(r => r.id === req.params.id);
@@ -1986,7 +1986,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // button covers both, since the operator-facing action is conceptually the same:
   // "give me a fresh credential and connection-info sheet for this radio").
   router.post('/radios/:id/rotate-credential', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -2082,7 +2082,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/radios/:id/test-tunnel', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -2106,7 +2106,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.get('/radios/:id/bundle', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const radio = state.radios.find(r => r.id === req.params.id);
@@ -2170,7 +2170,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path: p, content } = req.body ?? {};
     if (!isAllowedConfigPath(p) || typeof content !== 'string') {
       res.status(400).json({ success: false, error: 'Invalid request' });
@@ -2191,7 +2191,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

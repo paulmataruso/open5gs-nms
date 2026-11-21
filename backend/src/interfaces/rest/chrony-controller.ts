@@ -277,7 +277,7 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
   // PUT /api/chrony/config
   router.put('/config', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const cfg  = req.body as ChronyConfig;
     try {
       const content = serializeConfig(cfg);
@@ -298,7 +298,7 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
   // POST /api/chrony/install — streams output
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
@@ -318,7 +318,7 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
   // POST /api/chrony/restart
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', 'chrony']);
       await auditLogger.log({ action: 'chrony_restart', user, details: 'chrony restarted', success: true });
@@ -330,7 +330,7 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
   // POST /api/chrony/start
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', 'chrony']);
       await auditLogger.log({ action: 'chrony_start', user, details: 'chrony started', success: true });
@@ -352,7 +352,7 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
   // POST /api/chrony/stop
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', 'chrony']);
       await auditLogger.log({ action: 'chrony_stop', user, details: 'chrony stopped', success: true });

@@ -15,7 +15,7 @@ export function createEsimRouter(
   // Creates a real, likely billable eSIM activation code on the user's
   // Simlessly account — admin-only, always audit logged.
   router.post('/generate', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { iccid, imsi } = req.body ?? {};
 
     try {

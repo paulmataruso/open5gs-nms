@@ -1045,7 +1045,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (!['idle', 'failed', 'complete'].includes(state.installStatus)) {
       res.status(409).json({ success: false, error: `An install is already in progress (status: ${state.installStatus})` });
@@ -1057,7 +1057,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const body = req.body ?? {};
       const epdgIp = typeof body.epdgIp === 'string' && body.epdgIp ? body.epdgIp : DEFAULT_EPDG_IP;
@@ -1074,7 +1074,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['enable', '--now', 'vowifi-vectorcore-aaa']);
       await new Promise(r => setTimeout(r, 1500));
@@ -1092,7 +1092,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['disable', '--now', 'vowifi-vectorcore-epdg']).catch(() => {});
       await nsenter('systemctl', ['disable', '--now', 'vowifi-vectorcore-aaa']).catch(() => {});
@@ -1105,7 +1105,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', 'vowifi-vectorcore-aaa']);
       await new Promise(r => setTimeout(r, 1500));
@@ -1133,7 +1133,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path: p, content } = req.body ?? {};
     if (!isAllowedConfigPath(p) || typeof content !== 'string') { res.status(400).json({ success: false, error: 'Invalid request' }); return; }
     try {
@@ -1167,7 +1167,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

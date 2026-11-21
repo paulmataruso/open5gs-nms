@@ -112,7 +112,7 @@ export function createDhcpRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   // alternative is a service that silently fails to come back and a UI that
   // reported success. Warnings are returned alongside the saved config instead.
   router.put('/config', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const cfg = req.body?.config as DhcpConfig | undefined;
       if (!cfg || !Array.isArray(cfg.subnets) || !Array.isArray(cfg.interfaces)) {
@@ -179,7 +179,7 @@ export function createDhcpRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   // packages and runs well past nginx's generic 120s /api/ read timeout. Its
   // path is in nginx's streaming-timeout regex (CLAUDE.md pattern #5).
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -218,7 +218,7 @@ export function createDhcpRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   // afterwards rather than reporting the command's own exit code.
   for (const action of ['start', 'stop', 'restart'] as const) {
     router.post(`/${action}`, requireAdmin, async (req: Request, res: Response) => {
-      const user = (req as any).user?.username ?? 'unknown';
+      const user = req.user?.username ?? 'unknown';
       try {
         if (action === 'start') {
           const conf = await readHostFile(KEA_CONF_PATH);

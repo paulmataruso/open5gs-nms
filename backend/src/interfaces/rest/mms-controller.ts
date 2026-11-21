@@ -1080,7 +1080,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   // POST /api/mms/install — streaming: Go toolchain + build deps, clone,
   // build (embeds the web UI first), deploy the systemd unit as-is.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!(await isImsInstalled())) {
       return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. MMS relies on IMS being the default SMS delivery path for a working deployment (see CLAUDE.md).' });
     }
@@ -1097,7 +1097,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // POST /api/mms/configure — body: { mm1PublicIp }
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { mm1PublicIp } = req.body as { mm1PublicIp?: string };
     const result = await configureMms({ mm1PublicIp: mm1PublicIp ?? '' }, subscriberRepo);
     if (!result.success) {
@@ -1121,7 +1121,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   // /sync-subscribers (CLAUDE.md gotcha #10) — a subscriber deleted or
   // MSISDN-cleared in Open5GS must not orphan forever in VectorCore's table.
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const result = await syncMmsSubscribers(subscriberRepo, logger);
       await auditLogger.log({ action: 'mms_sync_subscribers', user, details: `synced=${result.synced} failed=${result.failed.length} removed=${result.removed}`, success: true });
@@ -1134,7 +1134,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', SYSTEMD_UNIT]);
       // vectorcore-mm1-proxy.service's PartOf=vectorcore-mmsc.service only
@@ -1151,7 +1151,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'mms_stop', user, details: 'stopped', success: true });
@@ -1162,7 +1162,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', SYSTEMD_UNIT]);
       const state = readMmsState();
@@ -1184,7 +1184,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
   // SMS/PSTN uninstall convention of a full clean removal — the frontend
   // gates this behind an explicit confirmation dialog, same as those).
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

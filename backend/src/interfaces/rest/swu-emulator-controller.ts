@@ -308,7 +308,7 @@ export function createSwuEmulatorRouter(
 
   // POST /install — streamed, synchronous (clone + venv + pip install, no compilation, ~1-2 min)
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -349,7 +349,7 @@ export function createSwuEmulatorRouter(
 
   // POST /run — starts (or restarts) a single test tunnel against the configured VoWiFi ePDG
   router.post('/run', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { imsi, k, opc, staticIp } = req.body as { imsi?: string; k?: string; opc?: string; staticIp?: string };
       const result = await startSwuTestTunnel(subscriberRepo, { imsi, k, opc, staticIp });
@@ -366,7 +366,7 @@ export function createSwuEmulatorRouter(
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await stopSwuTestTunnel(subscriberRepo, logger);
       await auditLogger.log({ action: 'swu_emulator_stop', user, success: true });

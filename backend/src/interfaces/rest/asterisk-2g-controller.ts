@@ -1074,7 +1074,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -1087,7 +1087,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { bindIp, bindPort, msisdnMatchPattern, echoTestNumber } = req.body as { bindIp?: string; bindPort?: number; msisdnMatchPattern?: string; echoTestNumber?: string };
     const result = await configureAsterisk2g({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber }, mongoUri, subscriberRepo);
     if (!result.success) {
@@ -1121,7 +1121,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
 
   // POST /api/asterisk-2g/extensions — body: { extension, subscriberImsi, label? }
   router.post('/extensions', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { subscriberImsi, label } = req.body as { extension?: string; subscriberImsi?: string; label?: string };
     const rawExtension = req.body.extension as string | undefined;
     if (!rawExtension || !EXTENSION_INPUT_RE.test(rawExtension)) {
@@ -1170,7 +1170,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
 
   // DELETE /api/asterisk-2g/extensions/:extension
   router.delete('/extensions/:extension', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const extension = decodeURIComponent(req.params.extension);
     try {
       await withGsm2gExtensions(mongoUri, col => col.deleteOne({ extension }));
@@ -1184,7 +1184,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', SYSTEMD_UNIT]);
       await ensureNativeRtpBridgeSuspended2g();
@@ -1196,7 +1196,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'asterisk2g_stop', user, details: '', success: true });
@@ -1207,7 +1207,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', SYSTEMD_UNIT]);
       await ensureNativeRtpBridgeSuspended2g();
@@ -1236,7 +1236,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path, content } = req.body as { path: string; content: string };
     if (!A2G_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
     try {
@@ -1250,7 +1250,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const services = (req.body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);
@@ -1276,7 +1276,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   // direction can't be a static import) so whichever of the two runs LAST
   // correctly finishes the job, order-independent.
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

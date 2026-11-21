@@ -31,7 +31,7 @@ export const createHnbBlockRouter = (
   // GetInterfaceStatus source for 3G — HNBGW's own VTY is the only live
   // "who's connected right now" source.
   router.post('/all', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const hnbListRaw = await hnbgwVtyCommand('show hnb all').catch(() => '');
       const ips = [...new Set(listRegisteredHnbIps(hnbListRaw).filter(ip => IPV4_RE.test(ip)))];
@@ -50,7 +50,7 @@ export const createHnbBlockRouter = (
 
   router.post('/:ip', requireAdmin, async (req: Request, res: Response) => {
     const ip = decodeURIComponent(req.params.ip);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!IPV4_RE.test(ip)) {
       res.status(400).json({ error: 'Invalid IPv4 address' });
       return;
@@ -69,7 +69,7 @@ export const createHnbBlockRouter = (
 
   router.delete('/:ip', requireAdmin, async (req: Request, res: Response) => {
     const ip = decodeURIComponent(req.params.ip);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await hnbBlockService.unblock(ip);
       logger.info({ ip, user }, 'HNB Iuh unblocked');

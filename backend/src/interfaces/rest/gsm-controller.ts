@@ -2154,7 +2154,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // see installGsm() above for the actual logic, extracted so a
   // bootstrap/restore orchestrator can call it in-process too.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -2170,7 +2170,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // Thin wrapper — see configureGsm() above for the actual logic, extracted
   // so the IP Plan apply orchestrator can call it in-process too.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { eigrpApplied } = await configureGsm(req.body as ConfigureGsmInput);
       const state = loadGsmState();
@@ -2191,7 +2191,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // separately-managed SIP daemon the operator is mid-way through wiring up.
   // POST /api/gsm/sip/configure — Body: { localIp, localPort, remoteHost, remotePort }
   router.post('/sip/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const result = await configureGsmSip(req.body);
       if (!result.success) {
@@ -2212,7 +2212,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/sip/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', 'osmo-sip-connector']);
       await auditLogger.log({ action: 'gsm_sip_start', user, details: '', success: true });
@@ -2223,7 +2223,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/sip/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', 'osmo-sip-connector']);
       // Deliberately does NOT touch osmo-msc's MNCC mode — if the operator
@@ -2244,7 +2244,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // comment for the full incident this replaced (a leftover `mncc external`
   // silently breaking plain 2G<->2G calling with no operator-visible cause).
   router.post('/sip/mncc-mode', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const mode = req.body?.mode;
     if (mode !== 'internal' && mode !== 'external') {
       res.status(400).json({ success: false, error: "mode must be 'internal' or 'external'" });
@@ -2262,7 +2262,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/sip/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', 'osmo-sip-connector']);
       await auditLogger.log({ action: 'gsm_sip_restart', user, details: '', success: true });
@@ -2386,7 +2386,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // local or remote, is trusted as-is; this makes no assumption about local
   // attachment and requires no bind-interface selection.
   router.post('/discover', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const cidr = req.body.cidr as string;
     if (!cidr || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(cidr)) {
       res.status(400).json({ success: false, error: 'cidr is required, e.g. 172.16.0.0/24' });
@@ -2405,7 +2405,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // POST /api/gsm/bts — add a BTS entry
   router.post('/bts', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
       const backend = req.body.backend as BtsBackend;
@@ -2481,7 +2481,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // PUT /api/gsm/bts/:id — edit an existing entry's settings
   router.put('/bts/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
       const idx = state.btsEntries.findIndex(e => e.id === req.params.id);
@@ -2545,7 +2545,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // POST /api/gsm/bts/:id/provision — retry the physical repoint for an
   // existing remote-abis-ip entry without re-entering/changing anything.
   router.post('/bts/:id/provision', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadGsmState();
     const entry = state.btsEntries.find(e => e.id === req.params.id);
     if (!entry) { res.status(404).json({ success: false, error: 'BTS entry not found' }); return; }
@@ -2567,7 +2567,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // (ipaccess-config -r), without changing its OML target. It drops OML/RSL
   // and comes back on its own in ~60-90s.
   router.post('/bts/:id/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const entry = loadGsmState().btsEntries.find(e => e.id === req.params.id);
     if (!entry) { res.status(404).json({ success: false, error: 'BTS entry not found' }); return; }
     if (entry.backend !== 'remote-abis-ip' || !entry.remoteIp) {
@@ -2728,7 +2728,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   };
 
   const setBtsBlocked = (blocked: boolean) => async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadGsmState();
     const idx = state.btsEntries.findIndex(e => e.id === req.params.id);
     if (idx === -1) { res.status(404).json({ success: false, error: 'BTS entry not found' }); return; }
@@ -2757,7 +2757,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // NACKing a bad command, not a stale flag — no reason to risk a redundant
   // command against a BTS that's already confirmed locked.
   router.post('/bts/block-all', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadGsmState();
     const results: { id: string; name: string; success: boolean; error?: string }[] = [];
     for (let idx = 0; idx < state.btsEntries.length; idx++) {
@@ -2772,7 +2772,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // DELETE /api/gsm/bts/:id
   router.delete('/bts/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
       const removed = state.btsEntries.find(e => e.id === req.params.id);
@@ -2805,7 +2805,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     ...(state.gprsEnabled && state.btsEntries.some(e => e.backend === 'virtual' || e.backend === 'trx') ? ['osmo-pcu'] : []),
   ];
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
       // `enable --now`, not plain `start`. Nothing in this module ever enabled
@@ -2827,7 +2827,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     }
   });
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       // `disable --now` is the counterpart to /start's `enable --now`: a plain
       // `stop` against an enabled unit would come straight back on the next
@@ -2840,7 +2840,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     }
   });
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
       for (const svc of lifecycleServices(state)) await nsenter('systemctl', ['restart', svc]);
@@ -2870,7 +2870,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path, content } = req.body as { path: string; content: string };
     if (!GSM_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
     try {
@@ -2884,7 +2884,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const services = (req.body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);
@@ -2898,7 +2898,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // POST /api/gsm/uninstall
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

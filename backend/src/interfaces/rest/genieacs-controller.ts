@@ -1228,7 +1228,7 @@ export function createGenieacsRouter(
   // from deviceId to prevent SSRF (fix for bug report 3.5).
   router.post('/execute-tasks', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId, tasks } = req.body as { deviceId: string; tasks: Array<{ body: Record<string, any> }> };
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
 
     if (!deviceId || !Array.isArray(tasks) || tasks.length === 0) {
       return res.status(400).json({ success: false, error: 'deviceId and tasks array required' });
@@ -1477,7 +1477,7 @@ export function createGenieacsRouter(
   // ── POST /api/genieacs/reboot/:deviceId ──────────────────────────────────
   router.post('/reboot/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
-    const user         = (req as any).user?.username ?? 'unknown';
+    const user         = req.user?.username ?? 'unknown';
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
 
@@ -1508,7 +1508,7 @@ export function createGenieacsRouter(
   // same pattern the neighbor-table save endpoint used before it was removed.
   router.post('/mme-pool/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
-    const user         = (req as any).user?.username ?? 'unknown';
+    const user         = req.user?.username ?? 'unknown';
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl       = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
     const { entries, originalEntries } = req.body as { entries: MmePoolEntry[]; originalEntries?: MmePoolEntry[] };
@@ -1569,7 +1569,7 @@ export function createGenieacsRouter(
   // directly observed on real hardware.
   router.post('/mme-pool-config/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
-    const user         = (req as any).user?.username ?? 'unknown';
+    const user         = req.user?.username ?? 'unknown';
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl       = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
     const cfg = req.body as MmePoolConfig;
@@ -1617,7 +1617,7 @@ export function createGenieacsRouter(
 
   // ── POST /api/genieacs/reboot-all ────────────────────────────────────────
   router.post('/reboot-all', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
 
     try {
       const listResp = await fetch(`${nbiUrl}/devices?projection=_id`);
@@ -1656,7 +1656,7 @@ export function createGenieacsRouter(
   router.post('/rf/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId }       = req.params;
     const { enable }         = req.body as { enable: boolean };
-    const user               = (req as any).user?.username ?? 'unknown';
+    const user               = req.user?.username ?? 'unknown';
     const encodedId          = encodeDeviceId(deviceId);
     const taskUrl            = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
     const action             = enable ? 'radio_rf_enable' : 'radio_rf_disable';
@@ -1690,7 +1690,7 @@ export function createGenieacsRouter(
   // ── POST /api/genieacs/rf-all ─────────────────────────────────────────────
   router.post('/rf-all', requireAdmin, async (req: Request, res: Response) => {
     const { enable } = req.body as { enable: boolean };
-    const user       = (req as any).user?.username ?? 'unknown';
+    const user       = req.user?.username ?? 'unknown';
 
     try {
       const listResp = await fetch(`${nbiUrl}/devices?projection=${encodeURIComponent('_id,_deviceId,Device.DeviceInfo.SAS.enableMode')}`);
@@ -1749,7 +1749,7 @@ export function createGenieacsRouter(
   router.post('/rf-sercomm/:deviceId', requireAdmin, async (req: Request, res: Response) => {
     const { deviceId } = req.params;
     const { enable }   = req.body as { enable: boolean };
-    const user         = (req as any).user?.username ?? 'unknown';
+    const user         = req.user?.username ?? 'unknown';
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
     const action       = enable ? 'radio_rf_enable' : 'radio_rf_disable';
@@ -1786,7 +1786,7 @@ export function createGenieacsRouter(
   // RF on/off for all Sercomm devices via AdminState
   router.post('/rf-sercomm-all', requireAdmin, async (req: Request, res: Response) => {
     const { enable } = req.body as { enable: boolean };
-    const user       = (req as any).user?.username ?? 'unknown';
+    const user       = req.user?.username ?? 'unknown';
     try {
       const listResp = await fetch(`${nbiUrl}/devices?projection=_id,_deviceId`);
       if (!listResp.ok) throw new Error(`Failed to list devices: ${listResp.status}`);

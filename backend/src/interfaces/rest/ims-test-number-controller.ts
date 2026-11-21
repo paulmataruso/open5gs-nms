@@ -772,7 +772,7 @@ export function createImsTestNumberRouter(manager: ImsTestNumberManager, auditLo
   });
 
   router.post('/', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const info = await manager.create(req.body?.msisdn);
       await auditLogger.log({
@@ -787,7 +787,7 @@ export function createImsTestNumberRouter(manager: ImsTestNumberManager, auditLo
   });
 
   router.delete('/:msisdn', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await manager.stop(req.params.msisdn);
       await auditLogger.log({
@@ -802,7 +802,7 @@ export function createImsTestNumberRouter(manager: ImsTestNumberManager, auditLo
   });
 
   router.post('/:msisdn/call', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const target = req.body?.targetNumber;
     if (!target || typeof target !== 'string') {
       return res.status(400).json({ success: false, error: 'targetNumber is required' });
@@ -821,7 +821,7 @@ export function createImsTestNumberRouter(manager: ImsTestNumberManager, auditLo
   });
 
   router.post('/:msisdn/hangup', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await manager.hangup(req.params.msisdn);
       await auditLogger.log({

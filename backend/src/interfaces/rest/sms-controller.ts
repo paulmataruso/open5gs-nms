@@ -1032,7 +1032,7 @@ export function createSmsRouter(
 
   // POST /api/sms/install — streaming apt install
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
@@ -1055,7 +1055,7 @@ export function createSmsRouter(
   //   hlrBindIp  — IP OsmoHLR binds GSUP on; OsmoMSC connects here (default: 127.0.0.1)
   //   mmeLocalIp — MME's local SCTP bind for the SGs link           (default: '' = OS picks)
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const mscBindIp  = (req.body.mscBindIp  as string) || '127.0.0.2';
       const hlrBindIp  = (req.body.hlrBindIp  as string) || '127.0.0.1';
@@ -1078,7 +1078,7 @@ export function createSmsRouter(
 
   // POST /api/sms/sync-subscribers
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const result = await syncHlrSubscribers(subscriberRepo, logger);
       await auditLogger.log({ action: 'sms_sync_subscribers', user, details: `synced=${result.synced} failed=${result.failed.length} removed=${result.removed}`, success: true });
@@ -1094,7 +1094,7 @@ export function createSmsRouter(
   // <from> send <text>`. Useful for testing the SMS-over-SGs path without a real
   // handset — the message is injected directly at the MSC, not sent from a UE.
   router.post('/send-test', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { to, from, text } = req.body as { to?: string; from?: string; text?: string };
 
     if (!to || !/^\d{5,16}$/.test(to)) {
@@ -1143,7 +1143,7 @@ export function createSmsRouter(
 
   // POST /api/sms/start
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       // `enable --now`, not plain `start` — same boot-persistence gap found in
       // the 2G module (see gsm-controller.ts's /start comment). These three
@@ -1163,7 +1163,7 @@ export function createSmsRouter(
 
   // POST /api/sms/stop
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       // Counterpart to /start's `enable --now`: a plain stop on an enabled unit
       // would silently come back at the next reboot.
@@ -1179,7 +1179,7 @@ export function createSmsRouter(
 
   // POST /api/sms/disable — save sgsap block, remove from MME, stop Osmocom services
   router.post('/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       if (fs.existsSync(HOST_MME_YAML)) {
         const raw = fs.readFileSync(HOST_MME_YAML, 'utf-8');
@@ -1202,7 +1202,7 @@ export function createSmsRouter(
 
   // POST /api/sms/enable — restore saved sgsap block, start Osmocom services
   router.post('/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       if (!fs.existsSync(HOST_SGSAP_BAK)) {
         return res.status(400).json({ success: false, error: 'No saved config — use Configure first.' });
@@ -1230,7 +1230,7 @@ export function createSmsRouter(
   // Osmocom config files and the HLR database, and purges the osmo-* packages (not
   // sqlite3 — a generic system utility, not SMS-specific, left alone on purpose).
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -1327,7 +1327,7 @@ export function createSmsRouter(
 
   // POST /api/sms/restart
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       for (const svc of ['osmo-stp', 'osmo-hlr', 'osmo-msc']) {
         await nsenter('systemctl', ['restart', svc]);
@@ -1356,7 +1356,7 @@ export function createSmsRouter(
 
   // PUT /api/sms/configs/content
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path: filePath, content } = req.body as { path: string; content: string };
     if (!SMS_ALLOWED_PATHS.has(filePath)) return res.status(403).json({ success: false, error: 'Path not allowed' });
     fs.mkdirSync(filePath.substring(0, filePath.lastIndexOf('/')), { recursive: true });
@@ -1367,7 +1367,7 @@ export function createSmsRouter(
 
   // POST /api/sms/configs/restart
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { services } = req.body as { services: string[] };
     const results: string[] = [];
     for (const svc of services) {

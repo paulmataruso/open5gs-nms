@@ -474,7 +474,7 @@ export function createVolteValidationRouter(logger: pino.Logger, auditLogger: IA
 
   // POST /api/validation/volte/run — streamed: one line per step as it completes.
   router.post('/run', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (testRunning) {
       return res.status(409).json({ success: false, error: 'A VoLTE validation test is already running.' });
     }

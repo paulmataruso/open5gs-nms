@@ -390,7 +390,7 @@ export function createTwampRouter(
   // support, then builds BOTH twamp-client and twamp-server from that same
   // shared module. Idempotent/safe to re-run.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -403,7 +403,7 @@ export function createTwampRouter(
   });
 
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       if (isTwampServerInstalled() || fs.existsSync(`${HOST_ROOT}${TWAMP_SERVER_UNIT_PATH}`)) {
         await hostExecutor.executeCommand('systemctl', ['disable', '--now', TWAMP_SERVER_UNIT]).catch(() => ({} as any));
@@ -436,7 +436,7 @@ export function createTwampRouter(
   });
 
   router.post('/targets', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { name, host, port, protocol, mode, sharedSecret, keyId, packetCount, pollIntervalSeconds, enabled, bindIp } = req.body;
     if (!name || typeof name !== 'string' || !host || typeof host !== 'string') {
       return res.status(400).json({ success: false, error: 'name and host are required' });
@@ -469,7 +469,7 @@ export function createTwampRouter(
   });
 
   router.put('/targets/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'Invalid id' }); }
     const { name, host, port, protocol, mode, sharedSecret, keyId, packetCount, pollIntervalSeconds, enabled, bindIp } = req.body;
@@ -512,7 +512,7 @@ export function createTwampRouter(
   });
 
   router.delete('/targets/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'Invalid id' }); }
     try {
@@ -539,7 +539,7 @@ export function createTwampRouter(
   // test is ~10-12s, well inside a normal request timeout — no need for the
   // streamed/chunked pattern every install endpoint uses).
   router.post('/targets/:id/test', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!isTwampInstalled()) {
       return res.status(400).json({ success: false, error: 'twamp-client is not installed yet — install it above first.' });
     }
@@ -571,7 +571,7 @@ export function createTwampRouter(
   });
 
   router.put('/history/settings', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { retentionDays } = req.body as { retentionDays?: number };
     if (!Number.isFinite(retentionDays) || retentionDays! < MIN_RETENTION_DAYS || retentionDays! > MAX_RETENTION_DAYS) {
       return res.status(400).json({ success: false, error: `retentionDays must be between ${MIN_RETENTION_DAYS} and ${MAX_RETENTION_DAYS}` });
@@ -660,7 +660,7 @@ export function createTwampRouter(
   });
 
   router.post('/server/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const result = await configureTwampServer(req.body, hostExecutor);
     if (!result.success) {
       logger.error({ error: result.error }, 'twamp server configure error');
@@ -672,7 +672,7 @@ export function createTwampRouter(
   });
 
   router.post('/server/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await systemctlOrThrow(hostExecutor, ['start', TWAMP_SERVER_UNIT]);
       await auditLogger.log({ action: 'twamp_server_start', user, details: 'started', success: true });
@@ -683,7 +683,7 @@ export function createTwampRouter(
   });
 
   router.post('/server/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await systemctlOrThrow(hostExecutor, ['stop', TWAMP_SERVER_UNIT]);
       await auditLogger.log({ action: 'twamp_server_stop', user, details: 'stopped', success: true });
@@ -694,7 +694,7 @@ export function createTwampRouter(
   });
 
   router.post('/server/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await systemctlOrThrow(hostExecutor, ['restart', TWAMP_SERVER_UNIT]);
       await auditLogger.log({ action: 'twamp_server_restart', user, details: 'restarted', success: true });

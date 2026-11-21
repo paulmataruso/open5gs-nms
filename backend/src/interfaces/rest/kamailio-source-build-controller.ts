@@ -327,7 +327,7 @@ export function createKamailioSourceBuildRouter(logger: pino.Logger, auditLogger
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const targetTag = (req.body?.targetTag && String(req.body.targetTag).trim()) || DEFAULT_KAMAILIO_TAG;
     if (!isValidKamailioTag(targetTag)) {
       return res.status(400).json({ ok: false, error: 'Invalid target tag — use a plain git tag name (letters, numbers, dots, dashes, underscores only)' });
@@ -403,7 +403,7 @@ export function createKamailioSourceBuildRouter(logger: pino.Logger, auditLogger
   });
 
   router.post('/rollback', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const result = await runRollback(state.snapshotPath, logger);

@@ -24,7 +24,7 @@ export function createApnProfileRouter(useCase: ApnProfileUseCase, logger: pino.
   });
 
   router.post('/', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const input = req.body as ApnProfileInput;
       const profile = await useCase.create(input);
@@ -58,7 +58,7 @@ export function createApnProfileRouter(useCase: ApnProfileUseCase, logger: pino.
   });
 
   router.put('/ipv6-settings', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { parentPrefix } = req.body as { parentPrefix?: string | null };
       await useCase.setIPv6ParentPrefix(parentPrefix ?? null);
@@ -86,7 +86,7 @@ export function createApnProfileRouter(useCase: ApnProfileUseCase, logger: pino.
   });
 
   router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const input = req.body as ApnProfileInput;
       const profile = await useCase.update(req.params.id, input);
@@ -100,7 +100,7 @@ export function createApnProfileRouter(useCase: ApnProfileUseCase, logger: pino.
   });
 
   router.delete('/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await useCase.delete(req.params.id);
       await auditLogger.log({ action: 'apn_profile_delete', user, details: `id=${req.params.id}`, success: true });
@@ -116,7 +116,7 @@ export function createApnProfileRouter(useCase: ApnProfileUseCase, logger: pino.
   // see ApnProfileUseCase.createFromDerived()'s comment for why this is
   // Mongo-only (no smf.yaml/upf.yaml write needed).
   router.post('/:dnn/promote', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const profile = await useCase.createFromDerived(req.params.dnn);
       await auditLogger.log({ action: 'apn_profile_promote', user, details: `dnn=${profile.dnn}`, success: true });

@@ -107,7 +107,7 @@ export function createSipTraceRouter(
   });
 
   router.post('/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const report = await setSipTracingEnabled(true);
       await auditLogger.log({
@@ -127,7 +127,7 @@ export function createSipTraceRouter(
   });
 
   router.post('/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const report = await setSipTracingEnabled(false);
       await auditLogger.log({ action: 'sip_trace_disable', user, target: 'ims-cscf', success: true });
@@ -214,7 +214,7 @@ export function createSipTraceRouter(
   });
 
   router.post('/settings', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const hours = Number((req.body ?? {}).retentionHours);
     if (!Number.isFinite(hours) || hours < MIN_SIP_TRACE_RETENTION_HOURS || hours > MAX_SIP_TRACE_RETENTION_HOURS) {
       res.status(400).json({
@@ -267,7 +267,7 @@ export function createSipTraceRouter(
   });
 
   router.post('/call-debug/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const body = req.body ?? {};
     try {
       const scope = DIALOG_SCOPES.includes(body.dialogScope) ? (body.dialogScope as DialogScope) : 'calls';
@@ -306,7 +306,7 @@ export function createSipTraceRouter(
   });
 
   router.post('/call-debug/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const session = await callDebug.stop('operator');
       if (!session) {
@@ -374,7 +374,7 @@ export function createSipTraceRouter(
   });
 
   router.delete('/call-debug/sessions/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const session = await getSessionFull(db, req.params.id);
       if (session?.status === 'running') {

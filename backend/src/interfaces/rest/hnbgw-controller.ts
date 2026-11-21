@@ -490,7 +490,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // Thin wrapper — see installHnbgw() above for the actual logic, extracted
   // so a bootstrap/restore orchestrator can call it in-process too.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -504,7 +504,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
 
   // Thin wrapper — see configureHnbgw() above for the actual logic.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const body = req.body as Record<string, unknown>;
       const result = await configureHnbgw({
@@ -532,7 +532,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       for (const unit of [HNBGW_MGW_UNIT, 'osmo-hnbgw']) await nsenter('systemctl', ['start', unit]);
       await auditLogger.log({ action: 'hnbgw_start', user, details: 'hnbgw services started', success: true });
@@ -542,7 +542,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     }
   });
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       for (const unit of ['osmo-hnbgw', HNBGW_MGW_UNIT]) await nsenter('systemctl', ['stop', unit]);
       await auditLogger.log({ action: 'hnbgw_stop', user, details: 'hnbgw services stopped', success: true });
@@ -552,7 +552,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     }
   });
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       for (const unit of [HNBGW_MGW_UNIT, 'osmo-hnbgw']) await nsenter('systemctl', ['restart', unit]);
       await auditLogger.log({ action: 'hnbgw_restart', user, details: 'hnbgw services restarted', success: true });
@@ -572,7 +572,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // needs. Requires osmo-hnbgw itself to already be configured and running
   // (it dials out to it, mirroring how a real HNB would).
   router.post('/virtual-hnb/deploy', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!fs.existsSync(HNBGW_CFG_HOST_PATH)) {
       res.status(400).json({ success: false, error: 'Configure OsmoHNBGW itself first — the virtual HNB dials out to it, same as a real one would.' });
       return;
@@ -641,7 +641,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/virtual-hnb/remove', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['disable', '--now', 'osmo-hnodeb']).catch(() => {});
       await nsenter('rm', ['-f', HNODEB_UNIT_PATH]).catch(() => {});
@@ -661,7 +661,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // touches osmo-stp/osmo-msc at all, matching the approved plan's
   // ownership map.
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       for (const unit of ['osmo-hnbgw', HNBGW_MGW_UNIT, 'osmo-hnodeb']) {
         await nsenter('systemctl', ['disable', '--now', unit]).catch(() => {});
@@ -715,7 +715,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path, content } = req.body as { path: string; content: string };
     if (!HNBGW_ALLOWED_PATHS.has(path)) { res.status(403).json({ success: false, error: 'path not allowed' }); return; }
     try {
@@ -729,7 +729,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const services = (req.body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);

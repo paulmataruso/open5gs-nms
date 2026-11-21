@@ -483,7 +483,7 @@ export function createSercommNRRouter(
 
       auditLogger.log({
         action:  'nr_configure',
-        user:    (req as any).user?.username ?? 'unknown',
+        user:    req.user?.username ?? 'unknown',
         target:  id,
         details: `PLMN=${plmn} TAC=${tac} gNBId=${gnbId} AMF=${amfIp} unlock=${unlockCell}`,
         success: true,
@@ -519,7 +519,7 @@ export function createSercommNRRouter(
 
       auditLogger.log({
         action:  'nr_unlock',
-        user:    (req as any).user?.username ?? 'unknown',
+        user:    req.user?.username ?? 'unknown',
         target:  id,
         details: 'adminState=UNLOCKED for all cells',
         success: result.ok,
@@ -548,7 +548,7 @@ export function createSercommNRRouter(
 
       auditLogger.log({
         action:  'nr_lock',
-        user:    (req as any).user?.username ?? 'unknown',
+        user:    req.user?.username ?? 'unknown',
         target:  id,
         details: 'adminState=LOCKED for all cells',
         success: result.ok,
@@ -571,7 +571,7 @@ export function createSercommNRRouter(
 
       auditLogger.log({
         action:  'nr_reboot',
-        user:    (req as any).user?.username ?? 'unknown',
+        user:    req.user?.username ?? 'unknown',
         target:  id,
         success: result.ok,
       });

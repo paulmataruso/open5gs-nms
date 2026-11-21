@@ -141,7 +141,7 @@ export const createQciHwTestRouter = (
   });
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -172,7 +172,7 @@ export const createQciHwTestRouter = (
   });
 
   router.post('/run', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const radioIp = String(req.body?.radioIp || '');
     const qci = Number(req.body?.qci);
 
