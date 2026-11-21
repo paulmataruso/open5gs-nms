@@ -1,4 +1,4 @@
-import { Db } from 'mongodb';
+import { Collection, Db } from 'mongodb';
 import { TwampProtocol } from './twamp-runner';
 
 // ── TWAMP reflector (server-side) long-term history ──────────────────────
@@ -129,7 +129,68 @@ export interface ReflectorPeerSeriesPoint {
   sampleCount: number;
 }
 
-function col(db: Db) {
+// The shapes the four aggregations below actually return. Declared so the
+// driver's generic `aggregate<T>()` carries them through and the `.map()`
+// callbacks stop being `any`, which is where nearly all of this file's
+// findings came from.
+//
+// `_id` is the $group key, not a document id: a peer IP in the summary, a
+// bucket timestamp in both series, and null for the single-row totals.
+// A numeric is optional exactly where the pipeline uses `$$REMOVE`, which
+// omits the field rather than storing a zero -- the distinction the `?? null`
+// at each call site exists to preserve, and the one this file's own comments
+// warn about ("not measured" vs "idle").
+interface ReflectorTotalsAggRow {
+  _id: null;
+  totalSamples: number;
+  activeSamples: number;
+}
+
+interface ReflectorSummaryAggRow {
+  _id: string;
+  protocol: TwampProtocol;
+  presentSamples: number;
+  packetsInRange: number;
+  avgPacketsPerSec?: number;
+  maxPacketsPerSec?: number;
+  maxSessions?: number;
+  firstSeen: Date | number;
+  lastSeen: Date | number;
+  anyCounter?: number | null;
+}
+
+interface ReflectorSeriesAggRow {
+  _id: number;
+  avgFullPeers?: number;
+  maxFullPeers?: number;
+  avgLightPeers?: number;
+  maxLightPeers?: number;
+  avgTotalPeers?: number;
+  maxTotalPeers?: number;
+  avgPacketsPerSec?: number;
+  maxPacketsPerSec?: number;
+  upSamples: number;
+  sampleCount: number;
+}
+
+interface ReflectorPeerSeriesAggRow {
+  _id: number;
+  avgPacketsPerSec?: number;
+  maxPacketsPerSec?: number;
+  packetsInBucket?: number;
+  maxSessions?: number;
+  presentSamples: number;
+  sampleCount: number;
+}
+
+// Only the fields ensureReflectorHistoryIndexes reads. listIndexes returns
+// driver `Document`s, which are index-signature `any`.
+interface IndexInfo {
+  key?: Record<string, number>;
+  expireAfterSeconds?: number;
+}
+
+function col(db: Db): Collection<TwampReflectorSample> {
   return db.collection<TwampReflectorSample>(TWAMP_REFLECTOR_HISTORY_COLLECTION);
 }
 
@@ -166,7 +227,7 @@ export function reflectorPacketRate(delta: number | undefined, elapsedMs: number
 }
 
 export async function recordReflectorHistorySample(db: Db, sample: TwampReflectorSample): Promise<void> {
-  await col(db).insertOne(sample as any);
+  await col(db).insertOne(sample);
 }
 
 /**
@@ -178,8 +239,8 @@ export async function recordReflectorHistorySample(db: Db, sample: TwampReflecto
 export async function ensureReflectorHistoryIndexes(db: Db, retentionDays: number): Promise<void> {
   const c = col(db);
   const seconds = Math.max(1, Math.round(retentionDays * 86400));
-  const indexes = await c.indexes().catch(() => [] as any[]);
-  const ttlIndex = indexes.find((ix: any) => ix.key && Object.keys(ix.key).length === 1 && ix.key.timestamp === 1 && ix.expireAfterSeconds !== undefined);
+  const indexes = (await c.indexes().catch(() => [])) as IndexInfo[];
+  const ttlIndex = indexes.find((ix) => ix.key && Object.keys(ix.key).length === 1 && ix.key.timestamp === 1 && ix.expireAfterSeconds !== undefined);
   if (!ttlIndex) {
     await c.createIndex({ timestamp: 1 }, { expireAfterSeconds: seconds });
   } else if (ttlIndex.expireAfterSeconds !== seconds) {
@@ -196,12 +257,12 @@ export async function ensureReflectorHistoryIndexes(db: Db, retentionDays: numbe
 export async function queryReflectorSummary(db: Db, from: Date, to: Date): Promise<ReflectorSummary> {
   const match = { timestamp: { $gte: from, $lte: to } };
 
-  const [totals] = await col(db).aggregate([
+  const [totals] = await col(db).aggregate<ReflectorTotalsAggRow>([
     { $match: match },
     { $group: { _id: null, totalSamples: { $sum: 1 }, activeSamples: { $sum: { $cond: ['$serviceActive', 1, 0] } } } },
   ]).toArray();
 
-  const rows = await col(db).aggregate([
+  const rows = await col(db).aggregate<ReflectorSummaryAggRow>([
     { $match: match },
     { $sort: { timestamp: 1 } },
     { $unwind: '$peers' },
@@ -228,7 +289,7 @@ export async function queryReflectorSummary(db: Db, from: Date, to: Date): Promi
   return {
     totalSamples: totals?.totalSamples ?? 0,
     activeSamples: totals?.activeSamples ?? 0,
-    rows: rows.map((r: any) => ({
+    rows: rows.map((r) => ({
       peerIp: r._id,
       protocol: r.protocol,
       presentSamples: r.presentSamples,
@@ -248,7 +309,7 @@ export async function queryReflectorSummary(db: Db, from: Date, to: Date): Promi
 export async function queryReflectorSeries(
   db: Db, from: Date, to: Date, bucketMs: number,
 ): Promise<ReflectorSeriesPoint[]> {
-  const rows = await col(db).aggregate([
+  const rows = await col(db).aggregate<ReflectorSeriesAggRow>([
     { $match: { timestamp: { $gte: from, $lte: to } } },
     { $addFields: { _tsMs: { $toLong: '$timestamp' } } },
     { $addFields: { _bucket: { $subtract: ['$_tsMs', { $mod: ['$_tsMs', bucketMs] }] } } },
@@ -270,7 +331,7 @@ export async function queryReflectorSeries(
     { $sort: { _id: 1 } },
   ]).toArray();
 
-  return rows.map((r: any) => ({
+  return rows.map((r) => ({
     ts: Number(r._id),
     avgFullPeers: r.avgFullPeers ?? null,
     maxFullPeers: r.maxFullPeers ?? null,
@@ -297,7 +358,7 @@ export async function queryReflectorSeries(
 export async function queryReflectorPeerSeries(
   db: Db, peerIp: string, from: Date, to: Date, bucketMs: number,
 ): Promise<ReflectorPeerSeriesPoint[]> {
-  const rows = await col(db).aggregate([
+  const rows = await col(db).aggregate<ReflectorPeerSeriesAggRow>([
     { $match: { timestamp: { $gte: from, $lte: to } } },
     {
       $addFields: {
@@ -330,7 +391,7 @@ export async function queryReflectorPeerSeries(
     { $sort: { _id: 1 } },
   ]).toArray();
 
-  return rows.map((r: any) => ({
+  return rows.map((r) => ({
     ts: Number(r._id),
     avgPacketsPerSec: r.avgPacketsPerSec ?? null,
     maxPacketsPerSec: r.maxPacketsPerSec ?? null,

@@ -12,6 +12,61 @@ import { requireAdmin } from './middleware/auth-middleware';
 
 type RadioVendor = 'baicells' | 'generic';
 
+// Mirrors the signal_samples schema, including the columns the ALTER TABLE
+// migrations add (tx_power, path_loss, the two CQIs, details_json). Every REAL
+// column is nullable because a radio may report only a subset of them.
+//
+// This exists so the overview handler is not reading an `any` row: before it,
+// a typo in a column name was `undefined` at runtime and a blank field in the
+// UI, and every member access on the row produced a no-unsafe-member-access
+// finding. Those cascaded findings were the bulk of this file's lint count.
+// What /radios hands the frontend. Named so publicRadio() has a declared
+// return type: it is the one place credential material is stripped, and an
+// inferred type there would let a future field be added without anyone
+// noticing it had become part of the public response.
+interface PublicRadio {
+  id: string;
+  name: string;
+  vendor: RadioVendor;
+  baseUrl: string;
+  username: string;
+  passwordConfigured: boolean;
+  metricsPath: string;
+  enabled: boolean;
+  allowSelfSigned: boolean;
+}
+
+interface SampleRow {
+  id: number;
+  radio_id: string;
+  ue_id: string;
+  imsi: string | null;
+  sampled_at: number;
+  rsrp: number | null;
+  rsrq: number | null;
+  rssi: number | null;
+  sinr: number | null;
+  snr: number | null;
+  dl_mcs: number | null;
+  ul_mcs: number | null;
+  bler: number | null;
+  dl_mbps: number | null;
+  ul_mbps: number | null;
+  tx_power: number | null;
+  path_loss: number | null;
+  primary_dl_cqi: number | null;
+  secondary_dl_cqi: number | null;
+}
+
+interface SampleHistoryPoint {
+  sampledAt: number;
+  rsrp: number | null;
+  rsrq: number | null;
+  rssi: number | null;
+  sinr: number | null;
+  bler: number | null;
+}
+
 interface RadioRow {
   id: string;
   name: string;
@@ -53,12 +108,21 @@ function finite(value: unknown): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
-function first(obj: Record<string, any>, ...keys: string[]): any {
+// A radio's own JSON is a third party's shape, so it enters as `unknown` and
+// is narrowed here rather than asserted. finite() already takes unknown, which
+// is what makes every field read below safe without a cast.
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function first(obj: Record<string, unknown>, ...keys: string[]): unknown {
   for (const key of keys) if (obj[key] !== undefined && obj[key] !== null) return obj[key];
   return undefined;
 }
 
-function normalizeUe(raw: Record<string, any>): NormalizedSignal | null {
+function normalizeUe(raw: Record<string, unknown>): NormalizedSignal | null {
   const ueId = String(first(raw, 'ueId', 'ue_id', 'ueID', 'id', 'rnti', 'crnti', 'cRnti') ?? '').trim();
   const imsi = String(first(raw, 'imsi', 'IMSI', 'supi') ?? '').replace(/\D/g, '');
   if (!ueId && !imsi) return null;
@@ -83,16 +147,19 @@ function normalizeUe(raw: Record<string, any>): NormalizedSignal | null {
   };
 }
 
-function extractUes(payload: any): NormalizedSignal[] {
-  const candidates = Array.isArray(payload)
+function extractUes(payload: unknown): NormalizedSignal[] {
+  const candidates: unknown = Array.isArray(payload)
     ? payload
-    : first(payload ?? {}, 'ues', 'devices', 'data', 'results', 'items');
-  const list = Array.isArray(candidates)
+    : first(asRecord(payload), 'ues', 'devices', 'data', 'results', 'items');
+  const nested = asRecord(candidates).ues;
+  const list: unknown[] = Array.isArray(candidates)
     ? candidates
-    : Array.isArray(candidates?.ues)
-      ? candidates.ues
-      : [];
-  return list.map((item: any) => normalizeUe(item ?? {})).filter(Boolean) as NormalizedSignal[];
+    : Array.isArray(nested) ? nested : [];
+  // A type predicate rather than `.filter(Boolean) as NormalizedSignal[]`:
+  // the assertion was load-bearing for the types and told the compiler
+  // nothing it could check.
+  return list.map((item) => normalizeUe(asRecord(item)))
+    .filter((ue): ue is NormalizedSignal => ue !== null);
 }
 
 function requestRadio(radio: RadioRow, path: string, form?: URLSearchParams, cookie?: string): Promise<{ body: string; status: number; location?: string }> {
@@ -165,7 +232,7 @@ async function fetchGeneric(radio: RadioRow): Promise<NormalizedSignal[]> {
   if (!password) throw new Error('Radio credentials are incomplete');
   const url = new URL(radio.metrics_path, radio.base_url.endsWith('/') ? radio.base_url : `${radio.base_url}/`);
   const client = url.protocol === 'https:' ? https : http;
-  const payload = await new Promise<any>((resolve, reject) => {
+  const payload = await new Promise<unknown>((resolve, reject) => {
     const req = client.request(url, {
       method: 'GET', headers: { Accept: 'application/json', Authorization: `Basic ${Buffer.from(`${radio.username}:${password}`).toString('base64')}` },
       ...(url.protocol === 'https:' ? { rejectUnauthorized: !radio.allow_self_signed } : {}), timeout: 8000,
@@ -232,7 +299,7 @@ export function createRadioSignalRouter(
   }
 
   const router = Router();
-  const publicRadio = (row: RadioRow) => ({
+  const publicRadio = (row: RadioRow): PublicRadio => ({
     id: row.id, name: row.name, vendor: row.vendor, baseUrl: row.base_url,
     username: row.username, passwordConfigured: !!(row.password_cipher || row.password_env), metricsPath: row.metrics_path,
     enabled: !!row.enabled, allowSelfSigned: !!row.allow_self_signed,
@@ -249,7 +316,7 @@ export function createRadioSignalRouter(
   });
 
   router.post('/radios', requireAdmin, (req: Request, res: Response) => {
-    const body = req.body ?? {};
+    const body = asRecord(req.body);
     const id = String(body.id || randomUUID());
     const name = String(body.name || '').trim();
     const baseUrl = String(body.baseUrl || '').trim();
@@ -300,7 +367,7 @@ export function createRadioSignalRouter(
     for (const ip of radioIps) {
       const imsis = byIp.get(ip) ?? [];
       const baseUrl = `https://${ip}/`;
-      let existing = db.prepare('SELECT id FROM signal_radios WHERE base_url = ?').get(baseUrl) as { id: string } | undefined;
+      const existing = db.prepare('SELECT id FROM signal_radios WHERE base_url = ?').get(baseUrl) as { id: string } | undefined;
       const id = existing?.id ?? randomUUID();
       if (!existing) insert.run(id, `eNodeB ${ip}`, 'baicells', baseUrl, '', '', '/api/ue/signals', 0, 1, Date.now());
       discovered.push({ ip, enbId: connectedRadios.find(r => r.ip === ip)?.enbId, radioId: id, imsis, added: !existing });
@@ -364,8 +431,9 @@ export function createRadioSignalRouter(
   });
 
   router.post('/wake', requireAdmin, async (req, res) => {
-    const radioId = String(req.body?.radioId || '');
-    const imsi = String(req.body?.imsi || '').replace(/\D/g, '');
+    const body = asRecord(req.body);
+    const radioId = String(body.radioId || '');
+    const imsi = String(body.imsi || '').replace(/\D/g, '');
     const radio = db.prepare('SELECT * FROM signal_radios WHERE id = ?').get(radioId) as RadioRow | undefined;
     if (!radio) { res.status(404).json({ error: 'Radio not found' }); return; }
     const radioIp = new URL(radio.base_url).hostname;
@@ -393,12 +461,12 @@ export function createRadioSignalRouter(
     const search = String(req.query.search || '').trim().toLowerCase();
     const since = Date.now() - Math.min(Math.max(Number(req.query.hours) || 24, 1), 168) * 3600000;
     const radios = db.prepare('SELECT * FROM signal_radios ORDER BY name').all() as RadioRow[];
-    const samples = db.prepare('SELECT * FROM signal_samples WHERE sampled_at >= ? ORDER BY sampled_at ASC').all(since) as any[];
+    const samples = db.prepare('SELECT * FROM signal_samples WHERE sampled_at >= ? ORDER BY sampled_at ASC').all(since) as SampleRow[];
     const subscribers = await subscriberRepo.findAllFull();
     const subscriberByImsi = new Map(subscribers.map(s => [s.imsi, s]));
-    const latestByKey = new Map<string, any>();
+    const latestByKey = new Map<string, SampleRow>();
     for (const sample of samples) latestByKey.set(`${sample.radio_id}:${sample.ue_id}`, sample);
-    const historyByKey = new Map<string, any[]>();
+    const historyByKey = new Map<string, SampleHistoryPoint[]>();
     for (const sample of samples) {
       const key = `${sample.radio_id}:${sample.ue_id}`;
       const list = historyByKey.get(key) ?? [];

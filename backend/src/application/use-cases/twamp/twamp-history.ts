@@ -1,4 +1,4 @@
-import { Db } from 'mongodb';
+import { Collection, Db } from 'mongodb';
 import { TwampProtocol, TwampTestResult } from './twamp-runner';
 
 // ── TWAMP long-term history ──────────────────────────────────────────────
@@ -74,7 +74,51 @@ export interface HistorySeriesPoint {
   sampleCount: number;
 }
 
-function col(db: Db) {
+// The shapes the two aggregations below actually return. Declared so the
+// driver's generic `aggregate<T>()` carries them through and the `.map()`
+// callbacks stop being `any` -- which is where ~50 of this file's findings
+// came from, all of them downstream of two untyped result rows.
+//
+// `_id` is the $group key, so it is the grouped-by value, not a document id:
+// a targetId string in the summary, a bucket timestamp in the series.
+// The optional numerics are optional because `$$REMOVE` omits the field
+// entirely when no successful sample fell in the group, which is exactly what
+// the `?? null` at each call site is handling.
+interface HistorySummaryAggRow {
+  _id: string;
+  name: string;
+  host: string;
+  protocol: TwampProtocol;
+  sampleCount: number;
+  successCount: number;
+  avgRttMs?: number;
+  minRttMs?: number;
+  maxRttMs?: number;
+  avgJitterMs?: number;
+  avgPacketLossRatio?: number;
+  lastTimestamp: Date | number;
+  lastSuccess: boolean;
+}
+
+interface HistorySeriesAggRow {
+  _id: number;
+  avgRttMs?: number;
+  minRttMs?: number;
+  maxRttMs?: number;
+  jitterMs?: number;
+  packetLossRatio?: number;
+  sampleCount: number;
+}
+
+// Only the fields ensureHistoryIndexes reads. listIndexes returns driver
+// `Document`s, which are index-signature `any`, so this is narrowed once here
+// rather than at each access.
+interface IndexInfo {
+  key?: Record<string, number>;
+  expireAfterSeconds?: number;
+}
+
+function col(db: Db): Collection<TwampHistorySample> {
   return db.collection<TwampHistorySample>(TWAMP_HISTORY_COLLECTION);
 }
 
@@ -106,7 +150,7 @@ export async function recordTwampHistorySample(
     packetsLost: result.packetsLost,
     packetLossRatio,
   };
-  await col(db).insertOne(doc as any);
+  await col(db).insertOne(doc);
 }
 
 // Idempotent — safe to call on every backend startup and every retention
@@ -117,8 +161,8 @@ export async function recordTwampHistorySample(
 export async function ensureHistoryIndexes(db: Db, retentionDays: number): Promise<void> {
   const c = col(db);
   const seconds = Math.max(1, Math.round(retentionDays * 86400));
-  const indexes = await c.indexes().catch(() => [] as any[]);
-  const ttlIndex = indexes.find((ix: any) => ix.key && Object.keys(ix.key).length === 1 && ix.key.timestamp === 1 && ix.expireAfterSeconds !== undefined);
+  const indexes = (await c.indexes().catch(() => [])) as IndexInfo[];
+  const ttlIndex = indexes.find((ix) => ix.key && Object.keys(ix.key).length === 1 && ix.key.timestamp === 1 && ix.expireAfterSeconds !== undefined);
   if (!ttlIndex) {
     await c.createIndex({ timestamp: 1 }, { expireAfterSeconds: seconds });
   } else if (ttlIndex.expireAfterSeconds !== seconds) {
@@ -127,7 +171,7 @@ export async function ensureHistoryIndexes(db: Db, retentionDays: number): Promi
   // Separate, non-TTL compound index for the actual query pattern below
   // (filter by target + time range) — the TTL index alone isn't shaped for
   // that.
-  const queryIndex = indexes.find((ix: any) => ix.key && ix.key.targetId === 1 && ix.key.timestamp === 1);
+  const queryIndex = indexes.find((ix) => ix.key && ix.key.targetId === 1 && ix.key.timestamp === 1);
   if (!queryIndex) {
     await c.createIndex({ targetId: 1, timestamp: 1 });
   }
@@ -137,7 +181,7 @@ export async function ensureHistoryIndexes(db: Db, retentionDays: number): Promi
 // worst-to-best RTT sorting happens client-side once this small (one row
 // per target) result set is loaded.
 export async function queryHistorySummary(db: Db, from: Date, to: Date): Promise<HistorySummaryRow[]> {
-  const rows = await col(db).aggregate([
+  const rows = await col(db).aggregate<HistorySummaryAggRow>([
     { $match: { timestamp: { $gte: from, $lte: to } } },
     { $sort: { timestamp: -1 } },
     {
@@ -159,7 +203,7 @@ export async function queryHistorySummary(db: Db, from: Date, to: Date): Promise
     },
   ]).toArray();
 
-  return rows.map((r: any) => ({
+  return rows.map((r) => ({
     targetId: r._id,
     name: r.name,
     host: r.host,
@@ -197,7 +241,7 @@ export function pickBucketMs(rangeMs: number, targetPoints = 300): number {
 export async function queryHistorySeries(
   db: Db, targetId: string, from: Date, to: Date, bucketMs: number,
 ): Promise<HistorySeriesPoint[]> {
-  const rows = await col(db).aggregate([
+  const rows = await col(db).aggregate<HistorySeriesAggRow>([
     { $match: { targetId, timestamp: { $gte: from, $lte: to } } },
     {
       $addFields: {
@@ -223,7 +267,7 @@ export async function queryHistorySeries(
     { $sort: { _id: 1 } },
   ]).toArray();
 
-  return rows.map((r: any) => ({
+  return rows.map((r) => ({
     ts: Number(r._id),
     avgRttMs: r.avgRttMs ?? null,
     minRttMs: r.minRttMs ?? null,
