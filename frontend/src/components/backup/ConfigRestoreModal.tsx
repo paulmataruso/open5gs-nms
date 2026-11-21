@@ -57,6 +57,9 @@ export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupNa
 
   useEffect(() => {
     loadDiff();
+  // loadDiff is redefined every render; its only input is `backupName`, which
+  // IS the dependency. Depending on the function would re-diff on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [backupName]);
 
   const loadDiff = async () => {

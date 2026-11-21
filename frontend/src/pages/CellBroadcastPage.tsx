@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { RadioTower, RefreshCw, Send, Download, MapPin, KeyRound, X } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 import { cellBroadcastApi as api, type CbcState, type Tai } from '../api/cellBroadcast';
 
 const taiKey=(a:Tai)=>a.plmn+':'+a.tac;

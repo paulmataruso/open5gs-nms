@@ -5,7 +5,7 @@ import { radioTagsApi, radioBlockApi, gnbBlockApi, configApi, type RadioTagFull 
 import { getBlockedUes, blockUe, unblockUe, deregisterUe } from '../../api/ueBlock';
 import { ConfirmModal } from '../common/ConfirmModal';
 import { imsApi } from '../../api/ims';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { FEATURES } from '../../config/features';
@@ -356,7 +356,9 @@ function UESubRow({ ue, gen, onNavigate }: {
 
 export type RadioLayoutKind = 'table' | 'accordion' | 'split';
 
-export const RADIO_LAYOUTS: { key: RadioLayoutKind; label: string }[] = [
+// Not exported: nothing outside this file reads it, and exporting a non-component
+// from a component module silently disables Fast Refresh for the whole file.
+const RADIO_LAYOUTS: { key: RadioLayoutKind; label: string }[] = [
   { key: 'table',     label: 'Table' },
   { key: 'accordion', label: 'Collapsible List' },
   { key: 'split',     label: 'List + Detail Panel' },
@@ -2514,8 +2516,18 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
   const n2Radios    = withBlockedRadios((interfaceStatus?.n2?.connectedGnodebs || []) as ConnectedRadio[], blockedGnbIps).filter(r => matchesFilter(r.ip));
   const n3Active    = interfaceStatus?.n3?.active                || false;
   const n3Radios    = withBlockedRadios((interfaceStatus?.n3?.connectedGnodebs || []) as ConnectedRadio[], blockedGnbIps).filter(r => matchesFilter(r.ip));
-  const activeUEs4G = (interfaceStatus?.activeUEs4G || []) as ActiveUE[];
-  const activeUEs5G = (interfaceStatus?.activeUEs5G || []) as ActiveUE[];
+  // Memoised only to keep their identity stable: the `|| []` builds a fresh
+  // array on every render whenever the field is absent, which made the
+  // allSessions memo below recompute on every render while no UEs were
+  // attached — the exact case where there is nothing to recompute.
+  const activeUEs4G = useMemo(
+    () => (interfaceStatus?.activeUEs4G || []) as ActiveUE[],
+    [interfaceStatus?.activeUEs4G],
+  );
+  const activeUEs5G = useMemo(
+    () => (interfaceStatus?.activeUEs5G || []) as ActiveUE[],
+    [interfaceStatus?.activeUEs5G],
+  );
   const gsm2g = useGsm2GData();
   const umts3g = useUmts3GData();
 
@@ -2581,7 +2593,13 @@ export const RANPage: React.FC<RANPageProps> = ({ onNavigateToSubscriber }) => {
       const cmp = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' });
       return sortDir === 'asc' ? cmp : -cmp;
     });
-  }, [activeUEs4G, activeUEs5G, gsm2g.samples, sortCol, sortDir, matchesFilter]);
+    // gsm2g.btsEntries is read above (it resolves a sample's numeric bts to a
+    // name) and must be listed: btsEntries and samples arrive from two
+    // separate fetches, so a btsEntries-only change left every 2G row's
+    // radioIp at undefined — a blank Radio column, and rows that bypass the
+    // band/IP filter as "no known radio" — until the next samples poll
+    // happened to recompute this.
+  }, [activeUEs4G, activeUEs5G, gsm2g.samples, gsm2g.btsEntries, sortCol, sortDir, matchesFilter]);
 
   const isMetricsFallback = allSessions.some(s => s.metricsOnly);
 

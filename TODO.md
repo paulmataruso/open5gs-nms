@@ -10,7 +10,7 @@ file exists so that doesn't recur.)
 This is an engineering worklist, not product documentation — "we should"
 phrasing belongs here, unlike `README.md`/`docs/*.md`.
 
-**Last updated:** 2026-10-07
+**Last updated:** 2026-11-16
 
 Detail lives elsewhere, deliberately: `PROJECT_STATE.md` (Known Issues §N,
 Handoff Summary) holds the full investigation history, `CLAUDE.md` holds the
@@ -21,6 +21,18 @@ left and what's the next action" view.
 ---
 
 ## Open
+
+**Status 2026-11-16.** Rows **1, 3 and 5 are RESOLVED** (2026-10-08/09/10,
+each verified on real device calls) — their wording is kept because the
+root causes are worth reading, but they are not open work. Treat rows 2, 4
+and 6-27 as the live list.
+
+Closed since this file was last touched, and never listed here: the
+Auto-Config "reports success for failed NF restarts" defect (both halves —
+exit codes are now checked and aggregated into `success: false` naming each
+dead unit, and an unbindable bind address is refused pre-flight before
+anything is written), plus the 14 clean-host module bugs and the 5 release
+bugs shipped in v2.0-beta_0.82.
 
 | # | Item | Severity | Status | Next step |
 |---|---|---|---|---|

@@ -4,7 +4,7 @@ import {
   AlertTriangle, Info, Network, CheckCircle, XCircle,
 } from 'lucide-react';
 import { tunApi, type TunInterface } from '../api';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { useEscapeKey } from '../hooks/useKeyboardA11y';

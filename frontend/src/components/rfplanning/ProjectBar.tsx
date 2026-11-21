@@ -22,7 +22,9 @@ interface Props {
 }
 
 /** A saved site becomes a planning radio. */
-export function siteToRadio(site: RfPlanningSite): PlanningRadio {
+// Neither mapper is exported: both are used only in this file, and a
+// non-component export disables Fast Refresh for the whole module.
+function siteToRadio(site: RfPlanningSite): PlanningRadio {
   const frequencyGhz = site.frequencyMhz ? site.frequencyMhz / 1000 : 3.6;
   return {
     id: site.id,
@@ -58,7 +60,7 @@ export function siteToRadio(site: RfPlanningSite): PlanningRadio {
  * workspace does not edit. Round-tripping through a fresh object would quietly
  * discard the propagation-model and terrain settings a site may carry.
  */
-export function radioToSite(radio: PlanningRadio, original?: RfPlanningSite): RfPlanningSite {
+function radioToSite(radio: PlanningRadio, original?: RfPlanningSite): RfPlanningSite {
   return {
     ...(original ?? {
       id: radio.id, name: radio.name,

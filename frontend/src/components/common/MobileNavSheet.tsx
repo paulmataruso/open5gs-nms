@@ -54,9 +54,14 @@ export function MobileNavSheet(
   // time they pass through the nav, which is the thing you pass through to get
   // anywhere.
   useEffect(() => {
+    // Resolve the target NOW, while the sheet is opening, rather than reading
+    // returnFocusTo.current inside the cleanup. The sheet is mounted only
+    // while open, so this render IS the open — and the thing that opened it is
+    // whatever the ref points at here. Reading .current at close time would
+    // instead follow the ref wherever it had moved to meanwhile.
     const previouslyFocused = (document.activeElement as HTMLElement | null);
+    const target = returnFocusTo?.current ?? previouslyFocused;
     return () => {
-      const target = returnFocusTo?.current ?? previouslyFocused;
       // Only if it is still in the document — the trigger can legitimately be
       // gone if navigating changed the chrome.
       if (target && document.contains(target)) target.focus();

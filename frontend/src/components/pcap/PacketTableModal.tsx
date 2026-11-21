@@ -53,6 +53,9 @@ export function PacketTableModal({ capture, presets, onClose }: {
     }
   };
 
+  // Mount-only on purpose: the packet table is loaded once for the capture this
+  // modal was opened on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
 
   const selectRow = (frameNumber: number) => {

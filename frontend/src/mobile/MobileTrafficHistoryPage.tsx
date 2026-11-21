@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TrendingUp, ArrowDown, ArrowUp } from 'lucide-react';
 import { trafficHistoryApi, type TrafficHistoryPoint } from '../api';
 import {
-  MScreen, MSection, MStatGrid, MStat, MCard, MChips, MEmpty, MLoading, fmtMbps,
+  MScreen, MSection, MStatGrid, MStat, MCard, MChips, MEmpty, MLoading,
 } from './MobileKit';
+import { fmtMbps } from './format';
 
 /**
  * Traffic History, built for a phone.

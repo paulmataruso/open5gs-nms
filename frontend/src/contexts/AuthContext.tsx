@@ -1,26 +1,13 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { authApi } from '../api';
+import { AuthContext, type AuthUser } from './auth-context';
 
 // ─────────────────────────────────────────────────────────────
-// Auth Context
+// Auth Provider
 // ─────────────────────────────────────────────────────────────
-
-export interface AuthUser {
-  id: string;
-  username: string;
-  role: string;
-  createdAt: string | null;
-  lastLoginAt: string | null;
-}
-
-interface AuthContextValue {
-  user: AuthUser | null;
-  loading: boolean;
-  login: (username: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextValue | null>(null);
+// Only the provider belongs in this file. The context object, its types and
+// the useAuth hook are in ./auth-context so that this module exports nothing
+// but a component and Fast Refresh keeps working — see that file's comment.
 
 export function AuthProvider({ children }: { children: ReactNode }): JSX.Element {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -50,10 +37,4 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth(): AuthContextValue {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
 }

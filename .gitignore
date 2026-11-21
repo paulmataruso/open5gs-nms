@@ -3,8 +3,12 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
 pnpm-debug.log*
+
+# package-lock.json is deliberately TRACKED (un-ignored 2026-11-21). CI cannot
+# run `npm ci` without it, and `npm install` re-resolves the whole tree on every
+# run, so a transitive release can turn the build red on a commit that changed
+# nothing and leave no way to reproduce the failing tree locally.
 
 # Build outputs
 dist/
