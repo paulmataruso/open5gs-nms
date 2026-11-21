@@ -110,7 +110,13 @@ export function RadioSignalPage(): JSX.Element {
   const sinrs = sampled.map(ue => ue.sinr).filter((v): v is number => v != null && Number.isFinite(v));
   const saveRadio = async () => {
     try { await radioSignalApi.saveRadio(form); setConfigOpen(false); setForm(emptyRadio); toast.success('Radio saved'); await poll(false); }
-    catch (e: any) { toast.error(e.response?.data?.error || 'Unable to save radio'); }
+    // Asserted to the one shape being read rather than annotated `any`:
+    // the changed-lines gate holds new code to the full rule set, and
+    // `strict` makes a bare `catch (e)` `unknown`, which cannot be indexed.
+    catch (e) {
+      const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      toast.error(detail || 'Unable to save radio');
+    }
   };
   const discover = async () => {
     try { const result = await radioSignalApi.discover(); toast.success(result.discovered.length + ' eNodeB(s) detected'); await load(); setConfigOpen(true); }

@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, RequestHandler } from 'express';
 import { isOnlineSignalUe } from '../../domain/services/radio-signal-presence';
 import { parseBaicellsUes, signalNumber as finite, type RadioMeasurement as NormalizedSignal } from '../../domain/services/baicells-signal';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'crypto';
@@ -13,6 +13,74 @@ import type { ActiveSessionsUseCase } from '../../application/use-cases/active-s
 import { requireAdmin } from './middleware/auth-middleware';
 
 type RadioVendor = 'baicells' | 'generic';
+
+// Mirrors the signal_samples schema below, including the columns added by the
+// ALTER TABLE migrations (tx_power, path_loss, the two CQIs, details_json).
+// Every REAL column is nullable because a radio may report only a subset.
+// This exists so the overview handler is not reading an `any` row: a typo in
+// a column name here is a compile error, where before it was `undefined` at
+// runtime and a blank field in the UI.
+// Express's RequestHandler is typed to return void, so handing it an `async`
+// function hands it a floating Promise: anything thrown outside the handler's
+// own try/catch becomes an unhandled rejection and the request hangs rather
+// than answering. GET /overview has no try/catch at all and does real I/O
+// (two SQLite reads plus getActive4GUEs), so this was a live path, not a
+// style point. Sending the rejection to next() lets Express answer 500.
+const asyncRoute = (fn: (req: Request, res: Response) => Promise<void>): RequestHandler =>
+  (req, res, next) => { void fn(req, res).catch(next); };
+
+interface PollResult {
+  radioId: string;
+  success: boolean;
+  count?: number;
+  error?: string;
+}
+
+interface SampleRow {
+  id: number;
+  radio_id: string;
+  ue_id: string;
+  imsi: string | null;
+  sampled_at: number;
+  rsrp: number | null;
+  rsrq: number | null;
+  rssi: number | null;
+  sinr: number | null;
+  snr: number | null;
+  dl_mcs: number | null;
+  ul_mcs: number | null;
+  bler: number | null;
+  dl_mbps: number | null;
+  ul_mbps: number | null;
+  tx_power: number | null;
+  path_loss: number | null;
+  primary_dl_cqi: number | null;
+  secondary_dl_cqi: number | null;
+  details_json: string | null;
+}
+
+interface SampleHistoryPoint {
+  sampledAt: number;
+  rsrp: number | null;
+  rsrq: number | null;
+  rssi: number | null;
+  sinr: number | null;
+  bler: number | null;
+}
+
+// JSON.parse returns `any`, which would spread through every field that reads
+// it. Narrowing once here keeps that contained.
+function parseSampleDetails(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 interface RadioRow {
   id: string;
@@ -291,7 +359,7 @@ export function createRadioSignalRouter(
     res.json({ success: true, ingested: ues.length });
   });
 
-  const collectMeasurements = async () => {
+  const collectMeasurements = async (): Promise<{ results: PollResult[] }> => {
     const radios = db.prepare('SELECT * FROM signal_radios WHERE enabled = 1').all() as RadioRow[];
     const results = await Promise.all(radios.map(async radio => {
       try {
@@ -320,7 +388,7 @@ export function createRadioSignalRouter(
 
   // Multiple viewers share one collection, avoiding simultaneous radio logins.
   let collection: ReturnType<typeof collectMeasurements> | null = null;
-  router.post('/poll', requireAdmin, async (_req, res) => {
+  router.post('/poll', requireAdmin, asyncRoute(async (_req, res) => {
     try {
       collection ??= collectMeasurements().finally(() => { collection = null; });
       res.json(await collection);
@@ -328,7 +396,7 @@ export function createRadioSignalRouter(
       logger.warn({ err: String(err) }, 'Radio collection failed');
       res.status(502).json({ error: 'Radio collection failed' });
     }
-  });
+  }));
 
   router.post('/wake', requireAdmin, async (req, res) => {
     const radioId = String(req.body?.radioId || '');
@@ -353,11 +421,11 @@ export function createRadioSignalRouter(
     res.json({ success: true, targets: sessions.length, packets: sessions.length * ports.length });
   });
 
-  router.get('/overview', requireAdmin, async (req, res) => {
+  router.get('/overview', requireAdmin, asyncRoute(async (req, res) => {
     const search = String(req.query.search || '').trim().toLowerCase();
     const since = Date.now() - Math.min(Math.max(Number(req.query.hours) || 24, 1), 168) * 3600000;
     const radios = db.prepare('SELECT * FROM signal_radios ORDER BY name').all() as RadioRow[];
-    const samples = db.prepare('SELECT * FROM signal_samples WHERE sampled_at >= ? ORDER BY sampled_at ASC').all(since) as any[];
+    const samples = db.prepare('SELECT * FROM signal_samples WHERE sampled_at >= ? ORDER BY sampled_at ASC').all(since) as SampleRow[];
     let coreAvailable = true;
     const [subscribers, active] = await Promise.all([
       subscriberRepo.findAllFull(),
@@ -370,10 +438,10 @@ export function createRadioSignalRouter(
     const activeByImsi = new Map(active.map(ue => [ue.imsi, ue]));
 
     const subscriberByImsi = new Map(subscribers.map(s => [s.imsi, s]));
-    const sampleKey = (sample: any) => sample.radio_id + ':' + (sample.imsi ? 'imsi:' + sample.imsi : 'ue:' + sample.ue_id);
-    const latestByKey = new Map<string, any>();
+    const sampleKey = (sample: SampleRow): string => sample.radio_id + ':' + (sample.imsi ? 'imsi:' + sample.imsi : 'ue:' + sample.ue_id);
+    const latestByKey = new Map<string, SampleRow>();
     for (const sample of samples) latestByKey.set(sampleKey(sample), sample);
-    const historyByKey = new Map<string, any[]>();
+    const historyByKey = new Map<string, SampleHistoryPoint[]>();
     for (const sample of samples) {
       const key = sampleKey(sample);
       const list = historyByKey.get(key) ?? [];
@@ -381,6 +449,13 @@ export function createRadioSignalRouter(
       historyByKey.set(key, list);
     }
     const radioById = new Map(radios.map(r => [r.id, r]));
+    // Return type left inferred: it is the composition of two domain record
+    // types (Subscriber and the active-UE record) plus a nested per-session
+    // projection. Writing it out here would restate domain shapes that
+    // already exist and then drift from them silently, which is worse than
+    // inferring it. This rule is a warning rather than an error in
+    // backend/.eslintrc.json for exactly this class of case.
+    // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
     const subscriberInfo = (imsi?: string | null) => {
       const sub = imsi ? subscriberByImsi.get(imsi) : undefined;
       const live = imsi ? activeByImsi.get(imsi) : undefined;
@@ -396,7 +471,7 @@ export function createRadioSignalRouter(
         }))) ?? [],
       };
     };
-    const ues = [...latestByKey.entries()].map(([key, sample]) => {
+    const measuredUes = [...latestByKey.entries()].map(([key, sample]) => {
       const sub = sample.imsi ? subscriberByImsi.get(sample.imsi) : undefined;
       const radio = radioById.get(sample.radio_id);
       return {
@@ -409,9 +484,16 @@ export function createRadioSignalRouter(
         bler: sample.bler, dlMbps: sample.dl_mbps, ulMbps: sample.ul_mbps,
         txPower: sample.tx_power, pathLoss: sample.path_loss, primaryDlCqi: sample.primary_dl_cqi,
         secondaryDlCqi: sample.secondary_dl_cqi,
-        details: (() => { try { return JSON.parse(sample.details_json ?? '{}'); } catch { return {}; } })(), history: historyByKey.get(key) ?? [],
+        details: parseSampleDetails(sample.details_json), history: historyByKey.get(key) ?? [],
       };
     });
+    // Derived from the literal above rather than hand-written, so adding a
+    // field to a measured row cannot silently drift from this type. Only
+    // sampledAt is widened: the provisioned rows pushed below carry no RF
+    // reading at all, which is the distinction the UI renders as "No radio
+    // reading". `any` had been hiding that this one array holds both shapes.
+    type OverviewUe = Omit<(typeof measuredUes)[number], 'sampledAt'> & { sampledAt: number | null };
+    const ues: OverviewUe[] = measuredUes;
     const measuredImsis = new Set(ues.map(ue => ue.imsi).filter(Boolean));
     // Provisioned/registered UEs remain visible even while the radio has no RF sample.
     // Only a reported IMSI links a radio observation to a subscriber.
@@ -443,7 +525,7 @@ export function createRadioSignalRouter(
     const filtered = onlineUes.filter(ue => !search || [ue.ueId, ue.imsi, ue.iccid, ue.msisdn, ue.nickname, ue.radioName]
       .some(value => String(value ?? '').toLowerCase().includes(search)));
     res.json({ radios: radios.map(publicRadio), ues: filtered, coreAvailable, onlineOnly: true, collectedAt: presenceNow });
-  });
+  }));
 
   return router;
 }

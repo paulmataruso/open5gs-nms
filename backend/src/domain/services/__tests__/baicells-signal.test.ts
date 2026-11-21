@@ -1,6 +1,6 @@
 import { parseBaicellsUes, signalNumber } from '../baicells-signal';
 
-const row = (imsi: string, sinr = '18.5') =>
+const row = (imsi: string, sinr = '18.5'): string =>
   imsi + ':vmac:10.5:1.25:172.20.1.5:1234:' + sinr + ':12:10:15:20:18:23:0.5:1:2:3:4:110';
 
 describe('Baicells native UE measurements', () => {
