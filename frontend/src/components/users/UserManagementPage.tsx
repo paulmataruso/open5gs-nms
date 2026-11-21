@@ -3,8 +3,8 @@ import { Plus, Trash2, KeyRound, UserCog, AlertTriangle, X, Eye, EyeOff, Shield,
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
 import { usersApi } from '../../api';
-import { useAuth } from '../../contexts/AuthContext';
-import type { AuthUser } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
+import type { AuthUser } from '../../contexts/auth-context';
 import { useEscapeKey } from '../../hooks/useKeyboardA11y';
 
 function scorePassword(password: string) {

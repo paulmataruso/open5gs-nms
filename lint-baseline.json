@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "Lint ratchet baseline. Checked by scripts/lint-ratchet.mjs from the CI",
+    "`lint` job: the count may fall, never rise. See CI-LINT-PLAN.md.",
+    "",
+    "`fatals` is tracked separately, and ratcheted separately, because a fatal",
+    "is a PARSE failure rather than a rule finding \u2014 the file was not linted at",
+    "all, so it contributes zero errors and looks clean by the only number the",
+    "ratchet would otherwise read. Both workspaces are at 0 and must stay there.",
+    "",
+    "The backend sat at 120 fatals until Phase 4: tsconfig.json excludes",
+    "src/**/__tests__/** and src/**/*.test.ts, and a file outside",
+    "parserOptions.project is a fatal, not a skip, so every test file failed to",
+    "parse. backend/.eslintrc.json now points at tsconfig.eslint.json, which",
+    "extends the production config and drops only those two excludes. The",
+    "production tsconfig.json is untouched, so nothing changed about what is",
+    "emitted to dist/. Admitting 120 files is what took backend errors/warnings",
+    "from 5658/277 to the 6293/408 recorded below \u2014 a deliberate re-baseline,",
+    "not a regression.",
+    "",
+    "A fatal reappearing means some file is outside parserOptions.project again.",
+    "Fix the project reference; do not re-baseline around it.",
+    "",
+    "To lower the counts after real cleanup:",
+    "  cd backend && npm run -s lint:json | node ../scripts/lint-ratchet.mjs backend --update"
+  ],
+  "measuredAt": "2026-11-21",
+  "backend": {
+    "errors": 6293,
+    "warnings": 408,
+    "files": 432,
+    "filesWithFindings": 246,
+    "fatals": 0
+  },
+  "frontend": {
+    "errors": 459,
+    "warnings": 0,
+    "files": 208,
+    "filesWithFindings": 70,
+    "fatals": 0
+  }
+}

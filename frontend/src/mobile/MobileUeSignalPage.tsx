@@ -3,9 +3,10 @@ import { Wifi, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { radioSignalApi, type SignalUe, type SignalRadio } from '../api/radioSignal';
 import {
-  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MSheet, MFacts,
-  MEmpty, MLoading, MSearch, fmtAgo,
+  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MSheet, MFacts, MEmpty, MLoading,
+  MSearch,
 } from './MobileKit';
+import { fmtAgo } from './format';
 
 /**
  * 4G/5G UE Signal, built for a phone.

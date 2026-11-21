@@ -1139,6 +1139,11 @@ export function FRRPage() {
   const [showPreview, setShowPreview]     = useState(false);
   const [reconfigMode, setReconfigMode]   = useState(false);
   const [neighborTimer, setNeighborTimer] = useState<ReturnType<typeof setInterval> | null>(null);
+  // Mirrors neighborTimer purely so the unmount cleanup below can read the
+  // CURRENT handle. The state is what the render reads; a cleanup cannot use
+  // it, because the mount effect's closure captures whatever the first render
+  // saw (null) and keeps seeing that forever.
+  const neighborTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [settingLogLevel, setSettingLogLevel] = useState(false);
   const [routeFilters, setRouteFiltersState] = useState<RouteFilter[]>([]);
   const [storedUeSubnets, setStoredUeSubnets] = useState<UeSubnet[]>([]);
@@ -1212,7 +1217,16 @@ export function FRRPage() {
     } finally { if (!silent) setLoading(false); }
   }, [mgmtIface]);
 
-  useEffect(() => { load(); return () => { if (neighborTimer) clearInterval(neighborTimer); }; }, []);
+  // Mount-only on purpose: one initial load, and a cleanup that stops the
+  // neighbor poll. `load` is deliberately not a dependency — it is recreated
+  // every render, so depending on it would re-fetch the whole FRR state on
+  // every keystroke in this page's forms. The cleanup reads the REF rather
+  // than the neighborTimer state: this effect's closure captured the
+  // first render's value (null), so clearing the state variable here never
+  // cleared anything, and leaving the page mid-poll left a 5s
+  // validateNeighbor() interval running for the rest of the session.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); return () => { if (neighborTimerRef.current) clearInterval(neighborTimerRef.current); }; }, []);
 
   const buildProtocolConfig = () => {
     if (protocol === 'eigrp') return { protocol: 'eigrp', as: parseInt(eigrpAs), peerIp: eigrpPeer, mgmtInterface: mgmtIface };
@@ -1242,11 +1256,12 @@ export function FRRPage() {
   };
 
   const startNeighborPolling = () => {
-    if (neighborTimer) clearInterval(neighborTimer);
+    if (neighborTimerRef.current) clearInterval(neighborTimerRef.current);
     const timer = setInterval(async () => {
       const result = await frrApi.validateNeighbor().catch(() => null);
-      if (result?.neighborUp) { clearInterval(timer); setNeighborTimer(null); toast.success('Neighbor established!'); await load(true); }
+      if (result?.neighborUp) { clearInterval(timer); neighborTimerRef.current = null; setNeighborTimer(null); toast.success('Neighbor established!'); await load(true); }
     }, 5000);
+    neighborTimerRef.current = timer;
     setNeighborTimer(timer);
   };
 

@@ -3,7 +3,7 @@ import axios from 'axios';
 import { Network, RefreshCw, Settings, Plus, ArrowRightLeft, X } from 'lucide-react';
 import { highAvailabilityApi, type HaNode, type HaOverview, type HaUe } from '../api/highAvailability';
 import { ConfigPage } from '../components/config/ConfigPage';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 
 const message = (e: unknown) => axios.isAxiosError(e) ? String(e.response?.data?.error || e.message) : e instanceof Error ? e.message : String(e);
 export function HighAvailabilityPage(): JSX.Element {

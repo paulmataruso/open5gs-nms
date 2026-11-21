@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
 import { NmsLogoMark } from '../common/NmsLogo';
 
 // ─────────────────────────────────────────────────────────────

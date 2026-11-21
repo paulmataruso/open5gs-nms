@@ -100,7 +100,6 @@ function SwuEmulatorCard() {
     load();
     const interval = setInterval(load, status?.running ? 2000 : 6000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, status?.running]);
 
   useEffect(() => {
@@ -120,7 +119,6 @@ function SwuEmulatorCard() {
       const reader = resp.body?.getReader();
       const decoder = new TextDecoder();
       if (reader) {
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -362,7 +360,6 @@ function QciHwTestCard() {
       if (resp.body) {
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
-        // eslint-disable-next-line no-constant-condition
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -392,7 +389,6 @@ function QciHwTestCard() {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -561,7 +557,6 @@ function VolteTestCard() {
     load();
     const interval = setInterval(load, running ? 3000 : 8000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, running]);
 
   const doRun = async () => {
@@ -577,7 +572,6 @@ function VolteTestCard() {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -912,7 +906,6 @@ function VowifiTestCard() {
     load();
     const interval = setInterval(load, running ? 3000 : 8000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, running]);
 
   const doRun = async () => {
@@ -928,7 +921,6 @@ function VowifiTestCard() {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1216,6 +1208,10 @@ export function ValidationPage() {
       }
     }).catch(() => {});
     return () => { Object.values(pollRefs.current).forEach(clearInterval); };
+  // Mount-only on purpose: infer config once and rehydrate in-progress sessions.
+  // handleInfer and startPolling are redefined every render, so depending on
+  // them would re-infer and re-subscribe pollers on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleInfer = useCallback(async () => {

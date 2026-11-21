@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { AuthUser } from '../contexts/AuthContext';
+import type { AuthUser } from '../contexts/auth-context';
 import type {
   AllConfigs,
   ServiceStatus,
