@@ -164,13 +164,29 @@ jobs:
       # JSON, and it exits 2 rather than 0 if that JSON is missing or
       # malformed — so a crashed eslint fails the job instead of passing as
       # "no findings".
+      # All three checks below run even if an earlier one fails, and the
+      # verdict step at the end decides the job. They answer different
+      # questions -- "did the totals rise" vs "is the new code clean" -- and
+      # failing fast on the first means the others never execute.
+      #
+      # That is not hypothetical. Four PRs failed the backend ratchet, which
+      # runs first, so the changed-lines result never ran at all and there was
+      # no way to tell whether their added lines were clean. The gate is the
+      # check with precise per-line attribution, so losing it is losing the
+      # informative half of the job. A contributor who fixes one finding and
+      # then discovers the next on the following push has spent two CI cycles
+      # learning one thing.
       - name: Ratchet — backend
+        id: ratchet_backend
+        continue-on-error: true
         run: |
           npm run -s lint:json > /tmp/backend-lint.json || true
           node ../scripts/lint-ratchet.mjs backend < /tmp/backend-lint.json
         working-directory: backend
 
       - name: Ratchet — frontend
+        id: ratchet_frontend
+        continue-on-error: true
         run: |
           npm run -s lint:json > /tmp/frontend-lint.json || true
           node ../scripts/lint-ratchet.mjs frontend < /tmp/frontend-lint.json
@@ -188,6 +204,8 @@ jobs:
       # eigrp-health-guard-daemon-gate.test.ts. All six community PRs failed
       # this way and none of them had anything wrong with it.
       - name: Changed lines must be clean
+        id: changed_lines
+        continue-on-error: true
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
@@ -198,3 +216,21 @@ jobs:
             base='${{ github.event.before }}'
           fi
           node scripts/lint-changed-lines.mjs "$base"
+
+      # `continue-on-error` above makes each step's `conclusion` success, so
+      # the real result is in `outcome`. Without this step the job would go
+      # green with findings.
+      - name: Lint verdict
+        if: always()
+        run: |
+          backend='${{ steps.ratchet_backend.outcome }}'
+          frontend='${{ steps.ratchet_frontend.outcome }}'
+          changed='${{ steps.changed_lines.outcome }}'
+          echo "ratchet (backend):  $backend"
+          echo "ratchet (frontend): $frontend"
+          echo "changed lines:      $changed"
+          if [ "$backend" != success ] || [ "$frontend" != success ] || [ "$changed" != success ]; then
+            echo '::error::lint failed — see the step outcomes above'
+            exit 1
+          fi
+          echo 'All three lint checks passed.'
