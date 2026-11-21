@@ -20,6 +20,7 @@
     "Phase 5 then began bringing it down for real: the first pass typed three",
     "DB/Mongo boundary files and took errors 6293 -> 6062; the second removed",
     "268 redundant `(req as any).user` casts, which alone took 6062 -> 4808.",
+    "the third typed the GenieACS device document, 4808 -> 4700.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -31,7 +32,7 @@
   ],
   "measuredAt": "2026-11-21",
   "backend": {
-    "errors": 4808,
+    "errors": 4700,
     "warnings": 405,
     "files": 433,
     "filesWithFindings": 244,
