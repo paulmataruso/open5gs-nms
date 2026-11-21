@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, AlertCircle, Antenna, CheckCircle2, ChevronRight, Gauge, Info, Plus, Radar, RadioTower, RefreshCw, Search, Send, Settings2, Signal, Trash2, Users, Wifi } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
@@ -85,16 +85,24 @@ export function RadioSignalPage(): JSX.Element {
   useEscapeKey(() => setConfigOpen(false), configOpen);
   const [form, setForm] = useState<Partial<SignalRadio>>(emptyRadio);
 
-  const load = async () => {
+  // The functional setSelectedKey form is load-bearing, not style. Both
+  // effects below re-subscribe only when search/hours change, so the 15s
+  // interval keeps calling whichever `load` existed at that moment. Reading
+  // `selectedKey` directly meant reading the value it held back THEN — which
+  // on first mount is '' — so `!selectedKey` stayed true forever and every
+  // poll re-selected the first UE, overwriting the operator's own selection
+  // every 15 seconds. Reading it through the updater reads the live value.
+  const load = useCallback(async () => {
     try {
       const data = await radioSignalApi.overview(search, hours);
       setUes(data.ues); setRadios(data.radios);
-      if (!selectedKey && data.ues[0]) setSelectedKey(`${data.ues[0].radioId}:${data.ues[0].ueId}`);
+      const first = data.ues[0];
+      if (first) setSelectedKey(prev => prev || `${first.radioId}:${first.ueId}`);
     } catch { toast.error('Unable to load radio measurements'); }
     finally { setLoading(false); }
-  };
-  useEffect(() => { const timer = setTimeout(load, 250); return () => clearTimeout(timer); }, [search, hours]);
-  useEffect(() => { const timer = setInterval(load, 15000); return () => clearInterval(timer); }, [search, hours]);
+  }, [search, hours]);
+  useEffect(() => { const timer = setTimeout(load, 250); return () => clearTimeout(timer); }, [load]);
+  useEffect(() => { const timer = setInterval(load, 15000); return () => clearInterval(timer); }, [load]);
 
   const selected = ues.find(ue => `${ue.radioId}:${ue.ueId}` === selectedKey) ?? ues[0];
   const summary = useMemo(() => ({

@@ -6,11 +6,12 @@ import toast from 'react-hot-toast';
 import { useTopologyStore, type ActiveUE } from '../stores';
 import { radioBlockApi, gnbBlockApi, radioTagsApi } from '../api';
 import { blockUe, unblockUe, getBlockedUes, deregisterUe, type UeBlockInfo } from '../api/ueBlock';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 import {
-  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MChips, MSheet, MAction,
-  MFacts, MEmpty, MIconButton, MLoading, fmtMbps,
+  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MChips, MSheet, MAction, MFacts,
+  MEmpty, MIconButton, MLoading,
 } from './MobileKit';
+import { fmtMbps } from './format';
 
 /**
  * RAN Network, built for a phone.
@@ -177,6 +178,10 @@ export function MobileRanPage(): JSX.Element {
     });
   // isRadioBlocked reads state that `runUeAction`'s refresh updates; recreating
   // the callback on every block-set change is correct and cheap here.
+  // isRadioBlocked is redefined every render; the state it reads (blocked4G,
+  // blocked5G) is listed instead, which is equivalent and keeps this callback's
+  // identity stable across unrelated renders — the point of useCallback here.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runUeAction, blocked4G, blocked5G]);
 
   /* ── Render ───────────────────────────────────────────────────────────── */

@@ -177,7 +177,10 @@ export function BandOccupancy({
     const gaa = gaaRanges.map(r => clip(r)).filter(Boolean) as Array<{ low: number; high: number }>;
     const live = grants.map(g => clip(g)).filter(Boolean) as SasSpectrumGrant[];
     return { pal, palLanes: packLanes(pal), prot, gaa, grantLanes: packLanes(live) };
-  }, [band, bLow, bHigh, gaaRanges, protections, ppas, grants]);
+    // `band` itself is deliberately absent: the only things this reads from it
+    // are band.low/band.high, already listed as bLow/bHigh. Listing the object
+    // too defeated the memo, since the caller passes a fresh one each render.
+  }, [bLow, bHigh, gaaRanges, protections, ppas, grants]);
 
   // Vertical layout: one pass, so every row's y is decided in one place.
   let y = AXIS_H + 4;

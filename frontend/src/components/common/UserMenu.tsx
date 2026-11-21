@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { LogOut, Check, Palette } from 'lucide-react';
 import { clsx } from 'clsx';
-import { useAuth } from '../../contexts/AuthContext';
-import { useTheme, THEME_OPTIONS } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/auth-context';
+import { useTheme, THEME_OPTIONS } from '../../contexts/theme-context';
 
 /**
  * `variant` places the dropdown. The sidebar sits at the bottom of a tall

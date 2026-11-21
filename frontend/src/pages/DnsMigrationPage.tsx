@@ -176,6 +176,8 @@ export function DnsMigrationPage(): JSX.Element {
         setMode('wizard');
       }
     })();
+  // Mount-only on purpose: one initial load of plan state and backups.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleLoadPlan = async () => {
