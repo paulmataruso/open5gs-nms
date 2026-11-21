@@ -172,6 +172,11 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
     setTimeout(() => {
       document.getElementById('remote-upf-generator')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
+  // Deliberately keyed on editUpfData alone. onEditUpfDataConsumed is the
+  // parent's callback and is a fresh closure on each of its renders, so adding
+  // it would re-run this one-shot consume-and-scroll whenever the parent
+  // re-rendered — scrolling the operator back down mid-edit.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editUpfData]);
 
   const setRemote = (patch: Partial<RemoteUpfForm>) =>

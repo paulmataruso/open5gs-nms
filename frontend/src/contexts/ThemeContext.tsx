@@ -1,48 +1,11 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { useState, useCallback, type ReactNode } from 'react';
+import { ThemeContext, getInitialTheme, isValidTheme, STORAGE_KEY } from './theme-context';
 
 // ─────────────────────────────────────────────────────────────
-// Theme Context
+// Theme Provider
 // ─────────────────────────────────────────────────────────────
-// Themes are pure CSS — each entry here just needs to match a
-// `[data-theme="..."]` block defined in index.css (the actual --nms-*-rgb
-// custom property values live there, not here). This file only owns which
-// theme is currently selected and persisting that choice.
-
-export interface ThemeOption {
-  id: string;
-  label: string;
-  swatch: string; // representative accent hex, for the switcher UI only
-}
-
-export const THEME_OPTIONS: ThemeOption[] = [
-  { id: 'cyan',    label: 'Cyan Slate',      swatch: '#06b6d4' },
-  { id: 'violet',  label: 'Violet Midnight', swatch: '#8b5cf6' },
-  { id: 'emerald', label: 'Emerald Terminal', swatch: '#10b981' },
-  { id: 'amber',   label: 'Amber Dusk',      swatch: '#f59e0b' },
-  { id: 'rose',    label: 'Rose Noir',       swatch: '#f43f5e' },
-];
-
-const DEFAULT_THEME = 'cyan';
-const STORAGE_KEY = 'nms-theme';
-
-function isValidTheme(id: string | null): id is string {
-  return !!id && THEME_OPTIONS.some(t => t.id === id);
-}
-
-// index.html applies the stored theme synchronously (before React hydrates)
-// to avoid a flash of the default theme — this just needs to read back
-// whatever it already set so React's state agrees with the DOM.
-function getInitialTheme(): string {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  return isValidTheme(stored) ? stored : DEFAULT_THEME;
-}
-
-interface ThemeContextValue {
-  theme: string;
-  setTheme: (id: string) => void;
-}
-
-const ThemeContext = createContext<ThemeContextValue | null>(null);
+// Only the provider belongs in this file — see ./theme-context for why, and
+// for the theme vocabulary itself.
 
 export function ThemeProvider({ children }: { children: ReactNode }): JSX.Element {
   const [theme, setThemeState] = useState<string>(getInitialTheme);
@@ -59,10 +22,4 @@ export function ThemeProvider({ children }: { children: ReactNode }): JSX.Elemen
       {children}
     </ThemeContext.Provider>
   );
-}
-
-export function useTheme(): ThemeContextValue {
-  const ctx = useContext(ThemeContext);
-  if (!ctx) throw new Error('useTheme must be used within a ThemeProvider');
-  return ctx;
 }

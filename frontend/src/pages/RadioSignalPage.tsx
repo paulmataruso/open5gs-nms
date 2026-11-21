@@ -3,7 +3,7 @@ import { Activity, Antenna, CheckCircle2, ChevronRight, Gauge, Info, Plus, Radar
 import toast from 'react-hot-toast';
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { radioSignalApi, type SignalRadio, type SignalUe } from '../api/radioSignal';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 import { useEscapeKey } from '../hooks/useKeyboardA11y';
 import { SignalGauge } from '../components/common/SignalGauge';
 
@@ -78,6 +78,14 @@ export function RadioSignalPage(): JSX.Element {
   },[load]);
   useEffect(() => {
     void load();
+    // requestId is a monotonic request counter, not a rendered node, so the
+    // rule's concern does not apply. Reading .current HERE is the point:
+    // bumping it on cleanup is what makes load()'s own
+    // `if (id !== requestId.current) return;` guard discard a response that
+    // lands after this effect re-ran or the page unmounted. Copying it to a
+    // local inside the effect, as the rule suggests, would freeze the value
+    // and defeat that invalidation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     return () => { ++requestId.current; };
   },[load]);
   useEffect(() => {

@@ -10,7 +10,7 @@ import {
   dhcpApi, DHCP_DEFAULT_LEASE_LIFETIME,
   type DhcpConfig, type DhcpInterface, type DhcpLease, type DhcpStatus, type DhcpSubnet,
 } from '../../api/dhcp';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
 import { activateOnKey } from '../../hooks/useKeyboardA11y';
 import { ifaceServesOwnRange, ipInAnyPool, subnetReach } from './subnet-reach';
 
@@ -134,7 +134,11 @@ export function DhcpPage(): JSX.Element {
     } catch { /* non-fatal */ }
   }, []);
 
-  useEffect(() => { void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Mount-only on purpose: one initial read of config + status. The previous
+  // directive sat INSIDE the effect body and suppressed nothing, because
+  // `disable-next-line` has to precede the line the warning is reported on.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void refresh(); }, []);
   useEffect(() => {
     if (tab !== 'leases') return;
     void refreshLeases();

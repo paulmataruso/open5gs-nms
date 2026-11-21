@@ -284,6 +284,10 @@ export function ServicesPage({ onNavigate }: { onNavigate?: (tab: string) => voi
     // section) only knows active/inactive; this fetch feeds its subtitle
     // with the one thing that's actually OCS-specific: Gy peer state.
     ocsApi.getStatus().then(setOcsStatus).catch(() => {});
+  // Mount-only on purpose: each service's status is read once on open. The three
+  // fetchers are redefined every render, so depending on them would re-poll
+  // chrony, SNMP and speedtest on every render of this page.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleChronyAction = async (action: 'start' | 'stop' | 'restart') => {

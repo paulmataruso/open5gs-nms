@@ -24,6 +24,10 @@ export function AuditPage(): JSX.Element {
 
   useEffect(() => {
     fetchLogs();
+  // fetchLogs is redefined every render, so depending on it would refetch on
+  // every render. Its only input is `filter`, which IS the dependency, so this
+  // already re-runs exactly when the result would differ.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
   const actionColors: Record<string, string> = {

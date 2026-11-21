@@ -3,7 +3,7 @@ import { AlertCircle, AlertTriangle, RefreshCw, Wrench, Info } from 'lucide-reac
 import toast from 'react-hot-toast';
 import { modulesApi, ModuleId, ModuleStaleStatus, FixAllRunState } from '../../api/modules';
 import { useStaleModulesStore } from '../../stores/staleModules';
-import { useAuth } from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/auth-context';
 import { FEATURES } from '../../config/features';
 import { LogBlock } from './LogBlock';
 
