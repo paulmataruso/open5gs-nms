@@ -176,5 +176,25 @@ jobs:
           node ../scripts/lint-ratchet.mjs frontend < /tmp/frontend-lint.json
         working-directory: frontend
 
+      # The base must be the base branch's CURRENT tip, not
+      # `github.event.pull_request.base.sha` -- that is the base as it stood
+      # when the PR was opened, and this job checks out `refs/pull/N/merge`,
+      # which already contains everything main has landed since. merge-base
+      # then resolves to that old commit and every one of main's own commits
+      # gets diffed into the PR, so the contributor is blamed for them.
+      #
+      # Measured on #38, a one-file PR: 46 changed TypeScript files reported
+      # instead of 1, with the blocking findings sitting in main's own
+      # eigrp-health-guard-daemon-gate.test.ts. All six community PRs failed
+      # this way and none of them had anything wrong with it.
       - name: Changed lines must be clean
-        run: node scripts/lint-changed-lines.mjs "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = 'pull_request' ]; then
+            git fetch --no-tags origin \
+              "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+            base="refs/remotes/origin/${{ github.base_ref }}"
+          else
+            base='${{ github.event.before }}'
+          fi
+          node scripts/lint-changed-lines.mjs "$base"
