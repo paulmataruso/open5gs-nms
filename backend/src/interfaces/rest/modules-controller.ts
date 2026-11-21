@@ -28,7 +28,7 @@ export function createModulesRouter(useCase: ModuleFixAllUseCase, logger: pino.L
   });
 
   router.post('/fix-all', requireAdmin, (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const result = useCase.startFixAll(user);
     if (!result.started) {
       return res.status(409).json({ success: false, error: result.error });

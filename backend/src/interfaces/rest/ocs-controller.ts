@@ -1093,7 +1093,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -1106,7 +1106,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { bindIp, httpPort, originHost, originRealm, defaultOfferId } = req.body as { bindIp?: string; httpPort?: number; originHost?: string; originRealm?: string; defaultOfferId?: string };
     const result = await configureOcs({ bindIp, httpPort, originHost, originRealm, defaultOfferId });
     if (!result.success) {
@@ -1150,7 +1150,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   // (subscribers added/removed after the fact) — the user's own explicit
   // requirement, matching the IMS/SMS sync-subscribers precedent.
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = readState();
     if (!state?.defaultOfferId) {
       return res.status(400).json({ success: false, error: 'Set a default Product Offering ID first (Setup tab) — create the Offer in OCS\'s own web GUI, then paste its ID here.' });
@@ -1173,7 +1173,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   // falls back to update_user if the username is already taken — the
   // response's `created` flag just tells the frontend which toast to show.
   router.post('/users', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { username, password } = req.body as { username?: string; password?: string };
     if (!username || !/^[A-Za-z0-9_.@-]{1,64}$/.test(username)) {
       return res.status(400).json({ success: false, error: 'Username must be 1-64 characters: letters, numbers, . _ @ -' });
@@ -1191,7 +1191,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'ocs_start', user, details: '', success: true });
@@ -1202,7 +1202,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'ocs_stop', user, details: '', success: true });
@@ -1213,7 +1213,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'ocs_restart', user, details: '', success: true });
@@ -1231,7 +1231,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   // file manifest), matching this project's general caution against
   // needlessly destructive uninstalls.
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -1321,7 +1321,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const release = resolveActiveRelease();
     const allowed = new Set([release ? sysConfigPath(release) : '', HOST_SMF_CONF]);
     const { path: bodyPath, content } = req.body as { path: string; content: string };
@@ -1337,7 +1337,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const services = (req.body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);

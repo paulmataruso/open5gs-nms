@@ -461,7 +461,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/backup', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     try {
       if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -494,7 +494,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/install-frr', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (state.phase !== 'BACKUP_CREATED') return res.status(400).json({ success: false, error: `Invalid phase: ${state.phase}` });
 
@@ -566,7 +566,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/transit', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (state.phase !== 'FRR_INSTALLED') return res.status(400).json({ success: false, error: `Invalid phase: ${state.phase}` });
 
@@ -607,7 +607,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/neighbor', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (state.phase !== 'TRANSIT_CONFIGURED') return res.status(400).json({ success: false, error: `Invalid phase: ${state.phase}` });
 
@@ -676,7 +676,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/validate-neighbor', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     try {
       let neighborUp = false;
@@ -710,7 +710,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/dummies', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (state.phase !== 'NEIGHBOR_UP') return res.status(400).json({ success: false, error: `Invalid phase: ${state.phase}` });
     try {
@@ -750,7 +750,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/advertise', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (state.phase !== 'DUMMY_INTERFACES_CREATED') return res.status(400).json({ success: false, error: `Invalid phase: ${state.phase}` });
     try {
@@ -793,7 +793,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/cutover', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (state.phase !== 'SERVICE_DUAL_STACK_ACTIVE') return res.status(400).json({ success: false, error: `Invalid phase: ${state.phase}` });
 
@@ -936,7 +936,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/confirm', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     try {
       await nsenter('netplan', ['apply']);
@@ -951,7 +951,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   });
 
   router.post('/migration/rollback', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const state = loadState();
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -1016,7 +1016,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
 
   // ── POST /api/frr/route-filters ──────────────────────────────────────────────────────
   router.post('/route-filters', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       // Back up previous filters before overwriting
@@ -1055,7 +1055,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
 
   // ── POST /api/frr/route-filters/rollback ─────────────────────────────────────────
   router.post('/route-filters/rollback', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       if (!state.routeFilterBackup) return res.status(400).json({ success: false, error: 'No backup to roll back to' });
@@ -1130,7 +1130,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   // ── POST /api/frr/reconfigure ───────────────────────────────────────────
   // Apply new FRR config to an already-running instance (skips migration phases)
   router.post('/reconfigure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
@@ -1203,7 +1203,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   // daemons to bounce, and reloading via "vtysh -b" (same mechanism the daemons themselves
   // use to sync a config change) avoids an unnecessary EIGRP/OSPF/BGP neighbor flap.
   router.post('/log-level', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { level } = req.body;
       if (!FRR_LOG_LEVELS.includes(level)) {
@@ -1313,7 +1313,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   // Save selected UE subnets, remove NAT MASQUERADE rules, add FORWARD rules,
   // update FRR config. Stores removed NAT rules in state for one-click rollback.
   router.post('/ue-subnets/apply', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
@@ -1429,7 +1429,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   // Reverse a previous apply: remove FORWARD rules, restore NAT MASQUERADE rules,
   // clear UE subnets from FRR config.
   router.post('/ue-subnets/rollback', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
@@ -1559,7 +1559,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   // POST /api/frr/dummy-interfaces
   // Body: { name, ip, prefix, advertise? }
   router.post('/dummy-interfaces', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { name, ip, prefix: prefixRaw, advertise } = req.body as { name: string; ip: string; prefix: number; advertise?: boolean };
       const prefix = Number(prefixRaw);
@@ -1612,7 +1612,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
 
   // DELETE /api/frr/dummy-interfaces/:name
   router.delete('/dummy-interfaces/:name', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { name } = req.params;
       if (!name || !/^[a-zA-Z][a-zA-Z0-9_-]{0,14}$/.test(name))

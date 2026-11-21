@@ -98,7 +98,7 @@ export function createBackupRouter(
 
   // POST /api/backup/restore/config - Restore config backup
   router.post('/restore/config', requireAdmin, async (req, res) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { backupName } = req.body;
       if (!backupName) {
@@ -121,7 +121,7 @@ export function createBackupRouter(
 
   // POST /api/backup/restore/both - Restore both MongoDB and config
   router.post('/restore/both', requireAdmin, async (req, res) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { configBackupName, mongoBackupName } = req.body;
       if (!configBackupName || !mongoBackupName) {
@@ -287,7 +287,7 @@ export function createBackupRouter(
   // never optional-module config, so restarting optional modules here would
   // be needless extra disruption for something this path never touches.
   router.post('/restore/selective', requireAdmin, async (req, res) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { backupName, services } = req.body;
       // Real, confirmed-live 2026-09-30 finding (adversarial critic review): an
@@ -402,7 +402,7 @@ export function createBackupRouter(
   // operation in this codebase — it was never reasonable to keep this
   // synchronous once it started actually restarting services too.
   router.post('/full/restore', requireAdmin, async (req, res) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { uploadId, categories, freshHostBootstrap, presentModules } = req.body || {};
       if (!isValidUploadId(uploadId)) {

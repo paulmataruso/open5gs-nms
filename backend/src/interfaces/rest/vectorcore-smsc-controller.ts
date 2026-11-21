@@ -689,7 +689,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   // clone, build (embeds the web UI first), deploy the systemd unit as-is —
   // same shape as mms-controller.ts's /install.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!(await isImsInstalled())) {
       return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. VectorCore SMSC integrates via S-CSCF and needs IMS present.' });
     }
@@ -707,7 +707,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   // POST /api/vectorcore-smsc/configure — no body needed; imsDomain is
   // derived from ims-controller.ts's own state, not supplied by the caller.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const result = await configureVectorcoreSmsc();
     if (!result.success) {
       await auditLogger.log({ action: 'vectorcore_smsc_configure', user, details: result.error ?? 'failed', success: false });
@@ -718,7 +718,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['start', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'vectorcore_smsc_start', user, details: 'started', success: true });
@@ -729,7 +729,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'vectorcore_smsc_stop', user, details: 'stopped', success: true });
@@ -740,7 +740,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', SYSTEMD_UNIT]);
       await auditLogger.log({ action: 'vectorcore_smsc_restart', user, details: 'restarted', success: true });
@@ -754,7 +754,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   // this project's existing SMS/MMS/PSTN uninstall convention (full clean
   // removal, gated behind an explicit confirmation dialog on the frontend).
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');

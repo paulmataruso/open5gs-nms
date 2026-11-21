@@ -41,7 +41,7 @@ export function createPcapRouter(pcapUseCase: PcapUseCase, auditLogger: IAuditLo
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { interfaces, scope, label } = req.body ?? {};
       const manifest = await pcapUseCase.start({ interfaces, scope, label });
@@ -59,7 +59,7 @@ export function createPcapRouter(pcapUseCase: PcapUseCase, auditLogger: IAuditLo
   });
 
   router.post('/stop/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { id } = req.params;
     try {
       const manifest = await pcapUseCase.stop(id);
@@ -102,7 +102,7 @@ export function createPcapRouter(pcapUseCase: PcapUseCase, auditLogger: IAuditLo
   });
 
   router.get('/captures/:id/download', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { id } = req.params;
     try {
       const filePath = await pcapUseCase.getDownloadPath(id);
@@ -118,7 +118,7 @@ export function createPcapRouter(pcapUseCase: PcapUseCase, auditLogger: IAuditLo
   });
 
   router.delete('/captures/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { id } = req.params;
     try {
       await pcapUseCase.deleteCapture(id);

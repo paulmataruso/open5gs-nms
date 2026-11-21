@@ -5314,7 +5314,7 @@ export function createImsRouter(
   // POST /api/ims/sms-delivery-mode — body: { mode: 'sgs' | 'ims' | 'vectorcore' }.
   // Toggle shown on the SMS/MMS page (SMS tab) — see setSmsDeliveryMode() above.
   router.post('/sms-delivery-mode', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { mode } = req.body as { mode?: string };
     if (mode !== 'sgs' && mode !== 'ims' && mode !== 'vectorcore') {
       return res.status(400).json({ success: false, error: "mode must be 'sgs', 'ims', or 'vectorcore'" });
@@ -5335,7 +5335,7 @@ export function createImsRouter(
   // setVoiceChargingEnabled() above. Enabling requires SigScale OCS to
   // already be configured; disabling always succeeds.
   router.post('/voice-charging', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { enabled } = req.body as { enabled?: boolean };
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ success: false, error: 'enabled must be a boolean' });
@@ -5355,7 +5355,7 @@ export function createImsRouter(
   // Controls how often kamailio-smsc's store-and-forward queue is polled —
   // see setSmsWorkerInterval() above.
   router.post('/sms-worker-interval', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { seconds } = req.body as { seconds?: number };
     if (typeof seconds !== 'number' || !Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
       return res.status(400).json({ success: false, error: 'seconds must be an integer between 1 and 300' });
@@ -5377,7 +5377,7 @@ export function createImsRouter(
   // which drops every registered UE's IPsec SA — stated in the UI, and the
   // reason this is a considered setting rather than a live control.
   router.post('/natping-interval', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { seconds } = req.body as { seconds?: number };
     if (typeof seconds !== 'number' || !Number.isInteger(seconds)
         || seconds < MIN_NATPING_INTERVAL_SECONDS || seconds > MAX_NATPING_INTERVAL_SECONDS) {
@@ -5514,7 +5514,7 @@ export function createImsRouter(
   // exactly which ones did/didn't — so the UI never claims success when nothing
   // observably happened.
   router.post('/live/deregister', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const impus = (req.body as any)?.publicIdentities as unknown;
     if (!Array.isArray(impus) || impus.length === 0 || !impus.every((i: unknown) => typeof i === 'string' && i)) {
       res.status(400).json({ success: false, error: 'publicIdentities must be a non-empty array of strings' });
@@ -5580,7 +5580,7 @@ export function createImsRouter(
 
   // POST /api/ims/install — streaming: packages + PyHSS install
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');  // disable nginx proxy buffering
@@ -5595,7 +5595,7 @@ export function createImsRouter(
 
   // POST /api/ims/configure
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       // NMS fix (2026-08-05): dnsIp used to default to pcscfIp — a
       // coincidental, unrelated value (P-CSCF's own bind IP has nothing to
@@ -5654,7 +5654,7 @@ export function createImsRouter(
 
   // POST /api/ims/sync-subscribers — Open5GS MongoDB → PyHSS REST API
   router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const result = await syncImsSubscribers(subscriberRepo, logger);
       await auditLogger.log({
@@ -5702,7 +5702,7 @@ export function createImsRouter(
 
   // POST /api/ims/validate
   router.post('/validate', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     type Check = { name: string; pass: boolean; detail: string; remediation?: string };
     const checks: Check[] = [];
     const add = (name: string, pass: boolean, detail: string, remediation?: string) =>
@@ -5810,7 +5810,7 @@ export function createImsRouter(
 
   // POST /api/ims/enable
   router.post('/enable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const svcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api', 'pyhss-metrics', 'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
       for (const svc of svcs) {
@@ -5833,7 +5833,7 @@ export function createImsRouter(
 
   // POST /api/ims/disable
   router.post('/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       if (fs.existsSync(HOST_SMF_YAML)) {
         writeYamlGuarded(HOST_SMF_YAML, removeSmfImsSession, 'remove the IMS session from smf.yaml', IMS_OWNED_SMF_TOP_KEYS);
@@ -5858,7 +5858,7 @@ export function createImsRouter(
 
   // POST /api/ims/remove — full teardown, as if IMS was never installed
   router.post('/remove', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -6044,7 +6044,7 @@ export function createImsRouter(
 
   // POST /api/ims/restart
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const restartSvcs = ['bind9', 'mariadb', 'redis-server', 'pyhss-diameter', 'pyhss-hss', 'pyhss-api', 'pyhss-metrics',
                            'rtpengine-daemon', 'kamailio-icscf', 'kamailio-scscf', 'kamailio-pcscf', 'kamailio-smsc'];
@@ -6090,7 +6090,7 @@ export function createImsRouter(
 
   // PUT /api/ims/configs/content
   router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path: filePath, content } = req.body as { path: string; content: string };
     if (!filePath || !isAllowedConfigPath(filePath)) {
       return res.status(400).json({ error: 'Path not in allowlist' });

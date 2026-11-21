@@ -21,7 +21,7 @@ export function createSeppRouter(
   // real GSMA-IPX-backed PKI) — the visited operator saves the returned public cert
   // as their own cacert/verify_client_cacert file.
   router.post('/generate-certs', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { fqdn } = req.body ?? {};
     if (!fqdn || typeof fqdn !== 'string') {
       res.status(400).json({ success: false, error: 'fqdn is required' });
@@ -83,7 +83,7 @@ export function createSeppRouter(
   // cert (PEM), used as our own cacert/verify_client_cacert file (self-signed certs
   // used directly as their own trust anchor — see docs).
   router.post('/peer-cert', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { cert } = req.body ?? {};
     if (!cert || typeof cert !== 'string' || !cert.includes('BEGIN CERTIFICATE')) {
       res.status(400).json({ success: false, error: 'A valid PEM certificate is required' });

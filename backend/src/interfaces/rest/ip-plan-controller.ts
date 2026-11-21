@@ -297,7 +297,7 @@ export function createIpPlanRouter(
   // async run (this can take minutes — IMS alone is 14+ sequential service
   // restarts) and returns immediately; poll GET /apply/status for progress.
   router.post('/apply', requireAdmin, (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const body = req.body as { entries?: { service?: string; ip?: string }[] };
     if (!Array.isArray(body.entries) || body.entries.length === 0) {
       return res.status(400).json({ success: false, error: 'entries must be a non-empty array of { service, ip }' });

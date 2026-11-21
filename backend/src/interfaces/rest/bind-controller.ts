@@ -572,7 +572,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.put('/forwarders', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { forwarders } = req.body as { forwarders: string[] };
     if (!Array.isArray(forwarders) || forwarders.length === 0 || !forwarders.every(f => IP_RE.test(f))) {
       return res.status(400).json({ success: false, error: 'forwarders must be a non-empty array of IPv4 addresses' });
@@ -597,7 +597,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.put('/listen-on', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { listenOn } = req.body as { listenOn: string[] };
     if (!Array.isArray(listenOn) || listenOn.length === 0 || !listenOn.every(ip => IP_RE.test(ip))) {
       return res.status(400).json({ success: false, error: 'listenOn must be a non-empty array of IPv4 addresses' });
@@ -637,7 +637,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   // missing its zone{} block, and re-asserts recursion/allow-query/forwarders/listen-on
   // if any are missing. Safe to call anytime — a no-op if nothing needs fixing.
   router.post('/repair', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { zonesRepaired } = repairZonesAndOptions();
       await nsenter('systemctl', ['restart', 'bind9']);
@@ -660,7 +660,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   // perfectly healthy, getaddrinfo() (what every NF actually calls) was still bypassing
   // it entirely because /etc/resolv.conf pointed at systemd-resolved's 127.0.0.53 stub.
   router.post('/fix-resolver', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await fixResolver();
       await auditLogger.log({ action: 'bind_config_save', user, target: 'fix-resolver', success: true });
@@ -673,7 +673,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
 
   // POST /install — streamed synchronous install (apt only, fast — no build step)
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('X-Accel-Buffering', 'no');
@@ -720,7 +720,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['enable', '--now', 'bind9']);
       await auditLogger.log({ action: 'bind_start', user, success: true });
@@ -732,7 +732,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.post('/stop', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['stop', 'bind9']);
       await auditLogger.log({ action: 'bind_stop', user, success: true });
@@ -744,7 +744,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await nsenter('systemctl', ['restart', 'bind9']);
       await auditLogger.log({ action: 'bind_restart', user, success: true });
@@ -771,7 +771,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.put('/files/content', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { path: p, content, restart } = req.body as { path: string; content: string; restart?: boolean };
     if (!isPathInBindDir(p)) return res.status(400).json({ success: false, error: 'Path must be inside /etc/bind' });
     try {
@@ -787,7 +787,7 @@ export function createBindRouter(logger: pino.Logger, auditLogger: IAuditLogger)
   });
 
   router.delete('/files', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const p = String(req.query.path ?? '');
     if (!isPathInBindDir(p)) return res.status(400).json({ success: false, error: 'Path must be inside /etc/bind' });
     try {

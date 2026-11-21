@@ -224,7 +224,7 @@ export function createRtpengineSourceBuildRouter(logger: pino.Logger, auditLogge
   });
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const current = loadState();
     if (!['idle', 'complete', 'failed', 'rolled_back'].includes(current.status)) {
       return res.status(409).json({ ok: false, error: `A build is already in progress (status: ${current.status})` });
@@ -296,7 +296,7 @@ export function createRtpengineSourceBuildRouter(logger: pino.Logger, auditLogge
   });
 
   router.post('/rollback', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const state = loadState();
       const result = await runRollback(state.snapshotPath, logger);

@@ -29,7 +29,7 @@ export const createGnbBlockRouter = (
   // mirroring radio-block-controller.ts's 4G kill switch. Declared before /:ip so
   // Express doesn't try to match "all" as an IP.
   router.post('/all', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const status = await getInterfaceStatus.execute();
       const ips = [...new Set(status.n2.connectedGnodebs.map(r => r.ip).filter(ip => IPV4_RE.test(ip)))];
@@ -48,7 +48,7 @@ export const createGnbBlockRouter = (
 
   router.post('/:ip', requireAdmin, async (req: Request, res: Response) => {
     const ip = decodeURIComponent(req.params.ip);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!IPV4_RE.test(ip)) {
       res.status(400).json({ error: 'Invalid IPv4 address' });
       return;
@@ -67,7 +67,7 @@ export const createGnbBlockRouter = (
 
   router.delete('/:ip', requireAdmin, async (req: Request, res: Response) => {
     const ip = decodeURIComponent(req.params.ip);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await gnbBlockService.unblock(ip);
       logger.info({ ip, user }, 'gNodeB N2/N3 unblocked');

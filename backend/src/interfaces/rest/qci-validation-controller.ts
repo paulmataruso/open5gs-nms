@@ -630,7 +630,7 @@ export function createQciValidationRouter(
   // POST /api/validation/qci/run — streamed: one line per step as it completes, same
   // ndjson-over-chunked-transfer pattern as /api/validation/volte/run.
   router.post('/run', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (testRunning) {
       return res.status(409).json({ success: false, error: 'A QCI/dedicated-bearer validation test is already running.' });
     }

@@ -256,7 +256,7 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
 
   // POST /api/syslog/install — thin wrapper, see installSyslog() above.
   router.post('/install', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.flushHeaders();
@@ -268,7 +268,7 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
   // POST /api/syslog/configure  { host, port, protocol } — thin wrapper, see
   // configureSyslog() above for the actual logic.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const { host, port, protocol } = req.body as Partial<SyslogTarget>;
       if (!host || typeof host !== 'string') {
@@ -303,7 +303,7 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
   // POST /api/syslog/disable — removes our drop-in config only; leaves rsyslog itself
   // (and any config the user had before we touched anything) untouched.
   router.post('/disable', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       if (fs.existsSync(OUR_CONF_HOST_PATH)) {
         fs.unlinkSync(OUR_CONF_HOST_PATH);

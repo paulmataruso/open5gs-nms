@@ -659,7 +659,7 @@ export function createChargingPlansRouter(
   });
 
   router.post('/', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const { name, dataCapGB, voiceCapMinutes } = req.body as { name?: string; dataCapGB?: number; voiceCapMinutes?: number };
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ success: false, error: 'name is required' });
@@ -685,7 +685,7 @@ export function createChargingPlansRouter(
   });
 
   router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'Invalid id' }); }
     const plan = await col().findOne({ _id: id });
@@ -709,7 +709,7 @@ export function createChargingPlansRouter(
   });
 
   router.delete('/:id', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'Invalid id' }); }
     const plan = await col().findOne({ _id: id });
@@ -728,7 +728,7 @@ export function createChargingPlansRouter(
   // other plan they may have been on (a subscriber is on exactly one plan
   // at a time, matching OCS's own service.product being a single reference).
   router.post('/:id/assign', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     let id: ObjectId;
     try { id = new ObjectId(req.params.id); } catch { return res.status(400).json({ success: false, error: 'Invalid id' }); }
     const plan = await col().findOne({ _id: id });

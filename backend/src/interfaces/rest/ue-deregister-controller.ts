@@ -26,7 +26,7 @@ export const createUeDeregisterRouter = (
 
   router.post('/:imsi/deregister', requireAdmin, async (req: Request, res: Response) => {
     const imsi = decodeURIComponent(req.params.imsi);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!IMSI_RE.test(imsi)) {
       res.status(400).json({ error: 'Invalid IMSI' });
       return;

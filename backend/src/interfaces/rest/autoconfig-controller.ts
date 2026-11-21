@@ -155,7 +155,7 @@ export function createAutoconfigRouter(
    * boot. The addressing settings are still required.
    */
   router.post('/start', (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     const started = orchestrator.start(user, { force: true });
     if (!started.started) return res.status(409).json({ error: started.reason });
     res.json({ started: true, run: orchestrator.getRunState() });

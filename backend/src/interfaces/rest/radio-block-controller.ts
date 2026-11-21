@@ -30,7 +30,7 @@ export const createRadioBlockRouter = (
   // header-level "Block RAN" kill switch. Declared before /:ip so Express doesn't try to
   // match "all" as an IP.
   router.post('/all', requireAdmin, async (req: Request, res: Response) => {
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       const status = await getInterfaceStatus.execute();
       const ips = [...new Set(status.s1mme.connectedEnodebs.map(r => r.ip).filter(ip => IPV4_RE.test(ip)))];
@@ -49,7 +49,7 @@ export const createRadioBlockRouter = (
 
   router.post('/:ip', requireAdmin, async (req: Request, res: Response) => {
     const ip = decodeURIComponent(req.params.ip);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     if (!IPV4_RE.test(ip)) {
       res.status(400).json({ error: 'Invalid IPv4 address' });
       return;
@@ -68,7 +68,7 @@ export const createRadioBlockRouter = (
 
   router.delete('/:ip', requireAdmin, async (req: Request, res: Response) => {
     const ip = decodeURIComponent(req.params.ip);
-    const user = (req as any).user?.username ?? 'unknown';
+    const user = req.user?.username ?? 'unknown';
     try {
       await radioBlockService.unblock(ip);
       logger.info({ ip, user }, 'Radio S1-MME/S1-U unblocked');
