@@ -56,7 +56,7 @@ jobs:
       # binding is only valid for the ABI it was built against.
       - name: Cache node_modules
         id: deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: backend/node_modules
           key: backend-node20-${{ hashFiles('backend/package-lock.json') }}
@@ -95,7 +95,7 @@ jobs:
       # jobs finishing in roughly the same time.
       - name: Cache node_modules
         id: deps
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: frontend/node_modules
           key: frontend-node20-${{ hashFiles('frontend/package-lock.json') }}
@@ -137,14 +137,14 @@ jobs:
       # Same keys as the two jobs above, so whichever runs first warms them.
       - name: Cache backend node_modules
         id: be
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: backend/node_modules
           key: backend-node20-${{ hashFiles('backend/package-lock.json') }}
 
       - name: Cache frontend node_modules
         id: fe
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: frontend/node_modules
           key: frontend-node20-${{ hashFiles('frontend/package-lock.json') }}
