@@ -10,8 +10,7 @@
 #   - majors left ungrouped and separate, since those are the ones that need
 #     reading.
 #
-# NOTE: this starts opening real pull requests as soon as it reaches the
-# default branch.
+# This reached the default branch on 2026-11-21 and is live.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -24,6 +23,17 @@ updates:
       backend-minor-and-patch:
         patterns: ['*']
         update-types: [minor, patch]
+    ignore:
+      # The driver major is pinned by the HOST, not by this code. MongoDB
+      # server 5.0+ requires AVX, and this deployment's CPU has none
+      # (2009-era Xeon, `grep avx /proc/cpuinfo` is empty), so the server is
+      # `mongo:4.4` and cannot move. 4.4 is the oldest release any current
+      # driver supports, so every driver major from here is a coin flip on
+      # whether 4.4 survives it -- and the subscriber/SAS collections are the
+      # one data layer on this box that holds real keys and real grants.
+      # Minor and patch still come through in the grouped PR above.
+      - dependency-name: mongodb
+        update-types: [version-update:semver-major]
     commit-message:
       prefix: 'deps(backend):'
 
@@ -40,8 +50,8 @@ updates:
     commit-message:
       prefix: 'deps(frontend):'
 
-  # The workflow's own actions. These pin to major tags (@v4), so this mostly
-  # catches a v4 -> v5 that would otherwise sit unnoticed for a year.
+  # The workflow's own actions. These pin to major tags, so this mostly
+  # catches a major bump that would otherwise sit unnoticed for a year.
   - package-ecosystem: github-actions
     directory: /
     schedule:
