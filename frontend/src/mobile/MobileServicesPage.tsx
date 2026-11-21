@@ -3,12 +3,13 @@ import { Play, Square, RotateCw, Server, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useServiceStore } from '../stores';
 import { serviceApi } from '../api';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 import type { ServiceStatus } from '../types';
 import {
-  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MChips, MSheet, MAction,
-  MFacts, MEmpty, MIconButton, MLoading, MSearch, fmtBytes,
+  MScreen, MSection, MStatGrid, MStat, MRows, MRow, MBadge, MChips, MSheet, MAction, MFacts,
+  MEmpty, MIconButton, MLoading, MSearch,
 } from './MobileKit';
+import { fmtBytes } from './format';
 
 /**
  * Services, built for a phone.

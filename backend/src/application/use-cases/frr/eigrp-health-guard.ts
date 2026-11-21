@@ -60,6 +60,7 @@ export interface EigrpHealthGuardStats {
 export class EigrpHealthGuard {
   private timer: NodeJS.Timeout | null = null;
   private restartTimes: number[] = [];
+  private loggedEigrpdAbsent = false;
   private stats: EigrpHealthGuardStats = {
     checksRun: 0,
     lastCheckAt: 0,
@@ -120,6 +121,33 @@ export class EigrpHealthGuard {
         this.stats.lastHealth = null;
         return;
       }
+
+      // frr runs each routing daemon as its own process, so frr being active
+      // says nothing about eigrpd. This deployment migrated to OSPF on
+      // 2026-11-04 and /etc/frr/daemons carries eigrpd=no, which makes both
+      // EIGRP queries below fail on every single cycle. The guard stayed
+      // correctly inert either way (an empty topology yields no findings) —
+      // but because executeCommand REPORTS a failure rather than throwing,
+      // nothing here noticed, while LocalHostExecutor logged both failures at
+      // error level: measured at 1,440 error-level lines a day, burying real
+      // ones. So ask which daemons are actually up before querying one of
+      // them. `show daemons` is the live truth; /etc/frr/daemons states
+      // intent and can disagree with what is running.
+      const daemons = await this.run('vtysh -c "show daemons"').catch(() => '');
+      if (!/\beigrpd\b/.test(daemons)) {
+        if (!this.loggedEigrpdAbsent) {
+          this.loggedEigrpdAbsent = true;
+          this.logger.info(
+            { daemons: daemons.trim() },
+            'EIGRP health guard: eigrpd is not running, so this guard has nothing to watch and is idling. Whichever protocol IS running has no equivalent forwarding-health guard.',
+          );
+        }
+        this.stats.lastCheckAt = Date.now();
+        this.stats.lastCheckSuccess = true;
+        this.stats.lastHealth = null;
+        return;
+      }
+      this.loggedEigrpdAbsent = false; // so a later disappearance says so once more
 
       const [topology, routes, nexthops, neighbors] = await Promise.all([
         this.run('vtysh -c "show ip eigrp topology"'),

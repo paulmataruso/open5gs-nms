@@ -1,0 +1,61 @@
+# Dependabot is only useful now that the lockfiles are tracked (plan Phase 0)
+# and CI exists to actually validate a bump (Phase 1). Before both, a bump PR
+# was unverifiable.
+#
+# Deliberately conservative, because this repo deploys a live LTE/5G core:
+#   - weekly, not daily;
+#   - a low open-PR cap, so a quiet week does not become 30 branches;
+#   - minor and patch GROUPED into one PR per workspace, so routine churn is
+#     one review rather than twenty;
+#   - majors left ungrouped and separate, since those are the ones that need
+#     reading.
+#
+# This reached the default branch on 2026-11-21 and is live.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # The driver major is pinned by the HOST, not by this code. MongoDB
+      # server 5.0+ requires AVX, and this deployment's CPU has none
+      # (2009-era Xeon, `grep avx /proc/cpuinfo` is empty), so the server is
+      # `mongo:4.4` and cannot move. 4.4 is the oldest release any current
+      # driver supports, so every driver major from here is a coin flip on
+      # whether 4.4 survives it -- and the subscriber/SAS collections are the
+      # one data layer on this box that holds real keys and real grants.
+      # Minor and patch still come through in the grouped PR above.
+      - dependency-name: mongodb
+        update-types: [version-update:semver-major]
+    commit-message:
+      prefix: 'deps(backend):'
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'deps(frontend):'
+
+  # The workflow's own actions. These pin to major tags, so this mostly
+  # catches a major bump that would otherwise sit unnoticed for a year.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'deps(actions):'

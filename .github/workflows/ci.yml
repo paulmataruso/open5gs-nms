@@ -1,0 +1,200 @@
+# Two parallel jobs, both on Node 20 to match `engines` and both Dockerfiles.
+# Neither needs a secret, on purpose: this repo is public, fork PRs get no
+# secrets by default, and a job that silently needs one would pass for us and
+# fail for every outside contributor.
+#
+# What this does NOT cover, and cannot: everything that reaches the host
+# through `nsenter` (systemd units, /etc/open5gs, apt, vtysh), the endpoint
+# sweep, the clean-host deploy test, real calls, real radios. The unit suite
+# runs here precisely because it mocks IHostExecutor. A green badge means
+# "it compiles and the logic tests pass" — never that the deployment works.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes the previous run on the same ref. `main` is excluded
+# from cancellation so every commit that lands keeps its own recorded result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend (typecheck + tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # node_modules is cached, not just ~/.npm, because better-sqlite3 has to
+      # be COMPILED here. Measured 2026-11-21: `npm ci` takes 291s on Node 20,
+      # against ~23s on a machine that already has the binding built.
+      # better-sqlite3 12.11.1 publishes node prebuilds for ABI v127/v137/v141/
+      # v147 only — Node 20 is ABI 115 and is not among them — so prebuild-install
+      # 404s and node-gyp builds from source on every single run. (It works at
+      # all only because ubuntu-latest ships python3 + g++; the backend
+      # Dockerfile installs exactly those three packages for the same reason.)
+      #
+      # The key is the lockfile hash, so a dependency change always misses the
+      # cache and re-runs `npm ci` in full — lockfile drift cannot hide behind
+      # a stale cache. Node version is in the key too, since a compiled
+      # binding is only valid for the ABI it was built against.
+      - name: Cache node_modules
+        id: deps
+        uses: actions/cache@v6
+        with:
+          path: backend/node_modules
+          key: backend-node20-${{ hashFiles('backend/package-lock.json') }}
+
+      - name: Install
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # --runInBand comes from the existing `npm test` script. Left serial
+      # deliberately: the suite is ~71s, and serial removes any shared-state
+      # surprise on a 2-core runner.
+      - name: Tests
+        run: npm test
+
+  frontend:
+    name: frontend (build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Same keying rule as the backend. The frontend has no native module, so
+      # this saves far less — it is here for consistency and to keep the two
+      # jobs finishing in roughly the same time.
+      - name: Cache node_modules
+        id: deps
+        uses: actions/cache@v6
+        with:
+          path: frontend/node_modules
+          key: frontend-node20-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # `npm run build` is check-breakpoints -> tsc -> vite build, so this is
+      # the typecheck and the real production bundle in one step.
+      - name: Build
+        run: npm run build
+
+  # Lint is NOT a pass/fail gate yet — the backend carries thousands of
+  # pre-existing findings, and a permanently red check is a check everyone
+  # learns to ignore. Two things run instead:
+  #
+  #   1. a RATCHET, which fails only when a workspace's total count RISES
+  #      above lint-baseline.json, so the number is a one-way street;
+  #   2. a CHANGED-LINES gate, which holds lines this change actually adds to
+  #      the full rule set, so new code is clean from day one without a
+  #      one-line edit to a 400-finding legacy file failing the build.
+  #
+  # CI-LINT-PLAN.md Phase 7 replaces both with `--max-warnings 0`.
+  lint:
+    name: lint (ratchet + changed lines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The changed-lines gate needs real history to find a merge base.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      # Same keys as the two jobs above, so whichever runs first warms them.
+      - name: Cache backend node_modules
+        id: be
+        uses: actions/cache@v6
+        with:
+          path: backend/node_modules
+          key: backend-node20-${{ hashFiles('backend/package-lock.json') }}
+
+      - name: Cache frontend node_modules
+        id: fe
+        uses: actions/cache@v6
+        with:
+          path: frontend/node_modules
+          key: frontend-node20-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Install backend
+        if: steps.be.outputs.cache-hit != 'true'
+        run: npm ci
+        working-directory: backend
+
+      - name: Install frontend
+        if: steps.fe.outputs.cache-hit != 'true'
+        run: npm ci
+        working-directory: frontend
+
+      # `|| true` on the eslint half only: eslint exits non-zero whenever it
+      # reports anything, which is always here. The ratchet still sees the
+      # JSON, and it exits 2 rather than 0 if that JSON is missing or
+      # malformed — so a crashed eslint fails the job instead of passing as
+      # "no findings".
+      - name: Ratchet — backend
+        run: |
+          npm run -s lint:json > /tmp/backend-lint.json || true
+          node ../scripts/lint-ratchet.mjs backend < /tmp/backend-lint.json
+        working-directory: backend
+
+      - name: Ratchet — frontend
+        run: |
+          npm run -s lint:json > /tmp/frontend-lint.json || true
+          node ../scripts/lint-ratchet.mjs frontend < /tmp/frontend-lint.json
+        working-directory: frontend
+
+      # The base must be the base branch's CURRENT tip, not
+      # `github.event.pull_request.base.sha` -- that is the base as it stood
+      # when the PR was opened, and this job checks out `refs/pull/N/merge`,
+      # which already contains everything main has landed since. merge-base
+      # then resolves to that old commit and every one of main's own commits
+      # gets diffed into the PR, so the contributor is blamed for them.
+      #
+      # Measured on #38, a one-file PR: 46 changed TypeScript files reported
+      # instead of 1, with the blocking findings sitting in main's own
+      # eigrp-health-guard-daemon-gate.test.ts. All six community PRs failed
+      # this way and none of them had anything wrong with it.
+      - name: Changed lines must be clean
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = 'pull_request' ]; then
+            git fetch --no-tags origin \
+              "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+            base="refs/remotes/origin/${{ github.base_ref }}"
+          else
+            base='${{ github.event.before }}'
+          fi
+          node scripts/lint-changed-lines.mjs "$base"

@@ -113,6 +113,11 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
     setTimeout(() => {
       document.getElementById('remote-sgwu-generator')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
+  // Deliberately keyed on editSgwuData alone. onEditSgwuDataConsumed is the
+  // parent's callback and is a fresh closure on each of its renders, so adding
+  // it would re-run this one-shot consume-and-scroll whenever the parent
+  // re-rendered — scrolling the operator back down mid-edit.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editSgwuData]);
 
   const setRemote = (patch: Partial<RemoteSgwuForm>) =>

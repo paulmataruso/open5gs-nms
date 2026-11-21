@@ -1,0 +1,27 @@
+{
+  // Lint-only project. Never used to emit anything.
+  //
+  // tsconfig.json deliberately EXCLUDES the test files from the production
+  // compile — see the comment on its own `exclude` for why, and do not undo
+  // that. But the type-aware ESLint rules need a TypeScript *program* for
+  // every file they lint, and a file outside `parserOptions.project` is a
+  // FATAL parse error rather than a skipped file. Net effect before this
+  // config existed: all 120 backend test files reported a fatal and ESLint
+  // lint zero of them, while the error count looked like 120 ordinary
+  // findings.
+  //
+  // So this config exists purely to hand the parser a program that includes
+  // them. It inherits `include: ["src/**/*"]` and overrides only `exclude`,
+  // dropping the two test patterns.
+  //
+  // src/__tests__/ran-radio-grouping.test.ts imports the RAN page's pure
+  // grouping module out of frontend/src. TypeScript pulls an imported file
+  // into the program whether or not `include` names it, and that module has
+  // no imports of its own, so nothing further is needed here. rootDir would
+  // matter only for emit, and this never emits.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "exclude": ["node_modules", "dist"]
+}

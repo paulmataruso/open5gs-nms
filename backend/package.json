@@ -10,6 +10,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
+    "lint:json": "eslint src --ext .ts -f json",
     "format": "prettier --write 'src/**/*.ts'",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
