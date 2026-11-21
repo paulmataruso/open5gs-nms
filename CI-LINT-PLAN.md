@@ -29,6 +29,29 @@ date, not estimated — re-measure before trusting them after any dependency bum
 Both sides are on ESLint 8.x (`.eslintrc.*`, not flat config). Node 20 is the pin
 (`engines: >=20`, both Dockerfiles `node:20`).
 
+> **Four corrections to the table above, found by actually running the work.**
+> Kept here rather than silently edited, because each one was a wrong assumption
+> and the reason matters more than the number.
+>
+> 1. **`npm ci` backend is ~291s on Node 20, not 23s.** The 23s was measured on
+>    this host, which runs **Node 18**. better-sqlite3 12.11.1 ships no prebuild
+>    for Node 20's ABI, so every uncached install compiles it from source. Phase
+>    1 has the detail.
+> 2. **`jest` is ~135s, not 71s**, on a 2-core-class machine. Still comfortable.
+> 3. **The frontend's 488 was measured without `--report-unused-disable-directives`**,
+>    which the real `npm run lint` script includes. With it, 11 dead disable
+>    directives also surfaced.
+> 4. **Two of the three rule groups Phase 2 predicted were mischaracterised.**
+>    `no-constant-condition` was not dead code and `no-unused-vars` was not
+>    unused variables; both were correct idioms that the config, not the code,
+>    needed to account for. Phase 2 has the detail. The lesson for Phases 5-6:
+>    **read a sample of the findings before budgeting for a rule** — a rule name
+>    is not a diagnosis, and 27 of these "fixes" turned out to be two config
+>    lines.
+>
+> Live counts are in `lint-baseline.json`, which the CI ratchet reads. Treat that
+> file as current and this table as the 2026-11-21 starting point.
+
 **ESLint 8.57.1 is end-of-life upstream** — `npm ci` warns on it. That does not
 block anything here and migrating to ESLint 9 flat config mid-cleanup would mean
 re-baselining every count in this document, so it is deliberately deferred to
@@ -143,58 +166,176 @@ Fix in order of **what a rule actually catches**, not how many hits it has:
 turn the build red on a commit that changed nothing, with no way to reproduce the
 failing tree locally.
 
-### Phase 1 — CI on what is already green · ~1h
+### Phase 1 — CI on what is already green · DONE
 
-One workflow, `.github/workflows/ci.yml`, on pushes to `main` and all PRs. Two
-parallel jobs, Node 20, npm cache keyed on the lockfiles:
+`.github/workflows/ci.yml`, on pushes to `main` and all PRs. Two parallel jobs,
+Node 20 (matching `engines` and both Dockerfiles), with `node_modules` cached on
+the lockfile hash. Neither job needs a secret, which matters on a public repo:
+fork PRs get no secrets by default, and these jobs want none.
 
-- **backend** — `npm ci` (23s) → `tsc --noEmit` (39s) → `jest --runInBand` (71s)
-  ≈ **2m15s**
-- **frontend** — `npm ci` (18s) → `npm run build` (tsc 1m38s + vite 51s)
-  ≈ **2m50s**
+**Both jobs were run end-to-end before being committed**, in a `node:20`
+container against a `git archive HEAD` checkout — not assumed from the host.
+Results:
 
-Wall clock ~3 min since they run in parallel. Note `jest` runs `--runInBand`
-(serial) per the existing npm script; leave it, since the suite is only 71s and
-serial avoids any shared-state surprise on a 2-core runner. Neither job needs a secret, which
-matters on a public repo: fork PRs get no secrets by default, and these jobs want
-none.
+| | Result |
+|---|---|
+| backend `npm ci` | exit 0 |
+| backend `tsc --noEmit` | exit 0, 36s |
+| backend `jest --runInBand` | exit 0, **119/119 suites, 1652/1652 tests**, 135s |
+| frontend `npm ci` | exit 0 |
+| frontend `npm run build` | exit 0, 210s |
 
-**Exit:** both jobs green on a PR from this branch.
+`jest` stays `--runInBand` per the existing npm script: serial avoids any
+shared-state surprise on a 2-core runner.
+
+**Finding — `npm ci` is far slower than the host suggested, and structurally so.**
+It took **291s** in the container, against 23s measured on this host. Cause, read
+off the upstream release rather than guessed: **better-sqlite3 12.11.1 publishes
+node prebuilds for ABI v127/v137/v141/v147 only. Node 20 is ABI 115 and is not
+among them**, so `prebuild-install` 404s and `node-gyp` compiles from source on
+every uncached install. It works at all only because the runner ships python3 and
+g++ — the backend Dockerfile installs exactly those three packages, with a
+comment saying why. The host measured 23s because it runs **Node 18**, which has
+a prebuild. (That host/Node mismatch is itself worth knowing: `engines` says
+`>=20` and both Dockerfiles use `node:20`, so local `npm test` runs on a different
+major than production.)
+
+Hence `node_modules` is cached, not just `~/.npm`. The key is the lockfile hash,
+so a dependency change always misses and re-runs `npm ci` in full — lockfile
+drift cannot hide behind a stale cache. **If install time ever becomes the
+bottleneck, the real lever is Node 22 (ABI v127), which has a prebuild** — but
+that changes the runtime this project ships on and is a deployment decision, not
+a CI one.
+
+Container timings here are upper bounds: this host is a 2009-era Xeon under load,
+and a GitHub runner is faster.
 
 **This phase is worth doing even if every later phase is abandoned.** It covers
 the 1,652 tests that pin real, previously-shipped defects.
 
-### Phase 2 — frontend lint config + the real bugs · ~4h
+### Phase 2 — frontend lint config + the real bugs · DONE
 
-- [x] Add `frontend/.eslintrc.cjs` (variant A). All required plugins are already
+**Exit criterion met: `npm run lint` reports 459 errors, every one
+`no-explicit-any`, and zero warnings.**
+
+- [x] Add `frontend/.eslintrc.cjs` (variant A). All required plugins were already
       in `devDependencies` (`@typescript-eslint` 6.17, `react-hooks` 4.6,
       `react-refresh` 0.4.5) — only the config file was ever missing, which is why
-      `npm run lint` has failed since the script was written.
-- [ ] Fix the 2 `rules-of-hooks` violations. These are real — conditional or
-      nested hook calls break React's own invariants.
-- [ ] Review all 23 `exhaustive-deps`. **Hand-review each, never autofix**: adding
-      a missing dep can introduce a re-render loop, so each one is either a real
-      stale-closure bug or a deliberate omission that earns a disable + reason.
-- [ ] Review the 20 `no-constant-condition` — each is either dead code or an
-      inverted test.
-- [ ] Fix the 7 `no-unused-vars` and 9 `react-refresh` (mechanical).
+      `npm run lint` had failed since the script was written.
+- [x] `rules-of-hooks` (2) — **one real latent crash.** `SgwcEditor.tsx` called
+      `useState` twice *after* an early return. React identifies a hook by call
+      order, so `sgwc.gtpc.server` appearing or vanishing while that tab stays
+      mounted throws *"Rendered more/fewer hooks than during the previous
+      render"* and takes the config page down. Both hooks hoisted above the
+      return; the initialisers are constants, so nothing else changed.
+- [x] `exhaustive-deps` (23) — hand-reviewed, never autofixed. **Four were real
+      bugs:**
+      - `FRRPage.tsx` — the unmount cleanup read `neighborTimer` from a
+        `useState` captured by a mount-only effect, so it was always `null` and
+        **the 5s `validateNeighbor()` poll was never cleared**; leaving the page
+        mid-poll leaked it for the rest of the session. Now cleared via a ref.
+      - `RadioSignalPage.tsx` — the 15s interval's closure held `selectedKey`
+        from when `search`/`hours` last changed, i.e. `''` on mount, so
+        `!selectedKey` stayed true forever and **every poll re-selected the first
+        UE, overwriting the operator's own selection every 15 seconds.** Fixed
+        with the functional `setSelectedKey(prev => prev || …)` form.
+      - `RANPage.tsx` — a memo read `gsm2g.btsEntries` but listed only
+        `gsm2g.samples`. The two arrive from separate fetches, so a
+        `btsEntries`-only change left **every 2G row's Radio column blank**, and
+        those rows bypassing the band/IP filter as "no known radio", until the
+        next samples poll happened to recompute it.
+      - `MobileNavSheet.tsx` — focus-return read `returnFocusTo.current` inside
+        the cleanup, i.e. at close time rather than open time. Resolved at setup
+        instead, which both silences the rule and matches what the comment says
+        the code does.
+      Two more were pure performance (`RANPage`'s `|| []` producing a fresh array
+      identity every render; a redundant `band` dep in `BandOccupancy` that
+      defeated its own memo). The remaining 17 are deliberate omissions and each
+      now carries a **line-scoped disable with a specific reason** — no blanket
+      disables. The four `TwampPage` ones are worth singling out: `reloadKey` is
+      unused inside the callback *by design*, as bumping it changes the
+      callback's identity and that is what makes the Refresh control refetch.
+      "Fixing" the rule's complaint there would have silently broken Refresh.
+- [x] `no-constant-condition` (20) — **the plan's assumption here was wrong.**
+      These were not dead code or inverted tests: **all 20 were `while (true)`
+      loops draining a `ReadableStream` reader**, which is how this app streams
+      `apt-get` output into an install log. ESLint 9 changed this rule's own
+      default to stop flagging them, via `checkLoops: "allExceptWhileTrue"`;
+      8.57 accepts only a boolean and rejects that string as a schema error, so
+      both workspaces now set `checkLoops: false`. The useful half of the rule is
+      intact — a constant condition in an `if`, ternary or `&&` is still an error.
+      Applied to the backend too (2 sites: an Overpass endpoint scheduler and a
+      Mongo pagination loop) so there is one policy, not two.
+- [x] `no-unused-vars` (7) — **also not what the plan assumed.** All 7 were the
+      `const { sd, ...rest } = x` idiom this codebase uses to drop an optional
+      key, so the omitted binding is deliberately never read. `ignoreRestSiblings`
+      covers exactly that case: **zero code changes, config only.** A genuinely
+      unused variable is still an error.
+- [x] `react-refresh` (9) — HMR quality only, no production effect, but
+      `--max-warnings 0` is already in the lint script so they had to reach zero.
+      `RADIO_LAYOUTS`, `siteToRadio` and `radioToSite` simply had no importers
+      and no longer carry `export`. The three `MobileKit` formatters moved to
+      `src/mobile/format.ts`. Both contexts were split — `auth-context.ts` and
+      `theme-context.ts` now hold the context object, its types and its hook,
+      with only the provider left in the `.tsx` — and 13 consumer imports were
+      repointed. This one is a real DX win rather than box-ticking: a
+      non-component export disables Fast Refresh for the whole module, so
+      editing `AuthContext.tsx` forced a full reload, and a full reload of this
+      app re-checks the session and drops you back through the auth gate.
+- [x] Removed **11 dead `eslint-disable` directives** that
+      `--report-unused-disable-directives` surfaced: 8 per-site
+      `no-constant-condition` disables made redundant by the config above, and 3
+      `exhaustive-deps` disables on hooks that no longer report anything. One
+      more in `DhcpPage.tsx` was *misplaced* — a `disable-next-line` sitting
+      inside the effect body, one line below the reported line, suppressing
+      nothing. **The plan's 488-error frontend figure did not include these**,
+      because it was measured without that flag; the real `npm run lint` has it.
 
-**Exit:** frontend lint reports only `no-explicit-any`.
+Verified after the fact: `tsc --noEmit` clean, production build exit 0, container
+rebuilt and restarted, and the served bundle confirmed to carry both new context
+modules.
 
-### Phase 3 — make lint measurable and ratcheted · ~1h
+**Exit:** reached.
+
+### Phase 3 — make lint measurable and ratcheted · DONE
 
 Lint cannot gate yet, but it must stop getting worse.
 
-- [ ] Commit a baseline count per workspace.
-- [ ] Add a non-blocking `lint` CI job that fails **only if the count rises** above
-      baseline. A ratchet, not a gate.
-- [ ] Separately, lint **changed files only** as a blocking check, so new code is
-      held to the full rule set from day one without touching the 5,660 legacy
-      findings.
+- [x] `lint-baseline.json` at the repo root holds the per-workspace count.
+      Numbers live there, not in this document, so the two cannot drift.
+- [x] `scripts/lint-ratchet.mjs` — fails when a workspace's count **rises**, and
+      prints the exact `--update` command when it falls. Reads ESLint JSON on
+      stdin, fed by a new `lint:json` npm script in each workspace, so the rule
+      set stays single-sourced in the config the humans already use.
+- [x] `scripts/lint-changed-lines.mjs` — the blocking half.
+- [x] CI `lint` job wiring all three.
 
-**Exit:** no new lint errors can merge, and the baseline only moves down.
+**Changed LINES, not changed files.** The plan originally said changed files;
+that would have been a nuisance gate. The backend has 303 affected files with a
+median of 2 findings each, so a one-line edit to almost any file would fail on
+findings the author never touched — and the pressure that creates is to put the
+edit in a new file to dodge the gate, which is worse code for a greener build.
+The script parses `git diff -U0` hunk headers for genuinely added line numbers
+and reports only findings on those lines. A finding whose line the diff merely
+shifted is not yours.
 
-This is the phase that makes the rest optional rather than urgent.
+**The ratchet's guards were tested, not assumed** — a ratchet that fails open is
+worse than none, because it reports success. All five paths confirmed: empty
+stdin → exit 2; non-JSON (eslint crashed) → exit 2; JSON that is not an array →
+exit 2; count risen → exit 1; count fallen → exit 0 with the re-baseline command.
+Without the first three, a crashed eslint would parse as "no findings", pass the
+job, and with `--update` would overwrite the baseline with zeros.
+
+`fatals` is tracked as its own number and ratcheted separately, because a fatal
+is a **parse** failure — the file was not linted at all — and counting it as one
+finding understates it badly.
+
+The changed-lines gate exits 0 rather than failing when the base commit is
+unusable (an all-zero SHA on a branch's first push, or a force-pushed SHA that no
+longer exists). Neither is a defect in the change under test.
+
+**Exit:** reached — no new lint findings can merge on an added line, and the
+totals only move down.
 
 ### Phase 4 — unblock test-file linting · ~2h
 
@@ -206,9 +347,12 @@ parser has no type information for them. ESLint lints zero test files today.
       excludes removed, and point `parserOptions.project` at it.
 - [ ] Re-baseline.
 
-**Expect the backend count to RISE here** — ~120 files of previously invisible
+**Expect the backend count to RISE here** — 120 files of previously invisible
 findings, mostly `no-unsafe-*` on mocks. That is the ratchet working as designed,
-not a regression. Record the new baseline and move on.
+not a regression: re-baseline with `--update` and say why in the commit message.
+The 120 fatals in `lint-baseline.json` are exactly those files, so that number
+should go to **0** in the same change — and the ratchet checks fatals
+separately, so it will notice if it does not.
 
 ### Phase 5 — boundary typing: the collapse · days, the bulk of the work
 

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Lint ratchet baseline. Checked by scripts/lint-ratchet.mjs from the CI",
+    "`lint` job: the count may fall, never rise. See CI-LINT-PLAN.md.",
+    "",
+    "`fatals` is tracked separately because a fatal is a PARSE failure, not a",
+    "rule finding — the file was never linted at all. The backend's 120 are",
+    "its test files: tsconfig.json excludes src/**/__tests__/** and",
+    "src/**/*.test.ts, so the type-aware parser has no project for them.",
+    "Plan Phase 4 fixes that, and the backend count is EXPECTED to rise when",
+    "it does. Re-baseline deliberately (--update) rather than calling it a",
+    "regression.",
+    "",
+    "To lower it after real cleanup:",
+    "  cd backend && npm run -s lint:json | node ../scripts/lint-ratchet.mjs backend --update"
+  ],
+  "measuredAt": "2026-11-21",
+  "backend": {
+    "errors": 5658,
+    "warnings": 277,
+    "files": 432,
+    "filesWithFindings": 303,
+    "fatals": 120
+  },
+  "frontend": {
+    "errors": 459,
+    "warnings": 0,
+    "files": 208,
+    "filesWithFindings": 70,
+    "fatals": 0
+  }
+}
