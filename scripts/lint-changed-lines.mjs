@@ -14,13 +14,15 @@
 //
 // Usage:  node scripts/lint-changed-lines.mjs <base-ref>
 //
-// A line counts as changed if the diff ADDS it. A finding is reported only
-// when its line is one of those. Findings whose line the diff merely shifted
-// are not yours.
+// A line counts as changed if the diff adds it AND its content is not simply a
+// line the same hunk also removed — see scripts/lib/diff-added-lines.mjs for
+// why that second half is load-bearing rather than a nicety. Findings whose
+// line the diff merely shifted are not yours.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
+import { parseAddedLines } from './lib/diff-added-lines.mjs';
 
 const base = process.argv[2];
 if (!base) {
@@ -65,23 +67,10 @@ const WORKSPACES = [
     args: ['.', '--ext', 'ts,tsx', '--report-unused-disable-directives'] },
 ];
 
-// Added line numbers per file, from -U0 hunk headers.
+// Added line numbers per file, read from the BODY of a -U0 diff rather than
+// its hunk headers.
 const diff = git('diff', '-U0', `${mergeBase}...HEAD`, '--', '*.ts', '*.tsx');
-const added = new Map();
-let current = null;
-for (const line of diff.split('\n')) {
-  const f = /^\+\+\+ b\/(.+)$/.exec(line);
-  if (f) { current = f[1]; continue; }
-  const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
-  if (h && current) {
-    const start = Number(h[1]);
-    const count = h[2] === undefined ? 1 : Number(h[2]);
-    if (count === 0) continue; // a pure deletion adds nothing
-    let set = added.get(current);
-    if (!set) { set = new Set(); added.set(current, set); }
-    for (let i = 0; i < count; i++) set.add(start + i);
-  }
-}
+const added = parseAddedLines(diff);
 
 if (added.size === 0) {
   console.log('No added/modified TypeScript lines in this change.');
