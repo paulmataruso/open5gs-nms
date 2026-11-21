@@ -109,7 +109,22 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    back at it is its own fault, distinct from the interface mask. Also:
    `EigrpHealthGuard` is still wired in `index.ts` and is now inert (an empty
    EIGRP topology yields no findings, so it raises nothing and restarts
-   nothing); it should be removed or repointed at OSPF.
+   nothing). **Being inert was not free, and that is fixed as of
+   2026-11-21.** `check()` early-returned only when *frr* was inactive, and
+   frr is active here — it runs ospfd — so both EIGRP queries failed on
+   every 2-minute cycle, and since `executeCommand` reports failure rather
+   than throwing, nothing in the guard noticed while `LocalHostExecutor`
+   logged each one at ERROR: measured at 1,440 error-level lines a day for
+   17 days, burying real errors. It now asks `vtysh -c "show daemons"`
+   first and idles quietly (one info line per transition) when eigrpd is
+   absent, so the guard still works unchanged for a deployment that does
+   run EIGRP. Pinned by
+   `frr/__tests__/eigrp-health-guard-daemon-gate.test.ts`, mutation-checked.
+   **What remains open: there is no equivalent forwarding-health guard for
+   OSPF**, which is what actually carries the RAN routes here now — so
+   repointing it (or writing an OSPF sibling) is still worth doing, but it
+   is a feature, not cleanup. Do NOT delete the EIGRP guard to "finish"
+   this; the noise it was making is gone and the EIGRP patches still ship.
    **Original entry follows.** A long-standing A long-standing
    upstream FRR bug (FRRouting/frr#943) can crash `eigrpd` and take down every
    EIGRP-learned route — a full RAN outage on setups where EIGRP carries RAN-facing
