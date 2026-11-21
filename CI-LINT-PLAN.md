@@ -315,16 +315,36 @@ Lint cannot gate yet, but it must stop getting worse.
       stdin, fed by a new `lint:json` npm script in each workspace, so the rule
       set stays single-sourced in the config the humans already use.
 - [x] `scripts/lint-changed-lines.mjs` — the blocking half.
-- [x] CI `lint` job wiring all three.
+- [x] CI `lint` job wiring all three. **All three now run even when one fails**
+      (#64), with a verdict step deciding the job from their outcomes. They
+      failed fast until then, so a ratchet failure meant the changed-lines gate
+      never executed — losing the half of the job with per-line attribution,
+      which is exactly what made four PRs undiagnosable from their logs.
 
 **Changed LINES, not changed files.** The plan originally said changed files;
 that would have been a nuisance gate. The backend has 303 affected files with a
 median of 2 findings each, so a one-line edit to almost any file would fail on
 findings the author never touched — and the pressure that creates is to put the
 edit in a new file to dodge the gate, which is worse code for a greener build.
-The script parses `git diff -U0` hunk headers for genuinely added line numbers
-and reports only findings on those lines. A finding whose line the diff merely
-shifted is not yours.
+The script reads the **body** of `git diff -U0` for genuinely added line
+numbers and reports only findings on those lines. A finding whose line the diff
+merely shifted is not yours.
+
+**It read the hunk HEADERS until 2026-11-21, and that was wrong twice over.**
+Both were found by running real contributions through it, not by reading it.
+(1) Git's hunk alignment routinely emits a byte-identical line as a `-`/`+`
+pair, and a header-only reader counts it as added — so the gate failed a line
+nobody had edited. Fixed in #62 by matching added content against the content
+the same hunk removed, as a multiset so a genuine duplicate still counts.
+(2) The CI step passed `github.event.pull_request.base.sha`, which is the base
+as it stood when the PR was **opened**, while the job checks out
+`refs/pull/N/merge` — so `merge-base` resolved to that old commit and every
+commit `main` had landed since got diffed into the PR. On a one-file PR that
+reported 46 changed files, with the blocking findings sitting in `main`'s own
+test files. Fixed in #63 by comparing against the base branch's current tip,
+and the gate now prints the base and merge-base it resolved, because a wrong
+base is the one failure mode here that produces a credible-looking red build
+rather than an obvious error.
 
 **The ratchet's guards were tested, not assumed** — a ratchet that fails open is
 worse than none, because it reports success. All five paths confirmed: empty
@@ -343,6 +363,14 @@ longer exists). Neither is a defect in the change under test.
 
 **Exit:** reached — no new lint findings can merge on an added line, and the
 totals only move down.
+
+**With one honest caveat about what "reached" meant.** The first six real pull
+requests to meet this gate all failed it, and every one of those failures was
+the gate's own two bugs above, not the contributions. Ratchets, typechecks and
+tests passed on all six. A gate's exit criterion is not met when it is merged;
+it is met when it has judged real changes correctly, and that took two more
+fixes after this phase was marked done. Worth remembering before marking a
+later phase complete on the strength of its own test suite.
 
 ### Phase 4 — unblock test-file linting · DONE
 
@@ -472,10 +500,17 @@ rather than one 300-file commit.
 - [ ] Flip lint from ratchet to **gate** (`--max-warnings 0`) on both workspaces.
       Cannot happen before Phases 5-6 land: doing it now makes CI permanently
       red, which is exactly the state the ratchet exists to avoid.
-- [ ] Enable branch protection on `main`: require backend, frontend and lint
-      checks; no direct pushes. **Needs the user** — repo admin rights, and the
-      checks have to have run on GitHub at least once before they can be
-      required by name.
+- [x] **Enable branch protection on `main`** — done 2026-11-21. Requires all
+      three checks by their exact job names; force-pushes and branch deletion
+      blocked; no required reviews (a solo-maintainer repo would deadlock on
+      one); `strict`/up-to-date deliberately **off**, since it only creates
+      rebase churn on Dependabot PRs for no safety gain here.
+      **`enforce_admins` is deliberately off**, which means protection stops
+      accidents rather than a determined push: an admin can still push
+      directly. That is a considered trade, not an oversight — this repo is one
+      revert away from a live LTE/5G core, and keeping a manual override is
+      worth more than the stricter posture. Flip it to `true` for a binding
+      rule.
 - [ ] ~~Add `npm run lint` to the local pre-commit path~~ — **reconsider this
       one.** Backend lint is ~2 min at best and ~4 min under load. A pre-commit
       hook of that length gets `--no-verify`'d within a day, and a hook everyone
@@ -494,8 +529,16 @@ rather than one 300-file commit.
       were tracked (Phase 0) and CI existed to validate a bump (Phase 1).
       Deliberately conservative for a repo that deploys a live core: weekly, a
       5-PR cap per workspace, minor+patch grouped into one PR so routine churn
-      is one review, majors left separate. **It starts opening real PRs as soon
-      as it reaches the default branch.**
+      is one review, majors left separate. **It reached the default branch on
+      2026-11-21 and immediately opened 13 PRs** (3 actions, 5 backend, 5
+      frontend — the per-workspace caps held). The three `actions/*` majors are
+      merged (#47, #48, #50), which also cleared the Node-20-runtime
+      deprecation annotation. `mongodb` majors are now in an `ignore` block
+      (#60): server 5.0+ needs AVX, this CPU has none, so the server is pinned
+      at `mongo:4.4`. Note the reasoning carefully — driver 7 *does* still
+      support 4.4, so 4.4 is not itself the blocker; the point is that it is
+      the oldest release any current driver supports, which makes every future
+      driver major a gamble on the subscriber and SAS-grant store.
 - [ ] `docker compose build` smoke job. **Deliberately not added yet, and not
       because of SASBench** — that part is fine, its context is a public pinned
       remote git URL that resolves with nothing cloned. The problem is that the
