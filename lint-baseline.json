@@ -16,11 +16,11 @@
   ],
   "measuredAt": "2026-11-21",
   "backend": {
-    "errors": 5658,
-    "warnings": 277,
+    "errors": 6293,
+    "warnings": 408,
     "files": 432,
-    "filesWithFindings": 303,
-    "fatals": 120
+    "filesWithFindings": 246,
+    "fatals": 0
   },
   "frontend": {
     "errors": 459,

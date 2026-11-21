@@ -7,6 +7,13 @@ Engineering worklist, same voice as `TODO.md` — "we should" belongs here, not 
 **Goal:** every check green, zero errors, and `main` protected so it stays that
 way.
 
+**Status, 2026-11-21.** Phases 0-4 and the Dependabot half of 8 are done.
+Phases 5-6 — the boundary typing and the long tail — are the multi-week bulk and
+have not started; Phase 5 now carries a measured note on where to begin and
+which part is risky. Phase 7 is blocked on them by definition. Two items need
+the user rather than code: branch protection, and installing the PR-review app.
+Nothing is on `main` yet — this branch has not been pushed.
+
 **Created:** 2026-11-21. Every number below was measured on this host on that
 date, not estimated — re-measure before trusting them after any dependency bump.
 
@@ -148,7 +155,7 @@ Fix in order of **what a rule actually catches**, not how many hits it has:
 
 ## 3. Phases
 
-### Phase 0 — branch and lockfiles · ~1h · IN PROGRESS
+### Phase 0 — branch and lockfiles · DONE
 
 - [x] Branch `ci-and-lint-cleanup` off `main`.
 - [x] Remove `package-lock.json` from `.gitignore` (line 6), with a comment saying
@@ -337,15 +344,44 @@ longer exists). Neither is a defect in the change under test.
 **Exit:** reached — no new lint findings can merge on an added line, and the
 totals only move down.
 
-### Phase 4 — unblock test-file linting · ~2h
+### Phase 4 — unblock test-file linting · DONE
 
-All 120 backend test files currently **fatal** under type-aware lint:
-`tsconfig.json` excludes `src/**/__tests__/**` and `src/**/*.test.ts`, so the
-parser has no type information for them. ESLint lints zero test files today.
+All 120 backend test files **fataled** under type-aware lint: `tsconfig.json`
+excludes `src/**/__tests__/**` and `src/**/*.test.ts`, and a file outside
+`parserOptions.project` is a fatal parse error rather than a skipped file — so
+ESLint linted zero test files, while the count showed 120 findings that looked
+like ordinary ones.
 
-- [ ] Add `backend/tsconfig.eslint.json` extending `tsconfig.json` with the test
-      excludes removed, and point `parserOptions.project` at it.
-- [ ] Re-baseline.
+- [x] `backend/tsconfig.eslint.json` extends `tsconfig.json` and overrides only
+      `exclude`, dropping the two test patterns. It never emits. The production
+      `tsconfig.json` is untouched — its exclusion of test files is deliberate
+      and documented on the `exclude` itself.
+- [x] `parserOptions.project` repointed at it.
+- [x] Re-baselined.
+
+Result:
+
+| | before | after |
+|---|---|---|
+| errors | 5,658 | **6,293** (+635) |
+| warnings | 277 | **408** (+131) |
+| **fatals** | **120** | **0** |
+| files with findings | 303 | 246 |
+
+The rise is the ratchet working as designed. The fall in "files with findings"
+is not a contradiction: each of the 120 fatals counted as a file with a
+finding, and 57 of those test files turn out to be completely clean.
+
+Newly visible: 215 `no-unsafe-member-access`, 158 `no-unsafe-assignment`, 131
+`explicit-function-return-type`, 110 `no-explicit-any`, 106 `require-await` —
+mostly mocks, as predicted.
+
+One thing worth knowing for Phase 5: `src/__tests__/ran-radio-grouping.test.ts`
+imports the RAN page's pure grouping module out of `frontend/src`. TypeScript
+pulls an imported file into the program whether `include` names it or not, and
+that module deliberately has no imports of its own, so no extra config was
+needed — but it is the reason the production `tsconfig.json` cannot simply stop
+excluding tests (`rootDir` would reject it).
 
 **Expect the backend count to RISE here** — 120 files of previously invisible
 findings, mostly `no-unsafe-*` on mocks. That is the ratchet working as designed,
@@ -354,10 +390,51 @@ The 120 fatals in `lint-baseline.json` are exactly those files, so that number
 should go to **0** in the same change — and the ratchet checks fatals
 separately, so it will notice if it does not.
 
-### Phase 5 — boundary typing: the collapse · days, the bulk of the work
+### Phase 5 — boundary typing: the collapse · days, the bulk of the work · NOT STARTED
 
 Where 82% of the backend count actually dies. Type the boundary once, and every
 downstream `no-unsafe-*` resolves itself.
+
+**Measured 2026-11-21, to say where to start.** The 3,986 `no-unsafe-*` findings
+are concentrated the same way everything else here is: **121 files carry all of
+them, and the top 15 hold 51.7%.**
+
+```
+328  interfaces/rest/ims-controller.ts
+302  interfaces/rest/secgw-controller.ts
+284  application/use-cases/auto-config.ts
+146  interfaces/rest/gsm-controller.ts
+136  interfaces/rest/frr-controller.ts
+122  interfaces/rest/genieacs-controller.ts
+110  interfaces/rest/validation-controller.ts
+101  interfaces/rest/pstn-controller.ts
+ 97  infrastructure/yaml/yaml-config-repository.ts
+ 82  application/use-cases/pcap.ts
+```
+
+A first attempt to classify them by the line each sits on was **not conclusive
+and should not be repeated** — it put only ~7% on a visible `req.body` /
+`JSON.parse` / `yaml.parse` / `stdout` expression and 59% in an
+unattributable bucket, which looks like a refutation of the premise above and
+is not one. Reading an actual sample settled it: those lines are things like
+`raw.nrf`, `config.gtpc.port`, `upf.gtpu.addr`, `seppRaw?.n32?.server?.[0]`,
+`sample.sampled_at`, `r.maxSessions`, `body.espDhGroup` — genuinely boundary
+values, reached through two or three intervening assignments, which a
+line-level regex cannot see. **The premise holds; measuring it needs dataflow,
+not grep.**
+
+What the sample does establish is the ORDER. The single largest untyped
+boundary is **the parsed YAML config object**, which `yaml-config-repository.ts`
+hands out and which then spreads through `auto-config.ts`, `pcap.ts`,
+`config-controller.ts`, `ip-plan-controller.ts`, `dns-migration-usecase.ts` and
+`validation-controller.ts`. Giving that one value a declared shape is the
+highest-leverage change available — and the riskiest, because **CLAUDE.md
+pattern #2 is non-negotiable: never mutate a parsed config object and expect it
+to round-trip; everything goes through `rawYaml`.** So that work needs its own
+session and its own careful reading of the round-trip path, not a quick pass.
+Second is DB/SQLite row shapes (`radio-signal-controller.ts`,
+`twamp-reflector-history.ts`), which are self-contained and much safer, and a
+better place to prove the pattern first.
 
 - [ ] **HTTP input.** Typed request-body/params validation at each controller
       edge, replacing `any` reads of `req.body`. Biggest single win:
@@ -380,7 +457,7 @@ downstream `no-unsafe-*` resolves itself.
 behaviour is a separate commit with its own test. The 1,652 existing tests are the
 safety net and must stay green at every step.
 
-### Phase 6 — the long tail · days, parallelisable
+### Phase 6 — the long tail · days, parallelisable · NOT STARTED
 
 210 affected files have ≤10 issues each — mechanical, low-risk, easy to split
 across sessions. Worth a per-directory sweep so a reviewer sees coherent diffs
@@ -390,23 +467,48 @@ rather than one 300-file commit.
       (~4,692 at today's measurement, expected far lower once A's `no-explicit-any`
       work is done, since `no-unsafe-*` largely stems from those same `any`s).
 
-### Phase 7 — zero tolerance · ~1h
+### Phase 7 — zero tolerance · BLOCKED on 5 and 6
 
 - [ ] Flip lint from ratchet to **gate** (`--max-warnings 0`) on both workspaces.
+      Cannot happen before Phases 5-6 land: doing it now makes CI permanently
+      red, which is exactly the state the ratchet exists to avoid.
 - [ ] Enable branch protection on `main`: require backend, frontend and lint
-      checks; no direct pushes.
-- [ ] Add `npm run lint` to the local pre-commit path so it fails before CI does.
+      checks; no direct pushes. **Needs the user** — repo admin rights, and the
+      checks have to have run on GitHub at least once before they can be
+      required by name.
+- [ ] ~~Add `npm run lint` to the local pre-commit path~~ — **reconsider this
+      one.** Backend lint is ~2 min at best and ~4 min under load. A pre-commit
+      hook of that length gets `--no-verify`'d within a day, and a hook everyone
+      bypasses is worse than none because it creates a false sense of coverage.
+      If something local is wanted, the honest options are a `pre-push` hook
+      (fires far less often) or a hook that runs only
+      `scripts/lint-changed-lines.mjs` — but note that still pays the full
+      eslint startup cost, because the type-aware rules need the whole program.
+      Leaving this to CI is a defensible answer.
 
 **Exit:** the stated goal — zero errors, 100% pass rate, enforced.
 
 ### Phase 8 — optional extras
 
-- [ ] `docker compose build` smoke job. Works in CI: SASBench's build context is a
-      public pinned remote git URL, so it resolves with nothing cloned.
-- [ ] Dependabot. Only useful once lockfiles are tracked (Phase 0).
+- [x] **Dependabot** (`.github/dependabot.yml`). Only useful once the lockfiles
+      were tracked (Phase 0) and CI existed to validate a bump (Phase 1).
+      Deliberately conservative for a repo that deploys a live core: weekly, a
+      5-PR cap per workspace, minor+patch grouped into one PR so routine churn
+      is one review, majors left separate. **It starts opening real PRs as soon
+      as it reaches the default branch.**
+- [ ] `docker compose build` smoke job. **Deliberately not added yet, and not
+      because of SASBench** — that part is fine, its context is a public pinned
+      remote git URL that resolves with nothing cloned. The problem is that the
+      backend image's build pulls from `download.docker.com`, `repo.mongodb.org`
+      and pypi at build time, so as a per-PR required check it would go red on
+      someone else's outage. The right shape is a **scheduled weekly job**, not
+      a PR gate — and it should be written and verified in its own change
+      rather than committed unrun. The failure class it would catch is real:
+      see the 2026-10-30 SASBench entry in CLAUDE.md, where an unresolvable
+      build context meant not one service started.
 - [ ] A release workflow on `v2.0-beta_*` tags.
-- [ ] Claude Code GitHub App for PR review — after Phase 1, so it has green checks
-      to reason against.
+- [ ] Claude Code GitHub App for PR review — **needs the user** to install the
+      app on the repo.
 
 ---
 
@@ -427,3 +529,19 @@ rather than one 300-file commit.
   frontend's move to variant B. Both are expected; re-baseline rather than treating
   them as regressions.
 - **Re-measure after any dependency bump.** Every number here has a date on it.
+- **Read a sample of a rule's findings before budgeting for it.** A rule name is
+  not a diagnosis. 27 findings this plan had scheduled as code fixes were two
+  config lines, because `no-constant-condition` meant "idiomatic `while (true)`"
+  and `no-unused-vars` meant "deliberate rest-destructuring". Conversely, a
+  grep-level classification of `no-unsafe-*` looked like it refuted this plan's
+  central premise and did not — see Phase 5.
+- **A gate that cannot fail is theatre.** Both new scripts were tested against
+  their failure paths before being trusted: the ratchet exits 2 on absent or
+  malformed eslint output (otherwise a crashed eslint reads as "no findings" and
+  `--update` would zero the baseline), and the changed-lines gate was
+  mutation-checked by committing a deliberate `any` on a new line and confirming
+  exit 1. Do the same to anything added in Phases 5-8.
+- **CI timings measured on this host are not CI timings.** It is a 2009-era Xeon
+  and was under concurrent load for most of these runs; one backend lint took
+  118s on a quiet host and ~4 minutes on a busy one. Treat local numbers as
+  upper bounds and re-measure on the runner.

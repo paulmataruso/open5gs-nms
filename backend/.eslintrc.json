@@ -3,7 +3,11 @@
   "parserOptions": {
     "ecmaVersion": 2022,
     "sourceType": "module",
-    "project": "./tsconfig.json"
+    // tsconfig.eslint.json, not tsconfig.json: the production compile excludes
+    // the test files, and a file outside the parser's project is a FATAL error,
+    // not a skipped one. Pointing at the production config meant all 120 test
+    // files fataled and none was ever linted. See that file's own comment.
+    "project": "./tsconfig.eslint.json"
   },
   "plugins": ["@typescript-eslint"],
   "extends": [

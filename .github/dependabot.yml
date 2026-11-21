@@ -1,0 +1,51 @@
+# Dependabot is only useful now that the lockfiles are tracked (plan Phase 0)
+# and CI exists to actually validate a bump (Phase 1). Before both, a bump PR
+# was unverifiable.
+#
+# Deliberately conservative, because this repo deploys a live LTE/5G core:
+#   - weekly, not daily;
+#   - a low open-PR cap, so a quiet week does not become 30 branches;
+#   - minor and patch GROUPED into one PR per workspace, so routine churn is
+#     one review rather than twenty;
+#   - majors left ungrouped and separate, since those are the ones that need
+#     reading.
+#
+# NOTE: this starts opening real pull requests as soon as it reaches the
+# default branch.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'deps(backend):'
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        patterns: ['*']
+        update-types: [minor, patch]
+    commit-message:
+      prefix: 'deps(frontend):'
+
+  # The workflow's own actions. These pin to major tags (@v4), so this mostly
+  # catches a v4 -> v5 that would otherwise sit unnoticed for a year.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'deps(actions):'

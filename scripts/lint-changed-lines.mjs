@@ -50,9 +50,19 @@ try {
   process.exit(0);
 }
 
+// `blockOnWarnings` mirrors each workspace's OWN lint script, so this gate is
+// never stricter than the command a developer runs by hand:
+//   backend  `eslint src --ext .ts`                        -> warnings are advisory
+//   frontend `eslint . ... --max-warnings 0`               -> warnings are errors
+// This matters most for the backend's `explicit-function-return-type`, which is
+// a warning and fires on practically every arrow function in a new test. Failing
+// a PR over that would make adding a test unpleasant, and an unpleasant gate
+// gets routed around. Warnings are still printed — just not fatal.
 const WORKSPACES = [
-  { name: 'backend',  prefix: 'backend/',  args: ['src', '--ext', '.ts'] },
-  { name: 'frontend', prefix: 'frontend/', args: ['.', '--ext', 'ts,tsx', '--report-unused-disable-directives'] },
+  { name: 'backend',  prefix: 'backend/',  blockOnWarnings: false,
+    args: ['src', '--ext', '.ts'] },
+  { name: 'frontend', prefix: 'frontend/', blockOnWarnings: true,
+    args: ['.', '--ext', 'ts,tsx', '--report-unused-disable-directives'] },
 ];
 
 // Added line numbers per file, from -U0 hunk headers.
@@ -78,7 +88,8 @@ if (added.size === 0) {
   process.exit(0);
 }
 
-let reported = 0;
+let blocking = 0;
+let advisory = 0;
 let filesChecked = 0;
 
 for (const ws of WORKSPACES) {
@@ -109,12 +120,17 @@ for (const ws of WORKSPACES) {
     filesChecked++;
     for (const m of file.messages ?? []) {
       if (!lines.has(m.line)) continue;
-      reported++;
-      const sev = m.fatal ? 'fatal' : m.severity === 2 ? 'error' : 'warning';
+      const isWarning = !m.fatal && m.severity === 1;
+      const blocks = !isWarning || ws.blockOnWarnings;
+      if (blocks) blocking++; else advisory++;
+      const sev = m.fatal ? 'fatal' : m.severity === 2 ? 'error' : blocks ? 'warning' : 'warning (advisory)';
       console.log(`${repoRel}:${m.line}:${m.column}  ${sev}  ${m.message}  ${m.ruleId ?? ''}`);
     }
   }
 }
 
-console.log(`\nChecked ${filesChecked} changed file(s); ${reported} finding(s) on added lines.`);
-process.exit(reported > 0 ? 1 : 0);
+console.log(
+  `\nChecked ${filesChecked} changed file(s) — ${blocking} blocking finding(s) ` +
+  `and ${advisory} advisory warning(s) on added lines.`,
+);
+process.exit(blocking > 0 ? 1 : 0);
