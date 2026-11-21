@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import { ueDiagnosticsApi, type DiagnosticTarget, type DiagnosticSnapshot, type DiagnosticDependencies } from '../api/ueDiagnostics';
 import { pcapApi, type HostInterface, type PcapManifest, type PacketTreeNode } from '../api/pcap';
 import { PacketDetailTree } from '../components/pcap/PacketDetailTree';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 
 const bytes=(value:number)=>value>=1048576?(value/1048576).toFixed(2)+' MB':value>=1024?(value/1024).toFixed(1)+' KB':value+' B';
 const rate=(value:number)=>value>=1000000?(value/1000000).toFixed(2)+' Mbps':value>=1000?(value/1000).toFixed(1)+' Kbps':Math.round(value)+' bps';
