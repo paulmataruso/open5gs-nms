@@ -10,6 +10,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { classifyMajorEvent, MAJOR_EVENT_GREP_PATTERNS, parseOpen5gsTimestamp, formatOpen5gsTimestamp } from '../../application/use-cases/major-event-classifier';
 import { extractEventDetails } from '../../application/use-cases/log-event-details';
+import { asyncRoute } from './middleware/async-route';
 
 const execFileAsync = promisify(execFile);
 
@@ -102,7 +103,7 @@ export const createLogDownloadRouter = (
   };
 
   // ── POST /api/logs/download ──────────────────────────────────────────────────
-  router.post('/download', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/download', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const {
       services = ALL_OPEN5GS_SERVICES,
       source   = 'open5gs',
@@ -195,7 +196,7 @@ export const createLogDownloadRouter = (
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
-  });
+  }));
 
   // ── GET /api/logs/debug-bundle ───────────────────────────────────────────────
   router.get('/debug-bundle', requireAdmin, async (_req: Request, res: Response) => {

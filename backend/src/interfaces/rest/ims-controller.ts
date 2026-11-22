@@ -5858,7 +5858,7 @@ export function createImsRouter(
   });
 
   // POST /api/ims/remove — full teardown, as if IMS was never installed
-  router.post('/remove', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/remove', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -6041,7 +6041,7 @@ export function createImsRouter(
     write('   All services stopped, packages purged, configs deleted, subscriber IMS APNs cleared.\n');
     write('   The L3 IP address has not been changed. You may reinstall from scratch.\n');
     res.end();
-  });
+  }));
 
   // POST /api/ims/restart
   router.post('/restart', requireAdmin, async (req: Request, res: Response) => {

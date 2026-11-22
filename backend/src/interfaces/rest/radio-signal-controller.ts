@@ -394,7 +394,7 @@ export function createRadioSignalRouter(
     res.json({ success: true, ingested: ues.length });
   });
 
-  router.post('/poll', requireAdmin, async (_req, res) => {
+  router.post('/poll', requireAdmin, asyncRoute(async (_req, res) => {
     const radios = db.prepare('SELECT * FROM signal_radios WHERE enabled = 1').all() as RadioRow[];
     const activeByIp = new Map<string, string[]>();
     for (const ue of await activeSessions.getActive4GUEs()) {
@@ -424,7 +424,7 @@ export function createRadioSignalRouter(
     }));
     db.prepare('DELETE FROM signal_samples WHERE sampled_at < ?').run(Date.now() - 7 * 24 * 60 * 60 * 1000);
     res.json({ results });
-  });
+  }));
 
   router.post('/wake', requireAdmin, asyncRoute(async (req, res) => {
     const body = asRecord(req.body);

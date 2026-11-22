@@ -572,7 +572,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // /install) since it's a test tool, not something every real deployment
   // needs. Requires osmo-hnbgw itself to already be configured and running
   // (it dials out to it, mirroring how a real HNB would).
-  router.post('/virtual-hnb/deploy', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/virtual-hnb/deploy', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     if (!fs.existsSync(HNBGW_CFG_HOST_PATH)) {
       res.status(400).json({ success: false, error: 'Configure OsmoHNBGW itself first — the virtual HNB dials out to it, same as a real one would.' });
@@ -639,7 +639,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
       await auditLogger.log({ action: 'hnbgw_virtual_hnb_deploy', user, details: String(err), success: false });
     }
     res.end();
-  });
+  }));
 
   router.post('/virtual-hnb/remove', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
