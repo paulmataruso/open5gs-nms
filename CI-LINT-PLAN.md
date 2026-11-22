@@ -464,22 +464,86 @@ Second is DB/SQLite row shapes (`radio-signal-controller.ts`,
 `twamp-reflector-history.ts`), which are self-contained and much safer, and a
 better place to prove the pattern first.
 
-- [ ] **HTTP input.** Typed request-body/params validation at each controller
-      edge, replacing `any` reads of `req.body`. Biggest single win:
-      `ims-controller.ts` (400), `secgw-controller.ts` (344),
-      `frr-controller.ts` (224), `gsm-controller.ts` (220).
-- [ ] **`JSON.parse`.** A typed parse helper returning `unknown` plus a narrowing
-      check, instead of an implicit `any` fanning out.
-- [ ] **YAML.** `yaml-config-repository.ts` (185) — the `rawYaml` preservation path
-      is inherently untyped; give it a declared shape at the edge. **Do not change
-      round-trip behaviour while typing it** (CLAUDE.md pattern #2).
-- [ ] **Command output.** `executeCommand()` returns a typed `CommandResult`
-      already; the unsafe accesses are on parsed stdout. Type each parser's output.
-- [ ] **Then** sweep the 512 `no-misused-promises` and the floating promises.
-      Treat every one as a possible real bug before silencing it — this is the
-      highest-value rule in the whole set.
+**Progress: 6293 -> 3778 errors (40%) in eleven merged passes, 2026-11-21/22.**
+Every pass kept `tsc` clean and the full suite green. The baseline in
+`lint-baseline.json` is lowered in each commit and its `_comment` carries the
+running history, so trust those numbers over this prose.
+
+- [x] **HTTP input.** Done. `asRecord()`
+      (`domain/services/json-shape.ts`, tested) narrows `req.body` at the edge;
+      secgw (#69), gsm (#70), frr (#71), ims (#74) and others follow it.
+      **The single biggest win in the whole phase was not new typing at all:**
+      `req.user` was already declared on `Express.Request` by
+      `auth-middleware.ts` and was being thrown away by
+      `(req as any).user?.username` in 46 files — 268 identical casts, 1,254
+      errors, removed mechanically in #67.
+- [x] **`JSON.parse`.** Done, as per-boundary declared shapes rather than one
+      helper: PyHSS's REST responses behind a generic `pyhssApiCall<T = unknown>`
+      (#74), the `.ims-config.json` state file across its 23 parse sites (#75),
+      SASBench's REST API behind a generic `sasbench<T = unknown>` and Kea's
+      config JSON (#76), GenieACS device documents (#68), SQLite rows (#66).
+      The `unknown` DEFAULT on those generics is the load-bearing part: a call
+      site that does not say what it expects has to narrow, instead of
+      inheriting `any` the way `Promise<any>` handed it out.
+- [ ] **YAML — all that is left of this phase, and still its own session.**
+      Measured 2026-11-22: **nine files, ~1,350 findings, all touching this one
+      boundary** — `auto-config.ts` (339), `yaml-config-repository.ts` (185),
+      `validation-controller.ts` (154), `pcap.ts` (108),
+      `subscriber-management.ts` (106), `yaml-config-repository.test.ts` (91),
+      `auto-assign-ips-usecase.ts` (80), `config-mapper.ts` (76),
+      `apn-profile-usecase.ts` (74), `plmn-migration-usecase.ts` (66). That is
+      where the remaining count lives. **Do not change round-trip behaviour
+      while typing it** (CLAUDE.md pattern #2), and read the `rawYaml` path
+      before touching anything. A local, READ-ONLY `yaml.load` is a different
+      thing and is safe to type — `frr-controller.ts` has one, typed in #71
+      with a comment saying why.
+- [x] **Command output.** Done (#71). The framing was right: `executeCommand()`
+      already returned a typed `CommandResult`, so every unsafe access was on
+      the parsed stdout. The declared parser shapes double as documentation,
+      because these are positional parses of human-readable `vtysh` tables and
+      the field names are now the only record of what column N meant.
+- [x] **`no-misused-promises`, the real half.** Done (#72, #73), and this is
+      the clearest vindication of the "treat every one as a possible real bug"
+      rule. Of **496** async route handlers, **445 carry their own try/catch
+      and 51 did not** — and a handler can *have* a try/catch yet still `await`
+      before it opens, which caught **7 more**. Those **58** were genuine
+      request hangs: Express holds a Promise it never awaits, so a throw became
+      an unhandled rejection with **no response ever written**, and the client
+      waited for its own timeout. All 58 now answer 500 and log, via a tested
+      `asyncRoute()`. Where there was nothing to await, removing `async` was
+      the better repair — a sync throw is caught by Express itself.
+- [ ] **`no-misused-promises`, the lint-only half.** The remaining ~438 guarded
+      handlers have no defect behind them and can be wrapped mechanically
+      whenever Phase 7 wants the count. Blanket-wrapping all 496 at the start
+      would have fixed the same 58 while burying them in a diff nobody could
+      review.
 
 **Exit:** backend `no-unsafe-*` near zero; `no-explicit-any` is what remains.
+
+### What to carry into the rest of this work
+
+**Rank candidates by findings-per-untyped-VALUE, not by raw count.**
+`secgw-controller.ts` had 261 findings from three lines of
+`const body = req.body ?? {}`; `genieacs-controller.ts` had 129 from one
+device-document type. Raw count points at the biggest file; this points at the
+cheapest fix.
+
+**Check whether a type already exists before writing one.** The `req.user`
+case was 1,254 errors from casting away a declaration that was already
+correct, and `ImsStateConfig` was invented before noticing the state's `config`
+block simply *is* the `ImsConfigureInput` that produced it.
+
+**A high finding count does not mean careless code.** `secgw-controller.ts`
+validates carefully and its helpers already took `unknown` with real type
+predicates. Its 261 findings existed because one entry-point value was `any`.
+
+**Typing a boundary surfaces latent bugs, and that is the real return.** Every
+pass found at least one, none of them visible as a lint finding: a `ues` array
+holding two shapes; `FRR_LOG_LEVELS.includes()` looking like validation while
+narrowing nothing; `failures:` returning `[{}]` because Errors do not
+JSON-serialise; an APN id of `undefined` sent on as an id; the literal string
+`"undefined"` written into PyHSS's own config YAML; `.padStart()` on a
+possibly-absent MNC throwing from inside a domain helper.
 
 **Rule for this phase: no behaviour changes.** A typing change that alters runtime
 behaviour is a separate commit with its own test. The 1,652 existing tests are the
