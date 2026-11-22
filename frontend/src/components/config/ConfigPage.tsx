@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import axios from 'axios';
 import { Save, AlertTriangle, RefreshCw, Shield, FileText, Layout, Plus, X, BookOpen, Network } from 'lucide-react';
 import { useConfigStore } from '../../stores';
 import { configApi } from '../../api';
@@ -626,14 +627,14 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
   );
 }
 
-export function ConfigPage(): JSX.Element {
+export function ConfigPage({ initialTab = 'nrf', title = 'Configuration' }: { initialTab?: Tab; title?: string } = {}): JSX.Element {
   const configs = useConfigStore((s) => s.configs);
   const loading = useConfigStore((s) => s.loading);
   const dirty = useConfigStore((s) => s.dirty);
   const fetchConfigs = useConfigStore((s) => s.fetchConfigs);
   const updateConfigs = useConfigStore((s) => s.updateConfigs);
 
-  const [activeTab, setActiveTab] = useState<Tab>('nrf');
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab);
   const [editorMode, setEditorMode] = useState<'form' | 'text'>('form');
   const [applying, setApplying] = useState(false);
   const [validation, setValidation] = useState<ValidationResult | null>(null);
@@ -721,7 +722,8 @@ export function ConfigPage(): JSX.Element {
         toast.error('Apply failed');
       }
     } catch (err) {
-      toast.error('Apply failed');
+      const message = axios.isAxiosError<{ error?: string }>(err) ? err.response?.data?.error : undefined;
+      toast.error(message || 'Apply failed');
     } finally {
       setApplying(false);
     }
@@ -743,7 +745,7 @@ export function ConfigPage(): JSX.Element {
     <div className="p-4 space-y-4 md:p-6 md:space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-semibold font-display">Configuration</h1>
+          <h1 className="text-2xl font-semibold font-display">{title}</h1>
           <p className="text-sm text-nms-text-dim mt-1">
             Edit Open5GS network function configurations (5G Core + 4G EPC)
           </p>

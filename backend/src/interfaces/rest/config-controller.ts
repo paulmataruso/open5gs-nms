@@ -7,6 +7,7 @@ import { TopologyUseCase } from '../../application/use-cases/topology';
 import { ServiceMonitorUseCase } from '../../application/use-cases/service-monitor';
 import { SyncSDUseCase } from '../../application/use-cases/sync-sd-usecase';
 import { requireAdmin } from './middleware/auth-middleware';
+import { MmeMobilitySupportUseCase } from '../../application/use-cases/mme-mobility-support';
 
 export function createConfigRouter(
   loadConfigUseCase: LoadConfigUseCase,
@@ -16,8 +17,17 @@ export function createConfigRouter(
   serviceMonitorUseCase: ServiceMonitorUseCase,
   syncSDUseCase: SyncSDUseCase,
   logger: pino.Logger,
+  mobilitySupport?: MmeMobilitySupportUseCase,
 ): Router {
   const router = Router();
+
+  router.get('/mme/mobility-support', async (_req: Request, res: Response) => {
+    if (!mobilitySupport) {
+      res.status(503).json({ success: false, error: 'MME compatibility detection is unavailable' });
+      return;
+    }
+    res.json({ success: true, data: await mobilitySupport.execute() });
+  });
 
   router.get('/', async (_req: Request, res: Response) => {
     try {

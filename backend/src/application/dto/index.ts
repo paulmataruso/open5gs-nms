@@ -1,4 +1,5 @@
 import { ServiceName } from '../../domain/entities/service-status';
+import { MmeMobilityPeer } from '../../domain/entities/mme-config';
 
 // ── Common SBI Structures ──
 export interface SbiServerDto {
@@ -243,6 +244,7 @@ export interface MmeConfigDto {
   gtpc: {
     server: Array<{ address: string }>;
     client?: {
+      mme?: MmeMobilityPeer[];
       sgwc?: Array<{ address: string; tac?: number | number[]; e_cell_id?: string | string[] }>;
       smf?: Array<{ address: string; apn?: string | string[] }>;
     };

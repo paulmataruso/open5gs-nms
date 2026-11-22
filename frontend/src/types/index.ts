@@ -264,12 +264,31 @@ export interface SeppConfig {
 }
 
 // ── MME ──
+export interface MmeMobilityPeer {
+  address: string;
+  port?: number;
+  gummei: {
+    plmn_id: PlmnId;
+    mme_gid: number;
+    mme_code: number;
+  };
+  tai?: { plmn_id: PlmnId; tac: number } | Array<{ plmn_id: PlmnId; tac: number }>;
+}
+
+export interface MmeMobilitySupport {
+  status: 'supported' | 'unsupported' | 'unknown' | 'not_installed';
+  message: string;
+  executable?: string;
+  runningExecutable?: string;
+}
+
 export interface MmeConfig {
   freeDiameter?: string;
   s1ap: { server: Array<{ address: string; dev?: string }> };
   gtpc: {
     server: Array<{ address: string }>;
     client?: {
+      mme?: MmeMobilityPeer[];
       sgwc?: Array<{ address: string; tac?: number | number[]; e_cell_id?: string | string[] }>;
       smf?: Array<{ address: string; apn?: string | string[] }>;
     };

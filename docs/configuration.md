@@ -123,6 +123,7 @@ amf:
 - `plmn_support` - Supported PLMNs and network slices
 - `security` - NAS security algorithm preferences
 
+
 ---
 
 ### SMF (Session Management Function)
@@ -400,6 +401,69 @@ mme:
 - `gummei` - Global Unique MME Identifier
 - `tai` - Tracking Area Identity list
 - `security` - NAS security algorithm preferences
+
+#### Inter-MME Mobility
+
+Open **Configuration → MME → Inter-MME Mobility** to add neighboring MMEs for
+context transfer, tracking-area updates and S1 handover. This section uses S10
+over the existing GTP-C listener; it does not create a separate service or file.
+
+Before enabling editing, NMS checks the executable selected by the host's
+`open5gs-mmed.service` and, when running, `/proc/<MainPID>/exe`. The compatibility
+check recognizes the peer parser and mobility handlers implemented in
+[Open5GS PR #5019](https://github.com/open5gs/open5gs/pull/5019). It does not infer
+support from the Open5GS version or the presence of a UDP listener. Unrecognized
+builds remain blocked until support can be confirmed. A custom launcher or
+unreadable executable produces an explicit “cannot verify” message.
+
+If the MME lacks support, the section shows **Open5GS update required**. Install
+an Open5GS build containing this implementation, restart the MME and click
+**Check compatibility**. Updating NMS alone does not update the core. Both the
+running image and the next-restart executable must support mobility; replacing
+the binary on disk without restarting an old process is insufficient.
+
+For each neighbor, configure its GTP-C address and port (normally UDP 2123),
+remote MCC/MNC, MME group ID and MME code. Keep MCC/MNC leading zeroes: `01` and
+`001` are different MNCs. Add remote tracking areas to route connected S1
+handover; each entry has its own PLMN and decimal TAC. A neighbor without TAI
+routes can still be selected by GUMMEI for idle mobility. Several neighboring
+MMEs, and several routes per neighbor, are supported.
+
+The section writes the native `mme.gtpc.client.mme` configuration. For example,
+merge this under the local MME's existing `gtpc.client` mapping:
+
+```yaml
+mme:
+  gtpc:
+    client:
+      mme:
+        - address: 192.0.2.20
+          port: 2123
+          gummei:
+            plmn_id: {mcc: '001', mnc: '01'}
+            mme_gid: 2
+            mme_code: 2
+          tai:
+            - plmn_id: {mcc: '001', mnc: '01'}
+              tac: 2
+```
+
+Use the existing **Apply Configuration** workflow to save, back up and restart
+services. The backend rechecks support immediately before applying a nonempty
+neighbor list, including changes made through the YAML editor or API. Invalid
+ports, identity ranges, malformed PLMNs, duplicate GUMMEIs and ambiguous target
+TAI routes are rejected before backup, file writes or restarts. An empty list
+can remove old peers even on an unsupported MME.
+
+Configure the reciprocal neighbor on each remote MME separately; this page
+manages the local deployment and does not push files to remote cores. Allow
+UDP connectivity in both directions and ensure each target eNB has completed
+S1 Setup. Existing GTP-C Clients controls select SGW/PGW peers. SGW relocation
+also needs compatible gateway components; the MME capability check alone does
+not certify those gateways or cross-vendor interoperability. See the
+[two-site connection guide](https://github.com/cecrevier/open5gs/blob/feature/s10-sgw-relocation/docs/s10-configuration.md)
+for network paths and gateway setup.
+
 
 ---
 

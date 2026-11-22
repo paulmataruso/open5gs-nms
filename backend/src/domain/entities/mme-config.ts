@@ -1,5 +1,12 @@
 import { LoggerConfig, PlmnId, GtpcConfig } from './base-config';
 
+export interface MmeMobilityPeer {
+  address: string;
+  port?: number;
+  gummei: { plmn_id: PlmnId; mme_gid: number; mme_code: number };
+  tai?: { plmn_id: PlmnId; tac: number } | Array<{ plmn_id: PlmnId; tac: number }>;
+}
+
 export interface MmeGummei {
   plmn_id: PlmnId | PlmnId[];
   mme_gid: number | number[];
@@ -27,6 +34,7 @@ export interface MmeConfig {
       port?: number;
     }>;
     client: {
+      mme?: MmeMobilityPeer[];
       sgwc?: Array<{
         address: string;
         tac?: number | number[];
