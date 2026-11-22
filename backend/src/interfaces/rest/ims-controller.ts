@@ -76,7 +76,7 @@ export const MAX_NATPING_INTERVAL_SECONDS = 300;
 export function getSmsDeliveryMode(): 'sgs' | 'ims' | 'vectorcore' {
   if (!fs.existsSync(HOST_IMS_STATE)) return 'ims';
   try {
-    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
     return state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
   } catch {
     return 'ims';
@@ -2239,7 +2239,7 @@ interface ConfigFileEntry {
 function getImsConfigManifest(): ConfigFileEntry[] {
   let imsDomain = '';
   try {
-    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
     imsDomain = state.imsDomain ?? '';
   } catch { /* not configured yet */ }
 
@@ -2311,6 +2311,72 @@ async function mysqlExecFile(filePath: string, database: string): Promise<void> 
 // fields this project reads, all optional: PyHSS has its own schema and its
 // own release cadence, and asserting a field is present is how a version bump
 // turns into a runtime undefined rather than a compile error.
+/**
+ * The `.ims-config.json` state file on the host, read at 22 sites in this
+ * module and one in cdr-sync-monitor.
+ *
+ * Written only by configureIms() and the small per-feature setters below, so
+ * unlike PyHSS's API this shape is ours. Every field is still optional: the
+ * file on a given host was written by whatever version was installed then, and
+ * the setters each persist a subset, so a key being absent is normal rather
+ * than exceptional. Reading one has to cope with undefined either way, which
+ * is what the `=== true` / `?? default` idioms throughout this file are
+ * already doing.
+ *
+ * No index signature on purpose. A host's file may carry keys from an older
+ * build, and those survive the parse -> mutate -> JSON.stringify round trip
+ * regardless of the declared type, because the parsed object still holds them.
+ * Adding `[key: string]: unknown` would only re-open the door this closes.
+ */
+
+export interface ImsState {
+  imsDomain?: string;
+  hssBackend?: string;
+  installedWithVersion?: string;
+  installedWithRev?: number;
+  configuredWithVersion?: string;
+  configuredWithRev?: number;
+  smsDeliveryMode?: 'ims' | 'sgs' | 'vectorcore';
+  smsWorkerIntervalSeconds?: number;
+  voiceChargingEnabled?: boolean;
+  cdrAccountingEnabled?: boolean;
+  sipTracingEnabled?: boolean;
+  natpingIntervalSeconds?: number;
+  /**
+   * The configure input that produced this state -- the SAME shape, not a
+   * copy of it, so the two cannot drift. Optional because a host that has
+   * installed but never configured has no config block yet, which is exactly
+   * what the `hasSavedConfig` checks around this file are testing for.
+   */
+  config?: ImsConfigureInput;
+}
+
+/**
+ * A state file that has actually been through a Configure: `config` and
+ * `imsDomain` both present.
+ *
+ * The per-feature setters below each regenerate a CSCF include out of those
+ * two, so there is nothing to regenerate without them. They already threw in
+ * that case -- a TypeError from `state.config.scscfIp` -- so this is the same
+ * control flow with the message those functions already use for a missing
+ * state file.
+ */
+export type ConfiguredImsState = ImsState & {
+  config: ImsConfigureInput & { mcc: string; mnc: string };
+  imsDomain: string;
+};
+
+function requireConfiguredState(state: ImsState): ConfiguredImsState {
+  // mcc/mnc are included because a configured IMS has a PLMN by definition,
+  // and because deriveEpcDomain()/deriveImsDomain() call .padStart() on them:
+  // an absent mnc threw `Cannot read properties of undefined` from inside a
+  // domain helper, several frames from the actual cause.
+  if (!state.config?.mcc || !state.config.mnc || !state.imsDomain) {
+    throw new Error('IMS is not configured yet — configure IMS first');
+  }
+  return state as ConfiguredImsState;
+}
+
 export interface PyhssApn {
   apn_id?: number;
   apn?: string;
@@ -2853,7 +2919,7 @@ export const IMS_CONFIGURE_DEFAULTS = {
 export function readCurrentImsConfig(): ImsConfigureFullInput | null {
   if (!fs.existsSync(HOST_IMS_STATE)) return null;
   try {
-    const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
     return (saved?.config as ImsConfigureFullInput) ?? null;
   } catch {
     return null;
@@ -2877,9 +2943,9 @@ export async function syncImsSubscribers(
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS not configured — run Configure first.');
   }
-  const savedState = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const savedState = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
   const imsDomain  = savedState.imsDomain;
-  const savedConfig = savedState.config ?? {};
+  const savedConfig: Partial<ImsConfigureInput> = savedState.config ?? {};
 
   const allSubs = await subscriberRepo.findAllFull();
   const toSync  = allSubs.filter(s => s.msisdn && s.msisdn.length > 0 && s.security?.k);
@@ -3131,7 +3197,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   let sipTracingEnabled = true;
   if (fs.existsSync(HOST_IMS_STATE)) {
     try {
-      const prevSaved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      const prevSaved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
       if (typeof prevSaved?.smsWorkerIntervalSeconds === 'number' && prevSaved.smsWorkerIntervalSeconds > 0) {
         smsWorkerIntervalSeconds = prevSaved.smsWorkerIntervalSeconds;
       }
@@ -3409,7 +3475,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // kamailio-pcscf, but configuredWithVersion still got marked current, so the "update
   // modules" prompt never came back to tell the operator anything was still wrong.
   const prevConfiguredWithVersion: string | undefined = fs.existsSync(HOST_IMS_STATE)
-    ? (() => { try { return JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')).configuredWithVersion; } catch { return undefined; } })()
+    ? (() => { try { return (JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState).configuredWithVersion; } catch { return undefined; } })()
     : undefined;
   fs.writeFileSync(HOST_IMS_STATE, JSON.stringify({
     imsDomain,
@@ -3497,7 +3563,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   // just stays stuck true (a safe direction to fail in: worst case is a spurious "update
   // modules" prompt, never a silently-cleared one).
   try {
-    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
     state.configuredWithVersion = getAppVersion();
     state.configuredWithRev = IMS_CONFIG_REV;
     fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
@@ -3521,7 +3587,7 @@ export async function setSmsDeliveryMode(mode: 'sgs' | 'ims' | 'vectorcore'): Pr
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
-  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
   const { scscfIp, scscfPort } = state.config;
   const imsDomain: string = state.imsDomain;
   const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
@@ -3575,7 +3641,7 @@ export async function setVoiceChargingEnabled(enabled: boolean): Promise<void> {
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
-  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
   const { scscfIp, scscfPort } = state.config;
   const imsDomain: string = state.imsDomain;
   const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
@@ -3636,7 +3702,7 @@ export async function setCdrAccountingEnabled(enabled: boolean): Promise<void> {
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
-  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
   const { scscfIp, scscfPort } = state.config;
   const imsDomain: string = state.imsDomain;
   const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
@@ -3739,7 +3805,7 @@ async function siptraceRpc(ctl: string, arg: 'on' | 'off' | 'check'): Promise<{ 
   }
 }
 
-function writeCscfIncludes(state: any, enabled: boolean, http2N5Available: boolean): void {
+function writeCscfIncludes(state: ConfiguredImsState, enabled: boolean, http2N5Available: boolean): void {
   const c = state.config;
   const imsDomain: string = state.imsDomain;
   const additionalDomains = (c.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
@@ -3779,7 +3845,7 @@ export async function setSipTracingEnabled(enabled: boolean): Promise<SipTracing
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
-  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
   const http2N5Available = await isKamailioHttp2Capable();
 
   const report: SipTracingApplyReport = { enabled, instances: [], needsConfigure: false };
@@ -3834,7 +3900,7 @@ export async function setSipTracingEnabled(enabled: boolean): Promise<SipTracing
 export function getSipTracingEnabled(): boolean {
   try {
     if (!fs.existsSync(HOST_IMS_STATE)) return false;
-    return JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'))?.sipTracingEnabled === true;
+    return (JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState)?.sipTracingEnabled === true;
   } catch {
     return false;
   }
@@ -3850,7 +3916,7 @@ export function getSipTracingEnabled(): boolean {
  */
 export function getCscfAddresses(): { pcscfIp?: string; icscfIp?: string; scscfIp?: string } {
   try {
-    const cfg = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')).config ?? {};
+    const cfg: Partial<ImsConfigureInput> = (JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState).config ?? {};
     return { pcscfIp: cfg.pcscfIp, icscfIp: cfg.icscfIp, scscfIp: cfg.scscfIp };
   } catch {
     return {};
@@ -3878,7 +3944,7 @@ export async function getSipTracingRuntime(): Promise<{ role: string; loaded: bo
  */
 export function getNatpingIntervalSeconds(): number {
   try {
-    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
     const v = Number(state.natpingIntervalSeconds);
     if (Number.isInteger(v) && v >= MIN_NATPING_INTERVAL_SECONDS && v <= MAX_NATPING_INTERVAL_SECONDS) {
       return v;
@@ -3912,7 +3978,7 @@ export async function setNatpingIntervalSeconds(seconds: number): Promise<void> 
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
-  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
   const rtpEngineIp = state.config?.rtpEngineIp;
   if (!rtpEngineIp) {
     throw new Error('Saved IMS state has no rtpEngineIp — run Configure on the IMS page first');
@@ -3939,7 +4005,7 @@ export async function setSmsWorkerInterval(seconds: number): Promise<void> {
   if (!fs.existsSync(HOST_IMS_STATE)) {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
-  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+  const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SMSC_DIR}/kamailio_smsc.cfg`,
     smscMainCfg(seconds), 'utf-8');
@@ -5079,7 +5145,7 @@ export async function getImsStaleness(): Promise<ImsStalenessResult> {
   let configuredWithRev: number | undefined;
   if (hasSavedConfig) {
     try {
-      const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
       configuredWithVersion = saved.configuredWithVersion;
       configuredWithRev = saved.configuredWithRev;
     } catch { /* corrupt */ }
@@ -5112,7 +5178,7 @@ export async function getImsStaleness(): Promise<ImsStalenessResult> {
   let rtpEngineIp: string | undefined;
   if (hasSavedConfig) {
     try {
-      rtpEngineIp = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'))?.config?.rtpEngineIp;
+      rtpEngineIp = (JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState)?.config?.rtpEngineIp;
     } catch { /* corrupt */ }
   }
   const templates = installed
@@ -5180,7 +5246,7 @@ export function createImsRouter(
       let cdrAccountingEnabled = false;
       if (hasSavedConfig) {
         try {
-          const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+          const saved = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
           currentConfig = saved.config;
           imsDomain = saved.imsDomain;
           configuredWithVersion = saved.configuredWithVersion;
@@ -5706,7 +5772,7 @@ export function createImsRouter(
   router.get('/dns-records', async (_req: Request, res: Response) => {
     try {
       if (!fs.existsSync(HOST_IMS_STATE)) return res.json({ success: true, records: [] });
-      const stateData = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      const stateData = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
       const { imsDomain, config } = stateData;
       const additionalPlmns: { mcc: string; mnc: string }[] = config?.additionalPlmns ?? [];
       const additionalDomains = additionalPlmns.map((p: { mcc: string; mnc: string }) =>
@@ -5750,7 +5816,7 @@ export function createImsRouter(
           allPass: false,
         });
       }
-      const savedValidate = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+      const savedValidate = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
       const imsDomain = savedValidate.imsDomain;
       const config    = savedValidate.config;
       const dnsIp = config?.dnsIp ?? '127.0.0.1';
@@ -5851,7 +5917,7 @@ export function createImsRouter(
         await nsenter('systemctl', ['start', svc]).catch(() => {});
       }
       if (fs.existsSync(HOST_IMS_SMF_BAK) && fs.existsSync(HOST_IMS_STATE)) {
-        const { config } = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+        const { config } = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState;
         if (fs.existsSync(HOST_SMF_YAML) && config) {
           writeYamlGuarded(HOST_SMF_YAML, raw => updateSmfImsSession(raw, config.pcscfIp, config.dnsIp), 're-add the IMS session to smf.yaml', IMS_OWNED_SMF_TOP_KEYS);
           await nsenter('systemctl', ['restart', 'open5gs-smfd']).catch(() => {});

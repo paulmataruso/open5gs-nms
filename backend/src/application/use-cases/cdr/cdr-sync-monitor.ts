@@ -87,7 +87,10 @@ export async function closeScscfDbPool(): Promise<void> {
 function isCdrAccountingEnabled(): boolean {
   try {
     if (!fs.existsSync(HOST_IMS_STATE)) return false;
-    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8'));
+    // Declared inline rather than importing ImsState from ims-controller: that
+    // would make an application use-case depend on interfaces/rest and invert
+    // the layering. One field is all this reads.
+    const state = JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as { cdrAccountingEnabled?: boolean };
     return state.cdrAccountingEnabled === true;
   } catch {
     return false;

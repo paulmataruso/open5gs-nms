@@ -32,6 +32,8 @@
     "in total; the other 438 async handlers are guarded and lint-only.",
     "A ninth typed PyHSS's REST responses via a generic pyhssApiCall, 4216 ->",
     "4107, and surfaced three more real defects in the process.",
+    "A tenth declared the .ims-config.json state shape across its 23 parse",
+    "sites, 4107 -> 3889, turning three opaque TypeErrors into clear errors.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -43,7 +45,7 @@
   ],
   "measuredAt": "2026-11-22",
   "backend": {
-    "errors": 4107,
+    "errors": 3889,
     "warnings": 405,
     "files": 437,
     "filesWithFindings": 243,
