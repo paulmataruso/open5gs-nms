@@ -7,6 +7,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { createDummyInterface, deleteDummyInterface, nsenter } from '../../infrastructure/network/dummy-interface';
+import { asRecord } from '../../domain/services/json-shape';
 import {
   buildSecgwScript, SECGW_PATCH_REV, SECGW_BUILD_WORKDIR, SECGW_INSTALL_PREFIX,
   SECGW_CHARON_BIN, SECGW_SWANCTL_BIN,
@@ -1456,7 +1457,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
-    const body = req.body ?? {};
+    const body = asRecord(req.body);
     const result = await configureSecgw({
       gatewayIp: typeof body.gatewayIp === 'string' ? body.gatewayIp : '',
       interfaceMode: body.interfaceMode === 'existing' ? 'existing' : 'dummy',
@@ -1552,7 +1553,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
         res.status(409).json({ success: false, error: 'Configure SecGW before adding radios.' });
         return;
       }
-      const body = req.body ?? {};
+      const body = asRecord(req.body);
       const name = typeof body.name === 'string' ? body.name.trim() : '';
       const vendor: SecGwRadioVendor = body.vendor === 'nokia' ? 'nokia' : 'baicells';
       const radioType: SecGwRadioType = body.radioType === '5g' ? '5g' : '4g';
@@ -1703,7 +1704,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
         return;
       }
 
-      const body = req.body ?? {};
+      const body = asRecord(req.body);
       const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : radio.name;
       // vendor is fixed at creation — not editable (mirrors radio.peerIdentity, both are
       // established identity/config-family choices, not day-to-day tunable settings).
