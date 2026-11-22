@@ -34,6 +34,9 @@
     "4107, and surfaced three more real defects in the process.",
     "A tenth declared the .ims-config.json state shape across its 23 parse",
     "sites, 4107 -> 3889, turning three opaque TypeErrors into clear errors.",
+    "An eleventh typed SASBench's REST API and Kea's config JSON, 3889 -> 3778.",
+    "What is left is concentrated in the YAML config boundary, which CLAUDE.md",
+    "pattern #2 reserves for its own session, plus Phase 6's long tail.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -45,7 +48,7 @@
   ],
   "measuredAt": "2026-11-22",
   "backend": {
-    "errors": 3889,
+    "errors": 3778,
     "warnings": 405,
     "files": 437,
     "filesWithFindings": 243,
