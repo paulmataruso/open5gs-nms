@@ -27,6 +27,9 @@
     "the seventh wrapped the 51 async route handlers that had no try/catch at",
     "all, 4289 -> 4223. That last one is a BUG FIX, not a typing change: those",
     "handlers leaked a rejection to Express and the request hung with no reply.",
+    "An eighth caught 7 more of the same defect in handlers that DID have a",
+    "try/catch but awaited before it opened, 4223 -> 4216. 58 real hang risks",
+    "in total; the other 438 async handlers are guarded and lint-only.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -38,10 +41,10 @@
   ],
   "measuredAt": "2026-11-22",
   "backend": {
-    "errors": 4223,
+    "errors": 4216,
     "warnings": 405,
     "files": 437,
-    "filesWithFindings": 244,
+    "filesWithFindings": 243,
     "fatals": 0
   },
   "frontend": {

@@ -1729,7 +1729,7 @@ export function createPstnRouter(
   });
 
   // POST /api/pstn/extensions — body: { extension, subscriberImsi, label? }
-  router.post('/extensions', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/extensions', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { subscriberImsi, label } = req.body as { extension?: string; subscriberImsi?: string; label?: string };
     const rawExtension = req.body.extension as string | undefined;
@@ -1772,7 +1772,7 @@ export function createPstnRouter(
       await auditLogger.log({ action: 'pstn_extension_add', user, details: String(err), success: false });
       res.status(400).json({ success: false, error: String((err as Error).message ?? err) });
     }
-  });
+  }));
 
   // DELETE /api/pstn/extensions/:extension
   router.delete('/extensions/:extension', requireAdmin, async (req: Request, res: Response) => {

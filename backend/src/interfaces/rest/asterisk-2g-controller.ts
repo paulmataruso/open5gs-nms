@@ -1121,7 +1121,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   // POST /api/asterisk-2g/extensions — body: { extension, subscriberImsi, label? }
-  router.post('/extensions', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/extensions', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { subscriberImsi, label } = req.body as { extension?: string; subscriberImsi?: string; label?: string };
     const rawExtension = req.body.extension as string | undefined;
@@ -1167,7 +1167,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
       await auditLogger.log({ action: 'asterisk2g_extension_add', user, details: String(err), success: false });
       res.status(400).json({ success: false, error: String((err as Error).message ?? err) });
     }
-  });
+  }));
 
   // DELETE /api/asterisk-2g/extensions/:extension
   router.delete('/extensions/:extension', requireAdmin, async (req: Request, res: Response) => {

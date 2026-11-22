@@ -1106,7 +1106,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     res.end();
   }));
 
-  router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { bindIp, httpPort, originHost, originRealm, defaultOfferId } = req.body as { bindIp?: string; httpPort?: number; originHost?: string; originRealm?: string; defaultOfferId?: string };
     const result = await configureOcs({ bindIp, httpPort, originHost, originRealm, defaultOfferId });
@@ -1144,7 +1144,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
       success: true,
     });
     res.json({ success: true, gyPeerOpen: result.gyPeerOpen, subscriberSync, subscriberSyncWarning });
-  });
+  }));
 
   // POST /api/ocs/sync-subscribers — same seed+reconcile logic /configure
   // runs automatically, exposed as its own button for ongoing maintenance
