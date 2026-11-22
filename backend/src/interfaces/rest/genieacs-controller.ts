@@ -62,9 +62,27 @@ interface BaicellsProvisionInput {
   sasEirpCapability: string;
 }
 
+// A GenieACS device document. The TR-069 parameter tree under it varies by
+// vendor and firmware, so the index signature stays `unknown` and parameters
+// are read through getParam() rather than by direct member access. The two
+// declared members are GenieACS's own metadata, not CPE parameters, and are
+// the only fields this file reads off a device directly.
+export interface GenieAcsDeviceId {
+  _OUI?: string;
+  _Manufacturer?: string;
+  _ProductClass?: string;
+  _SerialNumber?: string;
+}
+
+export interface GenieAcsDevice {
+  [parameter: string]: unknown;
+  _id?: string;
+  _deviceId?: GenieAcsDeviceId;
+}
+
 export interface NbiTask {
   url:  string;
-  body: Record<string, any>;
+  body: Record<string, unknown>;
 }
 
 // ─── LTE Freq/Cell neighbor tables ────────────────────────────────────────────
@@ -522,14 +540,34 @@ function encodeDeviceId(deviceId: string): string {
   return encodeURIComponent(deviceId).replace(/%2F/gi, '%252F');
 }
 
-function getParam(device: Record<string, any>, dotPath: string): string {
-  const parts = dotPath.split('.');
-  let node: any = device;
-  for (const part of parts) {
-    if (node == null) return '';
-    node = node[part];
+// A GenieACS device document is a third party's JSON whose shape varies by
+// vendor and firmware, so it enters as `unknown` and every hop of the dot-path
+// walk is checked rather than asserted. This one signature was the source of
+// most of this file's lint findings: `Record<string, any>` made every
+// downstream read of a device parameter an unsafe member access.
+//
+// A missing or non-object hop returns '' exactly as before -- the previous
+// `node == null` check caught null and undefined, and a primitive hop would
+// have yielded undefined on the next index, so returning '' at that point is
+// the same observable result.
+// Walks the TR-069 parameter tree and returns the raw `_value`, or undefined
+// if any hop is missing or is not an object. Separate from getParam() because
+// the distinction between "absent" and "present but empty" is load-bearing in
+// at least one caller: the SAS enableMode check treats a present-but-empty
+// value as enabled, which collapsing to '' would silently flip.
+function getParamValue(device: GenieAcsDevice, dotPath: string): unknown {
+  let node: unknown = device;
+  for (const part of dotPath.split('.')) {
+    if (node === null || node === undefined || typeof node !== 'object') return undefined;
+    node = (node as Record<string, unknown>)[part];
   }
-  return node?._value != null ? String(node._value) : '';
+  if (node === null || node === undefined || typeof node !== 'object') return undefined;
+  return (node as { _value?: unknown })._value;
+}
+
+function getParam(device: GenieAcsDevice, dotPath: string): string {
+  const value = getParamValue(device, dotPath);
+  return value !== null && value !== undefined ? String(value) : '';
 }
 
 // ─── MME Pool table (PLMN + MME IP pairs) ────────────────────────────────────
@@ -553,7 +591,7 @@ interface MmePoolEntry {
   mmeStatus: string; // device-reported, read-only — not part of the write payload
 }
 
-function getMmePoolTable(device: Record<string, any>): MmePoolEntry[] {
+function getMmePoolTable(device: GenieAcsDevice): MmePoolEntry[] {
   const table: MmePoolEntry[] = [];
   for (let n = 1; n <= MME_POOL_MAX_ENTRIES; n++) {
     const base = MME_POOL_BASE(n);
@@ -628,7 +666,7 @@ interface MmePoolConfig {
   pool2Status: string; // device-reported, read-only
 }
 
-function getMmePoolConfig(device: Record<string, any>): MmePoolConfig {
+function getMmePoolConfig(device: GenieAcsDevice): MmePoolConfig {
   const pool1List = getParam(device, `${MME_POOL_CONFIG_BASE}MmePool1List`);
   const pool2List = getParam(device, `${MME_POOL_CONFIG_BASE}MmePool2List`);
   return {
@@ -657,15 +695,19 @@ function validateMmePoolConfig(cfg: MmePoolConfig): string[] {
 // index with Enable=false (the device's own default/cleared state, or a row
 // this NMS explicitly cleared on removal) is treated as an empty slot, not a
 // row with stale leftover field values.
-function getNeighborTables(device: Record<string, any>): { neighborFreqTable: NeighborFreqEntry[]; neighborCellTable: NeighborCellEntry[] } {
+function getNeighborTables(device: GenieAcsDevice): { neighborFreqTable: NeighborFreqEntry[]; neighborCellTable: NeighborCellEntry[] } {
   const neighborFreqTable: NeighborFreqEntry[] = [];
   for (let n = 1; n <= 8; n++) {
     const base = NEIGHBOR_FREQ_BASE(n);
     if (getParam(device, `${base}Enable`) !== 'true') continue;
-    const entry = { index: n } as NeighborFreqEntry;
+    // Collected first, then spread: assigning through `(entry as any)[prop]`
+    // wrote to a typed object with the type switched off, so a key the map
+    // and the interface disagreed about was silently accepted.
+    const fields: Record<string, string> = {};
     for (const [prop, field] of Object.entries(NEIGHBOR_FREQ_FIELD_MAP)) {
-      (entry as any)[prop] = getParam(device, `${base}${field}`);
+      fields[prop] = getParam(device, `${base}${field}`);
     }
+    const entry = { index: n, ...fields } as unknown as NeighborFreqEntry;
     neighborFreqTable.push(entry);
   }
 
@@ -673,10 +715,14 @@ function getNeighborTables(device: Record<string, any>): { neighborFreqTable: Ne
   for (let n = 1; n <= 8; n++) {
     const base = NEIGHBOR_CELL_BASE(n);
     if (getParam(device, `${base}Enable`) !== 'true') continue;
-    const entry = { index: n } as NeighborCellEntry;
+    // Collected first, then spread: assigning through `(entry as any)[prop]`
+    // wrote to a typed object with the type switched off, so a key the map
+    // and the interface disagreed about was silently accepted.
+    const fields: Record<string, string> = {};
     for (const [prop, field] of Object.entries(NEIGHBOR_CELL_FIELD_MAP)) {
-      (entry as any)[prop] = getParam(device, `${base}${field}`);
+      fields[prop] = getParam(device, `${base}${field}`);
     }
+    const entry = { index: n, ...fields } as unknown as NeighborCellEntry;
     neighborCellTable.push(entry);
   }
 
@@ -695,7 +741,7 @@ function getNeighborTables(device: Record<string, any>): { neighborFreqTable: Ne
 // entry only counts if Enable=true; MmePoolConfigParam has no Enable field,
 // so an entry counts as "populated" whenever its PLMNID isn't the device's
 // own observed blank-slot value ('000000').
-function findDuplicatePlmnEntries(device: Record<string, any>): string[] {
+function findDuplicatePlmnEntries(device: GenieAcsDevice): string[] {
   const issues: string[] = [];
 
   const enabledPlmns: string[] = [];
@@ -719,7 +765,7 @@ function findDuplicatePlmnEntries(device: Record<string, any>): string[] {
   return issues;
 }
 
-function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string, mmeUeCount: number | null = null) {
+function toRadio(device: GenieAcsDevice, coreMcc: string, coreMnc: string, mmeUeCount: number | null = null) {
   const serial     = device._id ?? 'unknown';
   const plmn       = getParam(device, `${FAP}CellConfig.LTE.EPC.PLMNList.1.PLMNID`);
   const mcc        = plmn.length >= 3 ? plmn.slice(0, 3) : '';
@@ -834,7 +880,7 @@ function toRadio(device: Record<string, any>, coreMcc: string, coreMnc: string, 
   };
 }
 
-async function nbiPost(url: string, body: Record<string, any>): Promise<{ ok: boolean; status: number; text: string }> {
+async function nbiPost(url: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; text: string }> {
   const resp = await fetch(url, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -873,7 +919,7 @@ async function assessSercommRf(
       `${nbiUrl}/devices?query=${encodeURIComponent(JSON.stringify({ _id: decodeURIComponent(encodedId) }))}`,
     );
     if (!resp.ok) return null;
-    const devices = (await resp.json()) as Record<string, any>[];
+    const devices = (await resp.json()) as GenieAcsDevice[];
     return devices[0] ? assessSercommRfPrecondition(devices[0]) : null;
   } catch {
     return null;
@@ -1020,7 +1066,7 @@ export function createGenieacsRouter(
       const resp = await fetch(`${nbiUrl}/devices?projection=${encodeURIComponent(projection)}`);
       if (!resp.ok) throw new Error(`GenieACS NBI returned HTTP ${resp.status}`);
 
-      const devices = (await resp.json()) as Record<string, any>[];
+      const devices = (await resp.json()) as GenieAcsDevice[];
 
       // Filter to Sercomm/FreedomFi 4G by OUI from _deviceId (000E8F)
       // Exclude OUI 00C002 = Sercomm NR (SCE5164 5G) which shares the "Sercomm" manufacturer string
@@ -1105,7 +1151,7 @@ export function createGenieacsRouter(
     if (missing.length) {
       return void res.status(400).json({ success: false, error: `Missing fields: ${missing.join(', ')}` });
     }
-    const sasServerUrl = req.body.sasServerUrl as string | undefined;
+    const sasServerUrl = (req.body as { sasServerUrl?: string }).sasServerUrl;
     logger.info({ sasUserId: input.sasUserId, sasEnable: input.sasEnable }, 'Sercomm preview-sercomm received');
     const encodedId    = encodeDeviceId(deviceId);
     const taskUrl      = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
@@ -1182,7 +1228,7 @@ export function createGenieacsRouter(
 
       const resp = await fetch(`${nbiUrl}/devices?projection=${encodeURIComponent(projection)}`);
       if (!resp.ok) throw new Error(`GenieACS NBI returned HTTP ${resp.status}`);
-      const devices = (await resp.json()) as Record<string, any>[];
+      const devices = (await resp.json()) as GenieAcsDevice[];
 
       // Filter to Baicells only by OUI from _deviceId (48BF74)
       // Device.DeviceInfo.Manufacturer is empty for Baicells — they don't populate it via TR-069
@@ -1197,7 +1243,7 @@ export function createGenieacsRouter(
       const mmeUeCountByDeviceId = new Map(mmeUeCounts.map(c => [c.genieacsDeviceId, c.mmeUeCount]));
       res.json({
         success: true,
-        devices: baicellsDevices.map(d => toRadio(d, coreMcc, coreMnc, mmeUeCountByDeviceId.get(d._id) ?? null)),
+        devices: baicellsDevices.map(d => toRadio(d, coreMcc, coreMnc, (d._id === undefined ? null : mmeUeCountByDeviceId.get(d._id) ?? null))),
       });
     } catch (err) {
       logger.error({ err: String(err) }, 'Failed to fetch GenieACS devices');
@@ -1209,7 +1255,7 @@ export function createGenieacsRouter(
   // Returns the three NBI task bodies that would be sent — without sending them.
   router.post('/preview/:deviceId', requireAdmin, (req: Request, res: Response) => {
     const { deviceId } = req.params;
-    const input: BaicellsProvisionInput = req.body;
+    const input = req.body as BaicellsProvisionInput;
 
     const missing = (['mcc','mnc','tac','mmeIp','bandwidthMhz','earfcn','cellId','pci','band','txPower'] as const)
       .filter(k => input[k] == null || input[k] === '');
@@ -1227,7 +1273,7 @@ export function createGenieacsRouter(
   // Security: caller supplies task bodies only — URLs are constructed server-side
   // from deviceId to prevent SSRF (fix for bug report 3.5).
   router.post('/execute-tasks', requireAdmin, async (req: Request, res: Response) => {
-    const { deviceId, tasks } = req.body as { deviceId: string; tasks: Array<{ body: Record<string, any> }> };
+    const { deviceId, tasks } = req.body as { deviceId: string; tasks: Array<{ body: Record<string, unknown> }> };
     const user = req.user?.username ?? 'unknown';
 
     if (!deviceId || !Array.isArray(tasks) || tasks.length === 0) {
@@ -1622,7 +1668,7 @@ export function createGenieacsRouter(
     try {
       const listResp = await fetch(`${nbiUrl}/devices?projection=_id`);
       if (!listResp.ok) throw new Error(`Failed to list devices: ${listResp.status}`);
-      const devices = (await listResp.json()) as Record<string, any>[];
+      const devices = (await listResp.json()) as GenieAcsDevice[];
 
       const results = await Promise.allSettled(
         devices.map(async (d) => {
@@ -1635,7 +1681,9 @@ export function createGenieacsRouter(
         }),
       );
 
-      const failed  = results.filter(r => r.status === 'rejected').map(r => (r as PromiseRejectedResult).reason);
+      const failed: unknown[] = results
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r): unknown => r.reason);
       const success = failed.length === 0;
 
       await auditLogger.log({
@@ -1666,8 +1714,10 @@ export function createGenieacsRouter(
     try {
       // Check if SAS is enabled on this radio before deciding what to set
       const devResp = await fetch(`${nbiUrl}/devices?query=${encodeURIComponent(JSON.stringify({ _id: deviceId }))}&projection=${encodeURIComponent('Device.DeviceInfo.SAS.enableMode')}`);
-      const devData = devResp.ok ? (await devResp.json()) as Record<string,any>[] : [];
-      const sasEnableMode = devData[0]?.Device?.DeviceInfo?.SAS?.enableMode?._value;
+      const devData = devResp.ok ? (await devResp.json()) as GenieAcsDevice[] : [];
+      const sasEnableMode = devData[0] === undefined
+        ? undefined
+        : getParamValue(devData[0], 'Device.DeviceInfo.SAS.enableMode');
       const sasEnabled = sasEnableMode != null && String(sasEnableMode) !== '0';
 
       const parameterValues: [string, string, string][] = [
@@ -1695,7 +1745,7 @@ export function createGenieacsRouter(
     try {
       const listResp = await fetch(`${nbiUrl}/devices?projection=${encodeURIComponent('_id,_deviceId,Device.DeviceInfo.SAS.enableMode')}`);
       if (!listResp.ok) throw new Error(`Failed to list devices: ${listResp.status}`);
-      const allDevices = (await listResp.json()) as Record<string, any>[];
+      const allDevices = (await listResp.json()) as GenieAcsDevice[];
 
       // Filter to Baicells only (OUI 48BF74) — Sercomm uses AdminState not X_COM_RadioEnable
       const baicellsDevices = allDevices.filter(d => {
@@ -1712,7 +1762,7 @@ export function createGenieacsRouter(
           const encodedId   = encodeDeviceId(id);
           const taskUrl     = `${nbiUrl}/devices/${encodedId}/tasks?timeout=30000&connection_request`;
           // Check SAS enableMode from the device data we already have
-          const sasEnableMode = d?.Device?.DeviceInfo?.SAS?.enableMode?._value;
+          const sasEnableMode = getParamValue(d, 'Device.DeviceInfo.SAS.enableMode');
           const sasEnabled    = sasEnableMode != null && String(sasEnableMode) !== '0';
           const parameterValues: [string, string, string][] = [
             [`${FAP}CellConfig.LTE.RAN.RF.X_COM_RadioEnable`, String(enable), 'xsd:boolean'],
@@ -1727,7 +1777,9 @@ export function createGenieacsRouter(
         }),
       );
 
-      const failed  = results.filter(r => r.status === 'rejected').map(r => (r as PromiseRejectedResult).reason);
+      const failed: unknown[] = results
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r): unknown => r.reason);
       const success = failed.length === 0;
 
       await auditLogger.log({
@@ -1790,7 +1842,7 @@ export function createGenieacsRouter(
     try {
       const listResp = await fetch(`${nbiUrl}/devices?projection=_id,_deviceId`);
       if (!listResp.ok) throw new Error(`Failed to list devices: ${listResp.status}`);
-      const allDevices = (await listResp.json()) as Record<string, any>[];
+      const allDevices = (await listResp.json()) as GenieAcsDevice[];
       const sercommDevices = allDevices.filter(d => {
         const oui = (d._deviceId?._OUI ?? d._id?.split('-')[0] ?? '').toUpperCase();
         const mfr = (d._deviceId?._Manufacturer ?? '').toLowerCase();
@@ -1810,7 +1862,9 @@ export function createGenieacsRouter(
           return id;
         }),
       );
-      const failed  = results.filter(r => r.status === 'rejected').map(r => (r as PromiseRejectedResult).reason);
+      const failed: unknown[] = results
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r): unknown => r.reason);
       const success = failed.length === 0;
       await auditLogger.log({ action: 'radio_rf_all', user, details: `Sercomm RF ${enable ? 'on' : 'off'} on ${sercommDevices.length} radios. Failures: ${failed.length}`, success });
       res.json({ success, affected: sercommDevices.length, failures: failed });
