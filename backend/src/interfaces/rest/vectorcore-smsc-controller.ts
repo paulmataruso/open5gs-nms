@@ -8,6 +8,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import { upsertSmppEsme, isSmppEsmeActive } from './sms-controller';
+import { asyncRoute } from './middleware/async-route';
 
 // ── SMS via VectorCore SMSC ──────────────────────────────────────────────────
 //
@@ -688,7 +689,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
   // POST /api/vectorcore-smsc/install — streaming: Go toolchain + build deps,
   // clone, build (embeds the web UI first), deploy the systemd unit as-is —
   // same shape as mms-controller.ts's /install.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     if (!(await isImsInstalled())) {
       return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. VectorCore SMSC integrates via S-CSCF and needs IMS present.' });
@@ -702,11 +703,11 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
     const result = await installVectorcoreSmsc(write);
     await auditLogger.log({ action: 'vectorcore_smsc_install', user, details: result.error ?? 'success', success: result.success });
     res.end();
-  });
+  }));
 
   // POST /api/vectorcore-smsc/configure — no body needed; imsDomain is
   // derived from ims-controller.ts's own state, not supplied by the caller.
-  router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const result = await configureVectorcoreSmsc();
     if (!result.success) {
@@ -715,7 +716,7 @@ export function createVectorcoreSmscRouter(logger: pino.Logger, auditLogger: IAu
     }
     await auditLogger.log({ action: 'vectorcore_smsc_configure', user, details: `imsDomain=${result.imsDomain}`, success: true });
     res.json({ success: true, sipAddress: result.sipAddress });
-  });
+  }));
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';

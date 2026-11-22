@@ -13,6 +13,7 @@ import { requireAdmin } from './middleware/auth-middleware';
 // is narrowed rather than asserted. finite() already takes unknown, which is
 // what makes every field read safe without a cast.
 import { asRecord } from '../../domain/services/json-shape';
+import { asyncRoute } from './middleware/async-route';
 
 type RadioVendor = 'baicells' | 'generic';
 
@@ -342,7 +343,7 @@ export function createRadioSignalRouter(
     res.json({ success: true, id });
   });
 
-  router.post('/discover', requireAdmin, async (_req, res) => {
+  router.post('/discover', requireAdmin, asyncRoute(async (_req, res) => {
     const [active, connectedRadios] = await Promise.all([
       activeSessions.getActive4GUEs(),
       activeSessions.getConnected4GRadios(),
@@ -368,7 +369,7 @@ export function createRadioSignalRouter(
       discovered.push({ ip, enbId: connectedRadios.find(r => r.ip === ip)?.enbId, radioId: id, imsis, added: !existing });
     }
     res.json({ discovered });
-  });
+  }));
 
   router.delete('/radios/:id', requireAdmin, (req, res) => {
     db.prepare('DELETE FROM signal_radios WHERE id = ?').run(req.params.id);
@@ -425,7 +426,7 @@ export function createRadioSignalRouter(
     res.json({ results });
   });
 
-  router.post('/wake', requireAdmin, async (req, res) => {
+  router.post('/wake', requireAdmin, asyncRoute(async (req, res) => {
     const body = asRecord(req.body);
     const radioId = String(body.radioId || '');
     const imsi = String(body.imsi || '').replace(/\D/g, '');
@@ -447,12 +448,12 @@ export function createRadioSignalRouter(
     }))));
     logger.info({ radioId, imsi: imsi || undefined, targets: sessions.length }, 'UE downlink wake packets sent');
     res.json({ success: true, targets: sessions.length, packets: sessions.length * ports.length });
-  });
+  }));
 
   // Read-only — this is the actual page's main data source (radio list +
   // per-UE signal data); see the comment on GET /radios above for why it
   // must not be admin-gated.
-  router.get('/overview', async (req, res) => {
+  router.get('/overview', asyncRoute(async (req, res) => {
     const search = String(req.query.search || '').trim().toLowerCase();
     const since = Date.now() - Math.min(Math.max(Number(req.query.hours) || 24, 1), 168) * 3600000;
     const radios = db.prepare('SELECT * FROM signal_radios ORDER BY name').all() as RadioRow[];
@@ -484,7 +485,7 @@ export function createRadioSignalRouter(
     }).filter(ue => !search || [ue.ueId, ue.imsi, ue.iccid, ue.msisdn, ue.nickname, ue.radioName]
       .some(value => String(value ?? '').toLowerCase().includes(search)));
     res.json({ radios: radios.map(publicRadio), ues });
-  });
+  }));
 
   return router;
 }

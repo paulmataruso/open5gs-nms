@@ -4,6 +4,7 @@ import { UeBlockService } from '../../application/use-cases/ran/ue-block-service
 import { isUeDetachToolBuilt, isOpen5gsSrcTreeAvailable, installUeDetachTool, runUeDetach } from '../../application/use-cases/ran/ue-detach-runner';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncRoute } from './middleware/async-route';
 
 const IMSI_RE = /^\d{6,15}$/;
 const DETACH_TIMEOUT_MS = 15_000;
@@ -23,7 +24,7 @@ export const createUeBlockRouter = (
     });
   });
 
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -33,7 +34,7 @@ export const createUeBlockRouter = (
     const result = await installUeDetachTool(write);
     await auditLogger.log({ action: 'ue_detach_install', user, details: `success=${result.success}`, success: result.success });
     res.end();
-  });
+  }));
 
   router.get('/', async (_req: Request, res: Response) => {
     try {

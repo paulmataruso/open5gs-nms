@@ -8,6 +8,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { createDummyInterface, deleteDummyInterface, nsenter } from '../../infrastructure/network/dummy-interface';
 import { asRecord } from '../../domain/services/json-shape';
+import { asyncRoute } from './middleware/async-route';
 import {
   buildSecgwScript, SECGW_PATCH_REV, SECGW_BUILD_WORKDIR, SECGW_INSTALL_PREFIX,
   SECGW_CHARON_BIN, SECGW_SWANCTL_BIN,
@@ -1437,7 +1438,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     }
   });
 
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const preState = loadState();
     if (preState.installStatus === 'installing') {
@@ -1453,9 +1454,9 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     const result = await installSecgw(write);
     await auditLogger.log({ action: 'secgw_install', user, details: result.error ?? 'success', success: result.success });
     res.end();
-  });
+  }));
 
-  router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const body = asRecord(req.body);
     const result = await configureSecgw({
@@ -1469,7 +1470,7 @@ export function createSecgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     }
     await auditLogger.log({ action: 'secgw_configure', user, details: `gatewayIp=${result.gatewayIp} interfaceMode=${result.interfaceMode} poolCidr=${result.poolCidr} dnsRecordAdded=${result.dnsRecordAdded}`, success: true });
     res.json({ success: true, gatewayIp: result.gatewayIp, interfaceMode: result.interfaceMode, gatewayFqdn: result.gatewayFqdn, poolCidr: result.poolCidr, bindZoneExists: result.bindZoneExists, dnsRecordAdded: result.dnsRecordAdded });
-  });
+  }));
 
   // Retry hook for "add the secgw DNS record now" — for when BIND9 (and the internal
   // epc zone via the DNS/FQDN Migration Wizard) gets set up AFTER SecGW was already

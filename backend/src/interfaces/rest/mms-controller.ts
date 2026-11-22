@@ -10,6 +10,7 @@ import { ISubscriberRepository } from '../../domain/interfaces/subscriber-reposi
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import { readCurrentSmsConfig, upsertSmppEsme, isSmppEsmeActive, removeSmppEsme } from './sms-controller';
+import { asyncRoute } from './middleware/async-route';
 
 // ── MMS (VectorCore MMSC) ───────────────────────────────────────────────────
 //
@@ -1079,7 +1080,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // POST /api/mms/install — streaming: Go toolchain + build deps, clone,
   // build (embeds the web UI first), deploy the systemd unit as-is.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     if (!(await isImsInstalled())) {
       return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. MMS relies on IMS being the default SMS delivery path for a working deployment (see CLAUDE.md).' });
@@ -1093,10 +1094,10 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
     const result = await installMms(write);
     await auditLogger.log({ action: 'mms_install', user, details: result.error ?? 'success', success: result.success });
     res.end();
-  });
+  }));
 
   // POST /api/mms/configure — body: { mm1PublicIp }
-  router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { mm1PublicIp } = req.body as { mm1PublicIp?: string };
     const result = await configureMms({ mm1PublicIp: mm1PublicIp ?? '' }, subscriberRepo);
@@ -1106,7 +1107,7 @@ export function createMmsRouter(subscriberRepo: ISubscriberRepository, logger: p
     }
     await auditLogger.log({ action: 'mms_configure', user, details: `mm1PublicIp=${mm1PublicIp}`, success: true });
     res.json({ success: true, message: result.message });
-  });
+  }));
 
   // POST /api/mms/sync-subscribers — VectorCore has no REST endpoint for
   // subscriber provisioning (confirmed by reading its api/rest/router.go: the

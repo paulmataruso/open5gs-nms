@@ -24,6 +24,7 @@ import { getOcsPeerInfo, addOcsDiameterClient } from './ocs-controller';
 import { formatPstnDispatcherEntry } from './pstn-controller';
 
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
+import { asyncRoute } from './middleware/async-route';
 
 const execFileAsync = promisify(execFile);
 
@@ -5579,7 +5580,7 @@ export function createImsRouter(
   });
 
   // POST /api/ims/install — streaming: packages + PyHSS install
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -5591,7 +5592,7 @@ export function createImsRouter(
     await installIms(write);
     await auditLogger.log({ action: 'ims_install', user, details: 'packages + pyhss', success: true });
     res.end();
-  });
+  }));
 
   // POST /api/ims/configure
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {

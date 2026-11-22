@@ -75,7 +75,7 @@ export function createCdrRouter(
     }
   });
 
-  router.get('/settings', requireAdmin, async (_req: Request, res: Response) => {
+  router.get('/settings', requireAdmin, (_req: Request, res: Response) => {
     res.json({ success: true, ...readCdrSettings() });
   });
 

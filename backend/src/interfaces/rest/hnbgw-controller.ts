@@ -6,6 +6,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { upsertVtyDirectives, OwnedDirective, parseVtyChunks, serializeVtyChunks } from '../../domain/services/vty-config-ownership';
+import { asyncRoute } from './middleware/async-route';
 import {
   buildOsmoHnbgwScript, verifyOsmoHnbgwBuild, osmoHnbgwSystemdUnit,
   UNIT_PATH as HNBGW_UNIT_PATH, CFG_PATH as HNBGW_CFG_PATH,
@@ -489,7 +490,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   // module's own dedicated MGW instance reuses that same binary).
   // Thin wrapper — see installHnbgw() above for the actual logic, extracted
   // so a bootstrap/restore orchestrator can call it in-process too.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -500,7 +501,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
     const result = await installHnbgw(write, req.query.force === '1');
     await auditLogger.log({ action: 'hnbgw_install', user, details: result.error ?? 'ok', success: result.success });
     res.end();
-  });
+  }));
 
   // Thin wrapper — see configureHnbgw() above for the actual logic.
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
@@ -698,7 +699,7 @@ export function createHnbgwRouter(logger: pino.Logger, auditLogger: IAuditLogger
   });
 
   // ─── Config file editor (mirrors gsm-controller.ts's /configs endpoints) ──
-  router.get('/configs', async (_req: Request, res: Response) => {
+  router.get('/configs', (_req: Request, res: Response) => {
     const files: HnbgwConfigFile[] = HNBGW_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
     res.json({ success: true, files });
   });

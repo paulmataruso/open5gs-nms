@@ -22,6 +22,7 @@ import {
 } from '../../application/use-cases/osmo-sip-connector-build';
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 import { asRecord } from '../../domain/services/json-shape';
+import { asyncRoute } from './middleware/async-route';
 
 // Was previously its own local execFileAsync('nsenter', ...) + timeout, same shared
 // pattern as sms-controller.ts/mms-controller.ts/pstn-controller.ts (there's no shared
@@ -2160,7 +2161,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // plan's Phase 0/1 note on why one package covers both). Thin wrapper —
   // see installGsm() above for the actual logic, extracted so a
   // bootstrap/restore orchestrator can call it in-process too.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -2171,7 +2172,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     const result = await installGsm(write);
     await auditLogger.log({ action: 'gsm_install', user, details: result.error ?? 'ok', success: result.success });
     res.end();
-  });
+  }));
 
   // POST /api/gsm/configure — Body: { bscMgwBindIp?, mscMgwBindIp?, mgwRtpBindIp?, ... }
   // Thin wrapper — see configureGsm() above for the actual logic, extracted
@@ -2320,7 +2321,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // noise. hlr.db itself stays owned by sms-controller.ts (see
   // listHlrSubscriberStatus's own comment) — this route just cross-
   // references it against Mongo's gsmEnabled flag.
-  router.get('/subscribers', async (_req: Request, res: Response) => {
+  router.get('/subscribers', asyncRoute(async (_req: Request, res: Response) => {
     const [hlrRows, allSubs] = await Promise.all([
       listHlrSubscriberStatus(),
       subscriberRepo.findAllFull(),
@@ -2330,7 +2331,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       .filter(s => s.gsmEnabled === true && hlrByImsi.has(s.imsi))
       .map(s => hlrByImsi.get(s.imsi)!);
     res.json({ success: true, subscribers });
-  });
+  }));
 
   // GET /api/gsm/signal/overview — latest 2G measurement sample per IMSI.
   // Real bug, found live 2026-10-03: this handler used to run its own
@@ -2346,7 +2347,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // already-correct, already-measured cache every other "is this 2G UE
   // currently active" consumer in this file relies on, instead of a second,
   // subtly-different implementation of the same query.
-  router.get('/signal/overview', async (_req: Request, res: Response) => {
+  router.get('/signal/overview', (_req: Request, res: Response) => {
     res.json({ success: true, samples: getCachedGsmSignalSamples() });
   });
 
@@ -2384,7 +2385,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   // GET /api/gsm/bts
-  router.get('/bts', async (_req: Request, res: Response) => {
+  router.get('/bts', (_req: Request, res: Response) => {
     res.json({ success: true, btsEntries: loadGsmState().btsEntries });
   });
 
@@ -2769,7 +2770,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // history here (see blockBtsByIdx's home comment above) is real hardware
   // NACKing a bad command, not a stale flag — no reason to risk a redundant
   // command against a BTS that's already confirmed locked.
-  router.post('/bts/block-all', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/bts/block-all', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const state = loadGsmState();
     const results: { id: string; name: string; success: boolean; error?: string }[] = [];
@@ -2781,7 +2782,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
     }
     const allOk = results.every(r => r.success);
     res.status(allOk ? 200 : 207).json({ success: allOk, results });
-  });
+  }));
 
   // DELETE /api/gsm/bts/:id
   router.delete('/bts/:id', requireAdmin, async (req: Request, res: Response) => {
@@ -2866,7 +2867,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   // ─── Config file editor (mirrors sms-controller.ts's /configs endpoints) ──
-  router.get('/configs', async (_req: Request, res: Response) => {
+  router.get('/configs', (_req: Request, res: Response) => {
     const files: GsmConfigFile[] = GSM_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
     res.json({ success: true, files });
   });

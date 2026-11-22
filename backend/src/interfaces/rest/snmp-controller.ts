@@ -8,6 +8,7 @@ import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { ActiveSessionsUseCase } from '../../application/use-cases/active-sessions';
 import { Open5gsApiClient } from '../../application/use-cases/open5gs-api-client';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncRoute } from './middleware/async-route';
 
 const HOST_ROOT = '/proc/1/root';
 const MIB_PATH = `${HOST_ROOT}/usr/share/snmp/mibs/OPEN5GS-NMS-MIB.txt`;
@@ -182,13 +183,13 @@ export function createSnmpRouter(
   // against the same files — whichever finished last would silently win.
   let installInProgress = false;
 
-  router.get('/status', async (_req, res) => {
+  router.get('/status', asyncRoute(async (_req, res) => {
     const dpkg = await hostExecutor.executeCommand('dpkg-query', ['-W', '-f=${Status}', 'snmpd'], undefined, { expectedFailure: true });
     const installed = dpkg.stdout.includes('install ok installed');
     const active = installed && (await hostExecutor.executeCommand('systemctl', ['is-active', UNIT])).stdout.trim() === 'active';
     const enabled = installed && (await hostExecutor.executeCommand('systemctl', ['is-enabled', UNIT])).stdout.trim() === 'enabled';
     res.json({ installed, active, enabled, port: 161, mibInstalled: await fs.access(MIB_PATH).then(() => true).catch(() => false) });
-  });
+  }));
 
   router.get('/stats', async (_req, res) => {
     try {
