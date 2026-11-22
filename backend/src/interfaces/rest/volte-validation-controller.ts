@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
-import { pyhssApiCall } from './ims-controller';
+import { pyhssApiCall, type PyhssApn, type PyhssAuc, type PyhssImsSubscriber, type PyhssSubscriber } from './ims-controller';
 
 // ── VoLTE End-to-End Validation ─────────────────────────────────────────────
 //
@@ -105,20 +105,26 @@ export function makeTestIdentity(mcc: string, mnc: string, idx: number): TestIde
 // real foreign keys, so hardcoding apn_id=1 fails on any host that hasn't already synced
 // a real subscriber at least once (confirmed live on a from-scratch test01 rebuild).
 async function ensureInternetApnId(): Promise<number> {
-  const apnList: any[] = await pyhssApiCall('GET', '/apn/list');
-  const existing = Array.isArray(apnList) ? apnList.find((a: any) => a.apn === 'internet') : null;
-  if (existing) return existing.apn_id;
-  const created = await pyhssApiCall('PUT', '/apn/', {
+  const apnList = await pyhssApiCall<PyhssApn[]>('GET', '/apn/list');
+  const existing = Array.isArray(apnList) ? apnList.find((a) => a.apn === 'internet') : null;
+  // No `?? 1` fallback on purpose: the comment above explains that a
+  // hardcoded apn_id=1 fails on a host that has never synced a subscriber,
+  // so an absent id has to surface rather than be guessed. Previously it was
+  // returned as undefined and sent on as an apn_id, which PyHSS rejected with
+  // a foreign-key error far from the cause.
+  if (existing?.apn_id !== undefined) return existing.apn_id;
+  const created = await pyhssApiCall<PyhssApn>('PUT', '/apn/', {
     apn: 'internet', apn_ambr_dl: 999999, apn_ambr_ul: 999999, qci: 9, arp_priority: 4,
   });
+  if (created.apn_id === undefined) throw new Error('PyHSS created the internet APN but returned no apn_id');
   return created.apn_id;
 }
 
 export async function provisionPyhssTestSubscriber(
   identity: TestIdentity, imsDomain: string, scscfPort: number,
-): Promise<{ apnId: number; aucId: number }> {
+): Promise<{ apnId: number; aucId: number | null }> {
   const apnId = await ensureInternetApnId();
-  const newAuc = await pyhssApiCall('PUT', '/auc/', { ki: identity.ki, opc: identity.opc, amf: '8000', sqn: 0, imsi: identity.imsi });
+  const newAuc = await pyhssApiCall<PyhssAuc>('PUT', '/auc/', { ki: identity.ki, opc: identity.opc, amf: '8000', sqn: 0, imsi: identity.imsi });
   await pyhssApiCall('PUT', '/subscriber/', {
     imsi: identity.imsi, msisdn: identity.msisdn, auc_id: newAuc.auc_id,
     default_apn: apnId, apn_list: String(apnId), enabled: true,
@@ -131,7 +137,10 @@ export async function provisionPyhssTestSubscriber(
     scscf_peer: `scscf.${imsDomain}`,
     ifc_path: 'pyhss/default_ifc.xml',
   });
-  return { apnId, aucId: newAuc.auc_id };
+  // auc_id is reported back for the caller's teardown, which already treats a
+  // missing id as "nothing to delete" -- so null says that explicitly rather
+  // than letting undefined travel as a number.
+  return { apnId, aucId: newAuc.auc_id ?? null };
 }
 
 export async function deprovisionPyhssTestSubscriber(imsi: string): Promise<void> {
@@ -141,7 +150,7 @@ export async function deprovisionPyhssTestSubscriber(imsi: string): Promise<void
     [`/auc/imsi/${imsi}`, '/auc/'],
   ] as const) {
     try {
-      const existing = await pyhssApiCall('GET', getPath);
+      const existing = await pyhssApiCall<PyhssImsSubscriber & PyhssSubscriber & PyhssAuc>('GET', getPath);
       const id = existing?.ims_subscriber_id ?? existing?.subscriber_id ?? existing?.auc_id;
       if (id) await pyhssApiCall('DELETE', `${deletePathPrefix}${id}`);
     } catch { /* not found — already gone, fine */ }
@@ -310,8 +319,8 @@ export async function runVolteE2ETest(onStep?: (step: VolteTestStep) => void): P
   let identityB: TestIdentity | undefined;
   let testAuthModeEnabled = false;
   let ims: ImsState | null = null;
-  let provA: { apnId: number; aucId: number } | undefined;
-  let provB: { apnId: number; aucId: number } | undefined;
+  let provA: { apnId: number; aucId: number | null } | undefined;
+  let provB: { apnId: number; aucId: number | null } | undefined;
   let linphoneWasAlreadyInstalled = false;
 
   // Raw per-step transcript helpers — sessions accumulate everything (including verbose

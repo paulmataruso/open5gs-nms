@@ -30,6 +30,8 @@
     "An eighth caught 7 more of the same defect in handlers that DID have a",
     "try/catch but awaited before it opened, 4223 -> 4216. 58 real hang risks",
     "in total; the other 438 async handlers are guarded and lint-only.",
+    "A ninth typed PyHSS's REST responses via a generic pyhssApiCall, 4216 ->",
+    "4107, and surfaced three more real defects in the process.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -41,7 +43,7 @@
   ],
   "measuredAt": "2026-11-22",
   "backend": {
-    "errors": 4216,
+    "errors": 4107,
     "warnings": 405,
     "files": 437,
     "filesWithFindings": 243,
