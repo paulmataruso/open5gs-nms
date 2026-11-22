@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { spawn } from 'child_process';
 import { createSocket } from 'dgram';
 import * as fs from 'fs';
+import * as path from 'path';
 import { randomUUID } from 'crypto';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -20,6 +21,7 @@ import {
   BIN as SIPCONN_BIN, UNIT_PATH as SIPCONN_UNIT_PATH, CFG_PATH as SIPCONN_CFG_PATH, MNCC_SOCKET_PATH as SIPCONN_MNCC_SOCKET_PATH,
 } from '../../application/use-cases/osmo-sip-connector-build';
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
+import { asRecord } from '../../domain/services/json-shape';
 
 // Was previously its own local execFileAsync('nsenter', ...) + timeout, same shared
 // pattern as sms-controller.ts/mms-controller.ts/pstn-controller.ts (there's no shared
@@ -548,8 +550,13 @@ function sanitizeGgsnGtpIp(ip: string | undefined): string {
 export function loadGsmState(): GsmState {
   try {
     if (fs.existsSync(HOST_GSM_STATE)) {
-      const parsed = JSON.parse(fs.readFileSync(HOST_GSM_STATE, 'utf-8'));
-      const merged = { ...GSM_STATE_DEFAULTS, ...parsed };
+      // asRecord, not a bare spread: JSON.parse returns `any`, and spreading a
+      // non-object (a corrupt state file holding a string or an array) merged
+      // its INDICES into the defaults and produced a malformed state. A
+      // non-object now falls back to the defaults, which is the only sane
+      // reading of a corrupt file. A well-formed object is unaffected.
+      const parsed: unknown = JSON.parse(fs.readFileSync(HOST_GSM_STATE, 'utf-8'));
+      const merged = { ...GSM_STATE_DEFAULTS, ...asRecord(parsed) } as GsmState;
       merged.ggsnGtpBindIp = sanitizeGgsnGtpIp(merged.ggsnGtpBindIp);
       return merged;
     }
@@ -1199,18 +1206,18 @@ function writeOsmoBscCfg(
   writeHostCfg(path, merged);
 }
 
-function writeHostCfg(path: string, content: string): void {
+function writeHostCfg(filePath: string, content: string): void {
   // Back up before every overwrite so a regeneration is always recoverable.
   // Kept to the most recent 10 so this cannot grow without bound.
   try {
-    if (fs.existsSync(path)) {
-      const prev = fs.readFileSync(path, 'utf-8');
+    if (fs.existsSync(filePath)) {
+      const prev = fs.readFileSync(filePath, 'utf-8');
       if (prev !== content) {
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        fs.writeFileSync(`${path}.pre-regen-${stamp}`, prev, 'utf-8');
-        warnOnUnmodelledLoss(path, prev, content);
-        const dir = require('path').dirname(path);
-        const base = require('path').basename(path);
+        fs.writeFileSync(`${filePath}.pre-regen-${stamp}`, prev, 'utf-8');
+        warnOnUnmodelledLoss(filePath, prev, content);
+        const dir = path.dirname(filePath);
+        const base = path.basename(filePath);
         const olds = fs.readdirSync(dir)
           .filter((n: string) => n.startsWith(`${base}.pre-regen-`))
           .sort();
@@ -1220,10 +1227,10 @@ function writeHostCfg(path: string, content: string): void {
       }
     }
   } catch (err) {
-    cfgLogger.warn({ path, error: String(err) }, 'Could not back up VTY config before regenerating it');
+    cfgLogger.warn({ path: filePath, error: String(err) }, 'Could not back up VTY config before regenerating it');
   }
-  try { if (fs.lstatSync(path).isSymbolicLink()) fs.unlinkSync(path); } catch { /* not there yet */ }
-  fs.writeFileSync(path, content, 'utf-8');
+  try { if (fs.lstatSync(filePath).isSymbolicLink()) fs.unlinkSync(filePath); } catch { /* not there yet */ }
+  fs.writeFileSync(filePath, content, 'utf-8');
 }
 
 // Add or remove one EIGRP `network` statement (plus a passive-interface for
@@ -2193,7 +2200,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   router.post('/sip/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     try {
-      const result = await configureGsmSip(req.body);
+      const result = await configureGsmSip(asRecord(req.body));
       if (!result.success) {
         res.status(400).json(result);
         return;
@@ -2244,8 +2251,9 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // comment for the full incident this replaced (a leftover `mncc external`
   // silently breaking plain 2G<->2G calling with no operator-visible cause).
   router.post('/sip/mncc-mode', requireAdmin, async (req: Request, res: Response) => {
+    const body = asRecord(req.body);
     const user = req.user?.username ?? 'unknown';
-    const mode = req.body?.mode;
+    const mode = body.mode;
     if (mode !== 'internal' && mode !== 'external') {
       res.status(400).json({ success: false, error: "mode must be 'internal' or 'external'" });
       return;
@@ -2386,29 +2394,33 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   // local or remote, is trusted as-is; this makes no assumption about local
   // attachment and requires no bind-interface selection.
   router.post('/discover', requireAdmin, async (req: Request, res: Response) => {
+    const body = asRecord(req.body);
     const user = req.user?.username ?? 'unknown';
-    const cidr = req.body.cidr as string;
+    const cidr = body.cidr as string;
     if (!cidr || !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(cidr)) {
       res.status(400).json({ success: false, error: 'cidr is required, e.g. 172.16.0.0/24' });
       return;
     }
-    const timeoutSeconds = Math.min(Math.max(Number(req.body.timeoutSeconds) || 5, 2), 30);
+    const timeoutSeconds = Math.min(Math.max(Number(body.timeoutSeconds) || 5, 2), 30);
     try {
       const radios = await sweepForIpaRadios(cidr, timeoutSeconds * 1000);
       await auditLogger.log({ action: 'gsm_discover', user, details: `${radios.length} found on ${cidr}`, success: true });
       res.json({ success: true, radios });
-    } catch (err: any) {
+    } catch (err) {
       await auditLogger.log({ action: 'gsm_discover', user, details: String(err), success: false });
-      res.status(500).json({ success: false, error: String(err?.message ?? err) });
+      // Same result as the previous `err?.message ?? err`: a thrown non-object
+      // has no .message, so it falls through to the value itself.
+      res.status(500).json({ success: false, error: String(asRecord(err).message ?? err) });
     }
   });
 
   // POST /api/gsm/bts — add a BTS entry
   router.post('/bts', requireAdmin, async (req: Request, res: Response) => {
+    const body = asRecord(req.body);
     const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
-      const backend = req.body.backend as BtsBackend;
+      const backend = body.backend as BtsBackend;
       if (!['virtual', 'trx', 'remote-abis-ip'].includes(backend)) {
         res.status(400).json({ success: false, error: 'backend must be virtual, trx, or remote-abis-ip' });
         return;
@@ -2417,34 +2429,34 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
         res.status(400).json({ success: false, error: 'Only one virtual BTS is supported for protocol testing (Phase 1) — remove the existing one first' });
         return;
       }
-      const band = (req.body.band as string) || 'DCS1800';
+      const band = (body.band as string) || 'DCS1800';
       const range = BTS_BAND_ARFCN_RANGE[band];
-      const arfcn = Number(req.body.arfcn) || range?.default || 871;
+      const arfcn = Number(body.arfcn) || range?.default || 871;
       if (range && (arfcn < range.min || arfcn > range.max)) {
         res.status(400).json({ success: false, error: `ARFCN ${arfcn} is out of range for ${band} (valid: ${range.min}-${range.max})` });
         return;
       }
       const entry: BtsEntry = {
         id: randomUUID(),
-        name: (req.body.name as string) || 'BTS',
+        name: (body.name as string) || 'BTS',
         backend,
         // Real hardware usually already has its own unit-id burned in
         // (read via `ipaccess-config -G <ip>` — see the wiki note on that
         // tool) — honor an explicit value rather than force a second write
         // to the physical unit just to match this module's own numbering.
-        unitId: req.body.unitId != null && req.body.unitId !== '' ? Number(req.body.unitId) : nextUnitId(state.btsEntries),
+        unitId: body.unitId != null && body.unitId !== '' ? Number(body.unitId) : nextUnitId(state.btsEntries),
         band,
         arfcn,
-        cellIdentity: Number(req.body.cellIdentity) || 1,
-        locationAreaCode: Number(req.body.locationAreaCode) || 1,
-        baseStationIdCode: Number(req.body.baseStationIdCode) || 63,
-        remoteIp: backend === 'remote-abis-ip' ? (req.body.remoteIp as string) : undefined,
-        omlRemoteIp: backend !== 'remote-abis-ip' ? ((req.body.omlRemoteIp as string) || state.bscMgwBindIp) : undefined,
-        gprsMode: (req.body.gprsMode as BtsEntry['gprsMode']) || 'none',
-        gprsNsvci: req.body.gprsNsvci != null && req.body.gprsNsvci !== '' ? Number(req.body.gprsNsvci) : undefined,
-        gprsNsei: req.body.gprsNsei != null && req.body.gprsNsei !== '' ? Number(req.body.gprsNsei) : undefined,
-        gprsBvci: req.body.gprsBvci != null && req.body.gprsBvci !== '' ? Number(req.body.gprsBvci) : undefined,
-        lteEarfcns: parseEarfcns(req.body.lteEarfcns),
+        cellIdentity: Number(body.cellIdentity) || 1,
+        locationAreaCode: Number(body.locationAreaCode) || 1,
+        baseStationIdCode: Number(body.baseStationIdCode) || 63,
+        remoteIp: backend === 'remote-abis-ip' ? (body.remoteIp as string) : undefined,
+        omlRemoteIp: backend !== 'remote-abis-ip' ? ((body.omlRemoteIp as string) || state.bscMgwBindIp) : undefined,
+        gprsMode: (body.gprsMode as BtsEntry['gprsMode']) || 'none',
+        gprsNsvci: body.gprsNsvci != null && body.gprsNsvci !== '' ? Number(body.gprsNsvci) : undefined,
+        gprsNsei: body.gprsNsei != null && body.gprsNsei !== '' ? Number(body.gprsNsei) : undefined,
+        gprsBvci: body.gprsBvci != null && body.gprsBvci !== '' ? Number(body.gprsBvci) : undefined,
+        lteEarfcns: parseEarfcns(body.lteEarfcns),
       };
       state.btsEntries.push(entry);
       saveGsmState(state);
@@ -2481,6 +2493,7 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
   // PUT /api/gsm/bts/:id — edit an existing entry's settings
   router.put('/bts/:id', requireAdmin, async (req: Request, res: Response) => {
+    const body = asRecord(req.body);
     const user = req.user?.username ?? 'unknown';
     try {
       const state = loadGsmState();
@@ -2488,9 +2501,9 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
       if (idx === -1) { res.status(404).json({ success: false, error: 'BTS entry not found' }); return; }
       const existing = state.btsEntries[idx];
 
-      const band = (req.body.band as string) || existing.band;
+      const band = (body.band as string) || existing.band;
       const range = BTS_BAND_ARFCN_RANGE[band];
-      const arfcn = req.body.arfcn != null ? Number(req.body.arfcn) : existing.arfcn;
+      const arfcn = body.arfcn != null ? Number(body.arfcn) : existing.arfcn;
       if (range && (arfcn < range.min || arfcn > range.max)) {
         res.status(400).json({ success: false, error: `ARFCN ${arfcn} is out of range for ${band} (valid: ${range.min}-${range.max})` });
         return;
@@ -2498,20 +2511,20 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
 
       const updated: BtsEntry = {
         ...existing,
-        name: (req.body.name as string) || existing.name,
-        unitId: req.body.unitId != null && req.body.unitId !== '' ? Number(req.body.unitId) : existing.unitId,
+        name: (body.name as string) || existing.name,
+        unitId: body.unitId != null && body.unitId !== '' ? Number(body.unitId) : existing.unitId,
         band,
         arfcn,
-        cellIdentity: req.body.cellIdentity != null ? Number(req.body.cellIdentity) : existing.cellIdentity,
-        locationAreaCode: req.body.locationAreaCode != null ? Number(req.body.locationAreaCode) : existing.locationAreaCode,
-        baseStationIdCode: req.body.baseStationIdCode != null ? Number(req.body.baseStationIdCode) : existing.baseStationIdCode,
-        remoteIp: existing.backend === 'remote-abis-ip' ? ((req.body.remoteIp as string) ?? existing.remoteIp) : existing.remoteIp,
-        omlRemoteIp: existing.backend !== 'remote-abis-ip' ? ((req.body.omlRemoteIp as string) ?? existing.omlRemoteIp) : existing.omlRemoteIp,
-        gprsMode: (req.body.gprsMode as BtsEntry['gprsMode']) ?? existing.gprsMode ?? 'none',
-        gprsNsvci: req.body.gprsNsvci != null && req.body.gprsNsvci !== '' ? Number(req.body.gprsNsvci) : existing.gprsNsvci,
-        gprsNsei: req.body.gprsNsei != null && req.body.gprsNsei !== '' ? Number(req.body.gprsNsei) : existing.gprsNsei,
-        gprsBvci: req.body.gprsBvci != null && req.body.gprsBvci !== '' ? Number(req.body.gprsBvci) : existing.gprsBvci,
-        lteEarfcns: req.body.lteEarfcns !== undefined ? parseEarfcns(req.body.lteEarfcns) : existing.lteEarfcns,
+        cellIdentity: body.cellIdentity != null ? Number(body.cellIdentity) : existing.cellIdentity,
+        locationAreaCode: body.locationAreaCode != null ? Number(body.locationAreaCode) : existing.locationAreaCode,
+        baseStationIdCode: body.baseStationIdCode != null ? Number(body.baseStationIdCode) : existing.baseStationIdCode,
+        remoteIp: existing.backend === 'remote-abis-ip' ? ((body.remoteIp as string) ?? existing.remoteIp) : existing.remoteIp,
+        omlRemoteIp: existing.backend !== 'remote-abis-ip' ? ((body.omlRemoteIp as string) ?? existing.omlRemoteIp) : existing.omlRemoteIp,
+        gprsMode: (body.gprsMode as BtsEntry['gprsMode']) ?? existing.gprsMode ?? 'none',
+        gprsNsvci: body.gprsNsvci != null && body.gprsNsvci !== '' ? Number(body.gprsNsvci) : existing.gprsNsvci,
+        gprsNsei: body.gprsNsei != null && body.gprsNsei !== '' ? Number(body.gprsNsei) : existing.gprsNsei,
+        gprsBvci: body.gprsBvci != null && body.gprsBvci !== '' ? Number(body.gprsBvci) : existing.gprsBvci,
+        lteEarfcns: body.lteEarfcns !== undefined ? parseEarfcns(body.lteEarfcns) : existing.lteEarfcns,
       };
       state.btsEntries[idx] = updated;
       saveGsmState(state);
@@ -2884,8 +2897,9 @@ export function createGsmRouter(subscriberRepo: ISubscriberRepository, logger: p
   });
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
+    const body = asRecord(req.body);
     const user = req.user?.username ?? 'unknown';
-    const services = (req.body.services as string[]) || [];
+    const services = (body.services as string[]) || [];
     try {
       for (const svc of services) await nsenter('systemctl', ['restart', svc]);
       if (services.includes('osmo-bsc')) await reapplyBtsLocks(loadGsmState());
