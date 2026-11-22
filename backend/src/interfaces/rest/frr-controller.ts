@@ -11,6 +11,7 @@ import { nsenter, createDummyInterface, deleteDummyInterface, dummyNetdevPath } 
 import { listHostInterfaces } from '../../infrastructure/network/main-interface';
 import {
   ensureDaemonLine, parseEigrpNeighbors, buildFrrSourceScript, restoreFrrFromSnapshot,
+  type EigrpNeighbor,
   verifyFrr, DEFAULT_FRR_TAG,
 } from '../../application/use-cases/frr-source-build';
 
@@ -34,6 +35,7 @@ import type {
   UeSubnet, MigrationPhase, FrrLogLevel, Protocol, ServiceMapping, RouteFilter, MigrationState,
 } from '../../application/use-cases/frr/frr-config-generator';
 import { planUeNatRules, ueNatRuleArgs } from '../../application/use-cases/host-tuning';
+import { asRecord } from '../../domain/services/json-shape';
 
 const HOST_STATE_FILE = '/proc/1/root/etc/open5gs-nms/frr-migration-state.json';
 const HOST_FRR_CONF   = '/proc/1/root/etc/frr/frr.conf';
@@ -133,7 +135,8 @@ export type {
 function loadState(): MigrationState {
   try {
     if (fs.existsSync(HOST_STATE_FILE)) {
-      return JSON.parse(fs.readFileSync(HOST_STATE_FILE, 'utf-8'));
+      // This file is written only by saveState() below, so its shape is ours.
+      return JSON.parse(fs.readFileSync(HOST_STATE_FILE, 'utf-8')) as MigrationState;
     }
   } catch {}
   return {
@@ -297,10 +300,94 @@ async function writeGeneratedFrrConf(
 // top of this file) so that module — shared with frr-source-build-controller.ts — doesn't
 // have to import back into this file and create a circular dependency.
 
-function parseOspfNeighbors(raw: string): any[] {
+// ── Parsed shapes of FRR and iproute2 command output ─────────────────────────
+//
+// Phase 5 of CI-LINT-PLAN.md, "Command output": executeCommand() already
+// returns a typed CommandResult, so the unsafe accesses were all on the PARSED
+// stdout. Declaring each parser's output is what removes them, and it also
+// documents the column layout each regex depends on -- these are positional
+// parses of human-readable vtysh tables, so the field names are the only
+// record of what column N meant.
+
+/** `show ip ospf neighbor` */
+export interface OspfNeighbor {
+  id: string;
+  priority: string;
+  state: string;
+  deadTime: string;
+  address: string;
+  iface: string;
+}
+
+/** `show ip bgp summary` */
+export interface BgpPeerSummary {
+  peer: string;
+  as: string;
+  uptime: string;
+  state: string;
+}
+
+/** One `via` line under a prefix in `show ip eigrp topology` */
+export interface EigrpVia {
+  nexthop: string;
+  metric: string;
+  iface: string;
+}
+
+/** `show ip eigrp topology` */
+export interface EigrpTopologyEntry {
+  prefix: string;
+  via: EigrpVia[];
+}
+
+/** `show ip route` -- flags plus prefix only; the rest of the line is unparsed. */
+export interface RouteEntry {
+  flags: string;
+  prefix: string;
+}
+
+// `Array.includes` does not narrow, so this exists to make the validation
+// below actually tell the compiler what `level` is.
+function isFrrLogLevel(value: unknown): value is FrrLogLevel {
+  return typeof value === 'string' && (FRR_LOG_LEVELS as readonly string[]).includes(value);
+}
+
+/**
+ * Body of POST /migration/configure and /migration/apply-all. Each field is
+ * assigned directly onto MigrationState, so it borrows that type rather than
+ * declaring a second, driftable copy.
+ */
+type MigrationConfigureBody = Pick<MigrationState,
+  'mgmtInterface' | 'transitInterface' | 'transitCidr' | 'servicePlaneInterface' |
+  'protocol' | 'protocolConfig'> & { serviceMappings?: ServiceMapping[] };
+
+/** One entry of `upf.session` in upf.yaml -- only the fields read here. */
+interface UpfSessionYaml {
+  subnet?: string;
+  gateway?: string;
+  dnn?: string;
+  dev?: string;
+}
+
+/** `ip -j addr show` address entry (the subset read here). */
+interface IpAddrInfo {
+  family?: string;
+  local?: string;
+  prefixlen?: number;
+}
+
+/** `ip -j link show` / `ip -j addr show` entry (the subset read here). */
+interface IpEntry {
+  ifname?: string;
+  operstate?: string;
+  flags?: string[];
+  addr_info?: IpAddrInfo[];
+}
+
+function parseOspfNeighbors(raw: string): OspfNeighbor[] {
   // Format: Neighbor ID  Pri  State     Dead Time  Address         Interface
   //         10.0.0.1     1    Full/DR   00:00:35   192.168.1.2     ens20
-  const result: any[] = [];
+  const result: OspfNeighbor[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || !/^\d+\.\d+\.\d+\.\d+/.test(trimmed)) continue;
@@ -311,9 +398,9 @@ function parseOspfNeighbors(raw: string): any[] {
   return result;
 }
 
-function parseBgpSummary(raw: string): any[] {
+function parseBgpSummary(raw: string): BgpPeerSummary[] {
   // Format: Neighbor  V  AS  MsgRcvd  MsgSent  TblVer  InQ  OutQ  Up/Down  State/PfxRcd
-  const result: any[] = [];
+  const result: BgpPeerSummary[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || !/^\d+\.\d+\.\d+\.\d+/.test(trimmed)) continue;
@@ -325,11 +412,11 @@ function parseBgpSummary(raw: string): any[] {
   return result;
 }
 
-function parseEigrpTopology(raw: string): any[] {
+function parseEigrpTopology(raw: string): EigrpTopologyEntry[] {
   // Format: P  10.0.1.0/24, 1 successors, FD is 5376
   //              via 192.168.253.1 (5376/2816), ens20
-  const result: any[] = [];
-  let current: any = null;
+  const result: EigrpTopologyEntry[] = [];
+  let current: EigrpTopologyEntry | null = null;
   for (const line of raw.split('\n')) {
     const prefixMatch = line.match(/^[PAUQR]\s+(\S+),/);
     if (prefixMatch) {
@@ -343,8 +430,8 @@ function parseEigrpTopology(raw: string): any[] {
   return result;
 }
 
-function parseRoutes(raw: string): any[] {
-  const result: any[] = [];
+function parseRoutes(raw: string): RouteEntry[] {
+  const result: RouteEntry[] = [];
   for (const line of raw.split('\n')) {
     const m = line.match(/^([A-Z>*\s]+)\s+(\S+\/\d+)/);
     if (m) result.push({ flags: m[1].trim(), prefix: m[2] });
@@ -386,8 +473,8 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       else if (/^router ospf/m.test(runCfg)) protocol = 'ospf';
       else if (/^router bgp/m.test(runCfg))  protocol = 'bgp';
 
-      let neighbors: any[] = [];
-      let topology: any[] = [];
+      let neighbors: EigrpNeighbor[] | OspfNeighbor[] | BgpPeerSummary[] = [];
+      let topology: EigrpTopologyEntry[] = [];
       if (protocol === 'eigrp') {
         const { stdout: nbOut }   = await nsenter('vtysh', ['-c', 'show ip eigrp neighbors']).catch(() => ({ stdout: '' }));
         const { stdout: topoOut } = await nsenter('vtysh', ['-c', 'show ip eigrp topology']).catch(() => ({ stdout: '' }));
@@ -447,7 +534,10 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   router.post('/migration/configure', requireAdmin, (req: Request, res: Response) => {
     try {
       const state = loadState();
-      const { mgmtInterface, transitInterface, transitCidr, servicePlaneInterface, serviceMappings, protocol, protocolConfig } = req.body;
+      // Asserted to the state's own field types, since that is exactly where
+      // each value is assigned two lines below.
+      const { mgmtInterface, transitInterface, transitCidr, servicePlaneInterface,
+              serviceMappings, protocol, protocolConfig } = req.body as MigrationConfigureBody;
       state.mgmtInterface = mgmtInterface;
       state.transitInterface = transitInterface;
       state.transitCidr = transitCidr;
@@ -766,9 +856,12 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       if (state.mgmtInterface) {
         const { stdout: mgmtOut } = await nsenter('ip', ['-j', 'addr', 'show', state.mgmtInterface]).catch(() => ({ stdout: '[]' }));
         try {
-          const parsed = JSON.parse(mgmtOut);
-          const mgmtIps = (parsed[0]?.addr_info ?? []).filter((a: any) => a.family === 'inet').map((a: any) => a.local);
-          const leaked = mgmtIps.filter((ip: string) => frrRoutes.includes(ip));
+          const parsed = JSON.parse(mgmtOut) as IpEntry[];
+          const mgmtIps = (parsed[0]?.addr_info ?? [])
+            .filter((a) => a.family === 'inet')
+            .map((a) => a.local)
+            .filter((ip): ip is string => ip !== undefined);
+          const leaked = mgmtIps.filter((ip) => frrRoutes.includes(ip));
           if (leaked.length > 0) {
             return res.status(400).json({ success: false, error: `Management IP ${leaked[0]} is being advertised via FRR — check passive-interface config.` });
           }
@@ -1021,7 +1114,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       const state = loadState();
       // Back up previous filters before overwriting
       state.routeFilterBackup = state.routeFilters ?? [];
-      state.routeFilters = req.body.filters ?? [];
+      state.routeFilters = (asRecord(req.body).filters ?? []) as RouteFilter[];
       saveState(state);
 
       // If FRR is already running, regenerate and reload config immediately
@@ -1047,7 +1140,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   // ── POST /api/frr/route-filters/preview ──────────────────────────────────────────
   router.post('/route-filters/preview', requireAdmin, async (req: Request, res: Response) => {
     try {
-      const state = { ...loadState(), routeFilters: req.body.filters ?? [] };
+      const state = { ...loadState(), routeFilters: (asRecord(req.body).filters ?? []) as RouteFilter[] };
       const config = await generateFrrConfig(state);
       res.json({ success: true, config });
     } catch (err) { res.status(500).json({ success: false, error: String(err) }); }
@@ -1078,7 +1171,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
       const { stdout: raw } = await nsenter('vtysh', ['-c', 'show running-config']).catch(() => ({ stdout: '' }));
       if (!raw) return res.json({ success: true, parsed: null });
 
-      const parsed: Record<string, any> = { protocol: null };
+      const parsed: Record<string, unknown> = { protocol: null };
 
       // EIGRP
       const eigrpAs = raw.match(/^router eigrp (\d+)/m);
@@ -1138,7 +1231,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
     try {
       // Save new config to state
       const { mgmtInterface, transitInterface, transitCidr, servicePlaneInterface,
-              serviceMappings, protocol, protocolConfig } = req.body;
+              serviceMappings, protocol, protocolConfig } = req.body as MigrationConfigureBody;
       const state = loadState();
       state.mgmtInterface        = mgmtInterface;
       state.transitInterface     = transitInterface;
@@ -1205,9 +1298,11 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
   router.post('/log-level', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     try {
-      const { level } = req.body;
-      if (!FRR_LOG_LEVELS.includes(level)) {
-        return res.status(400).json({ success: false, error: `Invalid log level: ${level}` });
+      const { level } = req.body as { level?: unknown };
+      // A real type predicate, so the 400 below actually narrows `level` for
+      // the assignment that follows. `includes` alone does not.
+      if (!isFrrLogLevel(level)) {
+        return res.status(400).json({ success: false, error: `Invalid log level: ${String(level)}` });
       }
 
       const state = loadState();
@@ -1239,15 +1334,20 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
         return res.json({ success: true, subnets: [], stored: loadState().ueSubnets ?? [] });
       }
       const content = fs.readFileSync(HOST_UPF_YAML, 'utf-8');
-      const parsed  = yaml.load(content) as any;
-      const sessions: any[] = parsed?.upf?.session ?? [];
+      // A read-only parse of upf.yaml for its UE session subnets. This is NOT
+      // the shared rawYaml config object, so declaring a shape here does not
+      // touch the round-trip path CLAUDE.md pattern #2 protects -- nothing
+      // here is written back.
+      const parsed = yaml.load(content) as { upf?: { session?: UpfSessionYaml[] } } | null | undefined;
+      const sessions: UpfSessionYaml[] = parsed?.upf?.session ?? [];
       const subnets: UeSubnet[] = sessions
-        .filter((s: any) => s?.subnet && !s.subnet.includes(':'))  // skip IPv6
-        .map((s: any): UeSubnet => ({
-          subnet:  s.subnet,
-          gateway: s.gateway,
-          dnn:     s.dnn,
-          dev:     s.dev || 'ogstun',
+        .filter((session): session is UpfSessionYaml & { subnet: string } =>
+          typeof session?.subnet === 'string' && !session.subnet.includes(':'))  // skip IPv6
+        .map((session): UeSubnet => ({
+          subnet:  session.subnet,
+          gateway: session.gateway,
+          dnn:     session.dnn,
+          dev:     session.dev || 'ogstun',
         }));
       res.json({ success: true, subnets, stored: loadState().ueSubnets ?? [] });
     } catch (err) {
@@ -1320,7 +1420,7 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
     const write = (msg: string) => res.write(msg);
 
     try {
-      const subnets: UeSubnet[] = req.body.subnets ?? [];
+      const subnets: UeSubnet[] = (asRecord(req.body).subnets ?? []) as UeSubnet[];
 
       // Checked before anything is touched. Switching a pool from host-NAT to
       // routed means removing its MASQUERADE rule and adding the matching
@@ -1523,22 +1623,22 @@ export function createFrrRouter(logger: pino.Logger, auditLogger: IAuditLogger):
     try {
       // Get all dummy interfaces from the host
       const { stdout: ipJson } = await nsenter('ip', ['-j', 'link', 'show', 'type', 'dummy']).catch(() => ({ stdout: '[]' }));
-      const linkEntries: any[] = JSON.parse(ipJson || '[]');
+      const linkEntries = JSON.parse(ipJson || '[]') as IpEntry[];
 
       // Get address info for each
       const { stdout: addrJson } = await nsenter('ip', ['-j', 'addr', 'show', 'type', 'dummy']).catch(() => ({ stdout: '[]' }));
-      const addrEntries: any[] = JSON.parse(addrJson || '[]');
+      const addrEntries = JSON.parse(addrJson || '[]') as IpEntry[];
       const addrMap = new Map<string, { ip: string; prefix: number }[]>();
       for (const entry of addrEntries) {
         const addrs = (entry.addr_info ?? [])
-          .filter((a: any) => a.family === 'inet')
-          .map((a: any) => ({ ip: a.local as string, prefix: a.prefixlen as number }));
-        addrMap.set(entry.ifname, addrs);
+          .filter((a) => a.family === 'inet')
+          .map((a) => ({ ip: a.local ?? '', prefix: a.prefixlen ?? 0 }));
+        if (entry.ifname !== undefined) addrMap.set(entry.ifname, addrs);
       }
 
       // Find NMS-managed ones (have our netdev file)
-      const interfaces = linkEntries.map((link: any) => {
-        const name    = link.ifname as string;
+      const interfaces = linkEntries.map((link) => {
+        const name    = link.ifname ?? '';
         const managed = fs.existsSync(dummyNetdevPath(name));
         const addrs   = addrMap.get(name) ?? [];
         return {

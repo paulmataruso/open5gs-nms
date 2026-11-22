@@ -7,8 +7,17 @@ const execFileAsync = promisify(execFile);
 //         0   192.168.253.1     ens20      12    0       0     2    0  22393
 // H column is an integer index; skip lines that don't start with a digit.
 // Lives here (not frr-controller.ts) so this module doesn't need to import back into it.
-export function parseEigrpNeighbors(raw: string): any[] {
-  const result: any[] = [];
+/** `show ip eigrp neighbors` -- a positional parse of the vtysh table. */
+export interface EigrpNeighbor {
+  ip: string;
+  iface: string;
+  holdTime: string;
+  uptime: string;
+  state: string;
+}
+
+export function parseEigrpNeighbors(raw: string): EigrpNeighbor[] {
+  const result: EigrpNeighbor[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || !/^\d/.test(trimmed)) continue;
