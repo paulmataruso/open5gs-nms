@@ -9,7 +9,7 @@ import {
   readImsState, TestIdentity,
   provisionPyhssTestSubscriber, deprovisionPyhssTestSubscriber,
 } from './volte-validation-controller';
-import { pyhssApiCall } from './ims-controller';
+import { pyhssApiCall, type PyhssAuc, type PyhssSubscriber } from './ims-controller';
 
 // This feature's own test subscribers use a distinct "901" MSIN block —
 // deliberately NOT the "900" block randomTestImsi() (VoLTE/VoWiFi E2E tests)
@@ -705,20 +705,30 @@ export class ImsTestNumberManager {
     const pcscfPort = state.config.pcscfPort ?? 5060;
     const plmnPrefix = mcc + mnc.padStart(3, '0') + '901';
 
-    let list: any[];
+    let list: PyhssSubscriber[];
     try {
-      list = await pyhssApiCall('GET', '/subscriber/list');
+      list = await pyhssApiCall<PyhssSubscriber[]>('GET', '/subscriber/list');
     } catch (err) {
       this.logger.warn({ err: String(err) }, 'ims-test-number: reconcile skipped — PyHSS unreachable');
       return;
     }
+    // A type predicate, not just a runtime check: the filter already proved
+    // imsi is a string, and saying so is what lets the loop below use it
+    // without re-asserting.
     const leftovers = (Array.isArray(list) ? list : []).filter(
-      (s) => typeof s?.imsi === 'string' && s.imsi.startsWith(plmnPrefix),
+      (s): s is PyhssSubscriber & { imsi: string } =>
+        typeof s?.imsi === 'string' && s.imsi.startsWith(plmnPrefix),
     );
 
     for (const sub of leftovers) {
       try {
-        const auc = await pyhssApiCall('GET', `/auc/imsi/${sub.imsi}`);
+        const auc = await pyhssApiCall<PyhssAuc>('GET', `/auc/imsi/${sub.imsi}`);
+        // PyHSS omitting ki/opc was previously carried into TestIdentity as
+        // undefined, and the instance was started anyway -- it cannot register
+        // without key material, so it failed later and less clearly. Failing
+        // here lands in the catch below, which deprovisions the leftover: the
+        // right outcome for an AUC row with no key.
+        if (!auc.ki || !auc.opc) throw new Error(`PyHSS AUC record for ${sub.imsi} has no ki/opc`);
         const identity: TestIdentity = { imsi: sub.imsi, msisdn: String(sub.msisdn), ki: auc.ki, opc: auc.opc };
         const localPort = this.allocatePort();
         const instance = new ImsTestNumberInstance(identity, state.imsDomain, pcscfIp, pcscfPort, localPort, this.logger);

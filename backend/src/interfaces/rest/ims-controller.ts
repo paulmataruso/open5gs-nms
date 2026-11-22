@@ -25,6 +25,7 @@ import { formatPstnDispatcherEntry } from './pstn-controller';
 
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 import { asyncRoute } from './middleware/async-route';
+import { asRecord } from '../../domain/services/json-shape';
 
 const execFileAsync = promisify(execFile);
 
@@ -2306,11 +2307,43 @@ async function mysqlExecFile(filePath: string, database: string): Promise<void> 
   await nsenter('bash', ['-c', `mysql --user=root --protocol=socket ${database} < ${filePath}`], 120000);
 }
 
-export async function pyhssApiCall(method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: object): Promise<any> {
+// PyHSS's REST API is a third party's JSON, so the shapes below are only the
+// fields this project reads, all optional: PyHSS has its own schema and its
+// own release cadence, and asserting a field is present is how a version bump
+// turns into a runtime undefined rather than a compile error.
+export interface PyhssApn {
+  apn_id?: number;
+  apn?: string;
+}
+
+export interface PyhssSubscriber {
+  subscriber_id?: number;
+  imsi?: string;
+  msisdn?: string;
+}
+
+export interface PyhssImsSubscriber {
+  ims_subscriber_id?: number;
+  imsi?: string;
+  msisdn?: string;
+}
+
+export interface PyhssAuc {
+  auc_id?: number;
+  imsi?: string;
+  ki?: string;
+  opc?: string;
+}
+
+// Generic with an `unknown` DEFAULT, deliberately: a call site that does not
+// say what it expects gets `unknown` and has to narrow, rather than silently
+// inheriting `any` the way `Promise<any>` handed it out before. Annotating is
+// opt-in, so nothing is forced to lie about a response it does not inspect.
+export async function pyhssApiCall<T = unknown>(method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', path: string, body?: object): Promise<T> {
   const args = ['-s', '-f', '-X', method, `http://127.0.0.1:8080${path}`, '-H', 'Content-Type: application/json'];
   if (body) args.push('-d', JSON.stringify(body));
   const { stdout } = await nsenter('curl', args, 15000);
-  return JSON.parse(stdout);
+  return JSON.parse(stdout) as T;
 }
 
 async function sourceKamSql(db: string, files: string[]): Promise<void> {
@@ -2349,8 +2382,9 @@ async function sourceKamSql(db: string, files: string[]): Promise<void> {
     // NOT matching one of these specific "already exists" codes — aborts Configure.
     try {
       await nsenter('bash', ['-c', `mysql --force --user=root --protocol=socket ${db} < ${filePath}`], 60000);
-    } catch (err: any) {
-      const stderr: string = err?.stderr || err?.message || String(err);
+    } catch (err) {
+      const e = err as { stderr?: unknown; message?: unknown };
+      const stderr: string = String(e.stderr || e.message || err);
       // Empirically verified live 2026-09-02 by force-running every file this function
       // ever sources against already-populated scscf/pcscf/smsc databases: only 1050
       // (table exists), 1061 (duplicate key name), and 1062 (duplicate entry — these
@@ -2896,12 +2930,12 @@ export async function syncImsSubscribers(
   {
     let internetApnId = 1;
     try {
-      const apnList: any[] = await pyhssApiCall('GET', '/apn/list');
-      const existing = Array.isArray(apnList) ? apnList.find((a: any) => a.apn === 'internet') : null;
+      const apnList = await pyhssApiCall<PyhssApn[]>('GET', '/apn/list');
+      const existing = Array.isArray(apnList) ? apnList.find((a) => a.apn === 'internet') : null;
       if (existing) {
-        internetApnId = existing.apn_id;
+        internetApnId = existing.apn_id ?? 1;
       } else {
-        const created = await pyhssApiCall('PUT', '/apn/', {
+        const created = await pyhssApiCall<PyhssApn>('PUT', '/apn/', {
           apn: 'internet', apn_ambr_dl: 999999, apn_ambr_ul: 999999, qci: 9, arp_priority: 4,
         });
         internetApnId = created.apn_id ?? 1;
@@ -2911,10 +2945,10 @@ export async function syncImsSubscribers(
     const syncImsiSet = new Set(toSync.map(s => s.imsi));
     const msisdnOwnerMap = new Map<string, { imsi: string; id: number }>();
     try {
-      const imsAll: any[] = await pyhssApiCall('GET', '/ims_subscriber/list');
+      const imsAll = await pyhssApiCall<PyhssImsSubscriber[]>('GET', '/ims_subscriber/list');
       if (Array.isArray(imsAll)) {
         for (const e of imsAll) {
-          if (e.msisdn) msisdnOwnerMap.set(String(e.msisdn), { imsi: String(e.imsi), id: e.ims_subscriber_id });
+          if (e.msisdn && e.ims_subscriber_id !== undefined) msisdnOwnerMap.set(String(e.msisdn), { imsi: String(e.imsi), id: e.ims_subscriber_id });
         }
       }
     } catch { /* proceed without conflict map */ }
@@ -2933,21 +2967,21 @@ export async function syncImsSubscribers(
       }
 
       try {
-        let existingIms: any = null;
-        try { existingIms = await pyhssApiCall('GET', `/ims_subscriber/ims_subscriber_imsi/${imsi}`); } catch { /* not found */ }
+        let existingIms: PyhssImsSubscriber | null = null;
+        try { existingIms = await pyhssApiCall<PyhssImsSubscriber>('GET', `/ims_subscriber/ims_subscriber_imsi/${imsi}`); } catch { /* not found */ }
         if (existingIms?.ims_subscriber_id) {
           try { await pyhssApiCall('DELETE', `/ims_subscriber/${existingIms.ims_subscriber_id}`); } catch { /* ignore */ }
           msisdnOwnerMap.delete(String(existingIms.msisdn ?? msisdn));
         }
 
-        let existingSub: any = null;
-        try { existingSub = await pyhssApiCall('GET', `/subscriber/imsi/${imsi}`); } catch { /* not found */ }
+        let existingSub: PyhssSubscriber | null = null;
+        try { existingSub = await pyhssApiCall<PyhssSubscriber>('GET', `/subscriber/imsi/${imsi}`); } catch { /* not found */ }
         if (existingSub?.subscriber_id) {
           try { await pyhssApiCall('DELETE', `/subscriber/${existingSub.subscriber_id}`); } catch { /* ignore */ }
         }
 
-        let existingAuc: any = null;
-        try { existingAuc = await pyhssApiCall('GET', `/auc/imsi/${imsi}`); } catch { /* not found */ }
+        let existingAuc: PyhssAuc | null = null;
+        try { existingAuc = await pyhssApiCall<PyhssAuc>('GET', `/auc/imsi/${imsi}`); } catch { /* not found */ }
         if (existingAuc?.auc_id) {
           try { await pyhssApiCall('DELETE', `/auc/${existingAuc.auc_id}`); } catch { /* ignore */ }
         }
@@ -2962,7 +2996,7 @@ export async function syncImsSubscribers(
           }
         }
 
-        const newAuc = await pyhssApiCall('PUT', '/auc/', { ki: k, opc, amf, sqn: sqnNum, imsi });
+        const newAuc = await pyhssApiCall<PyhssAuc>('PUT', '/auc/', { ki: k, opc, amf, sqn: sqnNum, imsi });
         const aucId  = newAuc.auc_id;
 
         await pyhssApiCall('PUT', '/subscriber/', {
@@ -2995,27 +3029,27 @@ export async function syncImsSubscribers(
   let removed = 0;
   try {
     const currentImsiSet = new Set(toSync.map(s => s.imsi));
-    const imsAll: any[] = await pyhssApiCall('GET', '/ims_subscriber/list');
+    const imsAll = await pyhssApiCall<PyhssImsSubscriber[]>('GET', '/ims_subscriber/list');
     const staleImsis = Array.isArray(imsAll)
       ? imsAll.filter(e => e.imsi && !currentImsiSet.has(String(e.imsi))).map(e => String(e.imsi))
       : [];
 
     for (const staleImsi of staleImsis) {
       try {
-        let existingIms: any = null;
-        try { existingIms = await pyhssApiCall('GET', `/ims_subscriber/ims_subscriber_imsi/${staleImsi}`); } catch { /* not found */ }
+        let existingIms: PyhssImsSubscriber | null = null;
+        try { existingIms = await pyhssApiCall<PyhssImsSubscriber>('GET', `/ims_subscriber/ims_subscriber_imsi/${staleImsi}`); } catch { /* not found */ }
         if (existingIms?.ims_subscriber_id) {
           await pyhssApiCall('DELETE', `/ims_subscriber/${existingIms.ims_subscriber_id}`).catch(() => {});
         }
 
-        let existingSub: any = null;
-        try { existingSub = await pyhssApiCall('GET', `/subscriber/imsi/${staleImsi}`); } catch { /* not found */ }
+        let existingSub: PyhssSubscriber | null = null;
+        try { existingSub = await pyhssApiCall<PyhssSubscriber>('GET', `/subscriber/imsi/${staleImsi}`); } catch { /* not found */ }
         if (existingSub?.subscriber_id) {
           await pyhssApiCall('DELETE', `/subscriber/${existingSub.subscriber_id}`).catch(() => {});
         }
 
-        let existingAuc: any = null;
-        try { existingAuc = await pyhssApiCall('GET', `/auc/imsi/${staleImsi}`); } catch { /* not found */ }
+        let existingAuc: PyhssAuc | null = null;
+        try { existingAuc = await pyhssApiCall<PyhssAuc>('GET', `/auc/imsi/${staleImsi}`); } catch { /* not found */ }
         if (existingAuc?.auc_id) {
           await pyhssApiCall('DELETE', `/auc/${existingAuc.auc_id}`).catch(() => {});
         }
@@ -5132,7 +5166,7 @@ export function createImsRouter(
 
       const installed = whichRes.status === 'fulfilled' && whichRes.value.stdout.trim().length > 0;
       const pyhssInstalled = fs.existsSync('/proc/1/root/opt/pyhss');
-      const svcActive = (r: PromiseSettledResult<any>) =>
+      const svcActive = (r: PromiseSettledResult<{ stdout: string }>) =>
         r.status === 'fulfilled' && r.value.stdout.trim() === 'active';
 
       const hasSavedConfig = fs.existsSync(HOST_IMS_STATE);
@@ -5261,7 +5295,7 @@ export function createImsRouter(
       let imsSubscribers = 0;
       if (services['pyhss-api']) {
         try {
-          const list = await pyhssApiCall('GET', '/ims_subscriber/list');
+          const list = await pyhssApiCall<PyhssImsSubscriber[]>('GET', '/ims_subscriber/list');
           imsSubscribers = Array.isArray(list) ? list.length : 0;
         } catch { /* api not ready */ }
       }
@@ -5516,7 +5550,7 @@ export function createImsRouter(
   // observably happened.
   router.post('/live/deregister', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
-    const impus = (req.body as any)?.publicIdentities as unknown;
+    const impus = asRecord(req.body).publicIdentities;
     if (!Array.isArray(impus) || impus.length === 0 || !impus.every((i: unknown) => typeof i === 'string' && i)) {
       res.status(400).json({ success: false, error: 'publicIdentities must be a non-empty array of strings' });
       return;
@@ -5629,8 +5663,7 @@ export function createImsRouter(
       } = req.body as Partial<ImsConfigureInput>;
 
       // Primary PLMN: use explicit override if provided, else read from mme.yaml
-      const bodyMcc = (req.body as any).mcc as string | undefined;
-      const bodyMnc = (req.body as any).mnc as string | undefined;
+      const { mcc: bodyMcc, mnc: bodyMnc } = req.body as { mcc?: string; mnc?: string };
       const { mcc: autoMcc, mnc: autoMnc } = readMccMnc();
       const mcc = bodyMcc || autoMcc;
       const mnc = bodyMnc || autoMnc;
@@ -5773,7 +5806,7 @@ export function createImsRouter(
       } catch { add('PyHSS Diameter port 3868', false, 'check failed'); }
       // PyHSS subscriber count via API
       try {
-        const list = await pyhssApiCall('GET', '/ims_subscriber/list');
+        const list = await pyhssApiCall<PyhssImsSubscriber[]>('GET', '/ims_subscriber/list');
         const count = Array.isArray(list) ? list.length : 0;
         add('PyHSS: IMS subscribers', true, `${count} IMS subscribers`,
           count === 0 ? 'Run Sync Subscribers.' : undefined);
