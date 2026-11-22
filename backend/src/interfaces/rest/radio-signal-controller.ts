@@ -9,6 +9,10 @@ import type pino from 'pino';
 import type { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import type { ActiveSessionsUseCase } from '../../application/use-cases/active-sessions';
 import { requireAdmin } from './middleware/auth-middleware';
+// A radio's own JSON is a third party's shape, so it enters as `unknown` and
+// is narrowed rather than asserted. finite() already takes unknown, which is
+// what makes every field read safe without a cast.
+import { asRecord } from '../../domain/services/json-shape';
 
 type RadioVendor = 'baicells' | 'generic';
 
@@ -106,15 +110,6 @@ interface NormalizedSignal {
 function finite(value: unknown): number | undefined {
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : undefined;
-}
-
-// A radio's own JSON is a third party's shape, so it enters as `unknown` and
-// is narrowed here rather than asserted. finite() already takes unknown, which
-// is what makes every field read below safe without a cast.
-function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }
 
 function first(obj: Record<string, unknown>, ...keys: string[]): unknown {
