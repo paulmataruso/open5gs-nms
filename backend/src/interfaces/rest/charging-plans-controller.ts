@@ -5,6 +5,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
 import { runOcsEval, escapeErlString, erlBinLit, getOcsNodeName, readState } from './ocs-controller';
+import { asyncRoute } from './middleware/async-route';
 
 // ── Charging Plans — simple data + voice caps on top of SigScale OCS ───────
 //
@@ -658,7 +659,7 @@ export function createChargingPlansRouter(
     }
   });
 
-  router.post('/', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { name, dataCapGB, voiceCapMinutes } = req.body as { name?: string; dataCapGB?: number; voiceCapMinutes?: number };
     if (!name || typeof name !== 'string' || !name.trim()) {
@@ -682,7 +683,7 @@ export function createChargingPlansRouter(
     await col().insertOne(doc);
     await auditLogger.log({ action: 'charging_plan_create', user, details: `name=${doc.name} dataCapGB=${dataCapGB} voiceCapMinutes=${voiceCapMinutes}`, success: true });
     res.json({ success: true, data: doc });
-  });
+  }));
 
   router.put('/:id', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';

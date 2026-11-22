@@ -14,6 +14,7 @@ import {
   CFG_PATH as SIPCONN_CFG_PATH, UNIT_PATH as SIPCONN_UNIT_PATH, MNCC_SOCKET_PATH,
 } from '../../application/use-cases/osmo-sip-connector-build';
 import { listHlrSubscriberStatus } from './sms-controller';
+import { asyncRoute } from './middleware/async-route';
 
 // Real, confirmed-live 2026-09-30 finding (adversarial critic review): both call
 // sites below filter subscriberMsisdns by `gsmEnabled` alone — the Mongo toggle,
@@ -1073,7 +1074,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
     }
   });
 
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -1084,9 +1085,9 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
     const result = await installAsterisk2g(write);
     await auditLogger.log({ action: 'asterisk2g_install', user, details: result.error ?? `codecGsmLoaded=${result.codecGsmLoaded}`, success: result.success });
     res.end();
-  });
+  }));
 
-  router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { bindIp, bindPort, msisdnMatchPattern, echoTestNumber } = req.body as { bindIp?: string; bindPort?: number; msisdnMatchPattern?: string; echoTestNumber?: string };
     const result = await configureAsterisk2g({ bindIp, bindPort, msisdnMatchPattern, echoTestNumber }, mongoUri, subscriberRepo);
@@ -1096,7 +1097,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
     }
     await auditLogger.log({ action: 'asterisk2g_configure', user, details: `bindIp=${result.bindIp} sipConnPeer=${result.sipConnPeer}`, success: true });
     res.json({ success: true, bindIp: result.bindIp, sipConnPeer: result.sipConnPeer });
-  });
+  }));
 
   // GET /api/asterisk-2g/extensions — list 2G short codes, joined with subscriber nickname/MSISDN
   router.get('/extensions', requireAdmin, async (_req: Request, res: Response) => {
@@ -1219,7 +1220,7 @@ export function createAsterisk2gRouter(subscriberRepo: ISubscriberRepository, mo
   });
 
   // ─── Config file editor (mirrors gsm-controller.ts's /configs endpoints) ──
-  router.get('/configs', async (_req: Request, res: Response) => {
+  router.get('/configs', (_req: Request, res: Response) => {
     const files: Asterisk2gConfigFile[] = A2G_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
     res.json({ success: true, files });
   });

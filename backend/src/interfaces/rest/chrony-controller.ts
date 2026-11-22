@@ -297,7 +297,7 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   // POST /api/chrony/install — streams output
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');

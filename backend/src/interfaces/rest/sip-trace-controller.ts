@@ -205,7 +205,7 @@ export function createSipTraceRouter(
     }
   });
 
-  router.get('/settings', async (_req: Request, res: Response) => {
+  router.get('/settings', (_req: Request, res: Response) => {
     res.json({
       success: true,
       settings: readSipTraceSettings(),

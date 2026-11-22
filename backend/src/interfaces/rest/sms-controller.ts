@@ -9,6 +9,7 @@ import { ISubscriberRepository } from '../../domain/interfaces/subscriber-reposi
 import { requireAdmin } from './middleware/auth-middleware';
 import { convertRepeatedMapKeysToArray } from '../../infrastructure/yaml/yaml-config-repository';
 import { upsertVtyDirectives, OwnedDirective } from '../../domain/services/vty-config-ownership';
+import { asyncRoute } from './middleware/async-route';
 
 // Module-scope, for the config generators below, which run outside any one
 // request handler's own logger scope (same idiom as gsm-controller's cfgLogger).
@@ -1031,7 +1032,7 @@ export function createSmsRouter(
   });
 
   // POST /api/sms/install — streaming apt install
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -1340,13 +1341,13 @@ export function createSmsRouter(
   });
 
   // GET /api/sms/configs — list of editable config files
-  router.get('/configs', requireAdmin, async (_req: Request, res: Response) => {
+  router.get('/configs', requireAdmin, (_req: Request, res: Response) => {
     const files: SmsConfigFile[] = SMS_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
     res.json({ success: true, files });
   });
 
   // GET /api/sms/configs/content?path=...
-  router.get('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+  router.get('/configs/content', requireAdmin, (req: Request, res: Response) => {
     const filePath = req.query.path as string;
     if (!SMS_ALLOWED_PATHS.has(filePath)) return res.status(403).json({ success: false, error: 'Path not allowed' });
     const exists = fs.existsSync(filePath);
@@ -1355,7 +1356,7 @@ export function createSmsRouter(
   });
 
   // PUT /api/sms/configs/content
-  router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+  router.put('/configs/content', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { path: filePath, content } = req.body as { path: string; content: string };
     if (!SMS_ALLOWED_PATHS.has(filePath)) return res.status(403).json({ success: false, error: 'Path not allowed' });
@@ -1363,7 +1364,7 @@ export function createSmsRouter(
     fs.writeFileSync(filePath, content, 'utf-8');
     await auditLogger.log({ action: 'sms_config_save', user, details: filePath, success: true });
     res.json({ success: true });
-  });
+  }));
 
   // POST /api/sms/configs/restart
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {

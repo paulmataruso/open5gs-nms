@@ -17,6 +17,7 @@ import {
   getReflectorMetrics,
 } from '../../application/use-cases/twamp/twamp-runner';
 import { TwampMonitor, TwampTargetDoc, TWAMP_TARGETS_COLLECTION } from '../../application/use-cases/twamp/twamp-monitor';
+import { asyncRoute } from './middleware/async-route';
 import {
   DEFAULT_HISTORY_RETENTION_DAYS, MIN_RETENTION_DAYS, MAX_RETENTION_DAYS,
   ensureHistoryIndexes, recordTwampHistorySample, queryHistorySummary, queryHistorySeries, pickBucketMs,
@@ -389,7 +390,7 @@ export function createTwampRouter(
   // pulling in github.com/ncode/twamp, vendored + patched for bind-IP
   // support, then builds BOTH twamp-client and twamp-server from that same
   // shared module. Idempotent/safe to re-run.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -400,7 +401,7 @@ export function createTwampRouter(
     const result = await installTwamp(write);
     await auditLogger.log({ action: 'twamp_install', user, details: result.error ?? 'success', success: result.success });
     res.end();
-  });
+  }));
 
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
@@ -565,7 +566,7 @@ export function createTwampRouter(
 
   // ── History (long-term, all targets) ────────────────────────────────────
 
-  router.get('/history/settings', requireAdmin, async (_req: Request, res: Response) => {
+  router.get('/history/settings', requireAdmin, (_req: Request, res: Response) => {
     const retentionDays = readTwampState()?.history?.retentionDays ?? DEFAULT_HISTORY_RETENTION_DAYS;
     res.json({ success: true, retentionDays });
   });
@@ -659,7 +660,7 @@ export function createTwampRouter(
     }
   });
 
-  router.post('/server/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/server/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const result = await configureTwampServer(req.body, hostExecutor);
     if (!result.success) {
@@ -669,7 +670,7 @@ export function createTwampRouter(
     }
     await auditLogger.log({ action: 'twamp_server_configure', user, details: 'configured', success: true });
     res.json({ success: true });
-  });
+  }));
 
   router.post('/server/start', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';

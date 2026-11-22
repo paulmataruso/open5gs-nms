@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type pino from 'pino';
 import type { IHostExecutor } from '../../domain/interfaces/host-executor';
+import { asyncRoute } from './middleware/async-route';
 
 // ── CBRS SAS ────────────────────────────────────────────────────────────────
 // This NMS does not implement a SAS. SASBench does, as its own container, and
@@ -482,7 +483,7 @@ export function createSasRouter(
   // Status for both the SAS page and the dashboard card. `reachable: false`
   // is a normal answer, not a 5xx — SASBench being down is exactly the thing
   // this card exists to show, so the UI always gets a usable body.
-  router.get('/status', async (_req, res) => {
+  router.get('/status', asyncRoute(async (_req, res) => {
     const r = await sasbench(cfg, '/status');
     if (!r.ok) {
       logger.debug({ error: r.error, status: r.status }, 'SASBench status unavailable');
@@ -505,31 +506,31 @@ export function createSasRouter(
     else logger.debug({ error: sp.error }, 'SASBench spectrum unavailable; status served without occupancy');
 
     res.json({ reachable: true, uiPort: cfg.uiPort, ...r.data, derived: derived ?? undefined });
-  });
+  }));
 
   // Registered radios, as SASBench sees them. Its list endpoints answer
   // { items, total, limit, offset } (api/v1/routes/common.ts sqlPage).
-  router.get('/cbsds', async (_req, res) => {
+  router.get('/cbsds', asyncRoute(async (_req, res) => {
     const r = await sasbench(cfg, '/cbsds?limit=200');
     if (!r.ok) return res.json({ reachable: false, error: r.error, cbsds: [], total: 0 });
     res.json({ reachable: true, cbsds: r.data?.items ?? [], total: r.data?.total ?? 0 });
-  });
+  }));
 
   // Live grants only. SASBench keeps ended grants (TERMINATED/RELINQUISHED/
   // EXPIRED/DELETED) in the same table until purged, so filter server-side
   // rather than render an ever-growing history on a status page.
-  router.get('/grants', async (_req, res) => {
+  router.get('/grants', asyncRoute(async (_req, res) => {
     const r = await sasbench(cfg, '/grants?state=GRANTED,AUTHORIZED&limit=200');
     if (!r.ok) return res.json({ reachable: false, error: r.error, grants: [], total: 0 });
     res.json({ reachable: true, grants: r.data?.items ?? [], total: r.data?.total ?? 0 });
-  });
+  }));
 
   // Everything the band-occupancy chart draws: the managed band, GAA ranges,
   // PAL/PPA channels, protections, live grants and the registered radios they
   // belong to. Passed through nearly as-is — the chart needs the real ranges,
   // and reshaping them here would only mean two places to keep in step with
   // SASBench's own Spectrum page.
-  router.get('/spectrum', async (_req, res) => {
+  router.get('/spectrum', asyncRoute(async (_req, res) => {
     const r = await sasbench(cfg, '/spectrum', 8000);
     if (!r.ok) return res.json({ reachable: false, error: r.error });
     const d = r.data ?? {};
@@ -543,7 +544,7 @@ export function createSasRouter(
       cbsds: d.cbsds ?? [],
       derived: deriveFrom(d) ?? undefined,
     });
-  });
+  }));
 
   // ── Version / updates ─────────────────────────────────────────────────────
 

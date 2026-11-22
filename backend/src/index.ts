@@ -886,6 +886,18 @@ async function main() {
       _next: express.NextFunction,
     ) => {
       logger.error({ err }, 'Unhandled error');
+      // A streaming endpoint has already sent its headers (CLAUDE.md pattern
+      // #5: every module's /install chunks apt-get output), and calling
+      // res.status() after that throws ERR_HTTP_HEADERS_SENT from inside this
+      // very handler. Express would then fall back to its default handler and
+      // destroy the socket, so the client's symptom would be a dropped
+      // connection and the real error would be buried under a second one.
+      // Ending the response is all that is left to do, and the error is
+      // already logged above.
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
       res.status(500).json({
         success: false,
         error: 'Internal server error',

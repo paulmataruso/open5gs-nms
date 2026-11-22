@@ -13,6 +13,7 @@ import {
   isQciHwTestBuilt, isOpen5gsSrcTreeAvailable, runQciHwTest,
 } from '../../application/use-cases/ran/qci-hw-test-runner';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncRoute } from './middleware/async-route';
 
 // ── QCI / dedicated-bearer hardware test — real radio, operator-triggered ────
 //
@@ -130,7 +131,7 @@ export const createQciHwTestRouter = (
 ): Router => {
   const router = Router();
 
-  router.get('/status', async (_req: Request, res: Response) => {
+  router.get('/status', (_req: Request, res: Response) => {
     res.json({
       success: true,
       built: isQciHwTestBuilt(),
@@ -140,7 +141,7 @@ export const createQciHwTestRouter = (
     });
   });
 
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -150,7 +151,7 @@ export const createQciHwTestRouter = (
     const result = await installQciHwTest(write);
     await auditLogger.log({ action: 'qci_hw_test_install', user, details: `success=${result.success}`, success: result.success });
     res.end();
-  });
+  }));
 
   // Which real UEs are currently attached to the given radio — the guard the operator
   // picks their own phone from, and the same data the backend re-checks server-side

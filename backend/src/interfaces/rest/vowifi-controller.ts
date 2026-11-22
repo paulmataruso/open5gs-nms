@@ -6,6 +6,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { createDummyInterface, deleteDummyInterface } from '../../infrastructure/network/dummy-interface';
+import { asyncRoute } from './middleware/async-route';
 import {
   nsenter, BUILD_WORKDIR, RUNTIME_BIN_DIR, VECTORCORE_EPDG_CONFIG_DIR, VECTORCORE_AAA_CONFIG_DIR,
   VOWIFI_BUILD_STEPS, VowifiBuildStep, buildVowifiScript,
@@ -1044,7 +1045,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
     }, 2000);
   });
 
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const state = loadState();
     if (!['idle', 'failed', 'complete'].includes(state.installStatus)) {
@@ -1054,7 +1055,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
     resetAndStartInstall(logger, user);
     await auditLogger.log({ action: 'vowifi_install', user, details: 'Started VectorCore ePDG/AAA install', success: true });
     res.json({ ok: true, installStatus: 'preparing' });
-  });
+  }));
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';

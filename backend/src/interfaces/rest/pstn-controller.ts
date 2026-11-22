@@ -12,6 +12,7 @@ import { requireAdmin } from './middleware/auth-middleware';
 import { applyExternalTrunkFirewall, removeExternalTrunkFirewall } from '../../application/use-cases/pstn/pstn-external-trunk-firewall';
 import { createDummyInterface, deleteDummyInterface } from '../../infrastructure/network/dummy-interface';
 import { getAppVersion } from '../../infrastructure/system/app-version';
+import { asyncRoute } from './middleware/async-route';
 import {
   isAsterisk2gInstalled, setCrossRanPeer, listGsm2gShortCodesForCrossRan,
   getAsterisk2gEchoTestNumber, getAsterisk2gBindAddress,
@@ -1676,7 +1677,7 @@ export function createPstnRouter(
   // POST /api/pstn/install — streaming apt install of Asterisk, matching the
   // PoC: verifies codec_amr.so actually loads afterward (Phase 0's gate
   // condition) rather than just trusting the package installed cleanly.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     if (!(await isImsInstalled())) {
       return res.status(400).json({ success: false, error: 'IMS is not installed yet — install IMS on the IMS page first. PSTN Gateway is built entirely on top of IMS\'s Kamailio signaling chain.' });
@@ -1690,10 +1691,10 @@ export function createPstnRouter(
     const result = await installPstn(write);
     await auditLogger.log({ action: 'pstn_install', user, details: result.error ?? `codecAmrLoaded=${result.codecAmrLoaded}`, success: result.success });
     res.end();
-  });
+  }));
 
   // POST /api/pstn/configure — body: { asteriskIp?, echoTestNumber? }
-  router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/configure', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const asteriskIp = (req.body.asteriskIp as string) || DEFAULT_ASTERISK_IP;
     const echoTestNumber = req.body.echoTestNumber as string | undefined;
@@ -1704,7 +1705,7 @@ export function createPstnRouter(
     }
     await auditLogger.log({ action: 'pstn_configure', user, details: `asteriskIp=${result.asteriskIp}`, success: true });
     res.json({ success: true, message: result.message, asteriskIp: result.asteriskIp });
-  });
+  }));
 
   // GET /api/pstn/extensions — list mappings, joined with subscriber nickname/MSISDN
   router.get('/extensions', requireAdmin, async (_req: Request, res: Response) => {
@@ -2155,7 +2156,7 @@ export function createPstnRouter(
   });
 
   // ─── Config file editor (mirrors gsm-controller.ts's /configs endpoints) ──
-  router.get('/configs', async (_req: Request, res: Response) => {
+  router.get('/configs', (_req: Request, res: Response) => {
     const files: PstnConfigFile[] = PSTN_CONFIG_MANIFEST.map(f => ({ ...f, exists: fs.existsSync(f.path) }));
     res.json({ success: true, files });
   });
@@ -2232,21 +2233,21 @@ export function createPstnRouter(
   // paths from /enable and /disable above — those already mean the
   // pstnEnabled/dispatcher-wiring toggle, an unrelated concern on the same
   // page. See setCrossRanCalling() for the full orchestration.
-  router.post('/cross-ran/enable', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/cross-ran/enable', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const result = await setCrossRanCalling(true, mongoUri, subscriberRepo);
     await auditLogger.log({ action: 'pstn_cross_ran_enable', user, details: result.error ?? 'enabled', success: result.success });
     if (!result.success) return res.status(400).json({ success: false, error: result.error, collisions: result.collisions });
     res.json({ success: true });
-  });
+  }));
 
-  router.post('/cross-ran/disable', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/cross-ran/disable', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const result = await setCrossRanCalling(false, mongoUri, subscriberRepo);
     await auditLogger.log({ action: 'pstn_cross_ran_disable', user, details: result.error ?? 'disabled', success: result.success });
     if (!result.success) return res.status(400).json({ success: false, error: result.error });
     res.json({ success: true });
-  });
+  }));
 
   // POST /api/pstn/uninstall
   router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {

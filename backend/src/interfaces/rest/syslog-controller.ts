@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncRoute } from './middleware/async-route';
 
 const execFileAsync = promisify(execFile);
 
@@ -255,7 +256,7 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
   });
 
   // POST /api/syslog/install — thin wrapper, see installSyslog() above.
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -263,7 +264,7 @@ export function createSyslogRouter(logger: pino.Logger, auditLogger: IAuditLogge
     const result = await installSyslog((s) => res.write(s));
     await auditLogger.log({ action: 'syslog_install', user, details: result.error ?? 'ok', success: result.success });
     res.end();
-  });
+  }));
 
   // POST /api/syslog/configure  { host, port, protocol } — thin wrapper, see
   // configureSyslog() above for the actual logic.

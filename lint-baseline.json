@@ -23,7 +23,10 @@
     "the third typed the GenieACS device document, 4808 -> 4700.",
     "the fourth narrowed req.body in secgw-controller, 4700 -> 4474.",
     "the fifth did the same for gsm-controller, 4474 -> 4398.",
-    "and the sixth typed the FRR/iproute2 command-output parsers, 4398 -> 4289.",
+    "the sixth typed the FRR/iproute2 command-output parsers, 4398 -> 4289, and",
+    "the seventh wrapped the 51 async route handlers that had no try/catch at",
+    "all, 4289 -> 4223. That last one is a BUG FIX, not a typing change: those",
+    "handlers leaked a rejection to Express and the request hung with no reply.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -35,9 +38,9 @@
   ],
   "measuredAt": "2026-11-22",
   "backend": {
-    "errors": 4289,
+    "errors": 4223,
     "warnings": 405,
-    "files": 435,
+    "files": 437,
     "filesWithFindings": 244,
     "fatals": 0
   },

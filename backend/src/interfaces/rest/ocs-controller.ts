@@ -8,6 +8,7 @@ import { ISubscriberRepository } from '../../domain/interfaces/subscriber-reposi
 import { requireAdmin } from './middleware/auth-middleware';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
+import { asyncRoute } from './middleware/async-route';
 
 // ── SigScale OCS (Online Charging System, 4G/EPC Gy real-time charging) ────
 //
@@ -1092,7 +1093,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     }
   });
 
-  router.post('/install', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -1103,7 +1104,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     const result = await installOcs(write);
     await auditLogger.log({ action: 'ocs_install', user, details: result.error ?? 'installed', success: result.success });
     res.end();
-  });
+  }));
 
   router.post('/configure', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
@@ -1149,7 +1150,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   // runs automatically, exposed as its own button for ongoing maintenance
   // (subscribers added/removed after the fact) — the user's own explicit
   // requirement, matching the IMS/SMS sync-subscribers precedent.
-  router.post('/sync-subscribers', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/sync-subscribers', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const state = readState();
     if (!state?.defaultOfferId) {
@@ -1164,7 +1165,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     writeState({ ...state, lastSyncedAt: new Date().toISOString(), lastSyncCounts: { synced: result.synced, failed: result.failed, removed: result.removed } });
     await auditLogger.log({ action: 'ocs_sync_subscribers', user, details: `synced=${result.synced} failed=${result.failed} removed=${result.removed}`, success: true });
     res.json({ success: true, synced: result.synced, failed: result.failed, removed: result.removed });
-  });
+  }));
 
   // POST /api/ocs/users — creates the OCS web GUI / REST API login the
   // Setup tab used to just tell the operator to go create by hand over an
@@ -1172,7 +1173,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   // password later too: setOcsUser() tries add_user first and transparently
   // falls back to update_user if the username is already taken — the
   // response's `created` flag just tells the frontend which toast to show.
-  router.post('/users', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/users', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const { username, password } = req.body as { username?: string; password?: string };
     if (!username || !/^[A-Za-z0-9_.@-]{1,64}$/.test(username)) {
@@ -1188,7 +1189,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     }
     await auditLogger.log({ action: 'ocs_user_set', user, details: `username=${username} created=${result.created}`, success: true });
     res.json({ success: true, created: result.created });
-  });
+  }));
 
   router.post('/start', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
@@ -1293,7 +1294,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
   });
 
   // ─── Config file editor (mirrors gsm-controller.ts's /configs endpoints) ──
-  router.get('/configs', async (_req: Request, res: Response) => {
+  router.get('/configs', (_req: Request, res: Response) => {
     const release = resolveActiveRelease();
     const files = [
       release ? { path: sysConfigPath(release), label: 'sys.config', group: 'SigScale OCS', language: 'erlang', restartServices: [SYSTEMD_UNIT], exists: fs.existsSync(sysConfigPath(release)) } : null,
