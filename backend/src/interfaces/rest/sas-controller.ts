@@ -67,11 +67,11 @@ export function parseGitContext(context: string): { repo: string; ref: string } 
  * it — the admin account from SAS_ADMIN_PASSWORD is enough. A deployment
  * running SAS_AUTH=off ignores the header and answers anyway.
  */
-async function sasbench(
+async function sasbench<T = unknown>(
   cfg: SasBenchConfig,
   path: string,
   timeoutMs = 5000,
-): Promise<{ ok: true; data: any } | { ok: false; status: number; error: string }> {
+): Promise<{ ok: true; data: T } | { ok: false; status: number; error: string }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -88,9 +88,10 @@ async function sasbench(
       const body = await res.text().catch(() => '');
       return { ok: false, status: res.status, error: body.slice(0, 500) || res.statusText };
     }
-    return { ok: true, data: await res.json() };
-  } catch (err: any) {
-    const reason = err?.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : String(err?.message ?? err);
+    return { ok: true, data: (await res.json()) as T };
+  } catch (err) {
+    const e = err as { name?: unknown; message?: unknown };
+    const reason = e.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : String(e.message ?? err);
     return { ok: false, status: 0, error: reason };
   } finally {
     clearTimeout(timer);
@@ -129,6 +130,51 @@ export interface SasOccupancy {
 }
 
 /** Union length, peak overlap and largest free run of a set of ranges. */
+// SASBench's own REST shapes, limited to the fields this proxy reads and all
+// optional: it is a separate pinned project with its own release cadence
+// (CLAUDE.md's SASBench entry), so asserting a field is present is how a pin
+// bump becomes a runtime undefined instead of a compile error. Every read
+// below already goes through Number()/typeof guards, which is what makes the
+// optionality cost nothing here.
+/** SASBench's list endpoints answer { items, total, limit, offset }. */
+/** /status is spread straight into our own response, so it must be an object. */
+type SasStatus = Record<string, unknown>;
+
+/** /health, for the version SASBench reports about itself. */
+interface SasHealth {
+  version?: string;
+}
+
+interface SasPage<T> {
+  items?: T[];
+  total?: number;
+}
+
+/** The /spectrum payload, passed through nearly as-is to the band chart. */
+interface SasSpectrumPayload extends SasSpectrum {
+  gaaRanges?: unknown[];
+  protections?: unknown[];
+  ppas?: unknown[];
+}
+
+interface SasGrant {
+  cbsdId?: string;
+  low?: number;
+  high?: number;
+  channelType?: string;
+}
+
+interface SasCbsd {
+  cbsdId?: string;
+  category?: string;
+}
+
+interface SasSpectrum {
+  band?: { low?: number; high?: number };
+  grants?: SasGrant[];
+  cbsds?: SasCbsd[];
+}
+
 function occupancyOf(
   ranges: Array<{ low: number; high: number }>,
   bandLow: number,
@@ -191,14 +237,21 @@ export interface SasDerived {
   byChannelType: Record<string, number>;
 }
 
-function deriveFrom(spectrum: any): SasDerived | null {
+function deriveFrom(spectrum: SasSpectrum | undefined): SasDerived | null {
   const bandLow = Number(spectrum?.band?.low);
   const bandHigh = Number(spectrum?.band?.high);
   if (!Number.isFinite(bandLow) || !Number.isFinite(bandHigh) || bandHigh <= bandLow) return null;
 
-  const grants: any[] = Array.isArray(spectrum.grants) ? spectrum.grants : [];
-  const cbsds: any[] = Array.isArray(spectrum.cbsds) ? spectrum.cbsds : [];
-  const { unionHz, maxOverlap, largestGapHz } = occupancyOf(grants, bandLow, bandHigh);
+  const grants: SasGrant[] = Array.isArray(spectrum?.grants) ? spectrum.grants : [];
+  const cbsds: SasCbsd[] = Array.isArray(spectrum?.cbsds) ? spectrum.cbsds : [];
+  // occupancyOf wants concrete numbers; a grant missing either edge cannot
+  // contribute to occupancy, so it is dropped rather than coerced to 0 -- a
+  // 0..0 range would otherwise read as a real grant at the band floor.
+  const ranges = grants
+    .filter((g): g is SasGrant & { low: number; high: number } =>
+      typeof g.low === 'number' && typeof g.high === 'number')
+    .map((g) => ({ low: g.low, high: g.high }));
+  const { unionHz, maxOverlap, largestGapHz } = occupancyOf(ranges, bandLow, bandHigh);
   const bandHz = bandHigh - bandLow;
   const grantedHz = grants.reduce((n, g) => n + Math.max(0, Number(g.high) - Number(g.low)), 0);
 
@@ -484,7 +537,7 @@ export function createSasRouter(
   // is a normal answer, not a 5xx — SASBench being down is exactly the thing
   // this card exists to show, so the UI always gets a usable body.
   router.get('/status', asyncRoute(async (_req, res) => {
-    const r = await sasbench(cfg, '/status');
+    const r = await sasbench<SasStatus>(cfg, '/status');
     if (!r.ok) {
       logger.debug({ error: r.error, status: r.status }, 'SASBench status unavailable');
       return res.json({
@@ -501,7 +554,7 @@ export function createSasRouter(
     // ranges. A failure to read /spectrum is not a failure of /status — the
     // cards drop the extra detail and keep every count they already had.
     let derived: SasDerived | null = null;
-    const sp = await sasbench(cfg, '/spectrum');
+    const sp = await sasbench<SasSpectrum>(cfg, '/spectrum');
     if (sp.ok) derived = deriveFrom(sp.data);
     else logger.debug({ error: sp.error }, 'SASBench spectrum unavailable; status served without occupancy');
 
@@ -511,7 +564,7 @@ export function createSasRouter(
   // Registered radios, as SASBench sees them. Its list endpoints answer
   // { items, total, limit, offset } (api/v1/routes/common.ts sqlPage).
   router.get('/cbsds', asyncRoute(async (_req, res) => {
-    const r = await sasbench(cfg, '/cbsds?limit=200');
+    const r = await sasbench<SasPage<SasCbsd>>(cfg, '/cbsds?limit=200');
     if (!r.ok) return res.json({ reachable: false, error: r.error, cbsds: [], total: 0 });
     res.json({ reachable: true, cbsds: r.data?.items ?? [], total: r.data?.total ?? 0 });
   }));
@@ -520,7 +573,7 @@ export function createSasRouter(
   // EXPIRED/DELETED) in the same table until purged, so filter server-side
   // rather than render an ever-growing history on a status page.
   router.get('/grants', asyncRoute(async (_req, res) => {
-    const r = await sasbench(cfg, '/grants?state=GRANTED,AUTHORIZED&limit=200');
+    const r = await sasbench<SasPage<SasGrant>>(cfg, '/grants?state=GRANTED,AUTHORIZED&limit=200');
     if (!r.ok) return res.json({ reachable: false, error: r.error, grants: [], total: 0 });
     res.json({ reachable: true, grants: r.data?.items ?? [], total: r.data?.total ?? 0 });
   }));
@@ -531,7 +584,7 @@ export function createSasRouter(
   // and reshaping them here would only mean two places to keep in step with
   // SASBench's own Spectrum page.
   router.get('/spectrum', asyncRoute(async (_req, res) => {
-    const r = await sasbench(cfg, '/spectrum', 8000);
+    const r = await sasbench<SasSpectrumPayload>(cfg, '/spectrum', 8000);
     if (!r.ok) return res.json({ reachable: false, error: r.error });
     const d = r.data ?? {};
     res.json({
@@ -559,12 +612,12 @@ export function createSasRouter(
       const v = await readVersion(cfg, hostExecutor, { fetch: doFetch });
       // The version SASBench reports about itself, so the page can show what
       // is actually running next to what the checkout says.
-      const h = await sasbench(cfg, '/health', 3000);
+      const h = await sasbench<SasHealth>(cfg, '/health', 3000);
       if (h.ok && typeof h.data?.version === 'string') v.runningVersion = h.data.version;
       res.json(v);
-    } catch (err: any) {
+    } catch (err) {
       logger.error({ err }, 'Reading the SASBench version failed');
-      res.status(500).json({ managed: false, dir: cfg.dir, reason: String(err?.message ?? err) });
+      res.status(500).json({ managed: false, dir: cfg.dir, reason: String((err as { message?: unknown }).message ?? err) });
     }
   });
 

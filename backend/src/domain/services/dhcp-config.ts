@@ -449,29 +449,77 @@ export function buildKeaConfig(cfg: DhcpConfig): Record<string, unknown> {
   };
 }
 
+// Kea's own config JSON, limited to what parseKeaConfig reads.
+//
+// Anything this file passes through String() or Number() is typed `unknown`
+// rather than string/number on purpose: the host's kea-dhcp4.conf is the
+// single source of truth and an operator may hand-edit it (CLAUDE.md's DHCP
+// entry), so a numeric field really can arrive as a quoted string. Claiming
+// `number` here would be asserting something a hand edit can violate, and the
+// coercions already present handle either form.
+interface KeaOptionData {
+  name?: unknown;
+  data?: unknown;
+}
+
+interface KeaPool {
+  pool?: unknown;
+}
+
+interface KeaReservation {
+  'hw-address'?: unknown;
+  'ip-address'?: unknown;
+  hostname?: unknown;
+}
+
+interface KeaSubnet4 {
+  id?: unknown;
+  subnet?: unknown;
+  pools?: unknown;
+  'option-data'?: unknown;
+  'valid-lifetime'?: unknown;
+  interface?: unknown;
+  relay?: { 'ip-addresses'?: unknown };
+  reservations?: unknown;
+}
+
+interface KeaDhcp4 {
+  'interfaces-config'?: { interfaces?: unknown };
+  'valid-lifetime'?: unknown;
+  'reservation-mode'?: unknown;
+  subnet4?: unknown;
+}
+
+interface KeaDocument {
+  Dhcp4?: KeaDhcp4;
+}
+
 /** Reads a Kea config document back into our shape, tolerating hand edits. */
 export function parseKeaConfig(raw: string): DhcpConfig {
-  let doc: any;
-  try { doc = JSON.parse(stripJsonComments(raw)); } catch { return { ...EMPTY_DHCP_CONFIG }; }
+  let doc: KeaDocument | undefined;
+  try { doc = JSON.parse(stripJsonComments(raw)) as KeaDocument; } catch { return { ...EMPTY_DHCP_CONFIG }; }
   const d = doc?.Dhcp4;
   if (!d || typeof d !== 'object') return { ...EMPTY_DHCP_CONFIG };
 
-  const optOf = (arr: any, name: string): string =>
-    (Array.isArray(arr) ? arr.find((o: any) => o?.name === name)?.data : '') ?? '';
-  const listOf = (arr: any, name: string): string[] =>
-    optOf(arr, name).split(',').map((s: string) => s.trim()).filter(Boolean);
+  const optOf = (arr: unknown, name: string): string => {
+    if (!Array.isArray(arr)) return '';
+    const hit = (arr as KeaOptionData[]).find((o) => o?.name === name);
+    return hit?.data === undefined || hit.data === null ? '' : String(hit.data);
+  };
+  const listOf = (arr: unknown, name: string): string[] =>
+    optOf(arr, name).split(',').map((v) => v.trim()).filter(Boolean);
 
   return {
     interfaces: Array.isArray(d['interfaces-config']?.interfaces)
-      ? d['interfaces-config'].interfaces.filter((i: unknown): i is string => typeof i === 'string')
+      ? (d['interfaces-config'].interfaces as unknown[]).filter((i): i is string => typeof i === 'string')
       : [],
     defaultLeaseLifetime: Number(d['valid-lifetime']) || DEFAULT_LEASE_LIFETIME,
     reservationsOnly: d['reservation-mode'] === 'global',
-    subnets: (Array.isArray(d.subnet4) ? d.subnet4 : []).map((s: any, idx: number): DhcpSubnet => ({
+    subnets: (Array.isArray(d.subnet4) ? (d.subnet4 as KeaSubnet4[]) : []).map((s, idx): DhcpSubnet => ({
       id: Number(s?.id) || idx + 1,
       subnet: String(s?.subnet ?? ''),
-      pools: (Array.isArray(s?.pools) ? s.pools : []).flatMap((p: any) => {
-        const m = String(p?.pool ?? '').split('-').map((x: string) => x.trim());
+      pools: (Array.isArray(s?.pools) ? (s.pools as KeaPool[]) : []).flatMap((p) => {
+        const m = String(p?.pool ?? '').split('-').map((x) => x.trim());
         return m.length === 2 && m[0] && m[1] ? [{ start: m[0], end: m[1] }] : [];
       }),
       routers: listOf(s?.['option-data'], 'routers'),
@@ -482,7 +530,7 @@ export function parseKeaConfig(raw: string): DhcpConfig {
       // Absent rather than empty when there is no relay block, so a config
       // round-trips byte-for-byte through parse -> build -> parse.
       relayIps: relayIpsOf(s),
-      reservations: (Array.isArray(s?.reservations) ? s.reservations : []).flatMap((r: any) => {
+      reservations: (Array.isArray(s?.reservations) ? (s.reservations as KeaReservation[]) : []).flatMap((r) => {
         const mac = normalizeMac(String(r?.['hw-address'] ?? ''));
         const ip = String(r?.['ip-address'] ?? '');
         return mac && ip ? [{ mac, ip, hostname: r?.hostname ? String(r.hostname) : undefined }] : [];
@@ -491,12 +539,12 @@ export function parseKeaConfig(raw: string): DhcpConfig {
   };
 }
 
-function relayIpsOf(subnet: any): string[] | undefined {
+function relayIpsOf(subnet: KeaSubnet4 | undefined): string[] | undefined {
   const raw = subnet?.relay?.['ip-addresses'];
   if (!Array.isArray(raw)) return undefined;
   const ips = raw
-    .filter((a: unknown): a is string => typeof a === 'string' && !!a.trim())
-    .map((a: string) => a.trim());
+    .filter((a): a is string => typeof a === 'string' && !!a.trim())
+    .map((a) => a.trim());
   return ips.length > 0 ? ips : undefined;
 }
 
