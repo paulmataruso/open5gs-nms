@@ -1,3 +1,4 @@
+import { SmfYamlDocument } from './open5gs-yaml';
 import { BaseNfConfig, PfcpConfig, PlmnId, SbiConfig, Snssai, GtpuConfig } from './base-config';
 import { YamlSession } from './open5gs-yaml';
 
@@ -29,11 +30,13 @@ export interface SmfCtfConfig {
   enabled: 'auto' | 'yes' | 'no';
 }
 
-export interface SmfConfig extends BaseNfConfig {
+export interface SmfConfig extends BaseNfConfig<SmfYamlDocument> {
   sbi: SbiConfig;
   pfcp: PfcpConfig;
+  /** Normalised by parseGtpc from `server[0]`, which carries a port too. */
   gtpc?: {
-    addr: string | string[];
+    addr: string;
+    port?: number;
   };
   gtpu?: GtpuConfig;
   session?: SmfSessionConfig[];

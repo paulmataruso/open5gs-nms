@@ -1,3 +1,4 @@
+import { UpfYamlDocument } from './open5gs-yaml';
 import { BaseNfConfig, GtpuConfig, PfcpConfig } from './base-config';
 import { YamlSession } from './open5gs-yaml';
 
@@ -10,7 +11,7 @@ import { YamlSession } from './open5gs-yaml';
  */
 export type UpfSessionConfig = YamlSession;
 
-export interface UpfConfig extends BaseNfConfig {
+export interface UpfConfig extends BaseNfConfig<UpfYamlDocument> {
   pfcp: PfcpConfig;
   gtpu: GtpuConfig;
   session?: UpfSessionConfig[];

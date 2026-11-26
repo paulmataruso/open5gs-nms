@@ -106,15 +106,37 @@ export class CrossServiceValidator {
   }
 
   private validatePlmnConsistency(configs: AllConfigs, errors: ValidationError[]): void {
-    const amfPlmns = new Set<string>();
-    for (const entry of configs.amf.plmn_support || []) {
-      amfPlmns.add(plmnKey(entry.plmn_id.mcc, entry.plmn_id.mnc));
-    }
+    // `plmn_id` is optional on a real entry, so an entry missing it is REPORTED
+    // rather than skipped: a plmn_support or tai entry with no PLMN is exactly
+    // the kind of thing this validator exists to catch. These two loops used to
+    // read `entry.plmn_id.mcc` unguarded and would throw a TypeError on such a
+    // file -- crashing the validation run instead of reporting the problem --
+    // because AmfConfig declared `plmn_id` required while the document does
+    // not. The mme.gummei loop below has always guarded; these did not.
+    const collectPlmns = (
+      entries: Array<{ plmn_id?: { mcc?: string; mnc?: string } }>,
+      field: string,
+    ): Set<string> => {
+      const keys = new Set<string>();
+      entries.forEach((entry, index) => {
+        const mcc = entry.plmn_id?.mcc;
+        const mnc = entry.plmn_id?.mnc;
+        if (mcc === undefined || mnc === undefined) {
+          errors.push({
+            field: `${field}[${index}].plmn_id`,
+            message: `${field} entry ${index} has no complete plmn_id (mcc/mnc) — Open5GS cannot broadcast it`,
+            service: 'amf',
+            severity: 'error',
+          });
+          return;
+        }
+        keys.add(plmnKey(mcc, mnc));
+      });
+      return keys;
+    };
 
-    const amfTaiPlmns = new Set<string>();
-    for (const entry of configs.amf.tai || []) {
-      amfTaiPlmns.add(plmnKey(entry.plmn_id.mcc, entry.plmn_id.mnc));
-    }
+    const amfPlmns = collectPlmns(configs.amf.plmn_support || [], 'amf.plmn_support');
+    const amfTaiPlmns = collectPlmns(configs.amf.tai || [], 'amf.tai');
 
     for (const pk of amfPlmns) {
       if (!amfTaiPlmns.has(pk)) {

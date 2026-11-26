@@ -427,7 +427,7 @@ export class PlmnMigrationUseCase {
       if (!mmeOk) consistent = false;
 
       const amfPlmnSupport = allConfigs.amf.plmn_support ?? [];
-      const amfOk = amfPlmnSupport.length > 0 && amfPlmnSupport.every(p => p.plmn_id.mcc === plan.newMcc && p.plmn_id.mnc === plan.newMnc);
+      const amfOk = amfPlmnSupport.length > 0 && amfPlmnSupport.every(p => p.plmn_id?.mcc === plan.newMcc && p.plmn_id?.mnc === plan.newMnc);
       details.push(`amf.yaml plmn_support: ${amfOk ? 'OK' : 'MISMATCH'}`);
       if (!amfOk) consistent = false;
 

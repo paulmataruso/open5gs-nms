@@ -1,18 +1,32 @@
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
-import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
+import {
+  ALL_CONFIG_SERVICES,
+  AllConfigs,
+  IConfigRepository,
+  NfConfig,
+  Open5gsConfigDocuments,
+  Open5gsServiceName,
+} from '../../domain/interfaces/config-repository';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { NrfConfig } from '../../domain/entities/nrf-config';
 import { AmfConfig } from '../../domain/entities/amf-config';
 import { SmfConfig } from '../../domain/entities/smf-config';
 import { UpfConfig } from '../../domain/entities/upf-config';
 import { AusfConfig } from '../../domain/entities/ausf-config';
-import { GenericServiceConfig } from '../../domain/entities/generic-config';
+import { AmfYamlDocument } from '../../domain/entities/open5gs-yaml';
 import pino from 'pino';
 
-interface RawYamlDoc {
-  [key: string]: unknown;
+/**
+ * Narrow a parsed-YAML value to a plain mapping.
+ *
+ * Every tree-walker below needs exactly this question answered, and a real
+ * type predicate answers it once instead of each walker casting. `typeof null`
+ * is 'object' and so is an array, so both have to be excluded explicitly.
+ */
+function isYamlMap(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 // Host files that must travel with every config backup but live outside the
@@ -225,9 +239,12 @@ export function convertMapsArrayToRepeatedMapKeys(content: string): string {
   return output.join('\n');
 }
 
+// NOTE: this class used to keep a `rawCache` of every parsed document. It was
+// written in two places and READ IN NONE, so it cached nothing -- it only held
+// every config in memory and gave a future reader a trap, because saveRaw()
+// stored the caller's incoming (possibly partial) doc under the service name
+// while loadRaw() stored the full on-disk parse. Removed 2026-11-26.
 export class YamlConfigRepository implements IConfigRepository {
-  private rawCache: Record<string, RawYamlDoc> = {};
-
   constructor(
     private readonly hostExecutor: IHostExecutor,
     private readonly configPath: string,
@@ -236,7 +253,7 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async loadNrf(): Promise<NrfConfig> {
     const raw = await this.loadRaw('nrf');
-    const nrf = (raw.nrf || {}) as Record<string, unknown>;
+    const nrf = raw.nrf ?? {};
     return {
       sbi: this.parseSbi(nrf.sbi),
       logger: this.parseLogger(raw.logger),
@@ -246,16 +263,16 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async loadAmf(): Promise<AmfConfig> {
     const raw = await this.loadRaw('amf');
-    const amf = (raw.amf || {}) as Record<string, unknown>;
+    const amf = raw.amf ?? {};
     return {
       sbi: this.parseSbi(amf.sbi),
       ngap: this.parseAddrPort(amf.ngap),
-      guami: (amf.guami || []) as AmfConfig['guami'],
-      tai: (amf.tai || []) as AmfConfig['tai'],
-      plmn_support: (amf.plmn_support || []) as AmfConfig['plmn_support'],
+      guami: amf.guami ?? [],
+      tai: amf.tai ?? [],
+      plmn_support: amf.plmn_support ?? [],
       security: amf.security as AmfConfig['security'],
       network_name: amf.network_name as AmfConfig['network_name'],
-      amf_name: amf.amf_name as string | undefined,
+      amf_name: amf.amf_name,
       nrf: this.parseNrfRef(raw.nrf),
       logger: this.parseLogger(raw.logger),
       rawYaml: raw,
@@ -264,16 +281,16 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async loadSmf(): Promise<SmfConfig> {
     const raw = await this.loadRaw('smf');
-    const smf = (raw.smf || {}) as Record<string, unknown>;
+    const smf = raw.smf ?? {};
     return {
       sbi: this.parseSbi(smf.sbi),
       pfcp: this.parsePfcp(smf.pfcp),
-      gtpc: smf.gtpc ? { addr: this.resolveAddr((smf.gtpc as Record<string, unknown>).addr) } : undefined,
+      gtpc: this.parseGtpc(smf.gtpc),
       gtpu: smf.gtpu ? this.parseGtpu(smf.gtpu) : undefined,
-      session: smf.session as SmfConfig['session'],
-      dns: smf.dns as string[] | undefined,
-      mtu: smf.mtu as number | undefined,
-      freeDiameter: smf.freeDiameter as string | undefined,
+      session: smf.session,
+      dns: smf.dns,
+      mtu: smf.mtu,
+      freeDiameter: typeof smf.freeDiameter === 'string' ? smf.freeDiameter : undefined,
       info: smf.info as SmfConfig['info'],
       nrf: this.parseNrfRef(raw.nrf),
       logger: this.parseLogger(raw.logger),
@@ -283,11 +300,11 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async loadUpf(): Promise<UpfConfig> {
     const raw = await this.loadRaw('upf');
-    const upf = (raw.upf || {}) as Record<string, unknown>;
+    const upf = raw.upf ?? {};
     return {
       pfcp: this.parsePfcp(upf.pfcp),
       gtpu: this.parseGtpu(upf.gtpu),
-      session: upf.session as UpfConfig['session'],
+      session: upf.session,
       logger: this.parseLogger(raw.logger),
       rawYaml: raw,
     };
@@ -295,7 +312,7 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async loadAusf(): Promise<AusfConfig> {
     const raw = await this.loadRaw('ausf');
-    const ausf = (raw.ausf || {}) as Record<string, unknown>;
+    const ausf = raw.ausf ?? {};
     return {
       sbi: this.parseSbi(ausf.sbi),
       nrf: this.parseNrfRef(raw.nrf),
@@ -304,15 +321,24 @@ export class YamlConfigRepository implements IConfigRepository {
     };
   }
 
-  async loadGeneric(service: string): Promise<GenericServiceConfig> {
+  /**
+   * Load one config file without a per-NF parser: just the handful of common
+   * endpoint fields, plus the whole parsed document.
+   *
+   * `K` is a literal service name, so the returned document type is the one
+   * belonging to that file -- the caller does not have to assert it, and
+   * `loadSepp1()` correctly gets the document whose top-level key is `sepp`.
+   */
+  private async loadGeneric<K extends Open5gsServiceName>(service: K): Promise<NfConfig<K>> {
     const raw = await this.loadRaw(service);
-    const serviceSection = (raw[service] || {}) as Record<string, unknown>;
+    const section = raw[service];
+    const s: Record<string, unknown> = isYamlMap(section) ? section : {};
     return {
-      sbi: serviceSection.sbi ? this.parseSbi(serviceSection.sbi) : undefined,
-      pfcp: serviceSection.pfcp ? this.parsePfcp(serviceSection.pfcp) : undefined,
-      gtpu: serviceSection.gtpu ? this.parseGtpu(serviceSection.gtpu) : undefined,
-      gtpc: serviceSection.gtpc ? { addr: this.resolveAddr((serviceSection.gtpc as Record<string, unknown>).addr) } : undefined,
-      ngap: serviceSection.ngap ? this.parseAddrPort(serviceSection.ngap) : undefined,
+      sbi: s.sbi ? this.parseSbi(s.sbi) : undefined,
+      pfcp: s.pfcp ? this.parsePfcp(s.pfcp) : undefined,
+      gtpu: s.gtpu ? this.parseGtpu(s.gtpu) : undefined,
+      gtpc: this.parseGtpc(s.gtpc),
+      ngap: s.ngap ? this.parseAddrPort(s.ngap) : undefined,
       nrf: this.parseNrfRef(raw.nrf),
       logger: this.parseLogger(raw.logger),
       rawYaml: raw,
@@ -321,36 +347,35 @@ export class YamlConfigRepository implements IConfigRepository {
 
   async loadAll(): Promise<AllConfigs> {
     this.logger.info('Loading all configurations from /etc/open5gs');
-    const [nrf, amf, smf, upf, ausf] = await Promise.all([
-      this.loadNrf(),
-      this.loadAmf(),
-      this.loadSmf(),
-      this.loadUpf(),
-      this.loadAusf(),
+
+    // Read every file concurrently. Each loader resolves even when its file is
+    // missing or unparseable (loadRaw() reports and yields an empty document),
+    // so nothing here can reject -- which is also why the per-service
+    // try/catch this loop used to carry was unreachable and has been dropped.
+    const [
+      nrf, amf, smf, upf, ausf,
+      scp, udm, udr, pcf, nssf, bsf, sepp1,
+      mme, hss, pcrf, sgwc, sgwu,
+    ] = await Promise.all([
+      this.loadNrf(), this.loadAmf(), this.loadSmf(), this.loadUpf(), this.loadAusf(),
+      this.loadScp(), this.loadUdm(), this.loadUdr(), this.loadPcf(),
+      this.loadNssf(), this.loadBsf(), this.loadSepp1(),
+      this.loadMme(), this.loadHss(), this.loadPcrf(), this.loadSgwc(), this.loadSgwu(),
     ]);
 
-    const optionalServices = ['scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1'];
-    const optional: Partial<AllConfigs> = {};
-
-    for (const service of optionalServices) {
-      try {
-        const config = await this.loadGeneric(service);
-        (optional as any)[service] = config;
-      } catch (err) {
-        this.logger.debug({ service }, 'Optional service config not found');
-      }
-    }
-
-    return { nrf, amf, smf, upf, ausf, ...optional };
+    return {
+      nrf, amf, smf, upf, ausf,
+      scp, udm, udr, pcf, nssf, bsf, sepp1,
+      mme, hss, pcrf, sgwc, sgwu,
+    };
   }
 
   async saveNrf(config: NrfConfig): Promise<void> {
-    const raw = config.rawYaml as any;
-    await this.saveRaw('nrf', raw);
+    await this.saveRaw('nrf', config.rawYaml ?? {});
   }
 
   async saveAmf(config: AmfConfig): Promise<void> {
-    const raw = config.rawYaml as any;
+    const raw = config.rawYaml ?? {};
     this.normalizeAmfPlmnSupport(raw);
     await this.saveRaw('amf', raw);
   }
@@ -372,16 +397,17 @@ export class YamlConfigRepository implements IConfigRepository {
   // AMF write goes through, regardless of whether it came from this
   // editor, auto-config's bulk apply, or a raw YAML paste) fixes it at
   // the source regardless of which caller produced the duplicate.
-  private normalizeAmfPlmnSupport(raw: any): void {
-    const list = raw?.amf?.plmn_support;
+  private normalizeAmfPlmnSupport(raw: AmfYamlDocument): void {
+    const list = raw.amf?.plmn_support;
     if (!Array.isArray(list) || list.length < 2) return;
 
-    const merged: any[] = [];
+    type PlmnEntry = NonNullable<NonNullable<AmfYamlDocument['amf']>['plmn_support']>[number];
+    const merged: PlmnEntry[] = [];
     const indexByPlmn = new Map<string, number>();
 
     for (const entry of list) {
-      const mcc = entry?.plmn_id?.mcc;
-      const mnc = entry?.plmn_id?.mnc;
+      const mcc = entry.plmn_id?.mcc;
+      const mnc = entry.plmn_id?.mnc;
       if (mcc === undefined || mnc === undefined) {
         merged.push(entry);
         continue;
@@ -390,7 +416,7 @@ export class YamlConfigRepository implements IConfigRepository {
       const existingIdx = indexByPlmn.get(key);
       if (existingIdx === undefined) {
         indexByPlmn.set(key, merged.length);
-        merged.push({ ...entry, s_nssai: [...(entry.s_nssai || [])] });
+        merged.push({ ...entry, s_nssai: [...(entry.s_nssai ?? [])] });
         continue;
       }
 
@@ -399,9 +425,10 @@ export class YamlConfigRepository implements IConfigRepository {
       // an already-normalized save (or a double-click) doesn't accumulate
       // identical slice entries.
       const target = merged[existingIdx];
-      for (const slice of entry.s_nssai || []) {
-        const dup = target.s_nssai.some((s: any) => s.sst === slice.sst && s.sd === slice.sd);
-        if (!dup) target.s_nssai.push(slice);
+      const slices = (target.s_nssai ??= []);
+      for (const slice of entry.s_nssai ?? []) {
+        const dup = slices.some(existing => existing.sst === slice.sst && existing.sd === slice.sd);
+        if (!dup) slices.push(slice);
       }
       this.logger.info(
         { mcc, mnc, droppedFrom: existingIdx },
@@ -409,34 +436,29 @@ export class YamlConfigRepository implements IConfigRepository {
       );
     }
 
-    raw.amf.plmn_support = merged;
+    if (raw.amf) raw.amf.plmn_support = merged;
   }
 
   async saveSmf(config: SmfConfig): Promise<void> {
-    const raw = config.rawYaml as any;
-    await this.saveRaw('smf', raw);
+    await this.saveRaw('smf', config.rawYaml ?? {});
   }
 
   async saveUpf(config: UpfConfig): Promise<void> {
-    const raw = config.rawYaml as any;
-    await this.saveRaw('upf', raw);
+    await this.saveRaw('upf', config.rawYaml ?? {});
   }
 
   async saveAusf(config: AusfConfig): Promise<void> {
-    const raw = config.rawYaml as any;
-    await this.saveRaw('ausf', raw);
+    await this.saveRaw('ausf', config.rawYaml ?? {});
   }
 
-  async saveGeneric(service: string, config: GenericServiceConfig): Promise<void> {
-    const raw = config.rawYaml as any;
-    await this.saveRaw(service, raw);
+  private async saveGeneric<K extends Open5gsServiceName>(service: K, config: NfConfig<K>): Promise<void> {
+    await this.saveRaw(service, config.rawYaml ?? {});
   }
 
   async backupAll(backupDir: string): Promise<void> {
     await this.hostExecutor.createDirectory(backupDir);
-    const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2'];
 
-    for (const service of allServices) {
+    for (const service of ALL_CONFIG_SERVICES) {
       const srcPath = `${this.configPath}/${service}.yaml`;
       const destPath = `${backupDir}/${service}.yaml`;
       const exists = await this.hostExecutor.fileExists(srcPath);
@@ -455,9 +477,8 @@ export class YamlConfigRepository implements IConfigRepository {
   }
 
   async restoreBackup(backupDir: string): Promise<void> {
-    const allServices = ['nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2'];
 
-    for (const service of allServices) {
+    for (const service of ALL_CONFIG_SERVICES) {
       const srcPath = `${backupDir}/${service}.yaml`;
       const destPath = `${this.configPath}/${service}.yaml`;
       const exists = await this.hostExecutor.fileExists(srcPath);
@@ -474,7 +495,6 @@ export class YamlConfigRepository implements IConfigRepository {
         fs.copyFileSync(srcPath, destHostPath);
       }
     }
-    this.rawCache = {};
     this.logger.info({ backupDir }, 'Restore completed');
   }
 
@@ -485,65 +505,87 @@ export class YamlConfigRepository implements IConfigRepository {
 
   // ── Private helpers ──────────────────────────────────────────────────────────
 
-  private async loadRaw(service: string): Promise<RawYamlDoc> {
-    const filePath = `${this.configPath}/${service}.yaml`;
-    try {
-      let content = await this.hostExecutor.readFile(filePath);
+  private async loadRaw<K extends Open5gsServiceName>(service: K): Promise<Open5gsConfigDocuments[K]> {
+    const { doc } = await this.readDocument(service);
+    return doc;
+  }
 
+  /**
+   * Read and parse one config file.
+   *
+   * `parsed` distinguishes the two failures the old single catch conflated:
+   * false means the file WAS read but js-yaml rejected it, while a file that
+   * could not be read at all (absent, no permission) is reported as parsed
+   * with an empty document. saveRaw() needs that distinction -- merging over
+   * an empty document because the real one failed to parse would silently
+   * drop every key the NMS does not model (CLAUDE.md pattern #2).
+   *
+   * The service name picks the document type: the file determines the shape,
+   * so the one cast here is the parse boundary and nothing downstream needs
+   * to assert anything.
+   */
+  private async readDocument<K extends Open5gsServiceName>(
+    service: K,
+  ): Promise<{ doc: Open5gsConfigDocuments[K]; parsed: boolean; existed: boolean }> {
+    const filePath = `${this.configPath}/${service}.yaml`;
+    const empty = {} as Open5gsConfigDocuments[K];
+
+    let content: string;
+    try {
+      content = await this.hostExecutor.readFile(filePath);
+    } catch (err) {
+      this.logger.warn({ service, filePath, err: String(err) }, 'Config file could not be read');
+      return { doc: empty, parsed: true, existed: false };
+    }
+
+    try {
       // mme.yaml uses duplicate map: keys (Open5GS extension, not standard YAML).
       // Convert them to a maps: array so js-yaml can parse all entries.
-      if (service === 'mme') {
-        content = convertRepeatedMapKeysToArray(content);
-      }
+      const normalized = service === 'mme' ? convertRepeatedMapKeysToArray(content) : content;
 
       // js-yaml may interpret bare 010 (MNC) as octal/decimal.
       // Parse first, then restore MCC/MNC/SD from raw text.
-      const doc = yaml.load(content) as RawYamlDoc;
-      const fixedDoc = this.fixMccMncSdFromRawYaml(content, doc);
+      const loaded: unknown = yaml.load(normalized);
+      if (!isYamlMap(loaded)) {
+        // An empty file parses to undefined/null, which is not a corrupt file.
+        const blank = content.trim() === '';
+        if (!blank) this.logger.warn({ service, filePath }, 'Config file is not a YAML mapping');
+        return { doc: empty, parsed: blank, existed: true };
+      }
+      const fixedDoc = this.fixMccMncSdFromRawYaml(normalized, loaded);
       const cleanedDoc = this.preserveEmptyClient(fixedDoc);
-
-      this.rawCache[service] = cleanedDoc;
-      return cleanedDoc;
+      return {
+        doc: (isYamlMap(cleanedDoc) ? cleanedDoc : {}) as Open5gsConfigDocuments[K],
+        parsed: true,
+        existed: true,
+      };
     } catch (err) {
-      this.logger.warn({ service, filePath, err: String(err) }, 'Config file not found or parse error');
-      return {};
+      this.logger.error({ service, filePath, err: String(err) }, 'Config file failed to parse');
+      return { doc: empty, parsed: false, existed: true };
     }
   }
 
   // ── Deep merge: overlay wins on scalars and arrays, objects are merged recursively ──
   // This preserves unknown fields (e.g. manually added dev:, custom session entries)
   // that the NMS UI doesn't know about.
-  private deepMerge(base: any, overlay: any): any {
+  private deepMerge(base: unknown, overlay: unknown): unknown {
     // Scalars, arrays, null: overlay always wins
-    if (
-      overlay === null || overlay === undefined ||
-      typeof overlay !== 'object' || Array.isArray(overlay)
-    ) return overlay;
-    if (
-      base === null || base === undefined ||
-      typeof base !== 'object' || Array.isArray(base)
-    ) return overlay;
+    if (!isYamlMap(overlay) || !isYamlMap(base)) return overlay;
 
     // Both are plain objects — merge key by key
-    const result: any = { ...base };
+    const result: Record<string, unknown> = { ...base };
     for (const key of Object.keys(overlay)) {
       const ov = overlay[key];
       const bv = base[key];
-      if (
-        ov !== null && ov !== undefined &&
-        typeof ov === 'object' && !Array.isArray(ov) &&
-        bv !== null && bv !== undefined &&
-        typeof bv === 'object' && !Array.isArray(bv)
-      ) {
-        result[key] = this.deepMerge(bv, ov);
-      } else {
-        result[key] = ov;
-      }
+      result[key] = isYamlMap(ov) && isYamlMap(bv) ? this.deepMerge(bv, ov) : ov;
     }
     return result;
   }
 
-  private async saveRaw(service: string, doc: RawYamlDoc): Promise<void> {
+  private async saveRaw<K extends Open5gsServiceName>(
+    service: K,
+    doc: Open5gsConfigDocuments[K],
+  ): Promise<void> {
     const filePath = `${this.configPath}/${service}.yaml`;
 
     // ── Round-trip safety: merge incoming doc over the current on-disk file ──
@@ -567,18 +609,36 @@ export class YamlConfigRepository implements IConfigRepository {
     // after a second, sbi-only save merged over them. loadRaw() already solves
     // this exact problem for normal reads — reuse it here instead of
     // duplicating (and getting wrong) the same parse.
-    let mergedDoc: RawYamlDoc = doc;
-    const currentParsed = await this.loadRaw(service);
-    if (currentParsed && typeof currentParsed === 'object' && Object.keys(currentParsed).length > 0) {
-      mergedDoc = this.deepMerge(currentParsed, doc) as RawYamlDoc;
+    //
+    // A file that EXISTS but does not parse is refused rather than merged over
+    // (added 2026-11-26). The merge source used to be loadRaw(), which reported
+    // a parse failure as an empty document -- indistinguishable from "no file" --
+    // so one hand-edit with a YAML syntax error turned the next Apply Config
+    // into a silent overwrite that dropped every unknown key AND the operator's
+    // broken edit, with nothing but a log line. Restore Defaults is the
+    // deliberate way to replace a file that cannot be read.
+    const current = await this.readDocument(service);
+    if (!current.parsed) {
+      throw new Error(
+        `Refusing to save ${service}.yaml: the file on disk could not be parsed, ` +
+        'so merging over it would discard its contents. Fix the YAML syntax (or ' +
+        'use Restore Defaults to replace the file) and try again.',
+      );
+    }
+
+    let mergedDoc: Open5gsConfigDocuments[K] = doc;
+    if (Object.keys(current.doc).length > 0) {
+      const merged = this.deepMerge(current.doc, doc);
+      if (isYamlMap(merged)) mergedDoc = merged as Open5gsConfigDocuments[K];
       this.logger.debug({ service }, 'Deep-merged incoming config over on-disk file');
     } else {
       this.logger.debug({ service }, 'No existing file to merge; writing fresh');
     }
 
     // Keep mcc/mnc/sd as strings, convert everything else to proper numbers.
-    let cleanDoc = this.ensureNumericTypes(mergedDoc);
-    cleanDoc = this.removeNullValues(cleanDoc);
+    const numbered = this.ensureNumericTypes(mergedDoc);
+    const stripped = this.removeNullValues(numbered);
+    const cleanDoc: Record<string, unknown> = isYamlMap(stripped) ? stripped : {};
 
     this.logger.info(
       { service, doc: JSON.stringify(cleanDoc, null, 2).substring(0, 500) },
@@ -664,7 +724,6 @@ export class YamlConfigRepository implements IConfigRepository {
     );
 
     await this.hostExecutor.writeFile(filePath, finalContent);
-    this.rawCache[service] = doc;
     this.logger.info({ service, filePath }, 'Config saved');
   }
 
@@ -698,6 +757,51 @@ export class YamlConfigRepository implements IConfigRepository {
       return { addr: (s.address as string) || '127.0.0.1', port: s.port as number | undefined };
     }
     return { addr: (obj.addr as string) || '127.0.0.1', port: obj.port as number | undefined };
+  }
+
+  /**
+   * GTP-C endpoint.
+   *
+   * Real bug, confirmed live 2026-11-26: this used to be the one endpoint read
+   * WITHOUT a `server[]` branch -- `{ addr: resolveAddr(raw.addr) }` -- while
+   * every sibling (parseSbi/parsePfcp/parseGtpu/parseAddrPort) checks
+   * `server[0].address` first. No current Open5GS config has a flat `gtpc.addr`
+   * at all: all three files that declare a `gtpc:` section on this host
+   * (mme/sgwc/smf) use the nested form, so `raw.addr` was always undefined and
+   * `resolveAddr(undefined)` returned its 127.0.0.1 fallback -- a plausible
+   * address that is simply not the configured one (mme 127.0.0.2,
+   * sgwc 127.0.0.3, smf 127.0.0.4).
+   *
+   * Two real consequences, both user-visible: Packet Capture built SMF's GTP-C
+   * filter as `host 127.0.0.1 and udp port 2123`, which matches no SMF GTP-C
+   * traffic at all (pcap.ts had already worked around this for mme/sgwc by
+   * reading rawYaml, and its comment there records the 2026-07-19 occurrence --
+   * but SMF goes through loadSmf() and kept the broken value); and the topology
+   * endpoint reports MME at 127.0.0.1:2123, since gtpc is the only address MME
+   * exposes through this loader.
+   *
+   * Returns undefined when no address is configured, so a caller can tell
+   * "absent" from "defaulted" -- returning the fallback is what made the wrong
+   * value look like a real one.
+   */
+  private parseGtpc(raw: unknown): { addr: string; port?: number } | undefined {
+    if (!isYamlMap(raw)) return undefined;
+    const server = raw.server;
+    if (Array.isArray(server) && server.length > 0 && isYamlMap(server[0])) {
+      const first = server[0];
+      const addr = this.firstAddr(first.address);
+      if (addr !== undefined) return { addr, port: typeof first.port === 'number' ? first.port : undefined };
+    }
+    const addr = this.firstAddr(raw.addr);
+    if (addr !== undefined) return { addr, port: typeof raw.port === 'number' ? raw.port : undefined };
+    return undefined;
+  }
+
+  /** First address of a scalar-or-list `address` value, or undefined. */
+  private firstAddr(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value) && typeof value[0] === 'string') return value[0];
+    return undefined;
   }
 
   private parseAddrPort(raw: unknown): { addr: string | string[]; port?: number } {
@@ -762,49 +866,59 @@ export class YamlConfigRepository implements IConfigRepository {
    * confirmed live 2026-11-26 by diffing the written file against a
    * pre-apply backup.
    */
-  private ensureNumericTypes(obj: any, parentKey?: string): any {
-    if (obj === null || obj === undefined) return obj;
+  private ensureNumericTypes(value: unknown, parentKey?: string): unknown {
+    if (value === null || value === undefined) return value;
 
-    if (Array.isArray(obj)) {
-      return obj.map(item => this.ensureNumericTypes(item, parentKey));
+    if (Array.isArray(value)) {
+      return value.map(item => this.ensureNumericTypes(item, parentKey));
     }
 
-    if (typeof obj === 'object') {
-      const result: any = {};
-      for (const [key, value] of Object.entries(obj)) {
-        if (YamlConfigRepository.STRING_VALUED_KEYS.has(key)) {
-          result[key] = value; // preserve as string
-        } else {
-          result[key] = this.ensureNumericTypes(value, key);
-        }
+    if (isYamlMap(value)) {
+      const result: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(value)) {
+        result[key] = YamlConfigRepository.STRING_VALUED_KEYS.has(key)
+          ? child // preserve as string
+          : this.ensureNumericTypes(child, key);
       }
       return result;
     }
 
-    if (parentKey !== undefined && YamlConfigRepository.STRING_VALUED_KEYS.has(parentKey)) return obj;
+    // Reached for a scalar inside an exempt key's own LIST (the object branch
+    // above never recurses into an exempt key), e.g. a list-valued sd.
+    if (parentKey !== undefined && YamlConfigRepository.STRING_VALUED_KEYS.has(parentKey)) return value;
 
-    if (typeof obj === 'string' && /^\d+(\.\d+)?$/.test(obj)) {
-      const num = Number(obj);
-      if (!isNaN(num)) return num;
+    if (typeof value === 'string' && /^\d+(\.\d+)?$/.test(value)) {
+      const num = Number(value);
+      if (Number.isFinite(num)) return num;
     }
 
-    return obj;
+    return value;
   }
 
   /**
    * Read MCC/MNC/SD values from the raw YAML text to preserve leading zeros
    * and strip any surrounding quotes that were present in the file.
    */
-  private fixMccMncSdFromRawYaml(rawYaml: string, doc: any): any {
-    // Match bare values AND quoted values for sd (e.g. sd: "000001" or sd: 000001)
+  private fixMccMncSdFromRawYaml(rawYaml: string, doc: unknown): unknown {
     const mccValues: string[] = [];
     const mncValues: string[] = [];
     const sdValues: string[] = [];
 
-    for (const m of rawYaml.matchAll(/^\s*mcc:\s*(\d+)\s*$/gm)) mccValues.push(m[1]);
-    for (const m of rawYaml.matchAll(/^\s*mnc:\s*(\d+)\s*$/gm)) mncValues.push(m[1]);
-    // Match both  sd: 000001  and  sd: "000001"
-    for (const m of rawYaml.matchAll(/^\s*sd:\s*"?([0-9a-fA-F]+)"?\s*$/gm)) sdValues.push(m[1]);
+    // These lists are INDEX-matched against the parsed tree in document order
+    // (see replaceMccMncSdValues), so each key must be collected in ONE pass:
+    // scanning bare and quoted forms separately appends in pass order instead
+    // and would assign a value to the wrong occurrence. Quoted forms are
+    // accepted because, while the save path always writes these unquoted, a
+    // hand-edited file can carry either -- previously `mcc`/`mnc` matched the
+    // bare form only, so a quoted one was skipped and every later occurrence
+    // in that file shifted by one.
+    const scalar = (key: string): RegExp =>
+      new RegExp(`^\\s*${key}:\\s*(?:"([0-9a-fA-F]+)"|'([0-9a-fA-F]+)'|([0-9a-fA-F]+))\\s*$`, 'gm');
+    const valueOf = (m: RegExpMatchArray): string => m[1] ?? m[2] ?? m[3];
+
+    for (const m of rawYaml.matchAll(scalar('mcc'))) mccValues.push(valueOf(m));
+    for (const m of rawYaml.matchAll(scalar('mnc'))) mncValues.push(valueOf(m));
+    for (const m of rawYaml.matchAll(scalar('sd'))) sdValues.push(valueOf(m));
 
     return this.replaceMccMncSdValues(doc, mccValues, mncValues, sdValues, {
       mccIndex: 0, mncIndex: 0, sdIndex: 0,
@@ -812,19 +926,18 @@ export class YamlConfigRepository implements IConfigRepository {
   }
 
   private replaceMccMncSdValues(
-    obj: any,
+    obj: unknown,
     mccValues: string[],
     mncValues: string[],
     sdValues: string[],
     indices: { mccIndex: number; mncIndex: number; sdIndex: number },
-  ): any {
-    if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
-
+  ): unknown {
     if (Array.isArray(obj)) {
       return obj.map(item => this.replaceMccMncSdValues(item, mccValues, mncValues, sdValues, indices));
     }
+    if (!isYamlMap(obj)) return obj;
 
-    const result: any = {};
+    const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       if (key === 'mcc' && indices.mccIndex < mccValues.length) {
         result[key] = mccValues[indices.mccIndex++];
@@ -839,17 +952,17 @@ export class YamlConfigRepository implements IConfigRepository {
     return result;
   }
 
-  private preserveEmptyClient(obj: any): any {
-    if (obj === null || obj === undefined || typeof obj !== 'object') return obj;
+  private preserveEmptyClient(obj: unknown): unknown {
     if (Array.isArray(obj)) return obj.map(item => this.preserveEmptyClient(item));
-    const result: any = {};
+    if (!isYamlMap(obj)) return obj;
+    const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       result[key] = key === 'client' && value === null ? {} : this.preserveEmptyClient(value);
     }
     return result;
   }
 
-  private removeNullValues(obj: any, parentKey?: string): any {
+  private removeNullValues(obj: unknown, parentKey?: string): unknown {
     if (obj === null || obj === undefined) {
       return parentKey === 'client' ? {} : undefined;
     }
@@ -860,15 +973,15 @@ export class YamlConfigRepository implements IConfigRepository {
         .filter(item => item !== undefined);
     }
 
-    if (typeof obj === 'object') {
-      const result: any = {};
+    if (isYamlMap(obj)) {
+      const result: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(obj)) {
         if (key === 'client' && (value === null || value === undefined)) {
           result[key] = {};
           continue;
         }
         const cleaned = this.removeNullValues(value, key);
-        if (cleaned !== null && cleaned !== undefined) result[key] = cleaned;
+        if (cleaned !== undefined) result[key] = cleaned;
       }
       return result;
     }
@@ -876,39 +989,33 @@ export class YamlConfigRepository implements IConfigRepository {
     return obj;
   }
 
-  private serializeSbi(sbi: { addr: string | string[]; port?: number }): Record<string, unknown> {
-    return {
-      server: [{
-        address: Array.isArray(sbi.addr) ? sbi.addr[0] : sbi.addr,
-        port: sbi.port || 7777,
-      }],
-    };
-  }
-
   // ── Convenience loaders / savers ─────────────────────────────────────────────
-  async loadScp()  { return this.loadGeneric('scp')  as any; }
-  async loadUdm()  { return this.loadGeneric('udm')  as any; }
-  async loadUdr()  { return this.loadGeneric('udr')  as any; }
-  async loadPcf()  { return this.loadGeneric('pcf')  as any; }
-  async loadNssf() { return this.loadGeneric('nssf') as any; }
-  async loadBsf()  { return this.loadGeneric('bsf')  as any; }
-  async loadMme()  { return this.loadGeneric('mme')  as any; }
-  async loadHss()  { return this.loadGeneric('hss')  as any; }
-  async loadPcrf() { return this.loadGeneric('pcrf') as any; }
-  async loadSgwc() { return this.loadGeneric('sgwc') as any; }
-  async loadSgwu() { return this.loadGeneric('sgwu') as any; }
-  async loadSepp1() { return this.loadGeneric('sepp1') as any; }
+  // These used to end in `as any`, which is what let IConfigRepository claim
+  // each one returned a dedicated entity (ScpConfig, MmeConfig, ...) that
+  // loadGeneric() has never produced -- see Open5gsConfigDocuments.
+  async loadScp(): Promise<NfConfig<'scp'>> { return this.loadGeneric('scp'); }
+  async loadUdm(): Promise<NfConfig<'udm'>> { return this.loadGeneric('udm'); }
+  async loadUdr(): Promise<NfConfig<'udr'>> { return this.loadGeneric('udr'); }
+  async loadPcf(): Promise<NfConfig<'pcf'>> { return this.loadGeneric('pcf'); }
+  async loadNssf(): Promise<NfConfig<'nssf'>> { return this.loadGeneric('nssf'); }
+  async loadBsf(): Promise<NfConfig<'bsf'>> { return this.loadGeneric('bsf'); }
+  async loadMme(): Promise<NfConfig<'mme'>> { return this.loadGeneric('mme'); }
+  async loadHss(): Promise<NfConfig<'hss'>> { return this.loadGeneric('hss'); }
+  async loadPcrf(): Promise<NfConfig<'pcrf'>> { return this.loadGeneric('pcrf'); }
+  async loadSgwc(): Promise<NfConfig<'sgwc'>> { return this.loadGeneric('sgwc'); }
+  async loadSgwu(): Promise<NfConfig<'sgwu'>> { return this.loadGeneric('sgwu'); }
+  async loadSepp1(): Promise<NfConfig<'sepp1'>> { return this.loadGeneric('sepp1'); }
 
-  async saveScp(config: any)  { return this.saveGeneric('scp',  config); }
-  async saveUdm(config: any)  { return this.saveGeneric('udm',  config); }
-  async saveUdr(config: any)  { return this.saveGeneric('udr',  config); }
-  async savePcf(config: any)  { return this.saveGeneric('pcf',  config); }
-  async saveNssf(config: any) { return this.saveGeneric('nssf', config); }
-  async saveBsf(config: any)  { return this.saveGeneric('bsf',  config); }
-  async saveMme(config: any)  { return this.saveGeneric('mme',  config); }
-  async saveHss(config: any)  { return this.saveGeneric('hss',  config); }
-  async savePcrf(config: any) { return this.saveGeneric('pcrf', config); }
-  async saveSgwc(config: any) { return this.saveGeneric('sgwc', config); }
-  async saveSgwu(config: any) { return this.saveGeneric('sgwu', config); }
-  async saveSepp1(config: any) { return this.saveGeneric('sepp1', config); }
+  async saveScp(config: NfConfig<'scp'>): Promise<void> { return this.saveGeneric('scp', config); }
+  async saveUdm(config: NfConfig<'udm'>): Promise<void> { return this.saveGeneric('udm', config); }
+  async saveUdr(config: NfConfig<'udr'>): Promise<void> { return this.saveGeneric('udr', config); }
+  async savePcf(config: NfConfig<'pcf'>): Promise<void> { return this.saveGeneric('pcf', config); }
+  async saveNssf(config: NfConfig<'nssf'>): Promise<void> { return this.saveGeneric('nssf', config); }
+  async saveBsf(config: NfConfig<'bsf'>): Promise<void> { return this.saveGeneric('bsf', config); }
+  async saveMme(config: NfConfig<'mme'>): Promise<void> { return this.saveGeneric('mme', config); }
+  async saveHss(config: NfConfig<'hss'>): Promise<void> { return this.saveGeneric('hss', config); }
+  async savePcrf(config: NfConfig<'pcrf'>): Promise<void> { return this.saveGeneric('pcrf', config); }
+  async saveSgwc(config: NfConfig<'sgwc'>): Promise<void> { return this.saveGeneric('sgwc', config); }
+  async saveSgwu(config: NfConfig<'sgwu'>): Promise<void> { return this.saveGeneric('sgwu', config); }
+  async saveSepp1(config: NfConfig<'sepp1'>): Promise<void> { return this.saveGeneric('sepp1', config); }
 }

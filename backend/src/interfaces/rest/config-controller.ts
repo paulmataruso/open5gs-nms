@@ -8,6 +8,33 @@ import { ServiceMonitorUseCase } from '../../application/use-cases/service-monit
 import { SyncSDUseCase } from '../../application/use-cases/sync-sd-usecase';
 import { requireAdmin } from './middleware/auth-middleware';
 
+/**
+ * An endpoint as it appears in a parsed Open5GS config document:
+ * `{ server: [{ address, port }] }`.
+ */
+interface YamlServerList {
+  server?: Array<{ address?: string | string[]; port?: number }>;
+}
+
+/** First configured address of an endpoint, or undefined if it has none. */
+function endpointOf(
+  endpoint: YamlServerList | undefined,
+  defaultPort: number,
+): { address: string; port: number } | undefined {
+  const first = endpoint?.server?.[0];
+  const addr = first?.address;
+  const address = Array.isArray(addr) ? addr[0] : addr;
+  if (address === undefined || address === '') return undefined;
+  return { address, port: first?.port ?? defaultPort };
+}
+
+/** First candidate that is actually configured. */
+function firstEndpoint(
+  ...candidates: Array<{ address: string; port: number } | undefined>
+): { address: string; port: number } {
+  return candidates.find(candidate => candidate !== undefined) ?? { address: '0.0.0.0', port: 0 };
+}
+
 export function createConfigRouter(
   loadConfigUseCase: LoadConfigUseCase,
   validateConfigUseCase: ValidateConfigUseCase,
@@ -49,42 +76,73 @@ export function createConfigRouter(
         // Fall back to cached value
       }
       
-      // Build node list — all 16 NFs plus mongodb
-      const services = [
-        'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-        'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
-        'mongodb',
+      // Build node list — all 17 NFs plus mongodb.
+      //
+      // `configs` is the WIRE payload: each entry is the whole parsed YAML
+      // document, so an NF's endpoints sit one level down under the NF's own
+      // key (`configs.amf.amf.sbi`), and an endpoint is `server: [{ address }]`
+      // rather than a flat `addr`. This block previously did
+      // `(configs as any)[service]` and then read `config.sbi.addr` /
+      // `config.pfcp.addr` / `config.gtpc.addr` / `config.diameter.addr` —
+      // entity-shaped field names that do not exist on a document at all, and
+      // a `diameter` field that exists nowhere in this codebase. Every branch
+      // therefore missed and EVERY node reported 0.0.0.0:0, confirmed against
+      // the live endpoint on 2026-11-26. Not user-visible: TopologyPage.tsx
+      // reads only `active` from these nodes.
+      //
+      // sepp1's document key is `sepp`, not `sepp1`. HSS and PCRF genuinely
+      // declare no service endpoint (their Diameter address lives in the
+      // freeDiameter .conf the file points at), so `metrics` is the only
+      // address either one has, and its port is the metrics port.
+      const nrf = configs.nrf?.nrf;
+      const scp = configs.scp?.scp;
+      const amf = configs.amf?.amf;
+      const smf = configs.smf?.smf;
+      const upf = configs.upf?.upf;
+      const ausf = configs.ausf?.ausf;
+      const udm = configs.udm?.udm;
+      const udr = configs.udr?.udr;
+      const pcf = configs.pcf?.pcf;
+      const nssf = configs.nssf?.nssf;
+      const bsf = configs.bsf?.bsf;
+      const sepp = configs.sepp1?.sepp;
+      const mme = configs.mme?.mme;
+      const hss = configs.hss?.hss;
+      const pcrf = configs.pcrf?.pcrf;
+      const sgwc = configs.sgwc?.sgwc;
+      const sgwu = configs.sgwu?.sgwu;
+
+      const SBI = 7777, PFCP = 8805, GTPC = 2123, GTPU = 2152, NGAP = 38412, S1AP = 36412;
+
+      const endpoints: Array<[string, { address: string; port: number }]> = [
+        ['nrf', firstEndpoint(endpointOf(nrf?.sbi, SBI))],
+        ['scp', firstEndpoint(endpointOf(scp?.sbi, SBI))],
+        ['amf', firstEndpoint(endpointOf(amf?.sbi, SBI), endpointOf(amf?.ngap, NGAP))],
+        ['smf', firstEndpoint(endpointOf(smf?.sbi, SBI), endpointOf(smf?.pfcp, PFCP), endpointOf(smf?.gtpc, GTPC))],
+        ['upf', firstEndpoint(endpointOf(upf?.pfcp, PFCP), endpointOf(upf?.gtpu, GTPU))],
+        ['ausf', firstEndpoint(endpointOf(ausf?.sbi, SBI))],
+        ['udm', firstEndpoint(endpointOf(udm?.sbi, SBI))],
+        ['udr', firstEndpoint(endpointOf(udr?.sbi, SBI))],
+        ['pcf', firstEndpoint(endpointOf(pcf?.sbi, SBI))],
+        ['nssf', firstEndpoint(endpointOf(nssf?.sbi, SBI))],
+        ['bsf', firstEndpoint(endpointOf(bsf?.sbi, SBI))],
+        ['sepp1', firstEndpoint(endpointOf(sepp?.sbi, SBI))],
+        ['mme', firstEndpoint(endpointOf(mme?.s1ap, S1AP), endpointOf(mme?.gtpc, GTPC))],
+        ['hss', firstEndpoint(endpointOf(hss?.metrics, 9090))],
+        ['pcrf', firstEndpoint(endpointOf(pcrf?.metrics, 9090))],
+        ['sgwc', firstEndpoint(endpointOf(sgwc?.pfcp, PFCP), endpointOf(sgwc?.gtpc, GTPC))],
+        ['sgwu', firstEndpoint(endpointOf(sgwu?.pfcp, PFCP), endpointOf(sgwu?.gtpu, GTPU))],
+        ['mongodb', firstEndpoint()],
       ];
-      
-      const nodes = services.map(service => {
-        const config = (configs as any)[service];
-        let address = '0.0.0.0';
-        let port = 0;
-        
-        // Extract address and port from config
-        if (config?.sbi?.addr) {
-          address = Array.isArray(config.sbi.addr) ? config.sbi.addr[0] : config.sbi.addr;
-          port = config.sbi.port || 7777;
-        } else if (config?.pfcp?.addr) {
-          address = config.pfcp.addr;
-          port = config.pfcp.port || 8805;
-        } else if (config?.gtpc?.addr) {
-          address = config.gtpc.addr;
-          port = config.gtpc.port || 2123;
-        } else if (config?.diameter?.addr) {
-          address = config.diameter.addr;
-          port = config.diameter.port || 3868;
-        }
-        
-        return {
-          id: service,
-          address,
-          port,
-          // Use live MongoDB status for mongodb, cache for everything else
-          active: service === 'mongodb' ? mongoActive : (statuses?.[service]?.active ?? false),
-          source: service === 'mongodb' ? (statuses?.['mongodb']?.source || 'direct') : undefined,
-        };
-      });
+
+      const nodes = endpoints.map(([service, { address, port }]) => ({
+        id: service,
+        address,
+        port,
+        // Use live MongoDB status for mongodb, cache for everything else
+        active: service === 'mongodb' ? mongoActive : (statuses?.[service]?.active ?? false),
+        source: service === 'mongodb' ? (statuses?.['mongodb']?.source || 'direct') : undefined,
+      }));
       
       logger.info({ nodeCount: nodes.length }, 'Topology node data prepared');
       res.json({ success: true, data: { nodes, edges: [] } });
