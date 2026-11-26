@@ -161,6 +161,15 @@ export function osmoHnodebCfg(mcc: string, mnc: string, iuhRemoteIp: string, iuh
   // zero-padded string — Number() strips e.g. mnc "01" down to 1, since
   // this project's own mcc/mnc source (readMccMnc()-style parsing of
   // mme.yaml) always returns the zero-padded form.
+  //
+  // KNOWN LIMITATION, not a bug in this function: an integer cannot carry MNC
+  // WIDTH, and `70` and `070` are different networks. Both arrive here as 70,
+  // so a 3-digit MNC beginning with 0 is indistinguishable from its 2-digit
+  // namesake on the Iuh side. That is imposed by osmo-hnodeb's own VTY grammar
+  // rather than chosen here; expressing it would need whatever 3-digit-MNC flag
+  // that daemon offers (osmo-bsc has one; osmo-hnodeb's was not checked). Only
+  // reachable on a 3-digit-MNC deployment, and 3G is alpha, so it is recorded
+  // rather than guessed at. This deployment is MCC 001 / MNC 01, unaffected.
   const mccNum = Number(mcc);
   const mncNum = Number(mnc);
   return `log stderr

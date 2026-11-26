@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import * as dgram from 'dgram';
 import * as net from 'net';
 import * as crypto from 'crypto';
+import { imsiPlmnPrefix, legacyPaddedImsiPlmnPrefix, msinLength } from '../../domain/services/read-plmn';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
@@ -17,10 +18,21 @@ import { pyhssApiCall, type PyhssAuc, type PyhssSubscriber } from './ims-control
 // instance from before a restart" apart from "leftover E2E test subscriber
 // from a crashed test run" and never mistakenly resurrect the latter as a
 // live SIP UAS.
+/** Reserved MSIN block for the IMS Test Number bot (E2E tests use 900). */
+const BOT_MSIN_PREFIX = '901';
+
 function randomBotImsi(mcc: string, mnc: string): string {
-  const plmn = mcc + mnc.padStart(3, '0');
-  const suffix = '901' + crypto.randomInt(0, 100000).toString().padStart(5, '0');
-  return (plmn + suffix).slice(0, 15).padEnd(15, '0');
+  // MNC at its REAL width -- see imsiPlmnPrefix(). This used to pad to 3, which
+  // put the bot in a different PLMN than the network it registers against.
+  const msin = BOT_MSIN_PREFIX + randomDigits(msinLength(mcc, mnc) - BOT_MSIN_PREFIX.length);
+  return imsiPlmnPrefix(mcc, mnc) + msin;
+}
+
+/** `n` random decimal digits, zero-padded. */
+function randomDigits(n: number): string {
+  let out = '';
+  while (out.length < n) out += crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
+  return out.slice(0, n);
 }
 
 // ── On-demand IMS test numbers ──────────────────────────────────────────────
@@ -703,7 +715,13 @@ export class ImsTestNumberManager {
     if (!state) return;
     const { mcc, mnc, pcscfIp, scscfPort = 6060 } = state.config;
     const pcscfPort = state.config.pcscfPort ?? 5060;
-    const plmnPrefix = mcc + mnc.padStart(3, '0') + '901';
+    // Match the current prefix AND the padded one older builds produced, so a
+    // bot subscriber created before the MNC-width fix is still cleaned up
+    // instead of being orphaned in PyHSS forever.
+    const plmnPrefixes = [
+      imsiPlmnPrefix(mcc, mnc) + BOT_MSIN_PREFIX,
+      legacyPaddedImsiPlmnPrefix(mcc, mnc) + BOT_MSIN_PREFIX,
+    ];
 
     let list: PyhssSubscriber[];
     try {
@@ -716,8 +734,10 @@ export class ImsTestNumberManager {
     // imsi is a string, and saying so is what lets the loop below use it
     // without re-asserting.
     const leftovers = (Array.isArray(list) ? list : []).filter(
-      (s): s is PyhssSubscriber & { imsi: string } =>
-        typeof s?.imsi === 'string' && s.imsi.startsWith(plmnPrefix),
+      (s): s is PyhssSubscriber & { imsi: string } => {
+        const imsi = s?.imsi;
+        return typeof imsi === 'string' && plmnPrefixes.some(prefix => imsi.startsWith(prefix));
+      },
     );
 
     for (const sub of leftovers) {
