@@ -83,6 +83,23 @@ export interface YamlServerEntry {
   tac?: number | number[];
 }
 
+/**
+ * A peer entry in a `client:` list (smf->upf, sgwc->sgwu, mme->sgwc, mme->smf).
+ *
+ * Beyond the address, these keys select WHICH peer serves which traffic -- by
+ * DNN/APN, tracking area, or cell id -- and every one of them is
+ * scalar-or-list, like `tac` on the base type. The config editors each used to
+ * declare their own narrower copy of this shape with a REQUIRED scalar
+ * `address`, which is what let a list-valued address and an absent address
+ * both go unnoticed.
+ */
+export interface YamlPeerEntry extends YamlServerEntry {
+  dnn?: string | string[];
+  apn?: string | string[];
+  e_cell_id?: string | string[];
+  nr_cell_id?: string | string[];
+}
+
 /** The `server:`/`client:` pair shared by sbi, ngap, s1ap, pfcp, gtpu, gtpc. */
 export interface YamlEndpoint {
   server?: YamlServerEntry[];
@@ -181,12 +198,7 @@ export interface YamlMme {
    * `apn` which APNs it handles; all three are scalar-or-list like every other
    * repeatable value here.
    */
-  gtpc?: YamlEndpoint & {
-    client?: {
-      sgwc?: Array<YamlServerEntry & { e_cell_id?: string | string[] }>;
-      smf?: Array<YamlServerEntry & { apn?: string | string[] }>;
-    };
-  };
+  gtpc?: YamlEndpoint & { client?: { sgwc?: YamlPeerEntry[]; smf?: YamlPeerEntry[] } };
   metrics?: YamlEndpoint;
   gummei?: Array<{ plmn_id?: YamlPlmnId; mme_gid?: number; mme_code?: number }>;
   tai?: Array<{ plmn_id?: YamlPlmnId; tac?: number | number[] }>;
@@ -203,7 +215,7 @@ export interface YamlMme {
 
 export interface YamlSmf {
   sbi?: YamlSbiEndpoint;
-  pfcp?: YamlEndpoint & { client?: { upf?: YamlServerEntry[] } };
+  pfcp?: YamlEndpoint & { client?: { upf?: YamlPeerEntry[] } };
   gtpc?: YamlEndpoint;
   gtpu?: YamlEndpoint;
   metrics?: YamlEndpoint;
@@ -211,12 +223,15 @@ export interface YamlSmf {
   dns?: string[];
   mtu?: number;
   info?: Array<{ tai?: Array<{ plmn_id?: YamlPlmnId; tac?: number | number[] }> } & Record<string, unknown>>;
+  /** Charging Trigger Function toggle: auto (default) | yes | no. */
+  ctf?: { enabled?: string };
   freeDiameter?: unknown;
   'p-cscf'?: unknown;
 }
 
 export interface YamlUpf {
-  pfcp?: YamlEndpoint;
+  /** `pfcp.client.smf` is UPF dialling SMF, the reverse of smf->upf. */
+  pfcp?: YamlEndpoint & { client?: { smf?: YamlPeerEntry[] } };
   gtpu?: YamlEndpoint;
   metrics?: YamlEndpoint;
   session?: YamlSession[];
@@ -224,12 +239,17 @@ export interface YamlUpf {
 
 export interface YamlSgwc {
   gtpc?: YamlEndpoint;
-  pfcp?: YamlEndpoint & { client?: { sgwu?: YamlServerEntry[] } };
+  pfcp?: YamlEndpoint & { client?: { sgwu?: YamlPeerEntry[] } };
 }
 
 export interface YamlSgwu {
   gtpu?: YamlEndpoint;
-  pfcp?: YamlEndpoint;
+  /**
+   * `pfcp.client.sgwc` is SGW-U dialling SGW-C -- "SGW-U PFCP Client try to
+   * associate SGW-C PFCP Server", per config/defaults/sgwu.yaml's own comment.
+   * Present but EMPTY on this host, which is why only the compiler found it.
+   */
+  pfcp?: YamlEndpoint & { client?: { sgwc?: YamlPeerEntry[] } };
 }
 
 export interface YamlNrf {

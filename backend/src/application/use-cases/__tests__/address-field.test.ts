@@ -2,6 +2,7 @@ import {
   addressToText,
   textToAddress,
   isAddressList,
+  firstAddress,
 } from '../../../../../frontend/src/components/config/editors/address-field';
 
 // These helpers live in the frontend, which has no test runner of its own
@@ -61,6 +62,29 @@ describe('address field round trip', () => {
     const original = '127.0.0.2';
     const written = textToAddress(addressToText(original), isAddressList(original));
     expect(written).toBe(original);
+  });
+
+  describe('firstAddress', () => {
+    // For predicates, not display. Joining a list and asking isLoopback() about
+    // "127.0.0.1, 10.0.0.1" answers neither question correctly.
+    it('returns a scalar as-is', () => {
+      expect(firstAddress('127.0.0.1')).toBe('127.0.0.1');
+    });
+    it('returns the FIRST entry of a list, not the join', () => {
+      expect(firstAddress(['127.0.0.1', '10.0.0.1'])).toBe('127.0.0.1');
+    });
+    it('returns empty for absent or empty, never undefined', () => {
+      expect(firstAddress(undefined)).toBe('');
+      expect(firstAddress([])).toBe('');
+    });
+    it('keeps a loopback predicate answerable, which addressToText would not', () => {
+      const isLoopback = (a: string): boolean => a.startsWith('127.');
+      expect(isLoopback(firstAddress(['127.0.0.1', '10.0.0.1']))).toBe(true);
+      expect(isLoopback(addressToText(['127.0.0.1', '10.0.0.1']))).toBe(true);
+      // ...and the reverse ordering is where the join actually breaks:
+      expect(isLoopback(firstAddress(['10.0.0.1', '127.0.0.1']))).toBe(false);
+      expect(isLoopback(addressToText(['10.0.0.1', '127.0.0.1']))).toBe(false);
+    });
   });
 
   describe('isAddressList', () => {

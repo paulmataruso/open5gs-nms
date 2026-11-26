@@ -5,6 +5,7 @@ import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedCompon
 import { FieldWithTooltip, SelectWithTooltip } from '../FieldsWithTooltips';
 import { SMF_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
 import { TopologyModal } from './TopologyModal';
+import { addressToText, textToAddress, isAddressList, firstAddress } from './address-field';
 
 interface Props {
   configs: AllConfigs;
@@ -31,8 +32,8 @@ function isLoopback(ip: string): boolean {
 // it cannot send packets to remote routable peers (sendto returns EINVAL).
 function sortPfcpServers<T extends { address: string }>(servers: T[]): T[] {
   return [...servers].sort((a, b) => {
-    const aLoop = isLoopback(a.address);
-    const bLoop = isLoopback(b.address);
+    const aLoop = isLoopback(firstAddress(a.address));
+    const bLoop = isLoopback(firstAddress(b.address));
     if (aLoop === bLoop) return 0;
     return aLoop ? 1 : -1;  // routable first, loopback last
   });
@@ -46,7 +47,7 @@ function getRoutableSmfPfcpAddresses(smf: any): string[] {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element {
-  const fullYaml = configs.smf as any;
+  const fullYaml = configs.smf;
   const smf = fullYaml?.smf || {};
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -59,16 +60,15 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const sbiServer = smf.sbi.server[0] || { address: '127.0.0.4', port: 7777 };
-  const pfcpServers: Array<{ address: string }> = smf.pfcp?.server || [{ address: '127.0.0.4' }];
-  const upfClients: Array<{ address: string; dnn?: string | string[]; tac?: number | number[]; e_cell_id?: string | string[]; nr_cell_id?: string | string[] }> =
-    smf.pfcp?.client?.upf || [];
-  const sessions: Array<{ subnet: string; gateway: string; dnn?: string }> = smf.session || [];
+  const pfcpServers = smf.pfcp?.server ?? [{ address: '127.0.0.4' }];
+  const upfClients = smf.pfcp?.client?.upf ?? [];
+  const sessions = smf.session ?? [];
   const routableAddresses = getRoutableSmfPfcpAddresses(smf);
 
   // Detect ALL local UPF addresses from upf.yaml pfcp.server list
   // so we correctly label routable UPF IPs as local when they match
   const localUpfPfcpAddresses: string[] = (
-    (configs.upf as any)?.upf?.pfcp?.server ?? []
+    (configs.upf)?.upf?.pfcp?.server ?? []
   ).map((s: any) => s.address).filter(Boolean);
 
   const isLocalUpf = (address: string): boolean => {
@@ -143,13 +143,13 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
 
   // Remove ALL remote UPFs (non-local) and their matching sessions
   const removeAllRemoteUpfs = () => {
-    const remoteClients = upfClients.filter(c => !isLocalUpf(c.address));
+    const remoteClients = upfClients.filter(c => !isLocalUpf(firstAddress(c.address)));
     const remoteDnns = new Set(
       remoteClients.flatMap(c =>
         c.dnn ? (Array.isArray(c.dnn) ? c.dnn : [c.dnn]) : []
       )
     );
-    const newClients = upfClients.filter(c => isLocalUpf(c.address));
+    const newClients = upfClients.filter(c => isLocalUpf(firstAddress(c.address)));
     const newSessions = remoteDnns.size > 0
       ? sessions.filter(s => !s.dnn || !remoteDnns.has(s.dnn))
       : sessions;
@@ -162,7 +162,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
     });
   };
 
-  const remoteUpfCount = upfClients.filter(c => !isLocalUpf(c.address)).length;
+  const remoteUpfCount = upfClients.filter(c => !isLocalUpf(firstAddress(c.address))).length;
 
   const updateUpfClient = (idx: number, patch: Partial<typeof upfClients[0]>) => {
     const updated = [...upfClients];
@@ -221,12 +221,11 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
 
   // Also read SGW-C SGW-U client list so session pools for 4G APNs
   // are correctly labeled as Remote SGW-U, not Local UPF
-  const sgwuClients: Array<{ address: string; apn?: string | string[]; tac?: number | number[]; e_cell_id?: string | string[] }> =
-    (configs.sgwc as any)?.sgwc?.pfcp?.client?.sgwu || [];
+  const sgwuClients = configs.sgwc?.sgwc?.pfcp?.client?.sgwu ?? [];
 
   // All local SGW-U addresses from sgwu.yaml
   const localSgwuAddresses: string[] = (
-    (configs.sgwu as any)?.sgwu?.pfcp?.server ?? []
+    (configs.sgwu)?.sgwu?.pfcp?.server ?? []
   ).map((s: any) => s.address).filter(Boolean);
 
   const isLocalSgwu = (address: string): boolean => {
@@ -239,7 +238,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
   const findSgwuForDnn = (dnn: string | undefined): typeof sgwuClients[0] | null => {
     if (!dnn) return null;
     return sgwuClients.find(c => {
-      if (isLocalSgwu(c.address)) return false;
+      if (isLocalSgwu(firstAddress(c.address))) return false;
       if (!c.apn) return false;
       const apns = Array.isArray(c.apn) ? c.apn : [c.apn];
       return apns.includes(dnn);
@@ -262,21 +261,21 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="Address"
-            value={sbiServer.address}
-            onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, address: v }] } })}
+            value={addressToText(sbiServer.address)}
+            onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, address: textToAddress(v, isAddressList(sbiServer.address)) }] } })}
             tooltip={COMMON_TOOLTIPS.sbi_address}
           />
           <FieldWithTooltip
             label="Port"
             type="number"
-            value={sbiServer.port}
+            value={sbiServer.port ?? ''}
             onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, port: parseInt(v) || 7777 }] } })}
             tooltip={COMMON_TOOLTIPS.sbi_port}
           />
           <FieldWithTooltip
             label="Advertise (optional)"
-            value={sbiServer.advertise || ''}
-            onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, advertise: v || undefined }] } })}
+            value={addressToText(sbiServer.advertise)}
+            onChange={(v) => updateSmf({ sbi: { ...smf.sbi, server: [{ ...sbiServer, advertise: v ? textToAddress(v, isAddressList(sbiServer.advertise)) : undefined }] } })}
             placeholder="smf.5gc.mnc070.mcc999.3gppnetwork.org:7777"
             tooltip={COMMON_TOOLTIPS.sbi_advertise}
           />
@@ -311,7 +310,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                 />
               </div>
               <span className="text-xs text-nms-text-dim shrink-0">
-                {isLoopback(srv.address) ? '🔵 loopback (local UPF)' : '🟢 routable (remote UPF)'}
+                {isLoopback(firstAddress(srv.address)) ? '🔵 loopback (local UPF)' : '🟢 routable (remote UPF)'}
               </span>
               {pfcpServers.length > 1 && i > 0 && (
                 <button aria-label="Remove PFCP server"
@@ -341,15 +340,15 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="GTP-C Address"
-            value={smf.gtpc?.server?.[0]?.address || ''}
-            onChange={(v) => updateSmf({ gtpc: { server: [{ address: v }] } })}
+            value={addressToText(smf.gtpc?.server?.[0]?.address)}
+            onChange={(v) => { const f = smf.gtpc?.server?.[0] ?? {}; updateSmf({ gtpc: { ...smf.gtpc, server: [{ ...f, address: textToAddress(v, isAddressList(f.address)) }] } }); }}
             placeholder="127.0.0.4"
             tooltip={SMF_TOOLTIPS.gtpc_address}
           />
           <FieldWithTooltip
             label="GTP-U Address"
-            value={smf.gtpu?.server?.[0]?.address || ''}
-            onChange={(v) => updateSmf({ gtpu: { server: [{ address: v }] } })}
+            value={addressToText(smf.gtpu?.server?.[0]?.address)}
+            onChange={(v) => { const f = smf.gtpu?.server?.[0] ?? {}; updateSmf({ gtpu: { ...smf.gtpu, server: [{ ...f, address: textToAddress(v, isAddressList(f.address)) }] } }); }}
             placeholder="127.0.0.4"
             tooltip={SMF_TOOLTIPS.gtpu_address}
           />
@@ -458,7 +457,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
           )}
 
           {upfClients.map((client, idx) => {
-            const isLocal = isLocalUpf(client.address);
+            const isLocal = isLocalUpf(firstAddress(client.address));
             const hasRoutingRules = !!(client.dnn || client.tac || client.e_cell_id || client.nr_cell_id);
 
             return (
@@ -489,7 +488,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                           const dnn = Array.isArray(client.dnn) ? client.dnn[0] : client.dnn || '';
                           const matchingSession = sessions.find((s: any) => s.dnn === dnn);
                           onEditUpf({
-                            pfcpAddress: client.address,
+                            pfcpAddress: firstAddress(client.address),
                             dnn: displayMultiValue(client.dnn),
                             tac: displayMultiValue(client.tac),
                             eCellId: displayMultiValue(client.e_cell_id),
@@ -529,7 +528,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         onChange={(e) => updateUpfClient(idx, { address: e.target.value })}
                         placeholder={isLocal ? '127.0.0.7 or 10.0.1.157' : '10.50.1.10'}
                         />
-                        {!isLocal && client.address && isLoopback(client.address) && (
+                        {!isLocal && client.address && isLoopback(firstAddress(client.address)) && (
                     <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
                       <AlertTriangle className="w-3 h-3" /> Remote UPF cannot use a loopback address
                     </p>
@@ -672,7 +671,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
             // Determine which UPF/SGW-U handles this session pool
             const matchingRemoteUpf = sess.dnn
               ? upfClients.find(c => {
-                  if (!c.dnn || isLocalUpf(c.address)) return false;
+                  if (!c.dnn || isLocalUpf(firstAddress(c.address))) return false;
                   const dnns = Array.isArray(c.dnn) ? c.dnn : [c.dnn];
                   return dnns.includes(sess.dnn!);
                 })
@@ -682,7 +681,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
             const matchingSgwu = findSgwuForDnn(sess.dnn);
 
             // Find the local UPF for display
-            const localUpf = upfClients.find(c => isLocalUpf(c.address));
+            const localUpf = upfClients.find(c => isLocalUpf(firstAddress(c.address)));
             const localUpfAddr = localUpf?.address || localUpfPfcpAddress || '127.0.0.7';
 
             return (
@@ -769,7 +768,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                 label={`DNS ${i + 1}`}
                 value={dns}
                 onChange={(v) => {
-                  const updated = [...smf.dns];
+                  const updated = [...(smf.dns ?? [])];
                   updated[i] = v;
                   updateSmf({ dns: updated });
                 }}
@@ -821,8 +820,8 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
       {/* ── Section 7: S-NSSAI (Network Slices) ── */}
       {(() => {
         // Open5GS stores S-NSSAI under smf.info[0].s_nssai (not smf.s_nssai)
-        const infoBlock = smf.info?.[0] || {};
-        const nssai: any[] = infoBlock.s_nssai || [{ sst: 1, dnn: ['internet'] }];
+        const infoBlock = smf.info?.[0];
+        const nssai: any[] = (infoBlock?.s_nssai as any[] | undefined) ?? [{ sst: 1, dnn: ['internet'] }];
 
         const updateNssai = (updated: any[]) => {
           const newInfo = [{ ...(smf.info?.[0] || {}), s_nssai: updated }];
@@ -948,8 +947,8 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="Address"
-            value={smf.metrics?.server?.[0]?.address || ''}
-            onChange={(v) => updateSmf({ metrics: { server: [{ address: v, port: smf.metrics?.server?.[0]?.port || 9090 }] } })}
+            value={addressToText(smf.metrics?.server?.[0]?.address)}
+            onChange={(v) => { const f = smf.metrics?.server?.[0] ?? {}; updateSmf({ metrics: { ...smf.metrics, server: [{ ...f, address: textToAddress(v, isAddressList(f.address)), port: f.port ?? 9090 }] } }); }}
             tooltip={COMMON_TOOLTIPS.metrics_address}
           />
           <FieldWithTooltip

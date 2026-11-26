@@ -34,3 +34,18 @@ export function textToAddress(text: string, wasList: boolean): string | string[]
 export function isAddressList(value: string | string[] | undefined): boolean {
   return Array.isArray(value);
 }
+
+/**
+ * The single representative address, for LOGIC rather than display: "is this
+ * loopback", "is this one of our local UPFs", and so on.
+ *
+ * Distinct from addressToText() on purpose. Joining a list for a predicate
+ * would hand `isLoopback()` the string "127.0.0.1, 10.0.0.1", which is neither
+ * loopback nor routable and would quietly answer the wrong thing. Open5GS
+ * treats the first entry as the primary bind address, which is also what the
+ * backend's own addrOf() in auto-config.ts does -- keep the two consistent.
+ */
+export function firstAddress(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? '';
+  return value ?? '';
+}

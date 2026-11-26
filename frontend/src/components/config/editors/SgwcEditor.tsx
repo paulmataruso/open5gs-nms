@@ -3,6 +3,7 @@ import { Plus, X, AlertTriangle, Info, Map } from 'lucide-react';
 import type { AllConfigs } from '../../../types';
 import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { TopologyModal } from './TopologyModal';
+import { firstAddress } from './address-field';
 
 interface Props {
   configs: AllConfigs;
@@ -19,8 +20,8 @@ function isLoopback(ip: string): boolean {
 // it cannot send packets to remote routable peers (sendto returns EINVAL).
 function sortPfcpServers<T extends { address: string }>(servers: T[]): T[] {
   return [...servers].sort((a, b) => {
-    const aLoop = isLoopback(a.address);
-    const bLoop = isLoopback(b.address);
+    const aLoop = isLoopback(firstAddress(a.address));
+    const bLoop = isLoopback(firstAddress(b.address));
     if (aLoop === bLoop) return 0;
     return aLoop ? 1 : -1;  // routable first, loopback last
   });
@@ -49,7 +50,7 @@ function parseHexList(v: string): string | string[] {
 }
 
 export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Element {
-  const fullYaml = configs.sgwc as any;
+  const fullYaml = configs.sgwc;
   const sgwc = fullYaml?.sgwc || {};
 
   // These two must stay ABOVE the early return below. React identifies a hook
@@ -67,12 +68,12 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
   }
 
   const gtpcServer   = sgwc.gtpc.server[0] || { address: '127.0.0.3' };
-  const pfcpServers: Array<{ address: string; port?: number }> = sgwc.pfcp?.server || [{ address: '127.0.0.3' }];
-  const sgwuClients: Array<{ address: string; tac?: number | number[]; apn?: string | string[]; e_cell_id?: string | string[] }> = sgwc.pfcp?.client?.sgwu || [{ address: '127.0.0.6' }];
+  const pfcpServers = sgwc.pfcp?.server ?? [{ address: '127.0.0.3' }];
+  const sgwuClients = sgwc.pfcp?.client?.sgwu ?? [{ address: '127.0.0.6' }];
 
   // Detect ALL local SGW-U addresses from sgwu.yaml pfcp.server list
   const localSgwuPfcpAddresses: string[] = (
-    (configs.sgwu as any)?.sgwu?.pfcp?.server ?? []
+    (configs.sgwu)?.sgwu?.pfcp?.server ?? []
   ).map((s: any) => s.address).filter(Boolean);
 
   const isLocalSgwu = (address: string): boolean => {
@@ -83,9 +84,9 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
     return false;
   };
 
-  const routableAddresses = pfcpServers.map(s => s.address).filter(a => a && !isLoopback(a));
+  const routableAddresses = pfcpServers.map(s => firstAddress(s.address)).filter(a => a && !isLoopback(a));
   const hasRoutableAddress = routableAddresses.length > 0;
-  const remoteSgwuCount = sgwuClients.filter(c => !isLocalSgwu(c.address)).length;
+  const remoteSgwuCount = sgwuClients.filter(c => !isLocalSgwu(firstAddress(c.address))).length;
 
   const effectiveSgwcAddress = selectedSgwcAddress || routableAddresses[0] || '';
 
@@ -122,7 +123,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
   };
 
   const removeAllRemoteSgwus = () => {
-    updateSgwuClients(sgwuClients.filter(c => isLocalSgwu(c.address)));
+    updateSgwuClients(sgwuClients.filter(c => isLocalSgwu(firstAddress(c.address))));
   };
 
   return (
@@ -169,7 +170,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                 placeholder={i === 0 ? '127.0.0.3' : '10.0.1.156'}
               />
               <span className="text-xs text-nms-text-dim shrink-0">
-                {isLoopback(srv.address) ? '🔵 loopback (local SGW-U)' : '🟢 routable (remote SGW-U)'}
+                {isLoopback(firstAddress(srv.address)) ? '🔵 loopback (local SGW-U)' : '🟢 routable (remote SGW-U)'}
               </span>
               {pfcpServers.length > 1 && i > 0 && (
                 <button aria-label="Remove PFCP server"
@@ -285,7 +286,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
         {/* SGW-U client list */}
         <div className="space-y-3">
           {sgwuClients.map((client, idx) => {
-            const isLocal = isLocalSgwu(client.address);
+            const isLocal = isLocalSgwu(firstAddress(client.address));
             return (
               <div key={idx} className="border border-nms-border rounded-lg p-4 bg-nms-surface-2/30 space-y-4">
                 <div className="flex items-center justify-between">
@@ -304,7 +305,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                     {!isLocal && onEditSgwu && client.address && (
                       <button
                         onClick={() => onEditSgwu({
-                          pfcpAddress: client.address,
+                          pfcpAddress: firstAddress(client.address),
                           gtpuAddress: '',
                           tac: displayMultiValue(client.tac),
                           label: '',
@@ -336,7 +337,7 @@ export function SgwcEditor({ configs, onChange, onEditSgwu }: Props): JSX.Elemen
                     onChange={e => updateSgwuClient(idx, { address: e.target.value })}
                     placeholder={isLocal ? '127.0.0.6' : '10.0.1.158'}
                   />
-                  {!isLocal && client.address && isLoopback(client.address) && (
+                  {!isLocal && client.address && isLoopback(firstAddress(client.address)) && (
                     <p className="text-xs text-amber-400 mt-1 flex items-center gap-1">
                       <AlertTriangle className="w-3 h-3" /> Remote SGW-U cannot use a loopback address
                     </p>
