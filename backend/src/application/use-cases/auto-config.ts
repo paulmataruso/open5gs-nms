@@ -12,7 +12,8 @@ import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-re
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import type {
   AmfYamlDocument, MmeYamlDocument, SmfYamlDocument, UpfYamlDocument,
-  SgwcYamlDocument, SgwuYamlDocument, YamlServerEntry, YamlPlmnId, YamlSnssai, YamlSession,
+  SgwcYamlDocument, SgwuYamlDocument, NrfYamlDocument,
+  YamlServerEntry, YamlPlmnId, YamlSnssai, YamlSession, YamlPeerEntry,
 } from '../../domain/entities/open5gs-yaml';
 
 export interface PlmnConfig {
@@ -153,13 +154,25 @@ export interface AutoConfigPreviewResult {
 // this does not) — same field paths, same loopback-prefix heuristics for
 // localUpfOnly/localSgwuOnly, kept in sync by comment cross-reference since
 // there's no shared-types package between the two.
+/**
+ * Message text for a caught value. `catch` binds `unknown`, so interpolating it
+ * directly renders "[object Object]" for a rejection that is not an Error --
+ * exactly when the detail matters.
+ */
+function errText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  try { return JSON.stringify(e) ?? String(e); } catch { return String(e); }
+}
+
 export function deriveCurrentAutoConfigInput(configs: AllConfigs): AutoConfigInput {
-  const mmeRaw = (configs.mme?.rawYaml as MmeYamlDocument | undefined)?.mme;
-  const amfRaw = (configs.amf?.rawYaml as AmfYamlDocument | undefined)?.amf;
-  const sgwuRaw = (configs.sgwu?.rawYaml as SgwuYamlDocument | undefined)?.sgwu;
-  const upfRaw = (configs.upf?.rawYaml as UpfYamlDocument | undefined)?.upf;
-  const smfRaw = (configs.smf?.rawYaml as SmfYamlDocument | undefined)?.smf;
-  const sgwcRaw = (configs.sgwc?.rawYaml as SgwcYamlDocument | undefined)?.sgwc;
+  // No casts needed: AllConfigs types each `rawYaml` as its own document (#82).
+  const mmeRaw = configs.mme?.rawYaml?.mme;
+  const amfRaw = configs.amf?.rawYaml?.amf;
+  const sgwuRaw = configs.sgwu?.rawYaml?.sgwu;
+  const upfRaw = configs.upf?.rawYaml?.upf;
+  const smfRaw = configs.smf?.rawYaml?.smf;
+  const sgwcRaw = configs.sgwc?.rawYaml?.sgwc;
 
   // Open5GS allows `address:` and `tac:` to be either a scalar or a list, and
   // this snapshot feeds single-valued fields (PlmnConfig.tac is `number`,
@@ -462,7 +475,7 @@ export class AutoConfigUseCase {
         || (Array.isArray(priorTac) && priorTac.length > 0 && priorTac.every(t => typeof t === 'number'));
       return {
         plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-        tac: plmn.tac ?? (keepable ? priorTac as number | number[] : 1),
+        tac: plmn.tac ?? (keepable ? priorTac : 1),
       };
     });
   }
@@ -536,7 +549,10 @@ export class AutoConfigUseCase {
       // MME diff
       if (configs.mme && (applyPlmn || applyInterfaces)) {
         const original = configs.mme.rawYaml as MmeYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original)); // Deep clone
+        // Typed: JSON.parse returns `any`, so every mutation below was
+        // unchecked -- which is how the hardcoded identity fields and the
+        // rebuilt sub-trees went unnoticed in review.
+        const modified = JSON.parse(JSON.stringify(original)) as MmeYamlDocument;
 
         // Apply MME changes to rawYaml structure
         if (!modified.mme) modified.mme = {};
@@ -567,7 +583,7 @@ export class AutoConfigUseCase {
       // SGW-U diff
       if (configs.sgwu && applyInterfaces) {
         const original = configs.sgwu.rawYaml as SgwuYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as SgwuYamlDocument;
 
         if (!modified.sgwu) modified.sgwu = {};
         if (!modified.sgwu.gtpu) modified.sgwu.gtpu = {};
@@ -590,7 +606,7 @@ export class AutoConfigUseCase {
       // AMF diff
       if (configs.amf && (applyPlmn || applyInterfaces)) {
         const original = configs.amf.rawYaml as AmfYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as AmfYamlDocument;
 
         if (!modified.amf) modified.amf = {};
 
@@ -624,7 +640,7 @@ export class AutoConfigUseCase {
       // UPF diff
       if (configs.upf && (applyInterfaces || applySessionPools)) {
         const original = configs.upf.rawYaml as UpfYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as UpfYamlDocument;
 
         if (!modified.upf) modified.upf = {};
 
@@ -648,7 +664,7 @@ export class AutoConfigUseCase {
       // SMF diff
       if (configs.smf && applySessionPools) {
         const original = configs.smf.rawYaml as SmfYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as SmfYamlDocument;
 
         if (!modified.smf) modified.smf = {};
 
@@ -669,7 +685,7 @@ export class AutoConfigUseCase {
       this.logger.error({ error }, 'Failed to generate preview');
       return {
         success: false,
-        message: `Preview failed: ${error}`,
+        message: `Preview failed: ${errText(error)}`,
         diffs: {},
       };
     }
@@ -808,11 +824,13 @@ export class AutoConfigUseCase {
         );
 
         // SGW-C PFCP client — local SGW-U always present, remote entries appended
-        const sgwuClients: any[] = [{ address: '127.0.0.6' }];
+        const sgwuClients: YamlPeerEntry[] = [{ address: '127.0.0.6' }];
         if (!localSgwuOnly && input.remoteSgwus?.length) {
           for (const remote of input.remoteSgwus) {
             if (!remote.pfcpIP) continue;
-            const entry: any = { address: remote.pfcpIP };
+            const entry: YamlPeerEntry = { address: remote.pfcpIP };
+            // Open5GS takes a scalar or a list here; a single TAC is written
+            // bare so the file reads the way an operator would write it.
             if (remote.tac?.length) entry.tac = remote.tac.length === 1 ? remote.tac[0] : remote.tac;
             sgwuClients.push(entry);
           }
@@ -907,7 +925,7 @@ export class AutoConfigUseCase {
       const nrfPlmns = input.plmn5g.length > 0 ? input.plmn5g : input.plmn4g;
       if (configs.nrf && applyPlmn && nrfPlmns.length > 0) {
         this.logger.info({ plmnCount: nrfPlmns.length }, 'Updating NRF serving PLMN');
-        const raw = configs.nrf.rawYaml as any;
+        const raw = configs.nrf.rawYaml as NrfYamlDocument;
         if (!raw.nrf) raw.nrf = {};
         raw.nrf.serving = nrfPlmns.map(plmn => ({
           plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
@@ -1049,7 +1067,7 @@ export class AutoConfigUseCase {
       //
       // Each rule is added idempotently (-C check before -A/-I) so re-running
       // Apply Config never piles up duplicates.
-      const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string) => {
+      const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string): Promise<void> => {
         const check = await this.hostExecutor.executeCommand(bin, checkArgs);
         if (check.exitCode !== 0) {
           await this.hostExecutor.executeCommand(bin, addArgs);
@@ -1302,13 +1320,13 @@ export class AutoConfigUseCase {
         user,
         action: 'config_apply',
         target: 'auto_config',
-        details: `Auto-configuration failed: ${error}`,
+        details: `Auto-configuration failed: ${errText(error)}`,
         success: false,
       });
 
       return {
         success: false,
-        message: `Auto-configuration failed: ${error}`,
+        message: `Auto-configuration failed: ${errText(error)}`,
         updatedFiles,
         errors: [String(error)],
       };
