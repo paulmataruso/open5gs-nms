@@ -1483,7 +1483,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
     // Run async — each step logs to session.logs so the UI can show progress.
     // `void`: the response has already been sent, so this is a deliberately
     // detached task; its own try/catch records any failure on the session.
-    void (async () => {
+    void (async (): Promise<void> => {
       try {
         step(session, `Session ${sessionId} starting provisioning`, logger);
 
