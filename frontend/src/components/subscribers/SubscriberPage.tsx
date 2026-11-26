@@ -2114,7 +2114,11 @@ function SubForm({ sub, onSave, onCancel, isNew, plans, onPlanChanged, copySourc
       || addressConflict(session.ipv4_framed_routes, 'ipv4_framed_routes') || addressConflict(session.ipv6_framed_routes, 'ipv6_framed_routes')));
   const uniqueField = (invalid: boolean) => ({
     'aria-invalid': invalid || undefined,
-    style: invalid ? { borderColor: '#f87171', boxShadow: '0 0 0 1px #f87171' } : undefined,
+    // Theme variable, not a literal: five themes swap at runtime, and a hex
+    // here would pin this outline to whichever one it was eyeballed against.
+    style: invalid
+      ? { borderColor: 'rgb(var(--nms-red-rgb))', boxShadow: '0 0 0 1px rgb(var(--nms-red-rgb))' }
+      : undefined,
     title: invalid ? 'Change this copied value or clear this optional field before creating the subscriber.' : undefined,
   });
   const save = async () => { if (copyConflicts || (copySource && !form.imsi.trim())) return; setSaving(true); try { await onSave(form); } finally { setSaving(false); } };
