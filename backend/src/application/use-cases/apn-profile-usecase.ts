@@ -3,6 +3,7 @@ import pino from 'pino';
 import { IApnProfileRepository } from '../../domain/interfaces/apn-profile-repository';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { ApnProfile, ApnProfileListEntry } from '../../domain/entities/apn-profile';
+import type { YamlSession } from '../../domain/entities/open5gs-yaml';
 import { resolveDnnDevPairs, preferIPv4ByDev } from '../../domain/services/dnn-dev-resolver';
 import { ipToNum, cidrRange } from '../../domain/services/ip-utils';
 import {
@@ -164,6 +165,19 @@ export class ApnProfileUseCase {
     if (dnnOwner && dnnOwner.id !== id) throw new Error(`A different profile already uses DNN "${input.dnn}"`);
 
     const profile: ApnProfile = { ...existing, ...input, id, updatedAt: new Date().toISOString() };
+
+    // A renamed DNN changes the profile's IDENTITY, so the pools written under
+    // the OLD dnn would be orphaned in smf.yaml/upf.yaml: patchYamlConfigs
+    // selects by the NEW dnn, finds nothing, and appends a second pool while
+    // the old one stays behind serving the same subnet. Remove the old entries
+    // first. Only on a real rename -- otherwise this would delete and re-add
+    // the pool on every ordinary edit, and a reader of the diff could not tell
+    // an edit from a replacement.
+    if (existing.dnn !== profile.dnn) {
+      this.logger.info({ from: existing.dnn, to: profile.dnn }, 'APN profile DNN renamed — removing the old session pools first');
+      await this.removeYamlConfigs(existing);
+    }
+
     await this.patchYamlConfigs(profile);
     await this.apnProfileRepo.update(id, profile);
     return profile;
@@ -223,23 +237,60 @@ export class ApnProfileUseCase {
   // removes rather than upserts the smf session (matched by dnn) and upf
   // session (matched by dev, falling back to dnn) this profile owns, for
   // both the v4 entry and (if present) the v6 one.
+  /** An IPv6 pool, told apart by a colon in the subnet. */
+  private static isV6Pool(session: YamlSession): boolean {
+    return String(session.subnet ?? '').includes(':');
+  }
+
+  /**
+   * Does this smf/upf session pool belong to the given profile?
+   *
+   * Identity is the DNN, falling back to the SUBNET for a legacy entry that
+   * carries no dnn -- upf.yaml sessions often do not, because Open5GS's own
+   * UPF schema does not define the field at all and only this project's
+   * UpfEditor writes it (see dnn-dev-resolver.ts, and GitHub issue #28 which
+   * was the same confusion).
+   *
+   * It is NEVER the `dev`. Real bug, fixed 2026-11-26: both halves of this
+   * file keyed the UPF pool on `dev`, which is a SHARED interface rather than
+   * a per-APN identity --
+   *
+   *   patchYamlConfigs:  findIndex(s => (s.dev || 'ogstun') === profile.dev)
+   *   removeYamlConfigs: filter(s => (s.dev || 'ogstun') !== profile.dev && ...)
+   *
+   * `dev` defaults to `ogstun`, which is also what this deployment's main
+   * `internet` pool uses. So creating any further profile on the default dev
+   * matched the internet pool first and OVERWROTE it with the new profile's
+   * subnet and dnn -- taking out the primary UE address pool -- and deleting
+   * such a profile removed every other pool sharing that interface, because
+   * the filter's two keep-conditions are ANDed and so remove on either match.
+   * The current two profiles (ims/ogstun2, internet/ogstun) escape it only
+   * because their dnn AND dev both happen to differ.
+   */
+  private static belongsToProfile(session: YamlSession, profile: ApnProfile): boolean {
+    if (session.dnn !== undefined && session.dnn !== '') return session.dnn === profile.dnn;
+    const subnet = session.subnet;
+    if (subnet === undefined) return false;
+    return subnet === profile.subnet || (profile.subnetV6 !== undefined && subnet === profile.subnetV6);
+  }
+
   private async removeYamlConfigs(profile: ApnProfile): Promise<void> {
     const smf = await this.configRepo.loadSmf();
-    const smfRaw = (smf as any).rawYaml;
-    const smfSessions: any[] = smfRaw?.smf?.session ?? [];
-    const filteredSmf = smfSessions.filter((s) => s?.dnn !== profile.dnn);
+    const smfRaw = smf.rawYaml;
+    const smfSessions: YamlSession[] = smfRaw?.smf?.session ?? [];
+    const filteredSmf = smfSessions.filter((s) => !ApnProfileUseCase.belongsToProfile(s, profile));
     if (filteredSmf.length !== smfSessions.length) {
       if (smfRaw?.smf) smfRaw.smf.session = filteredSmf;
-      await this.configRepo.saveSmf({ ...(smf as any), rawYaml: smfRaw });
+      await this.configRepo.saveSmf({ ...smf, rawYaml: smfRaw });
     }
 
     const upf = await this.configRepo.loadUpf();
-    const upfRaw = (upf as any).rawYaml;
-    const upfSessions: any[] = upfRaw?.upf?.session ?? [];
-    const filteredUpf = upfSessions.filter((s) => (s?.dev || 'ogstun') !== profile.dev && s?.dnn !== profile.dnn);
+    const upfRaw = upf.rawYaml;
+    const upfSessions: YamlSession[] = upfRaw?.upf?.session ?? [];
+    const filteredUpf = upfSessions.filter((s) => !ApnProfileUseCase.belongsToProfile(s, profile));
     if (filteredUpf.length !== upfSessions.length) {
       if (upfRaw?.upf) upfRaw.upf.session = filteredUpf;
-      await this.configRepo.saveUpf({ ...(upf as any), rawYaml: upfRaw });
+      await this.configRepo.saveUpf({ ...upf, rawYaml: upfRaw });
     }
   }
 
@@ -259,41 +310,44 @@ export class ApnProfileUseCase {
   // either YAML file. The v6 session is matched by dnn/dev **and** an IPv6
   // subnet (`includes(':')`) so it never collides with the v4 entry above.
   private async patchYamlConfigs(profile: ApnProfile): Promise<void> {
-    const smf = await this.configRepo.loadSmf();
-    const smfRaw = (smf as any).rawYaml;
-    const smfSessions: any[] = smfRaw?.smf?.session ?? [];
-    const smfIdx = smfSessions.findIndex((s) => s?.dnn === profile.dnn && !String(s?.subnet ?? '').includes(':'));
-    const smfEntry = { subnet: profile.subnet, gateway: profile.gateway, dnn: profile.dnn };
-    if (smfIdx >= 0) smfSessions[smfIdx] = { ...smfSessions[smfIdx], ...smfEntry };
-    else smfSessions.push(smfEntry);
+    // Both halves select the profile's OWN pool by belongsToProfile() -- never
+    // by `dev`, which is a shared interface. Each entry is spread over so a
+    // field this profile does not model (a per-session `dns`, say) survives.
+    const upsert = (
+      sessions: YamlSession[],
+      wantV6: boolean,
+      entry: YamlSession,
+    ): void => {
+      const idx = sessions.findIndex((s) =>
+        ApnProfileUseCase.belongsToProfile(s, profile)
+        && ApnProfileUseCase.isV6Pool(s) === wantV6);
+      if (idx >= 0) sessions[idx] = { ...sessions[idx], ...entry };
+      else sessions.push(entry);
+    };
 
+    const smf = await this.configRepo.loadSmf();
+    const smfRaw = smf.rawYaml;
+    const smfSessions: YamlSession[] = smfRaw?.smf?.session ?? [];
+    upsert(smfSessions, false, { subnet: profile.subnet, gateway: profile.gateway, dnn: profile.dnn });
     if (profile.subnetV6 && profile.gatewayV6) {
-      const smfV6Idx = smfSessions.findIndex((s) => s?.dnn === profile.dnn && String(s?.subnet ?? '').includes(':'));
-      const smfV6Entry = { subnet: profile.subnetV6, gateway: profile.gatewayV6, dnn: profile.dnn };
-      if (smfV6Idx >= 0) smfSessions[smfV6Idx] = { ...smfSessions[smfV6Idx], ...smfV6Entry };
-      else smfSessions.push(smfV6Entry);
+      upsert(smfSessions, true, { subnet: profile.subnetV6, gateway: profile.gatewayV6, dnn: profile.dnn });
     }
     if (smfRaw?.smf) smfRaw.smf.session = smfSessions;
-    await this.configRepo.saveSmf({ ...(smf as any), rawYaml: smfRaw });
+    await this.configRepo.saveSmf({ ...smf, rawYaml: smfRaw });
 
     const upf = await this.configRepo.loadUpf();
-    const upfRaw = (upf as any).rawYaml;
-    const upfSessions: any[] = upfRaw?.upf?.session ?? [];
-    let upfIdx = upfSessions.findIndex((s) => (s?.dev || 'ogstun') === profile.dev && !String(s?.subnet ?? '').includes(':'));
-    if (upfIdx < 0) upfIdx = upfSessions.findIndex((s) => s?.dnn === profile.dnn && !String(s?.subnet ?? '').includes(':'));
-    const upfEntry = { subnet: profile.subnet, gateway: profile.gateway, dev: profile.dev, dnn: profile.dnn };
-    if (upfIdx >= 0) upfSessions[upfIdx] = { ...upfSessions[upfIdx], ...upfEntry };
-    else upfSessions.push(upfEntry);
-
+    const upfRaw = upf.rawYaml;
+    const upfSessions: YamlSession[] = upfRaw?.upf?.session ?? [];
+    upsert(upfSessions, false, {
+      subnet: profile.subnet, gateway: profile.gateway, dev: profile.dev, dnn: profile.dnn,
+    });
     if (profile.subnetV6 && profile.gatewayV6) {
-      let upfV6Idx = upfSessions.findIndex((s) => (s?.dev || 'ogstun') === profile.dev && String(s?.subnet ?? '').includes(':'));
-      if (upfV6Idx < 0) upfV6Idx = upfSessions.findIndex((s) => s?.dnn === profile.dnn && String(s?.subnet ?? '').includes(':'));
-      const upfV6Entry = { subnet: profile.subnetV6, gateway: profile.gatewayV6, dev: profile.dev, dnn: profile.dnn };
-      if (upfV6Idx >= 0) upfSessions[upfV6Idx] = { ...upfSessions[upfV6Idx], ...upfV6Entry };
-      else upfSessions.push(upfV6Entry);
+      upsert(upfSessions, true, {
+        subnet: profile.subnetV6, gateway: profile.gatewayV6, dev: profile.dev, dnn: profile.dnn,
+      });
     }
     if (upfRaw?.upf) upfRaw.upf.session = upfSessions;
-    await this.configRepo.saveUpf({ ...(upf as any), rawYaml: upfRaw });
+    await this.configRepo.saveUpf({ ...upf, rawYaml: upfRaw });
   }
 
   private validateInput(input: ApnProfileInput): void {
