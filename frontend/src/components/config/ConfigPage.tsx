@@ -8,6 +8,7 @@ import { clsx } from 'clsx';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { YamlTextEditor } from './YamlTextEditor';
 import { FieldWithTooltip, SelectWithTooltip } from './FieldsWithTooltips';
+import { addressToText, textToAddress, isAddressList } from './editors/address-field';
 import { NRF_TOOLTIPS, AMF_TOOLTIPS, COMMON_TOOLTIPS } from '../../data/tooltips';
 
 // Import all editors
@@ -75,8 +76,10 @@ function LoggerSection({
 
 // NRF Editor
 function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: AllConfigs) => void }): JSX.Element {
-  const fullYaml = configs.nrf as any;
+  const fullYaml = configs.nrf;
   const nrf = fullYaml.nrf || {};
+  // Optional on the document; spreading or mapping an absent list throws.
+  const serving = nrf.serving ?? [];
   if (!nrf?.sbi?.server || nrf.sbi.server.length === 0) {
     return <div className="text-nms-text-dim">Loading NRF configuration...</div>;
   }
@@ -102,21 +105,21 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="Bind Address"
-            value={server.address}
-            onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, address: v }] } })}
+            value={addressToText(server.address)}
+            onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, address: textToAddress(v, isAddressList(server.address)) }] } })}
             tooltip={NRF_TOOLTIPS.sbi_address}
           />
           <FieldWithTooltip
             label="Port"
             type="number"
-            value={server.port}
+            value={server.port ?? ''}
             onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, port: parseInt(v) || 7777 }] } })}
             tooltip={NRF_TOOLTIPS.sbi_port}
           />
           <FieldWithTooltip
             label="Advertise (optional)"
-            value={server.advertise || ''}
-            onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, advertise: v || undefined }] } })}
+            value={addressToText(server.advertise)}
+            onChange={(v) => updateNrf({ sbi: { ...nrf.sbi, server: [{ ...server, advertise: v ? textToAddress(v, isAddressList(server.advertise)) : undefined }] } })}
             placeholder="nrf.5gc.mnc070.mcc999.3gppnetwork.org:7777"
             tooltip={COMMON_TOOLTIPS.sbi_advertise}
           />
@@ -127,19 +130,19 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold font-display text-nms-accent">Serving PLMN</h3>
           <button
-            onClick={() => updateNrf({ serving: [...(nrf.serving || []), { plmn_id: { mcc: '001', mnc: '01' } }] })}
+            onClick={() => updateNrf({ serving: [...serving, { plmn_id: { mcc: '001', mnc: '01' } }] })}
             className="nms-btn-ghost text-xs flex items-center gap-1"
           >
             <Plus className="w-3.5 h-3.5" /> Add PLMN
           </button>
         </div>
-        {(!nrf.serving || nrf.serving.length === 0) && (
+        {serving.length === 0 && (
           <p className="text-xs text-nms-text-dim">No serving PLMN configured.</p>
         )}
-        {(nrf.serving || []).map((s: any, i: number) => (
+        {serving.map((s: any, i: number) => (
           <div key={i} className="relative grid grid-cols-2 gap-4 mb-2 pr-8">
             <button aria-label="Remove serving PLMN"
-              onClick={() => updateNrf({ serving: nrf.serving.filter((_: any, idx: number) => idx !== i) })}
+              onClick={() => updateNrf({ serving: serving.filter((_: any, idx: number) => idx !== i) })}
               className="absolute top-1/2 -translate-y-1/2 right-0 text-nms-text-dim hover:text-nms-red transition-colors"
             >
               <X className="w-4 h-4" />
@@ -148,7 +151,7 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               label="MCC"
               value={s.plmn_id?.mcc || ''}
               onChange={(v) => {
-                const updated = [...nrf.serving];
+                const updated = [...serving];
                 updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                 updateNrf({ serving: updated });
               }}
@@ -158,7 +161,7 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               label="MNC"
               value={s.plmn_id?.mnc || ''}
               onChange={(v) => {
-                const updated = [...nrf.serving];
+                const updated = [...serving];
                 updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                 updateNrf({ serving: updated });
               }}
@@ -175,8 +178,12 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
 
 // AMF Editor
 function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: AllConfigs) => void }): JSX.Element {
-  const fullYaml = configs.amf as any;
+  const fullYaml = configs.amf;
   const amf = fullYaml.amf || {};
+  // Optional on the document; spreading or mapping an absent list throws.
+  const guami = amf.guami ?? [];
+  const tai = amf.tai ?? [];
+  const plmnSupport = amf.plmn_support ?? [];
   const sbiServer = amf.sbi?.server?.[0] || { address: '127.0.0.5', port: 7777 };
   const ngapServer = amf.ngap?.server?.[0] || { address: '10.0.1.175' };
   const [syncingSD, setSyncingSD] = useState(false);
@@ -237,9 +244,9 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
-          <FieldWithTooltip label="Address" value={sbiServer.address} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, address: v }] } })} tooltip={AMF_TOOLTIPS.sbi_address} />
-          <FieldWithTooltip label="Port" type="number" value={sbiServer.port} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, port: parseInt(v) || 7777 }] } })} tooltip={AMF_TOOLTIPS.sbi_port} />
-          <FieldWithTooltip label="Advertise (optional)" value={sbiServer.advertise || ''} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, advertise: v || undefined }] } })} placeholder="amf.5gc.mnc070.mcc999.3gppnetwork.org:7777" tooltip={COMMON_TOOLTIPS.sbi_advertise} />
+          <FieldWithTooltip label="Address" value={addressToText(sbiServer.address)} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, address: textToAddress(v, isAddressList(sbiServer.address)) }] } })} tooltip={AMF_TOOLTIPS.sbi_address} />
+          <FieldWithTooltip label="Port" type="number" value={sbiServer.port ?? ''} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, port: parseInt(v) || 7777 }] } })} tooltip={AMF_TOOLTIPS.sbi_port} />
+          <FieldWithTooltip label="Advertise (optional)" value={addressToText(sbiServer.advertise)} onChange={(v) => updateAmf({ sbi: { ...amf.sbi, server: [{ ...sbiServer, advertise: v ? textToAddress(v, isAddressList(sbiServer.advertise)) : undefined }] } })} placeholder="amf.5gc.mnc070.mcc999.3gppnetwork.org:7777" tooltip={COMMON_TOOLTIPS.sbi_advertise} />
         </div>
       </div>
 
@@ -257,7 +264,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="Address (IP)"
-            value={ngapServer.dev ? '' : (ngapServer.address || '')}
+            value={ngapServer.dev ? '' : addressToText(ngapServer.address)}
             onChange={(v) => {
               // Spread existing server entry to preserve any unknown fields;
               // remove dev (mutually exclusive with address)
@@ -289,7 +296,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         </div>
       </div>
 
-      {amf.guami && amf.guami.length > 0 && (
+      {guami.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold font-display text-nms-accent">GUAMI</h3>
@@ -299,19 +306,19 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   plmn_id: { mcc: '001', mnc: '01' },
                   amf_id: { region: 2, set: 1, pointer: 0 },
                 };
-                updateAmf({ guami: [...amf.guami, newEntry] });
+                updateAmf({ guami: [...guami, newEntry] });
               }}
               className="nms-btn-ghost text-xs flex items-center gap-1"
             >
               <Plus className="w-3.5 h-3.5" /> Add PLMN with Slice
             </button>
           </div>
-          {amf.guami.map((g: any, i: number) => (
+          {guami.map((g: any, i: number) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
-              {amf.guami.length > 1 && (
+              {guami.length > 1 && (
                 <button
                   onClick={() => {
-                    const updated = amf.guami.filter((_: any, idx: number) => idx !== i);
+                    const updated = guami.filter((_: any, idx: number) => idx !== i);
                     updateAmf({ guami: updated });
                   }}
                   className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -322,28 +329,28 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               )}
               <div className="grid grid-cols-5 gap-4">
                 <FieldWithTooltip label="MCC" value={g.plmn_id.mcc} onChange={(v) => {
-                  const updated = [...amf.guami];
+                  const updated = [...guami];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                   updateAmf({ guami: updated });
                 }} tooltip={AMF_TOOLTIPS.guami_mcc} />
                 <FieldWithTooltip label="MNC" value={g.plmn_id.mnc} onChange={(v) => {
-                  const updated = [...amf.guami];
+                  const updated = [...guami];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateAmf({ guami: updated });
                 }} tooltip={AMF_TOOLTIPS.guami_mnc} />
                 <FieldWithTooltip label="Region" type="number" value={g.amf_id?.region ?? 2} onChange={(v) => {
-                  const updated = [...amf.guami];
-                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, region: v === '' ? '' : (parseInt(v) ?? 0) } };
+                  const updated = [...guami];
+                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, region: intOrUndefined(v) } };
                   updateAmf({ guami: updated });
                 }} placeholder="2" tooltip={AMF_TOOLTIPS.guami_region} />
                 <FieldWithTooltip label="Set" type="number" value={g.amf_id?.set ?? 1} onChange={(v) => {
-                  const updated = [...amf.guami];
-                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, set: v === '' ? '' : (parseInt(v) ?? 0) } };
+                  const updated = [...guami];
+                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, set: intOrUndefined(v) } };
                   updateAmf({ guami: updated });
                 }} placeholder="1" tooltip={AMF_TOOLTIPS.guami_set} />
                 <FieldWithTooltip label="Pointer" type="number" value={g.amf_id?.pointer ?? 0} onChange={(v) => {
-                  const updated = [...amf.guami];
-                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, pointer: v === '' ? '' : (parseInt(v) ?? 0) } };
+                  const updated = [...guami];
+                  updated[i] = { ...updated[i], amf_id: { ...updated[i].amf_id, pointer: intOrUndefined(v) } };
                   updateAmf({ guami: updated });
                 }} placeholder="0" tooltip={AMF_TOOLTIPS.guami_pointer} />
               </div>
@@ -352,26 +359,26 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         </div>
       )}
 
-      {amf.tai && amf.tai.length > 0 && (
+      {tai.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold font-display text-nms-accent">TAI (Tracking Area Identity)</h3>
             <button
               onClick={() => {
                 const newEntry = { plmn_id: { mcc: '001', mnc: '01' }, tac: 1 };
-                updateAmf({ tai: [...amf.tai, newEntry] });
+                updateAmf({ tai: [...tai, newEntry] });
               }}
               className="nms-btn-ghost text-xs flex items-center gap-1"
             >
               <Plus className="w-3.5 h-3.5" /> Add TAI
             </button>
           </div>
-          {amf.tai.map((t: any, i: number) => (
+          {tai.map((t: any, i: number) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
-              {amf.tai.length > 1 && (
+              {tai.length > 1 && (
                 <button aria-label="Remove tracking area"
                   onClick={() => {
-                    const updated = amf.tai.filter((_: any, idx: number) => idx !== i);
+                    const updated = tai.filter((_: any, idx: number) => idx !== i);
                     updateAmf({ tai: updated });
                   }}
                   className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -381,17 +388,17 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               )}
               <div className="grid grid-cols-3 gap-4">
                 <FieldWithTooltip label="MCC" value={t.plmn_id.mcc} onChange={(v) => {
-                  const updated = [...amf.tai];
+                  const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                   updateAmf({ tai: updated });
                 }} tooltip={AMF_TOOLTIPS.tai_mcc} />
                 <FieldWithTooltip label="MNC" value={t.plmn_id.mnc} onChange={(v) => {
-                  const updated = [...amf.tai];
+                  const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateAmf({ tai: updated });
                 }} tooltip={AMF_TOOLTIPS.tai_mnc} />
                 <FieldWithTooltip label="TAC" type="number" value={t.tac} onChange={(v) => {
-                  const updated = [...amf.tai];
+                  const updated = [...tai];
                   updated[i] = { ...updated[i], tac: parseInt(v) || 1 };
                   updateAmf({ tai: updated });
                 }} placeholder="1" tooltip={AMF_TOOLTIPS.tai_tac} />
@@ -401,7 +408,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         </div>
       )}
 
-      {amf.plmn_support && amf.plmn_support.length > 0 && (
+      {plmnSupport.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <div>
@@ -418,7 +425,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                 {syncingSD ? 'Syncing...' : 'Sync SD'}
               </button>
               <button
-                onClick={() => updateAmf({ plmn_support: [...amf.plmn_support, { plmn_id: { mcc: '001', mnc: '01' }, s_nssai: [{ sst: 1 }] }] })}
+                onClick={() => updateAmf({ plmn_support: [...plmnSupport, { plmn_id: { mcc: '001', mnc: '01' }, s_nssai: [{ sst: 1 }] }] })}
                 className="nms-btn-ghost text-xs flex items-center gap-1"
               >
                 <Plus className="w-3.5 h-3.5" /> Add PLMN
@@ -426,11 +433,11 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
             </div>
           </div>
 
-          {amf.plmn_support.map((p: any, pi: number) => (
+          {plmnSupport.map((p: any, pi: number) => (
             <div key={pi} className="relative border border-nms-border rounded-lg p-4 mb-3 bg-nms-surface-2/20">
-              {amf.plmn_support.length > 1 && (
+              {plmnSupport.length > 1 && (
                 <button aria-label="Remove supported PLMN"
-                  onClick={() => updateAmf({ plmn_support: amf.plmn_support.filter((_: any, idx: number) => idx !== pi) })}
+                  onClick={() => updateAmf({ plmn_support: plmnSupport.filter((_: any, idx: number) => idx !== pi) })}
                   className="absolute top-3 right-3 text-nms-text-dim hover:text-nms-red transition-colors"
                 >
                   <X className="w-4 h-4" />
@@ -439,12 +446,12 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">PLMN {pi + 1}</div>
               <div className="grid grid-cols-2 gap-4 mb-4">
                 <FieldWithTooltip label="MCC" value={p.plmn_id.mcc} onChange={(v) => {
-                  const updated = [...amf.plmn_support];
+                  const updated = [...plmnSupport];
                   updated[pi] = { ...updated[pi], plmn_id: { ...updated[pi].plmn_id, mcc: v } };
                   updateAmf({ plmn_support: updated });
                 }} tooltip={AMF_TOOLTIPS.plmn_mcc} />
                 <FieldWithTooltip label="MNC" value={p.plmn_id.mnc} onChange={(v) => {
-                  const updated = [...amf.plmn_support];
+                  const updated = [...plmnSupport];
                   updated[pi] = { ...updated[pi], plmn_id: { ...updated[pi].plmn_id, mnc: v } };
                   updateAmf({ plmn_support: updated });
                 }} tooltip={AMF_TOOLTIPS.plmn_mnc} />
@@ -453,7 +460,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                 <span className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider">S-NSSAI Slices</span>
                 <button
                   onClick={() => {
-                    const updated = [...amf.plmn_support];
+                    const updated = [...plmnSupport];
                     updated[pi] = { ...updated[pi], s_nssai: [...(updated[pi].s_nssai || []), { sst: 1 }] };
                     updateAmf({ plmn_support: updated });
                   }}
@@ -467,8 +474,8 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   {(p.s_nssai || []).length > 1 && (
                     <button aria-label="Remove network slice"
                       onClick={() => {
-                        const updated = [...amf.plmn_support];
-                        updated[pi] = { ...updated[pi], s_nssai: updated[pi].s_nssai.filter((_: any, idx: number) => idx !== si) };
+                        const updated = [...plmnSupport];
+                        updated[pi] = { ...updated[pi], s_nssai: (updated[pi].s_nssai ?? []).filter((_: unknown, idx: number) => idx !== si) };
                         updateAmf({ plmn_support: updated });
                       }}
                       className="absolute -left-3 top-2 w-5 h-5 flex items-center justify-center rounded-full bg-nms-surface text-nms-text-dim hover:text-nms-red transition-colors"
@@ -477,16 +484,16 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                     </button>
                   )}
                   <FieldWithTooltip label={`SST ${si + 1}`} type="number" value={slice.sst || 1} onChange={(v) => {
-                    const updated = [...amf.plmn_support];
-                    const slices = [...updated[pi].s_nssai];
+                    const updated = [...plmnSupport];
+                    const slices = [...(updated[pi].s_nssai ?? [])];
                     slices[si] = { ...slices[si], sst: parseInt(v) || 1 };
                     updated[pi] = { ...updated[pi], s_nssai: slices };
                     updateAmf({ plmn_support: updated });
                   }} placeholder="1" tooltip={AMF_TOOLTIPS.plmn_sst} />
                   <FieldWithTooltip label="SD (optional, 6 hex chars)" value={slice.sd || ''} onChange={(v) => {
                     const cleaned = v.replace(/[^0-9a-fA-F]/g, '').slice(0, 6);
-                    const updated = [...amf.plmn_support];
-                    const slices = [...updated[pi].s_nssai];
+                    const updated = [...plmnSupport];
+                    const slices = [...(updated[pi].s_nssai ?? [])];
                     if (cleaned) { slices[si] = { ...slices[si], sd: cleaned }; }
                     else { const { sd, ...rest } = slices[si]; slices[si] = rest; }
                     updated[pi] = { ...updated[pi], s_nssai: slices };
@@ -578,8 +585,8 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">Metrics Server</h3>
         <div className="grid grid-cols-2 gap-4">
-          <FieldWithTooltip label="Address" value={amf.metrics?.server?.[0]?.address || ''} onChange={(v) => updateAmf({ metrics: { server: [{ address: v, port: amf.metrics?.server?.[0]?.port || 9090 }] } })} tooltip={COMMON_TOOLTIPS.metrics_address} />
-          <FieldWithTooltip label="Port" type="number" value={amf.metrics?.server?.[0]?.port || 9090} onChange={(v) => updateAmf({ metrics: { server: [{ address: amf.metrics?.server?.[0]?.address || '', port: parseInt(v) || 9090 }] } })} tooltip={COMMON_TOOLTIPS.metrics_port} />
+          <FieldWithTooltip label="Address" value={addressToText(amf.metrics?.server?.[0]?.address)} onChange={(v) => updateAmf({ metrics: { ...amf.metrics, server: [{ ...(amf.metrics?.server?.[0] ?? {}), address: textToAddress(v, isAddressList(amf.metrics?.server?.[0]?.address)) }] } })} tooltip={COMMON_TOOLTIPS.metrics_address} />
+          <FieldWithTooltip label="Port" type="number" value={amf.metrics?.server?.[0]?.port ?? 9090} onChange={(v) => updateAmf({ metrics: { ...amf.metrics, server: [{ ...(amf.metrics?.server?.[0] ?? {}), port: parseInt(v) || 9090 }] } })} tooltip={COMMON_TOOLTIPS.metrics_port} />
         </div>
       </div>
 
@@ -590,7 +597,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
 
 // AUSF Editor
 function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: AllConfigs) => void }): JSX.Element {
-  const fullYaml = configs.ausf as any;
+  const fullYaml = configs.ausf;
   const ausf = fullYaml.ausf || {};
   if (!ausf?.sbi?.server || ausf.sbi.server.length === 0) {
     return <div className="text-nms-text-dim">Loading AUSF configuration...</div>;
@@ -615,15 +622,26 @@ function AusfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: 
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">SBI Server</h3>
         <div className="grid grid-cols-2 gap-4">
-          <FieldWithTooltip label="Address" value={server.address} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, address: v }] } })} tooltip={COMMON_TOOLTIPS.sbi_address} />
-          <FieldWithTooltip label="Port" type="number" value={server.port} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, port: parseInt(v) || 7777 }] } })} tooltip={COMMON_TOOLTIPS.sbi_port} />
-          <FieldWithTooltip label="Advertise (optional)" value={server.advertise || ''} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, advertise: v || undefined }] } })} placeholder="ausf.5gc.mnc070.mcc999.3gppnetwork.org:7777" tooltip={COMMON_TOOLTIPS.sbi_advertise} />
+          <FieldWithTooltip label="Address" value={addressToText(server.address)} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, address: textToAddress(v, isAddressList(server.address)) }] } })} tooltip={COMMON_TOOLTIPS.sbi_address} />
+          <FieldWithTooltip label="Port" type="number" value={server.port ?? ''} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, port: parseInt(v) || 7777 }] } })} tooltip={COMMON_TOOLTIPS.sbi_port} />
+          <FieldWithTooltip label="Advertise (optional)" value={addressToText(server.advertise)} onChange={(v) => updateAusf({ sbi: { ...ausf.sbi, server: [{ ...server, advertise: v ? textToAddress(v, isAddressList(server.advertise)) : undefined }] } })} placeholder="ausf.5gc.mnc070.mcc999.3gppnetwork.org:7777" tooltip={COMMON_TOOLTIPS.sbi_advertise} />
         </div>
       </div>
       <SbiClientSection client={ausf.sbi?.client} onChange={(client) => updateAusf({ sbi: { ...ausf.sbi, client } })} />
       <LoggerSection logger={fullYaml.logger || {}} onChange={updateLogger} />
     </div>
   );
+}
+
+// `parseInt(v) ?? 0` looks like a guard but is not one: `??` only catches null
+// and undefined, while a failed parseInt returns NaN -- so a non-numeric
+// keystroke used to write NaN into the config, which js-yaml serialises as
+// `.nan`. Clearing a numeric field wrote the empty string for the same reason.
+// Both now read as absent, which is what an optional numeric field means.
+function intOrUndefined(raw: string): number | undefined {
+  if (raw.trim() === '') return undefined;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : undefined;
 }
 
 export function ConfigPage(): JSX.Element {
