@@ -1,332 +1,88 @@
 import { ServiceName } from '../../domain/entities/service-status';
 
-// ── Common SBI Structures ──
-export interface SbiServerDto {
-  address: string;
-  port: number;
-  advertise?: string;
-  dev?: string;
-}
-
-export interface SbiClientDto {
-  nrf?: Array<{ uri: string }>;
-  scp?: Array<{ uri: string }>;
-}
-
-export interface SbiDto {
-  server: SbiServerDto[];
-  client?: SbiClientDto;
-}
-
-// ── Logger ──
-export interface LoggerDto {
-  file?: { path: string };
-  level?: string;
-}
-
-// ── Global ──
-export interface GlobalDto {
-  max?: {
-    ue?: number;
-    peer?: number;
-  };
-}
-
-// ── Metrics ──
-export interface MetricsDto {
-  server?: Array<{ address: string; port: number }>;
-}
-
 // ── Config DTOs ──
-export interface PlmnIdDto {
-  mcc: string;
-  mnc: string;
-}
+//
+// GET /api/config and PUT /api/config carry each NF's WHOLE parsed YAML
+// document, exactly as ConfigMapper.toAllDto() reads it out of `rawYaml`. So
+// an NF's own settings sit one level down under its own name, next to the
+// document-level `logger`/`global`:
+//
+//   { logger: {...}, global: {...}, amf: { sbi, ngap, guami, ... } }
+//
+// These used to be hand-written interfaces that declared the INNER fields at
+// their own top level -- off by one level for every NF -- and the mismatch was
+// invisible because the mapper assigned `rawYaml` behind an `as any` and the
+// frontend unwrapped `configs.amf as any` back to the real shape. Nothing was
+// broken at runtime; the types simply described a payload the API has never
+// sent. Three further shape errors hid behind the same casts: smf/upf declared
+// a `subnet:` block (the real key is `session:`), sepp declared `n32.server`
+// as an object (it is a list) and `tls` one level too high, and nssf declared
+// an `nsi:` list at top level (it lives under `sbi.client.nsi`).
+//
+// They are therefore ALIASES now, not copies. The documents are defined and
+// verified in domain/entities/open5gs-yaml.ts; a second hand-written copy
+// drifting from the first is what produced the original bug.
+export type {
+  AmfYamlDocument as AmfConfigDto,
+  AusfYamlDocument as AusfConfigDto,
+  BsfYamlDocument as BsfConfigDto,
+  HssYamlDocument as HssConfigDto,
+  MmeYamlDocument as MmeConfigDto,
+  NrfYamlDocument as NrfConfigDto,
+  NssfYamlDocument as NssfConfigDto,
+  PcfYamlDocument as PcfConfigDto,
+  PcrfYamlDocument as PcrfConfigDto,
+  ScpYamlDocument as ScpConfigDto,
+  SeppYamlDocument as SeppConfigDto,
+  SgwcYamlDocument as SgwcConfigDto,
+  SgwuYamlDocument as SgwuConfigDto,
+  SmfYamlDocument as SmfConfigDto,
+  UdmYamlDocument as UdmConfigDto,
+  UdrYamlDocument as UdrConfigDto,
+  UpfYamlDocument as UpfConfigDto,
+} from '../../domain/entities/open5gs-yaml';
 
-export interface SnssaiDto {
-  sst: number;
-  sd?: string;
-}
-
-// ── NRF ──
-export interface NrfConfigDto {
-  sbi: SbiDto;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── SCP ──
-export interface ScpConfigDto {
-  sbi: SbiDto;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-  info?: {
-    port?: { http?: number; https?: number };
-    domain?: Array<{
-      name: string;
-      fqdn: string;
-      port?: { http?: number; https?: number };
-    }>;
-  };
-}
-
-// ── AMF ──
-export interface AmfConfigDto {
-  sbi: SbiDto;
-  ngap: { server: Array<{ address: string; port?: number; dev?: string }> };
-  metrics?: MetricsDto;
-  guami: Array<{
-    plmn_id: PlmnIdDto;
-    amf_id: { region: number; set: number; pointer: number };
-  }>;
-  tai: Array<{ plmn_id: PlmnIdDto; tac: number | number[] }>;
-  plmn_support: Array<{ plmn_id: PlmnIdDto; s_nssai: SnssaiDto[] }>;
-  security?: { integrity_order?: string[]; ciphering_order?: string[] };
-  network_name?: { full?: string; short?: string };
-  amf_name?: string;
-  time?: {
-    t3502?: { value?: number };
-    t3512?: { value?: number };
-    t3522?: { value?: number };
-  };
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── SMF ──
-export interface SmfConfigDto {
-  sbi: SbiDto;
-  pfcp: { server: Array<{ address: string; port?: number; dev?: string }> };
-  gtpc?: { server?: Array<{ address: string; dev?: string }> };
-  gtpu?: { server?: Array<{ address: string; port?: number; dev?: string }> };
-  metrics?: MetricsDto;
-  subnet: Array<{
-    addr: string;
-    dnn?: string;
-  }>;
-  dns?: string[];
-  mtu?: number;
-  ctf?: { enabled?: string };
-  freeDiameter?: string;
-  info?: Array<{ s_nssai: SnssaiDto[]; dnn: string[] }>;
-  time?: {
-    t3502?: { value?: number };
-    t3512?: { value?: number };
-  };
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── UPF ──
-export interface UpfConfigDto {
-  pfcp: { server: Array<{ address: string; port?: number; dev?: string }> };
-  gtpu: { server: Array<{ address: string; port?: number; dev?: string }> };
-  metrics?: MetricsDto;
-  subnet: Array<{
-    addr: string;
-    dnn?: string;
-    dev?: string;
-  }>;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── AUSF ──
-export interface AusfConfigDto {
-  sbi: SbiDto;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── UDM ──
-export interface UdmConfigDto {
-  sbi: SbiDto;
-  hnet?: Array<{
-    id: number;
-    scheme: number;
-    key: string;
-  }>;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── UDR ──
-export interface UdrConfigDto {
-  db_uri: string;
-  sbi: SbiDto;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── PCF ──
-export interface PcfConfigDto {
-  sbi: SbiDto;
-  metrics?: MetricsDto;
-  policy?: Array<{
-    plmn_id?: PlmnIdDto;
-    slice?: Array<{
-      sst: number;
-      sd?: string;
-      default_indicator?: boolean;
-      session?: Array<{
-        name: string;
-        type?: number;
-        qos?: {
-          index?: number;
-          arp?: {
-            priority_level?: number;
-            pre_emption_capability?: number;
-            pre_emption_vulnerability?: number;
-          };
-        };
-        ambr?: {
-          uplink?: { value?: number; unit?: number };
-          downlink?: { value?: number; unit?: number };
-        };
-      }>;
-    }>;
-  }>;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── NSSF ──
-export interface NssfConfigDto {
-  sbi: SbiDto;
-  nsi?: Array<{
-    s_nssai: SnssaiDto;
-    nrf?: { sbi: SbiDto };
-  }>;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── BSF ──
-export interface BsfConfigDto {
-  sbi: SbiDto;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── SEPP (roaming — N32 to a visited PLMN's SEPP) ──
-export interface SeppConfigDto {
-  sbi: SbiDto;
-  n32: {
-    server: {
-      sender: string;
-      scheme?: 'http' | 'https';
-      address?: string;
-      port?: number;
-      n32f?: { scheme?: 'http' | 'https'; address?: string; port?: number };
-    };
-    client: {
-      sepp: Array<{
-        receiver: string;
-        uri: string;
-        resolve?: string;
-        n32f: { uri: string; resolve?: string };
-      }>;
-    };
-  };
-  tls?: {
-    server?: { private_key?: string; cert?: string; verify_client?: boolean; verify_client_cacert?: string };
-    client?: { cacert?: string; client_private_key?: string; client_cert?: string };
-  };
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── MME ──
-export interface MmeConfigDto {
-  freeDiameter?: string;
-  s1ap: { server: Array<{ address: string; dev?: string }> };
-  gtpc: {
-    server: Array<{ address: string }>;
-    client?: {
-      sgwc?: Array<{ address: string; tac?: number | number[]; e_cell_id?: string | string[] }>;
-      smf?: Array<{ address: string; apn?: string | string[] }>;
-    };
-  };
-  metrics?: MetricsDto;
-  gummei: Array<{
-    plmn_id: PlmnIdDto;
-    mme_gid: number;
-    mme_code: number;
-  }>;
-  tai: Array<{ plmn_id: PlmnIdDto; tac: number | number[] }>;
-  security: { integrity_order: string[]; ciphering_order: string[] };
-  network_name?: { full?: string; short?: string };
-  mme_name?: string;
-  time?: {
-    t3402?: { value?: number };
-    t3412?: { value?: number };
-    t3423?: { value?: number };
-  };
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── HSS ──
-export interface HssConfigDto {
-  freeDiameter: string;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── PCRF ──
-export interface PcrfConfigDto {
-  freeDiameter: string;
-  metrics?: MetricsDto;
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── SGW-C ──
-export interface SgwcConfigDto {
-  gtpc: {
-    server: Array<{ address: string }>;
-  };
-  pfcp: {
-    server: Array<{ address: string; port?: number; dev?: string }>;
-    client?: {
-      sgwu?: Array<{ address: string }>;
-    };
-  };
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
-
-// ── SGW-U ──
-export interface SgwuConfigDto {
-  pfcp: {
-    server: Array<{ address: string; port?: number; dev?: string }>;
-  };
-  gtpu: {
-    server: Array<{ address: string; port?: number; dev?: string }>;
-  };
-  logger?: LoggerDto;
-  global?: GlobalDto;
-}
+import type {
+  AmfYamlDocument,
+  AusfYamlDocument,
+  BsfYamlDocument,
+  HssYamlDocument,
+  MmeYamlDocument,
+  NrfYamlDocument,
+  NssfYamlDocument,
+  PcfYamlDocument,
+  PcrfYamlDocument,
+  ScpYamlDocument,
+  SeppYamlDocument,
+  SgwcYamlDocument,
+  SgwuYamlDocument,
+  SmfYamlDocument,
+  UdmYamlDocument,
+  UdrYamlDocument,
+  UpfYamlDocument,
+} from '../../domain/entities/open5gs-yaml';
 
 // ── All Configs ──
+//
+// `sepp1` is the DTO key; the document inside it nests under `sepp`.
 export interface AllConfigsDto {
-  nrf: NrfConfigDto;
-  scp: ScpConfigDto;
-  amf: AmfConfigDto;
-  smf: SmfConfigDto;
-  upf: UpfConfigDto;
-  ausf: AusfConfigDto;
-  udm: UdmConfigDto;
-  udr: UdrConfigDto;
-  pcf: PcfConfigDto;
-  nssf: NssfConfigDto;
-  bsf: BsfConfigDto;
-  sepp1: SeppConfigDto;
-  mme: MmeConfigDto;
-  hss: HssConfigDto;
-  pcrf: PcrfConfigDto;
-  sgwc: SgwcConfigDto;
-  sgwu: SgwuConfigDto;
+  nrf: NrfYamlDocument;
+  scp: ScpYamlDocument;
+  amf: AmfYamlDocument;
+  smf: SmfYamlDocument;
+  upf: UpfYamlDocument;
+  ausf: AusfYamlDocument;
+  udm: UdmYamlDocument;
+  udr: UdrYamlDocument;
+  pcf: PcfYamlDocument;
+  nssf: NssfYamlDocument;
+  bsf: BsfYamlDocument;
+  sepp1: SeppYamlDocument;
+  mme: MmeYamlDocument;
+  hss: HssYamlDocument;
+  pcrf: PcrfYamlDocument;
+  sgwc: SgwcYamlDocument;
+  sgwu: SgwuYamlDocument;
 }
 
 // ── Subscriber DTOs ──

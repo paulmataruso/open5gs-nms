@@ -34,13 +34,29 @@ function Field({
 }
 
 export function SbiEditor({ sbi, onChange }: Props): JSX.Element {
-  const server = sbi.server[0] || { address: '127.0.0.1', port: 7777 };
+  // `server` itself is optional -- a file may simply not declare one, and
+  // indexing [0] on an absent list throws and white-screens the whole config
+  // page. The pre-existing `|| {...}` only covered an EMPTY list, not a
+  // missing key.
+  const server = sbi.server?.[0] ?? { address: '127.0.0.1', port: 7777 };
 
-  const updateServer = (field: string, value: string | number) => {
+  const updateServer = (field: string, value: string | number | string[]) => {
     onChange({
       ...sbi,
       server: [{ ...server, [field]: value }],
     });
+  };
+
+  // `address` is `string | string[]`: Open5GS lets an NF bind one address or a
+  // list. Rendering a list straight into an <input> displays "a,b" and then
+  // writes that joined string back as ONE bogus address, silently collapsing
+  // the list -- so list-ness is carried across the round trip instead.
+  const rawAddress = server.address;
+  const addressIsList = Array.isArray(rawAddress);
+  const addressText = Array.isArray(rawAddress) ? rawAddress.join(', ') : rawAddress ?? '';
+  const writeAddress = (v: string): void => {
+    if (!addressIsList) { updateServer('address', v); return; }
+    updateServer('address', v.split(',').map((a) => a.trim()).filter(Boolean));
   };
 
   const updateNrfUri = (uri: string) => {
@@ -72,14 +88,14 @@ export function SbiEditor({ sbi, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <Field
             label="Bind Address"
-            value={server.address}
-            onChange={(v) => updateServer('address', v)}
+            value={addressText}
+            onChange={writeAddress}
             placeholder="127.0.0.1"
           />
           <Field
             label="Port"
             type="number"
-            value={server.port}
+            value={server.port ?? ''}
             onChange={(v) => updateServer('port', parseInt(v) || 7777)}
             placeholder="7777"
           />

@@ -10,7 +10,7 @@ interface Props {
 
 export function UdrEditor({ configs, onChange }: Props): JSX.Element {
   // Extract nested service section from full YAML
-  const fullYaml = configs.udr as any;
+  const fullYaml = configs.udr;
   const udr = fullYaml.udr || {};
   
   if (!udr?.sbi?.server || udr.sbi.server.length === 0) {

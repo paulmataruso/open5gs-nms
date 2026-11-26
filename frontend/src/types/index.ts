@@ -30,330 +30,75 @@ export interface ServiceStatus {
   source?: 'systemd' | 'docker' | 'direct';
 }
 
-// ── Common SBI Structures ──
-export interface SbiServer {
-  address: string;
-  port: number;
-  advertise?: string;
-  dev?: string;
-}
+// ── Open5GS NF config shapes ──
+//
+// GET /api/config returns each NF's WHOLE parsed YAML document, so the NF's
+// own settings sit one level down under its own name, beside the
+// document-level `logger`/`global`:
+//
+//   { logger: {...}, global: {...}, amf: { sbi, ngap, guami, ... } }
+//
+// This file used to hand-declare the INNER fields at the top level for all 17
+// NFs -- a second copy of the same off-by-one-level mistake the backend DTOs
+// had, which is why neither side's compiler ever contradicted the other. Every
+// consumer then wrote `configs.amf as any` and unwrapped `.amf` by hand, so the
+// runtime was right and only the types were wrong.
+//
+// The shapes now come from ./open5gs-yaml, a verbatim mirror of
+// backend/src/domain/entities/open5gs-yaml.ts, pinned by a backend test. None
+// of the 17 old per-NF interfaces had an importer outside this file.
+export type {
+  YamlPlmnId, YamlSnssai, YamlServerEntry, YamlEndpoint, YamlSession,
+  YamlUriEntry, YamlSbiClient, YamlSbiEndpoint,
+  YamlAmf, YamlMme, YamlSmf, YamlUpf, YamlSgwc, YamlSgwu, YamlNrf,
+  YamlScp, YamlAusf, YamlUdm, YamlUdr, YamlPcf, YamlNssf, YamlBsf,
+  YamlSepp, YamlHss, YamlPcrf,
+  YamlDocumentCommon,
+  AmfYamlDocument, MmeYamlDocument, SmfYamlDocument, UpfYamlDocument,
+  SgwcYamlDocument, SgwuYamlDocument, NrfYamlDocument, ScpYamlDocument,
+  AusfYamlDocument, UdmYamlDocument, UdrYamlDocument, PcfYamlDocument,
+  NssfYamlDocument, BsfYamlDocument, SeppYamlDocument, HssYamlDocument,
+  PcrfYamlDocument,
+} from './open5gs-yaml';
 
-export interface SbiClient {
-  nrf?: Array<{ uri: string }>;
-  scp?: Array<{ uri: string }>;
-}
+import type {
+  YamlSbiClient, YamlSbiEndpoint, YamlEndpoint,
+  AmfYamlDocument, MmeYamlDocument, SmfYamlDocument, UpfYamlDocument,
+  SgwcYamlDocument, SgwuYamlDocument, NrfYamlDocument, ScpYamlDocument,
+  AusfYamlDocument, UdmYamlDocument, UdrYamlDocument, PcfYamlDocument,
+  NssfYamlDocument, BsfYamlDocument, SeppYamlDocument, HssYamlDocument,
+  PcrfYamlDocument, YamlDocumentCommon,
+} from './open5gs-yaml';
 
-export interface Sbi {
-  server: SbiServer[];
-  client?: SbiClient;
-}
-
-// ── Common Structures ──
-export interface PlmnId {
-  mcc: string;
-  mnc: string;
-}
-
-export interface Snssai {
-  sst: number;
-  sd?: string;
-}
-
-export interface Logger {
-  file?: { path: string };
-  level?: string;
-}
-
-export interface Global {
-  max?: {
-    ue?: number;
-    peer?: number;
-  };
-}
-
-export interface Metrics {
-  server?: Array<{ address: string; port: number }>;
-}
-
-// ── NRF ──
-export interface NrfConfig {
-  sbi: Sbi;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── SCP ──
-export interface ScpConfig {
-  sbi: Sbi;
-  logger?: Logger;
-  global?: Global;
-  info?: {
-    port?: { http?: number; https?: number };
-    domain?: Array<{
-      name: string;
-      fqdn: string;
-      port?: { http?: number; https?: number };
-    }>;
-  };
-}
-
-// ── AMF ──
-export interface AmfConfig {
-  sbi: Sbi;
-  ngap: { server: Array<{ address: string; port?: number; dev?: string }> };
-  metrics?: Metrics;
-  guami: Array<{
-    plmn_id: PlmnId;
-    amf_id: { region: number; set: number; pointer: number };
-  }>;
-  tai: Array<{ plmn_id: PlmnId; tac: number | number[] }>;
-  plmn_support: Array<{ plmn_id: PlmnId; s_nssai: Snssai[] }>;
-  security?: { integrity_order?: string[]; ciphering_order?: string[] };
-  network_name?: { full?: string; short?: string };
-  amf_name?: string;
-  time?: {
-    t3502?: { value?: number };
-    t3512?: { value?: number };
-    t3522?: { value?: number };
-  };
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── SMF ──
-export interface SmfConfig {
-  sbi: Sbi;
-  pfcp: { server: Array<{ address: string; port?: number; dev?: string }> };
-  gtpc?: { server?: Array<{ address: string; dev?: string }> };
-  gtpu?: { server?: Array<{ address: string; port?: number; dev?: string }> };
-  metrics?: Metrics;
-  subnet: Array<{
-    addr: string;
-    dnn?: string;
-  }>;
-  dns?: string[];
-  mtu?: number;
-  ctf?: { enabled?: string };
-  freeDiameter?: string;
-  info?: Array<{ s_nssai: Snssai[]; dnn: string[] }>;
-  time?: {
-    t3502?: { value?: number };
-    t3512?: { value?: number };
-  };
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── UPF ──
-export interface UpfConfig {
-  pfcp: { server: Array<{ address: string; port?: number; dev?: string }> };
-  gtpu: { server: Array<{ address: string; port?: number; dev?: string }> };
-  metrics?: Metrics;
-  subnet: Array<{
-    addr: string;
-    dnn?: string;
-    dev?: string;
-  }>;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── AUSF ──
-export interface AusfConfig {
-  sbi: Sbi;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── UDM ──
-export interface UdmConfig {
-  sbi: Sbi;
-  hnet?: Array<{
-    id: number;
-    scheme: number;
-    key: string;
-  }>;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── UDR ──
-export interface UdrConfig {
-  db_uri: string;
-  sbi: Sbi;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── PCF ──
-export interface PcfConfig {
-  sbi: Sbi;
-  metrics?: Metrics;
-  policy?: Array<{
-    plmn_id?: PlmnId;
-    slice?: Array<{
-      sst: number;
-      sd?: string;
-      default_indicator?: boolean;
-      session?: Array<{
-        name: string;
-        type?: number;
-        qos?: {
-          index?: number;
-          arp?: {
-            priority_level?: number;
-            pre_emption_capability?: number;
-            pre_emption_vulnerability?: number;
-          };
-        };
-        ambr?: {
-          uplink?: { value?: number; unit?: number };
-          downlink?: { value?: number; unit?: number };
-        };
-      }>;
-    }>;
-  }>;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── NSSF ──
-export interface NssfConfig {
-  sbi: Sbi;
-  nsi?: Array<{
-    s_nssai: Snssai;
-    nrf?: { sbi: Sbi };
-  }>;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── BSF ──
-export interface BsfConfig {
-  sbi: Sbi;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── SEPP (roaming — N32 to a visited PLMN's SEPP) ──
-export interface SeppN32Peer {
-  receiver: string;
-  uri: string;
-  resolve?: string;
-  n32f: { uri: string; resolve?: string };
-}
-
-export interface SeppConfig {
-  sbi: Sbi;
-  n32: {
-    server: {
-      sender: string;
-      scheme?: 'http' | 'https';
-      address?: string;
-      port?: number;
-      n32f?: { scheme?: 'http' | 'https'; address?: string; port?: number };
-    };
-    client: { sepp: SeppN32Peer[] };
-  };
-  tls?: {
-    server?: { private_key?: string; cert?: string; verify_client?: boolean; verify_client_cacert?: string };
-    client?: { cacert?: string; client_private_key?: string; client_cert?: string };
-  };
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── MME ──
-export interface MmeConfig {
-  freeDiameter?: string;
-  s1ap: { server: Array<{ address: string; dev?: string }> };
-  gtpc: {
-    server: Array<{ address: string }>;
-    client?: {
-      sgwc?: Array<{ address: string; tac?: number | number[]; e_cell_id?: string | string[] }>;
-      smf?: Array<{ address: string; apn?: string | string[] }>;
-    };
-  };
-  metrics?: Metrics;
-  gummei: Array<{
-    plmn_id: PlmnId;
-    mme_gid: number;
-    mme_code: number;
-  }>;
-  tai: Array<{ plmn_id: PlmnId; tac: number | number[] }>;
-  security: { integrity_order: string[]; ciphering_order: string[] };
-  network_name?: { full?: string; short?: string };
-  mme_name?: string;
-  time?: {
-    t3402?: { value?: number };
-    t3412?: { value?: number };
-    t3423?: { value?: number };
-  };
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── HSS ──
-export interface HssConfig {
-  freeDiameter: string;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── PCRF ──
-export interface PcrfConfig {
-  freeDiameter: string;
-  metrics?: Metrics;
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── SGW-C ──
-export interface SgwcConfig {
-  gtpc: {
-    server: Array<{ address: string }>;
-  };
-  pfcp: {
-    server: Array<{ address: string; port?: number; dev?: string }>;
-    client?: {
-      sgwu?: Array<{ address: string }>;
-    };
-  };
-  logger?: Logger;
-  global?: Global;
-}
-
-// ── SGW-U ──
-export interface SgwuConfig {
-  pfcp: {
-    server: Array<{ address: string; port?: number; dev?: string }>;
-  };
-  gtpu: {
-    server: Array<{ address: string; port?: number; dev?: string }>;
-  };
-  logger?: Logger;
-  global?: Global;
-}
+// Names the config editors import directly. Aliases rather than duplicate
+// declarations, so an editor and the document it edits cannot disagree.
+export type Sbi = YamlSbiEndpoint;
+export type SbiClient = YamlSbiClient;
+export type Logger = NonNullable<YamlDocumentCommon['logger']>;
+export type Global = NonNullable<YamlDocumentCommon['global']>;
+export type Metrics = YamlEndpoint;
 
 // ── All Configs ──
+//
+// `sepp1` is the key here; the document inside it nests under `sepp`.
 export interface AllConfigs {
-  nrf: NrfConfig;
-  scp: ScpConfig;
-  amf: AmfConfig;
-  smf: SmfConfig;
-  upf: UpfConfig;
-  ausf: AusfConfig;
-  udm: UdmConfig;
-  udr: UdrConfig;
-  pcf: PcfConfig;
-  nssf: NssfConfig;
-  bsf: BsfConfig;
-  sepp1: SeppConfig;
-  mme: MmeConfig;
-  hss: HssConfig;
-  pcrf: PcrfConfig;
-  sgwc: SgwcConfig;
-  sgwu: SgwuConfig;
+  nrf: NrfYamlDocument;
+  scp: ScpYamlDocument;
+  amf: AmfYamlDocument;
+  smf: SmfYamlDocument;
+  upf: UpfYamlDocument;
+  ausf: AusfYamlDocument;
+  udm: UdmYamlDocument;
+  udr: UdrYamlDocument;
+  pcf: PcfYamlDocument;
+  nssf: NssfYamlDocument;
+  bsf: BsfYamlDocument;
+  sepp1: SeppYamlDocument;
+  mme: MmeYamlDocument;
+  hss: HssYamlDocument;
+  pcrf: PcrfYamlDocument;
+  sgwc: SgwcYamlDocument;
+  sgwu: SgwuYamlDocument;
 }
 
 // ── Topology Types ──

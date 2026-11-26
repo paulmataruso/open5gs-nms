@@ -10,7 +10,7 @@ interface Props {
 
 export function ScpEditor({ configs, onChange }: Props): JSX.Element {
   // Extract nested service section from full YAML
-  const fullYaml = configs.scp as any;
+  const fullYaml = configs.scp;
   const scp = fullYaml.scp || {};
   
   if (!scp?.sbi?.server || scp.sbi.server.length === 0) {
@@ -75,7 +75,7 @@ export function ScpEditor({ configs, onChange }: Props): JSX.Element {
           <input aria-label="NRF URI"
             className="nms-input font-mono text-xs"
             value={nrfUri}
-            onChange={(e) => updateScp({ sbi: { ...scp.sbi, client: { ...scp.sbi.client, nrf: [{ uri: e.target.value }] } } })}
+            onChange={(e) => updateScp({ sbi: { ...scp.sbi, client: { ...scp.sbi?.client, nrf: [{ uri: e.target.value }] } } })}
             placeholder="http://127.0.0.10:7777"
           />
         </div>

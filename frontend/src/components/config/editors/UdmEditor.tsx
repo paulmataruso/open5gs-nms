@@ -9,7 +9,7 @@ interface Props {
 }
 
 export function UdmEditor({ configs, onChange }: Props): JSX.Element {
-  const fullYaml = configs.udm as any;
+  const fullYaml = configs.udm;
   const udm = fullYaml.udm || {};
 
   if (!udm?.sbi?.server || udm.sbi.server.length === 0) {

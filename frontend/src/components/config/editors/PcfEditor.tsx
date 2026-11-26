@@ -10,7 +10,7 @@ interface Props {
 
 export function PcfEditor({ configs, onChange }: Props): JSX.Element {
   // Extract nested service section from full YAML
-  const fullYaml = configs.pcf as any;
+  const fullYaml = configs.pcf;
   const pcf = fullYaml.pcf || {};
   
   if (!pcf?.sbi?.server || pcf.sbi.server.length === 0) {

@@ -10,7 +10,7 @@ interface Props {
 
 export function HssEditor({ configs, onChange }: Props): JSX.Element {
   // Extract nested service section from full YAML
-  const fullYaml = configs.hss as any;
+  const fullYaml = configs.hss;
   const hss = fullYaml.hss || {};
   
   if (!hss?.freeDiameter) {

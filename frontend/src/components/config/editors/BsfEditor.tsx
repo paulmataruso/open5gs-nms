@@ -10,7 +10,7 @@ interface Props {
 
 export function BsfEditor({ configs, onChange }: Props): JSX.Element {
   // Extract nested service section from full YAML
-  const fullYaml = configs.bsf as any;
+  const fullYaml = configs.bsf;
   const bsf = fullYaml.bsf || {};
   
   if (!bsf?.sbi?.server || bsf.sbi.server.length === 0) {
