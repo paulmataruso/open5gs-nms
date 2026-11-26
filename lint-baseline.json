@@ -51,17 +51,17 @@
   ],
   "measuredAt": "2026-11-26",
   "backend": {
-    "errors": 3137,
+    "errors": 2993,
     "warnings": 381,
-    "files": 430,
+    "files": 432,
     "filesWithFindings": 237,
     "fatals": 0
   },
   "frontend": {
-    "errors": 459,
+    "errors": 379,
     "warnings": 0,
-    "files": 208,
-    "filesWithFindings": 70,
+    "files": 210,
+    "filesWithFindings": 69,
     "fatals": 0
   }
 }

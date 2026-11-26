@@ -371,11 +371,12 @@ function extractExistingMapEntries(raw: string): SgsMapEntry[] {
     const doc = yaml.load(converted) as any;
     const maps = doc?.sgsap?.client?.[0]?.maps ?? [];
 
-    // yaml.load() misparses a leading-zero mcc/mnc (e.g. "070") as YAML 1.1
-    // octal, silently turning it into a different decimal number — same bug
-    // class fixed in yaml-config-repository.ts's saveRaw(). Regex-scan the
-    // raw text for the real string values instead of trusting the parsed
-    // numbers. Each map entry has two mcc (tai + lai) and two mnc occurrences,
+    // yaml.load() drops the leading zeros of a bare mcc/mnc (e.g. "070" ->
+    // the number 70, and "01" -> 1), and the original width cannot be
+    // recovered from the number — same bug class fixed in
+    // yaml-config-repository.ts's saveRaw(). Regex-scan the raw text for the
+    // real string values instead of trusting the parsed numbers. (Said "YAML
+    // 1.1 octal" before 2026-11-26; measured false on js-yaml 4.3.1.) Each map entry has two mcc (tai + lai) and two mnc occurrences,
     // always identical by construction (see sgsapYamlBlock) — take the first
     // of each pair, indexed positionally by entry order.
     const mccMatches = [...dedented.matchAll(/^\s*mcc:\s*['"]?(\d+)['"]?/gm)].map(m => m[1]);

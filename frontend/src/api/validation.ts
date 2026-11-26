@@ -52,7 +52,6 @@ export interface StartParams {
   dnnOverride?: string;
   apnOverride?: string;
   amfIpOverride?: string;
-  upfIpOverride?: string;
 }
 
 export async function inferConfig(): Promise<InferredConfig> {
