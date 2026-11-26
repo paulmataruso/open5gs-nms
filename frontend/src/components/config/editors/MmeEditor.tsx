@@ -2,6 +2,7 @@ import type { AllConfigs } from '../../../types';
 import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { Plus, X, Shield } from 'lucide-react';
 import { FieldWithTooltip } from '../FieldsWithTooltips';
+import { addressToText, textToAddress, isAddressList } from './address-field';
 import { MME_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
 
 interface Props {
@@ -28,7 +29,7 @@ const defaultMap = () => ({
 
 export function MmeEditor({ configs, onChange }: Props): JSX.Element {
   // configs.mme is the full YAML: { mme: {...}, logger: {...}, global: {...} }
-  const fullYaml = configs.mme as any;
+  const fullYaml = configs.mme;
   const mme = fullYaml.mme || {};
 
   const updateMme = (partial: any) => {
@@ -48,6 +49,12 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
   };
 
   const s1apServer = mme.s1ap?.server?.[0] || { address: '10.0.1.175' };
+
+  // Both lists are optional on the document. Spreading or mapping an absent
+  // one throws and takes the whole config page down, so read them through
+  // these guarded locals -- never off `mme` directly.
+  const gummei = mme.gummei ?? [];
+  const tai = mme.tai ?? [];
   const gtpcServer = mme.gtpc?.server?.[0] || { address: '127.0.0.2' };
 
   // Normalize a client's map entries to an array (handles legacy map: object and maps: array).
@@ -121,10 +128,11 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="Address (IP)"
-            value={s1apServer.dev ? '' : (s1apServer.address || '')}
+            value={s1apServer.dev ? '' : addressToText(s1apServer.address)}
             onChange={(v) => {
               const { dev: _dev, ...rest } = s1apServer;
-              updateMme({ s1ap: { server: [v ? { ...rest, address: v } : rest] } });
+              const address = textToAddress(v, isAddressList(s1apServer.address));
+              updateMme({ s1ap: { server: [v ? { ...rest, address } : rest] } });
             }}
             placeholder="10.0.1.175"
             tooltip="Bind the MME's S1-MME (S1AP) listener to this specific IP address — the address eNodeBs connect to over SCTP for 4G control-plane signaling. Mutually exclusive with the Interface/dev field to the right — setting one clears the other, since Open5GS's s1ap.server config accepts either a fixed address or a named interface per entry, not both. Leave blank if you'd rather bind by interface name."
@@ -135,7 +143,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               value={s1apServer.dev || ''}
               onChange={(v) => {
                 const { address: _addr, ...rest } = s1apServer;
-                updateMme({ s1ap: { server: [v ? { ...rest, dev: v } : { ...rest, address: s1apServer.address || '' }] } });
+                updateMme({ s1ap: { server: [v ? { ...rest, dev: v } : { ...rest, address: s1apServer.address ?? '' }] } });
               }}
               placeholder="eth0"
               tooltip="Bind the MME's S1AP listener to every IP currently assigned to this named network interface, instead of one fixed address. Useful when the interface's address can change without needing to revisit this page. Mutually exclusive with the Address field to the left — when this field has a value, Open5GS's s1ap.server config writes only 'dev', omitting 'address' entirely."
@@ -153,9 +161,10 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">GTP-C Server</h3>
         <FieldWithTooltip
           label="Server Address"
-          value={gtpcServer.address}
+          value={addressToText(gtpcServer.address)}
           onChange={(v) => {
-            const updated = { ...mme, gtpc: { ...mme.gtpc, server: [{ address: v }] } };
+            const address = textToAddress(v, isAddressList(gtpcServer.address));
+            const updated = { ...mme, gtpc: { ...mme.gtpc, server: [{ address }] } };
             updateMme(updated);
           }}
           placeholder="127.0.0.2"
@@ -168,20 +177,26 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="SGWC Address"
-            value={mme.gtpc?.client?.sgwc?.[0]?.address || ''}
+            value={addressToText(mme.gtpc?.client?.sgwc?.[0]?.address)}
             onChange={(v) => {
-              const updated = { ...mme, gtpc: { ...mme.gtpc, client: { ...mme.gtpc?.client, sgwc: [{ address: v }] } } };
-              updateMme(updated);
+              const peers = mme.gtpc?.client?.sgwc ?? [];
+              const first = peers[0] ?? {};
+              const address = textToAddress(v, isAddressList(first.address));
+              const sgwc = [{ ...first, address }, ...peers.slice(1)];
+              updateMme({ ...mme, gtpc: { ...mme.gtpc, client: { ...mme.gtpc?.client, sgwc } } });
             }}
             placeholder="127.0.0.3"
             tooltip={MME_TOOLTIPS.gtpc_sgwc}
           />
           <FieldWithTooltip
             label="SMF Address"
-            value={mme.gtpc?.client?.smf?.[0]?.address || ''}
+            value={addressToText(mme.gtpc?.client?.smf?.[0]?.address)}
             onChange={(v) => {
-              const updated = { ...mme, gtpc: { ...mme.gtpc, client: { ...mme.gtpc?.client, smf: [{ address: v }] } } };
-              updateMme(updated);
+              const peers = mme.gtpc?.client?.smf ?? [];
+              const first = peers[0] ?? {};
+              const address = textToAddress(v, isAddressList(first.address));
+              const smf = [{ ...first, address }, ...peers.slice(1)];
+              updateMme({ ...mme, gtpc: { ...mme.gtpc, client: { ...mme.gtpc?.client, smf } } });
             }}
             placeholder="127.0.0.4"
             tooltip={MME_TOOLTIPS.gtpc_smf}
@@ -199,14 +214,14 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         </div>
 
         {/* Render clients — always show at least one placeholder row */}
-        {(mme.sgsap?.client?.length > 0 ? mme.sgsap.client : [null]).map((client: any, clientIdx: number) => {
+        {((mme.sgsap?.client?.length ?? 0) > 0 ? (mme.sgsap?.client ?? []) : [null]).map((client: any, clientIdx: number) => {
           const isFirstAndEmpty = client === null;
           const actualClient = client || {};
           const clientMaps: any[] = isFirstAndEmpty ? [defaultMap()] : getClientMaps(actualClient);
 
           return (
             <div key={clientIdx} className="relative border border-nms-border rounded-lg p-4 mb-4 bg-nms-surface-2/30">
-              {!isFirstAndEmpty && mme.sgsap?.client?.length > 1 && (
+              {!isFirstAndEmpty && (mme.sgsap?.client?.length ?? 0) > 1 && (
                 <button
                   onClick={() => {
                     const updated = (mme.sgsap?.client || []).filter((_: any, idx: number) => idx !== clientIdx);
@@ -435,19 +450,19 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 mme_gid: 2,
                 mme_code: 1,
               };
-              updateMme({ gummei: [...mme.gummei, newEntry] });
+              updateMme({ gummei: [...gummei, newEntry] });
             }}
             className="nms-btn-ghost text-xs flex items-center gap-1"
           >
             <Plus className="w-3.5 h-3.5" /> Add PLMN
           </button>
         </div>
-        {mme.gummei.map((g: any, i: number) => (
+        {gummei.map((g: any, i: number) => (
           <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
-            {mme.gummei.length > 1 && (
+            {gummei.length > 1 && (
               <button
                 onClick={() => {
-                  const updated = mme.gummei.filter((_: any, idx: number) => idx !== i);
+                  const updated = gummei.filter((_: any, idx: number) => idx !== i);
                   updateMme({ gummei: updated });
                 }}
                 className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -461,7 +476,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 label="MCC"
                 value={g.plmn_id.mcc}
                 onChange={(v) => {
-                  const updated = [...mme.gummei];
+                  const updated = [...gummei];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                   updateMme({ gummei: updated });
                 }}
@@ -471,7 +486,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 label="MNC"
                 value={g.plmn_id.mnc}
                 onChange={(v) => {
-                  const updated = [...mme.gummei];
+                  const updated = [...gummei];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateMme({ gummei: updated });
                 }}
@@ -482,7 +497,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 type="number"
                 value={g.mme_gid}
                 onChange={(v) => {
-                  const updated = [...mme.gummei];
+                  const updated = [...gummei];
                   updated[i] = { ...updated[i], mme_gid: parseInt(v) || 2 };
                   updateMme({ gummei: updated });
                 }}
@@ -494,7 +509,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 type="number"
                 value={g.mme_code}
                 onChange={(v) => {
-                  const updated = [...mme.gummei];
+                  const updated = [...gummei];
                   updated[i] = { ...updated[i], mme_code: parseInt(v) || 1 };
                   updateMme({ gummei: updated });
                 }}
@@ -515,19 +530,19 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 plmn_id: { mcc: '001', mnc: '01' },
                 tac: 1,
               };
-              updateMme({ tai: [...mme.tai, newEntry] });
+              updateMme({ tai: [...tai, newEntry] });
             }}
             className="nms-btn-ghost text-xs flex items-center gap-1"
           >
             <Plus className="w-3.5 h-3.5" /> Add TAI
           </button>
         </div>
-        {mme.tai.map((t: any, i: number) => (
+        {tai.map((t: any, i: number) => (
           <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
-            {mme.tai.length > 1 && (
+            {tai.length > 1 && (
               <button
                 onClick={() => {
-                  const updated = mme.tai.filter((_: any, idx: number) => idx !== i);
+                  const updated = tai.filter((_: any, idx: number) => idx !== i);
                   updateMme({ tai: updated });
                 }}
                 className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -541,7 +556,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 label="MCC"
                 value={t.plmn_id.mcc}
                 onChange={(v) => {
-                  const updated = [...mme.tai];
+                  const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                   updateMme({ tai: updated });
                 }}
@@ -551,7 +566,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 label="MNC"
                 value={t.plmn_id.mnc}
                 onChange={(v) => {
-                  const updated = [...mme.tai];
+                  const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateMme({ tai: updated });
                 }}
@@ -562,7 +577,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                 type="number"
                 value={Array.isArray(t.tac) ? t.tac[0] : t.tac}
                 onChange={(v) => {
-                  const updated = [...mme.tai];
+                  const updated = [...tai];
                   updated[i] = { ...updated[i], tac: parseInt(v) || 1 };
                   updateMme({ tai: updated });
                 }}
@@ -796,8 +811,12 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         <div className="grid grid-cols-2 gap-4">
           <FieldWithTooltip
             label="Address"
-            value={mme.metrics?.server?.[0]?.address || ''}
-            onChange={(v) => updateMme({ metrics: { server: [{ address: v, port: mme.metrics?.server?.[0]?.port || 9090 }] } })}
+            value={addressToText(mme.metrics?.server?.[0]?.address)}
+            onChange={(v) => {
+              const first = mme.metrics?.server?.[0] ?? {};
+              const address = textToAddress(v, isAddressList(first.address));
+              updateMme({ metrics: { ...mme.metrics, server: [{ ...first, address, port: first.port ?? 9090 }] } });
+            }}
             tooltip={COMMON_TOOLTIPS.metrics_address}
           />
           <FieldWithTooltip

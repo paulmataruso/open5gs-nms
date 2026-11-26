@@ -35,6 +35,13 @@
 // removed one by hand, and loadRaw() returns `{}` on a parse error — so a
 // present field is the exception to prove, not the rule to assume.
 //
+// And a field ABSENT from this host's files is still a field. Reading the live
+// configs is necessary but not sufficient: mme's `time:` block and its sgsap
+// `local_address` are both commented out in config/defaults/mme.yaml and
+// absent here, yet MmeEditor writes both — the compiler is what surfaced them,
+// once that editor stopped casting its own config to `any`. Check the shipped
+// defaults and the editors too, not just /etc/open5gs.
+//
 // `mcc`/`mnc`/`sd` are STRINGS, and that is load-bearing rather than cosmetic:
 // js-yaml reads a bare `070` as octal 56, so loadRaw() re-reads those three
 // keys out of the raw text and substitutes the string form back in
@@ -130,24 +137,68 @@ export interface YamlAmf {
   time?: Record<string, { value?: number }>;
 }
 
+/**
+ * One TAI->LAI mapping of an SGs-AP client.
+ *
+ * Open5GS's MME schema wants `map` to be an OBJECT, not an array -- building
+ * it as an array is a past bug class in this project (CLAUDE.md pattern #9).
+ */
+export interface YamlSgsapMap {
+  tai?: { plmn_id?: YamlPlmnId; tac?: number | number[] };
+  lai?: { plmn_id?: YamlPlmnId; lac?: number | number[] };
+}
+
+/**
+ * One `sgsap.client` entry. BOTH `map` and `maps` are declared, and that is
+ * not redundancy:
+ *
+ *   - on DISK a client may carry several `map:` keys at the same level, which
+ *     standard YAML cannot express, so loadRaw() rewrites them into a `maps`
+ *     ARRAY on the way in and saveRaw() rewrites them back on the way out
+ *     (convertRepeatedMapKeysToArray / convertMapsArrayToRepeatedMapKeys,
+ *     unique to mme);
+ *   - a file with exactly ONE mapping parses as a plain `map` object and never
+ *     goes through that conversion -- which is the live shape on this
+ *     deployment today.
+ *
+ * So a reader must handle both, and MmeEditor's getClientMaps() does. Deleting
+ * either field would break one of the two real on-disk forms.
+ */
+export interface YamlSgsapClient {
+  address?: string | string[];
+  /** SCTP local address(es) to bind in the MME. Scalar or list. */
+  local_address?: string | string[];
+  port?: number;
+  map?: YamlSgsapMap;
+  maps?: YamlSgsapMap[];
+}
+
 export interface YamlMme {
   s1ap?: YamlEndpoint;
-  gtpc?: YamlEndpoint;
+  /**
+   * `gtpc.client` carries the SGW-C and SMF peer lists. An SGW-C entry's `tac`
+   * and `e_cell_id` select which cells that SGW-C serves, and an SMF entry's
+   * `apn` which APNs it handles; all three are scalar-or-list like every other
+   * repeatable value here.
+   */
+  gtpc?: YamlEndpoint & {
+    client?: {
+      sgwc?: Array<YamlServerEntry & { e_cell_id?: string | string[] }>;
+      smf?: Array<YamlServerEntry & { apn?: string | string[] }>;
+    };
+  };
   metrics?: YamlEndpoint;
   gummei?: Array<{ plmn_id?: YamlPlmnId; mme_gid?: number; mme_code?: number }>;
   tai?: Array<{ plmn_id?: YamlPlmnId; tac?: number | number[] }>;
   security?: { integrity_order?: string[]; ciphering_order?: string[] };
   network_name?: { full?: string; short?: string };
   mme_name?: string;
-  /** Presence is what callers test; the contents are freeDiameter's own. */
-  freeDiameter?: unknown;
-  sgsap?: unknown;
-  /**
-   * `maps` not `map`: mme.yaml uses duplicate `map:` keys, which standard YAML
-   * cannot express, so loadRaw() rewrites them into an array on the way in and
-   * saveRaw() rewrites them back on the way out.
-   */
-  maps?: unknown[];
+  /** A PATH to the freeDiameter .conf file, not the configuration itself. */
+  freeDiameter?: string;
+  /** t3402/t3412/t3423. Commented out in the shipped default, so usually absent. */
+  time?: Record<string, { value?: number }>;
+  /** SGs-AP to the 2G/3G MSC. See YamlSgsapClient for the map/maps rule. */
+  sgsap?: { client?: YamlSgsapClient[] };
 }
 
 export interface YamlSmf {
@@ -288,7 +339,25 @@ export interface YamlDocumentCommon {
    */
   [key: string]: unknown;
   logger?: { level?: string; file?: { path?: string } | string };
-  global?: Record<string, unknown>;
+  global?: {
+    [key: string]: unknown;
+    max?: { ue?: number; peer?: number };
+    /**
+     * Open5GS's own docs and the osmo-gsm-tester templates put `use_openair`
+     * and `no_ipv4` HERE, under `global`, and MmeEditor writes to this path --
+     * but smf.yaml on this deployment carries its `parameter:` block at
+     * DOCUMENT level (see `parameter` below), so the two disagree about where
+     * the section lives and only one can be the location v2.8.0 reads.
+     *
+     * Both are therefore typed, deliberately, rather than one being declared
+     * the winner on a guess. Which is correct is NOT established: tested live
+     * on 2026-11-26, Open5GS v2.8.0 silently ignores unknown config keys
+     * entirely -- a deliberately bogus key under `global:` produced no
+     * warning, no error, and a healthy service -- so a wrong path here fails
+     * invisibly and the logs cannot tell you which one took effect.
+     */
+    parameter?: Record<string, unknown>;
+  };
   /** smf.yaml carries this at document level, outside the `smf:` block. */
   parameter?: Record<string, unknown>;
   /**
