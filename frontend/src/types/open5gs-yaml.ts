@@ -222,7 +222,17 @@ export interface YamlSmf {
   session?: YamlSession[];
   dns?: string[];
   mtu?: number;
-  info?: Array<{ tai?: Array<{ plmn_id?: YamlPlmnId; tac?: number | number[] }> } & Record<string, unknown>>;
+  /**
+   * `info[].s_nssai` is where SMF declares which slices it serves and the DNNs
+   * each one carries -- NOT `smf.s_nssai`, which does not exist. Each entry's
+   * `sd` is a hex STRING for the same octal reason as mcc/mnc.
+   */
+  info?: Array<
+    {
+      tai?: Array<{ plmn_id?: YamlPlmnId; tac?: number | number[] }>;
+      s_nssai?: Array<YamlSnssai & { dnn?: string | string[] }>;
+    } & Record<string, unknown>
+  >;
   /** Charging Trigger Function toggle: auto (default) | yes | no. */
   ctf?: { enabled?: string };
   freeDiameter?: unknown;

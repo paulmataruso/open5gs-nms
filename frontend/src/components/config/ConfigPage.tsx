@@ -8,7 +8,7 @@ import { clsx } from 'clsx';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { YamlTextEditor } from './YamlTextEditor';
 import { FieldWithTooltip, SelectWithTooltip } from './FieldsWithTooltips';
-import { addressToText, textToAddress, isAddressList } from './editors/address-field';
+import { addressToText, textToAddress, isAddressList, firstOf } from './editors/address-field';
 import { NRF_TOOLTIPS, AMF_TOOLTIPS, COMMON_TOOLTIPS } from '../../data/tooltips';
 
 // Import all editors
@@ -139,10 +139,10 @@ function NrfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
         {serving.length === 0 && (
           <p className="text-xs text-nms-text-dim">No serving PLMN configured.</p>
         )}
-        {serving.map((s: any, i: number) => (
+        {serving.map((s, i) => (
           <div key={i} className="relative grid grid-cols-2 gap-4 mb-2 pr-8">
             <button aria-label="Remove serving PLMN"
-              onClick={() => updateNrf({ serving: serving.filter((_: any, idx: number) => idx !== i) })}
+              onClick={() => updateNrf({ serving: serving.filter((_, idx) => idx !== i) })}
               className="absolute top-1/2 -translate-y-1/2 right-0 text-nms-text-dim hover:text-nms-red transition-colors"
             >
               <X className="w-4 h-4" />
@@ -313,12 +313,12 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               <Plus className="w-3.5 h-3.5" /> Add PLMN with Slice
             </button>
           </div>
-          {guami.map((g: any, i: number) => (
+          {guami.map((g, i) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
               {guami.length > 1 && (
                 <button
                   onClick={() => {
-                    const updated = guami.filter((_: any, idx: number) => idx !== i);
+                    const updated = guami.filter((_, idx) => idx !== i);
                     updateAmf({ guami: updated });
                   }}
                   className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -328,12 +328,12 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                 </button>
               )}
               <div className="grid grid-cols-5 gap-4">
-                <FieldWithTooltip label="MCC" value={g.plmn_id.mcc} onChange={(v) => {
+                <FieldWithTooltip label="MCC" value={g.plmn_id?.mcc ?? ''} onChange={(v) => {
                   const updated = [...guami];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                   updateAmf({ guami: updated });
                 }} tooltip={AMF_TOOLTIPS.guami_mcc} />
-                <FieldWithTooltip label="MNC" value={g.plmn_id.mnc} onChange={(v) => {
+                <FieldWithTooltip label="MNC" value={g.plmn_id?.mnc ?? ''} onChange={(v) => {
                   const updated = [...guami];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateAmf({ guami: updated });
@@ -373,12 +373,12 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               <Plus className="w-3.5 h-3.5" /> Add TAI
             </button>
           </div>
-          {tai.map((t: any, i: number) => (
+          {tai.map((t, i) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
               {tai.length > 1 && (
                 <button aria-label="Remove tracking area"
                   onClick={() => {
-                    const updated = tai.filter((_: any, idx: number) => idx !== i);
+                    const updated = tai.filter((_, idx) => idx !== i);
                     updateAmf({ tai: updated });
                   }}
                   className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -387,17 +387,17 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                 </button>
               )}
               <div className="grid grid-cols-3 gap-4">
-                <FieldWithTooltip label="MCC" value={t.plmn_id.mcc} onChange={(v) => {
+                <FieldWithTooltip label="MCC" value={t.plmn_id?.mcc ?? ''} onChange={(v) => {
                   const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
                   updateAmf({ tai: updated });
                 }} tooltip={AMF_TOOLTIPS.tai_mcc} />
-                <FieldWithTooltip label="MNC" value={t.plmn_id.mnc} onChange={(v) => {
+                <FieldWithTooltip label="MNC" value={t.plmn_id?.mnc ?? ''} onChange={(v) => {
                   const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
                   updateAmf({ tai: updated });
                 }} tooltip={AMF_TOOLTIPS.tai_mnc} />
-                <FieldWithTooltip label="TAC" type="number" value={t.tac} onChange={(v) => {
+                <FieldWithTooltip label="TAC" type="number" value={firstOf(t.tac) ?? ''} onChange={(v) => {
                   const updated = [...tai];
                   updated[i] = { ...updated[i], tac: parseInt(v) || 1 };
                   updateAmf({ tai: updated });
@@ -433,11 +433,11 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
             </div>
           </div>
 
-          {plmnSupport.map((p: any, pi: number) => (
+          {plmnSupport.map((p, pi) => (
             <div key={pi} className="relative border border-nms-border rounded-lg p-4 mb-3 bg-nms-surface-2/20">
               {plmnSupport.length > 1 && (
                 <button aria-label="Remove supported PLMN"
-                  onClick={() => updateAmf({ plmn_support: plmnSupport.filter((_: any, idx: number) => idx !== pi) })}
+                  onClick={() => updateAmf({ plmn_support: plmnSupport.filter((_, idx) => idx !== pi) })}
                   className="absolute top-3 right-3 text-nms-text-dim hover:text-nms-red transition-colors"
                 >
                   <X className="w-4 h-4" />
@@ -445,12 +445,12 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
               )}
               <div className="text-xs font-semibold text-nms-text-dim uppercase tracking-wider mb-2">PLMN {pi + 1}</div>
               <div className="grid grid-cols-2 gap-4 mb-4">
-                <FieldWithTooltip label="MCC" value={p.plmn_id.mcc} onChange={(v) => {
+                <FieldWithTooltip label="MCC" value={p.plmn_id?.mcc ?? ''} onChange={(v) => {
                   const updated = [...plmnSupport];
                   updated[pi] = { ...updated[pi], plmn_id: { ...updated[pi].plmn_id, mcc: v } };
                   updateAmf({ plmn_support: updated });
                 }} tooltip={AMF_TOOLTIPS.plmn_mcc} />
-                <FieldWithTooltip label="MNC" value={p.plmn_id.mnc} onChange={(v) => {
+                <FieldWithTooltip label="MNC" value={p.plmn_id?.mnc ?? ''} onChange={(v) => {
                   const updated = [...plmnSupport];
                   updated[pi] = { ...updated[pi], plmn_id: { ...updated[pi].plmn_id, mnc: v } };
                   updateAmf({ plmn_support: updated });
@@ -469,7 +469,7 @@ function AmfEditor({ configs, onChange }: { configs: AllConfigs; onChange: (c: A
                   <Plus className="w-3 h-3" /> Add Slice
                 </button>
               </div>
-              {(p.s_nssai || []).map((slice: any, si: number) => (
+              {(p.s_nssai || []).map((slice, si) => (
                 <div key={si} className="relative grid grid-cols-2 gap-3 mb-2 pl-3 border-l-2 border-nms-accent/20">
                   {(p.s_nssai || []).length > 1 && (
                     <button aria-label="Remove network slice"

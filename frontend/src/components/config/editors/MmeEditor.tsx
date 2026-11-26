@@ -1,8 +1,8 @@
-import type { AllConfigs } from '../../../types';
+import type { AllConfigs, YamlSgsapClient } from '../../../types';
 import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { Plus, X, Shield } from 'lucide-react';
 import { FieldWithTooltip } from '../FieldsWithTooltips';
-import { addressToText, textToAddress, isAddressList } from './address-field';
+import { addressToText, textToAddress, isAddressList, firstOf } from './address-field';
 import { MME_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
 
 interface Props {
@@ -35,7 +35,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
   const updateMme = (partial: any) => {
     // Keep maps as an array (plural); normalize any legacy map: object to maps: array.
     if (partial.sgsap?.client) {
-      partial.sgsap.client = partial.sgsap.client.map((client: any) => {
+      partial.sgsap.client = partial.sgsap.client.map((client: YamlSgsapClient) => {
         const { map: _legacy, ...rest } = client;
         const maps = client.maps ?? (_legacy ? [_legacy] : undefined);
         return maps !== undefined ? { ...rest, maps } : rest;
@@ -214,17 +214,17 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         </div>
 
         {/* Render clients — always show at least one placeholder row */}
-        {((mme.sgsap?.client?.length ?? 0) > 0 ? (mme.sgsap?.client ?? []) : [null]).map((client: any, clientIdx: number) => {
+        {((mme.sgsap?.client?.length ?? 0) > 0 ? (mme.sgsap?.client ?? []) : [null]).map((client, clientIdx) => {
           const isFirstAndEmpty = client === null;
           const actualClient = client || {};
-          const clientMaps: any[] = isFirstAndEmpty ? [defaultMap()] : getClientMaps(actualClient);
+          const clientMaps = isFirstAndEmpty ? [defaultMap()] : getClientMaps(actualClient);
 
           return (
             <div key={clientIdx} className="relative border border-nms-border rounded-lg p-4 mb-4 bg-nms-surface-2/30">
               {!isFirstAndEmpty && (mme.sgsap?.client?.length ?? 0) > 1 && (
                 <button
                   onClick={() => {
-                    const updated = (mme.sgsap?.client || []).filter((_: any, idx: number) => idx !== clientIdx);
+                    const updated = (mme.sgsap?.client || []).filter((_, idx) => idx !== clientIdx);
                     updateMme({ sgsap: { client: updated } });
                   }}
                   className="absolute top-3 right-3 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -313,7 +313,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                   </button>
                 </div>
 
-                {clientMaps.map((mapping: any, mapIdx: number) => (
+                {clientMaps.map((mapping, mapIdx) => (
                   <div key={mapIdx} className="relative mb-3 border border-dashed border-nms-border/60 rounded-lg p-3 bg-nms-surface-2/20">
                     {/* Remove mapping button — only when > 1 mapping and not placeholder */}
                     {!isFirstAndEmpty && clientMaps.length > 1 && (
@@ -322,7 +322,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                           const updatedClients = [...(mme.sgsap?.client || [])];
                           updatedClients[clientIdx] = {
                             ...updatedClients[clientIdx],
-                            maps: getClientMaps(updatedClients[clientIdx]).filter((_: any, idx: number) => idx !== mapIdx),
+                            maps: getClientMaps(updatedClients[clientIdx]).filter((_, idx) => idx !== mapIdx),
                           };
                           updateMme({ sgsap: { client: updatedClients } });
                         }}
@@ -457,12 +457,12 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
             <Plus className="w-3.5 h-3.5" /> Add PLMN
           </button>
         </div>
-        {gummei.map((g: any, i: number) => (
+        {gummei.map((g, i) => (
           <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
             {gummei.length > 1 && (
               <button
                 onClick={() => {
-                  const updated = gummei.filter((_: any, idx: number) => idx !== i);
+                  const updated = gummei.filter((_, idx) => idx !== i);
                   updateMme({ gummei: updated });
                 }}
                 className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -474,7 +474,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
             <div className="grid grid-cols-4 gap-4">
               <FieldWithTooltip
                 label="MCC"
-                value={g.plmn_id.mcc}
+                value={g.plmn_id?.mcc ?? ''}
                 onChange={(v) => {
                   const updated = [...gummei];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
@@ -484,7 +484,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               />
               <FieldWithTooltip
                 label="MNC"
-                value={g.plmn_id.mnc}
+                value={g.plmn_id?.mnc ?? ''}
                 onChange={(v) => {
                   const updated = [...gummei];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
@@ -495,7 +495,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               <FieldWithTooltip
                 label="MME GID"
                 type="number"
-                value={g.mme_gid}
+                value={g.mme_gid ?? ''}
                 onChange={(v) => {
                   const updated = [...gummei];
                   updated[i] = { ...updated[i], mme_gid: parseInt(v) || 2 };
@@ -507,7 +507,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               <FieldWithTooltip
                 label="MME Code"
                 type="number"
-                value={g.mme_code}
+                value={g.mme_code ?? ''}
                 onChange={(v) => {
                   const updated = [...gummei];
                   updated[i] = { ...updated[i], mme_code: parseInt(v) || 1 };
@@ -537,12 +537,12 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
             <Plus className="w-3.5 h-3.5" /> Add TAI
           </button>
         </div>
-        {tai.map((t: any, i: number) => (
+        {tai.map((t, i) => (
           <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-2">
             {tai.length > 1 && (
               <button
                 onClick={() => {
-                  const updated = tai.filter((_: any, idx: number) => idx !== i);
+                  const updated = tai.filter((_, idx) => idx !== i);
                   updateMme({ tai: updated });
                 }}
                 className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
@@ -554,7 +554,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
             <div className="grid grid-cols-3 gap-4">
               <FieldWithTooltip
                 label="MCC"
-                value={t.plmn_id.mcc}
+                value={t.plmn_id?.mcc ?? ''}
                 onChange={(v) => {
                   const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mcc: v } };
@@ -564,7 +564,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               />
               <FieldWithTooltip
                 label="MNC"
-                value={t.plmn_id.mnc}
+                value={t.plmn_id?.mnc ?? ''}
                 onChange={(v) => {
                   const updated = [...tai];
                   updated[i] = { ...updated[i], plmn_id: { ...updated[i].plmn_id, mnc: v } };
@@ -575,7 +575,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
               <FieldWithTooltip
                 label="TAC"
                 type="number"
-                value={Array.isArray(t.tac) ? t.tac[0] : t.tac}
+                value={firstOf(t.tac) ?? ''}
                 onChange={(v) => {
                   const updated = [...tai];
                   updated[i] = { ...updated[i], tac: parseInt(v) || 1 };

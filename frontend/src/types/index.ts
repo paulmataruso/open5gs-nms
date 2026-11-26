@@ -49,7 +49,8 @@ export interface ServiceStatus {
 // of the 17 old per-NF interfaces had an importer outside this file.
 export type {
   YamlPlmnId, YamlSnssai, YamlServerEntry, YamlEndpoint, YamlSession,
-  YamlUriEntry, YamlSbiClient, YamlSbiEndpoint,
+  YamlUriEntry, YamlSbiClient, YamlSbiEndpoint, YamlPeerEntry,
+  YamlSgsapMap, YamlSgsapClient,
   YamlAmf, YamlMme, YamlSmf, YamlUpf, YamlSgwc, YamlSgwu, YamlNrf,
   YamlScp, YamlAusf, YamlUdm, YamlUdr, YamlPcf, YamlNssf, YamlBsf,
   YamlSepp, YamlHss, YamlPcrf,

@@ -62,3 +62,16 @@ export function firstOf<T>(value: T | T[] | undefined): T | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
 }
+
+/**
+ * A scalar-or-list value as a list, for the keys an editor genuinely treats as
+ * repeatable: `dnn`, `apn`, `e_cell_id`, `nr_cell_id`, `tac`.
+ *
+ * Distinct from firstOf(), which answers "the one representative value". Use
+ * this where the UI renders a row per entry, so a file declaring a single
+ * scalar still shows its one row instead of nothing.
+ */
+export function asList<T>(value: T | T[] | undefined): T[] {
+  if (Array.isArray(value)) return value;
+  return value === undefined ? [] : [value];
+}

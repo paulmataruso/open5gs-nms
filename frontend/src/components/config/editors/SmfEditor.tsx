@@ -5,7 +5,7 @@ import { LoggerSection, SbiClientSection, FunctionInfoBox } from './SharedCompon
 import { FieldWithTooltip, SelectWithTooltip } from '../FieldsWithTooltips';
 import { SMF_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
 import { TopologyModal } from './TopologyModal';
-import { addressToText, textToAddress, isAddressList, firstAddress } from './address-field';
+import { addressToText, textToAddress, isAddressList, firstAddress, asList } from './address-field';
 
 interface Props {
   configs: AllConfigs;
@@ -67,9 +67,9 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
 
   // Detect ALL local UPF addresses from upf.yaml pfcp.server list
   // so we correctly label routable UPF IPs as local when they match
-  const localUpfPfcpAddresses: string[] = (
-    (configs.upf)?.upf?.pfcp?.server ?? []
-  ).map((s: any) => s.address).filter(Boolean);
+  const localUpfPfcpAddresses: string[] = ((configs.upf)?.upf?.pfcp?.server ?? [])
+    .map((s) => firstAddress(s.address))
+    .filter(Boolean);
 
   const isLocalUpf = (address: string): boolean => {
     if (!address) return false;
@@ -224,9 +224,9 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
   const sgwuClients = configs.sgwc?.sgwc?.pfcp?.client?.sgwu ?? [];
 
   // All local SGW-U addresses from sgwu.yaml
-  const localSgwuAddresses: string[] = (
-    (configs.sgwu)?.sgwu?.pfcp?.server ?? []
-  ).map((s: any) => s.address).filter(Boolean);
+  const localSgwuAddresses: string[] = ((configs.sgwu)?.sgwu?.pfcp?.server ?? [])
+    .map((s) => firstAddress(s.address))
+    .filter(Boolean);
 
   const isLocalSgwu = (address: string): boolean => {
     if (!address) return false;
@@ -486,7 +486,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         onClick={() => {
                           // Find session for this UPF's DNN
                           const dnn = Array.isArray(client.dnn) ? client.dnn[0] : client.dnn || '';
-                          const matchingSession = sessions.find((s: any) => s.dnn === dnn);
+                          const matchingSession = sessions.find((s) => s.dnn === dnn);
                           onEditUpf({
                             pfcpAddress: firstAddress(client.address),
                             dnn: displayMultiValue(client.dnn),
@@ -821,7 +821,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
       {(() => {
         // Open5GS stores S-NSSAI under smf.info[0].s_nssai (not smf.s_nssai)
         const infoBlock = smf.info?.[0];
-        const nssai: any[] = (infoBlock?.s_nssai as any[] | undefined) ?? [{ sst: 1, dnn: ['internet'] }];
+        const nssai = infoBlock?.s_nssai ?? [{ sst: 1, dnn: ['internet'] }];
 
         const updateNssai = (updated: any[]) => {
           const newInfo = [{ ...(smf.info?.[0] || {}), s_nssai: updated }];
@@ -846,11 +846,11 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
               <Plus className="w-3.5 h-3.5" /> Add Slice
             </button>
           </div>
-          {nssai.map((slice: any, i: number) => (
+          {nssai.map((slice, i) => (
             <div key={i} className="relative border border-nms-border rounded-lg p-3 mb-3">
               {nssai.length > 1 && (
                 <button aria-label="Remove network slice"
-                  onClick={() => updateNssai(nssai.filter((_: any, idx: number) => idx !== i))}
+                  onClick={() => updateNssai(nssai.filter((_, idx) => idx !== i))}
                   className="absolute top-2 right-2 text-nms-text-dim hover:text-nms-red transition-colors"
                 >
                   <X className="w-4 h-4" />
@@ -905,7 +905,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                   Add every DNN this SMF serves — including remote UPF DNNs.
                 </p>
                 <div className="space-y-1">
-                  {(slice.dnn || []).map((dnn: string, di: number) => (
+                  {asList(slice.dnn).map((dnn, di) => (
                     <div key={di} className="flex items-center gap-2">
                       <input aria-label="DNN"
                         className="nms-input font-mono text-sm flex-1"
@@ -923,7 +923,7 @@ export function SmfEditor({ configs, onChange, onEditUpf }: Props): JSX.Element 
                         <button aria-label="Remove DNN"
                           onClick={() => {
                             const updated = [...nssai];
-                            updated[i] = { ...updated[i], dnn: (updated[i].dnn || []).filter((_: string, idx: number) => idx !== di) };
+                            updated[i] = { ...updated[i], dnn: asList(updated[i].dnn).filter((_, idx) => idx !== di) };
                             updateNssai(updated);
                           }}
                           className="text-nms-text-dim hover:text-nms-red transition-colors shrink-0"
