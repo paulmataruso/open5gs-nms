@@ -10,7 +10,7 @@ interface Props {
 
 export function PcrfEditor({ configs, onChange }: Props): JSX.Element {
   // Extract nested service section from full YAML
-  const fullYaml = configs.pcrf as any;
+  const fullYaml = configs.pcrf;
   const pcrf = fullYaml.pcrf || {};
   
   if (!pcrf?.freeDiameter) {

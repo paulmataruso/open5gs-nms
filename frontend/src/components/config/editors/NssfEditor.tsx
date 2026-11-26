@@ -10,7 +10,7 @@ interface Props {
 }
 
 export function NssfEditor({ configs, onChange }: Props): JSX.Element {
-  const fullYaml = configs.nssf as any;
+  const fullYaml = configs.nssf;
   const nssf = fullYaml.nssf || {};
 
   if (!nssf?.sbi?.server || nssf.sbi.server.length === 0) {
@@ -26,7 +26,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
   };
 
   const updateNsiList = (updated: any[]) => {
-    updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi.client, nsi: updated } } });
+    updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi?.client, nsi: updated } } });
   };
 
   const updateLogger = (logger: any) => {
@@ -76,7 +76,7 @@ export function NssfEditor({ configs, onChange }: Props): JSX.Element {
       {/* SBI Client — NRF / SCP */}
       <SbiClientSection
         client={nssf.sbi?.client}
-        onChange={(client) => updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi.client, ...client } } })}
+        onChange={(client) => updateNssf({ sbi: { ...nssf.sbi, client: { ...nssf.sbi?.client, ...client } } })}
       />
 
       {/* NSI Clients */}

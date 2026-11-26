@@ -30,7 +30,7 @@ const TLS_PATHS = {
 };
 
 export function SeppEditor({ configs, onChange }: Props): JSX.Element {
-  const fullYaml = configs.sepp1 as any;
+  const fullYaml = configs.sepp1;
   const sepp = fullYaml?.sepp || {};
 
   const [existingCert, setExistingCert] = useState<string | null>(null);

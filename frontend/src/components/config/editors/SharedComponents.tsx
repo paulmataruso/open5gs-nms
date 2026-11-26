@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { clsx } from 'clsx';
 import { AlertTriangle, Info } from 'lucide-react';
+import type { SbiClient } from '../../../types';
 
 export function Field({
   label,
@@ -105,11 +106,6 @@ export function LoggerSection({
 // Presents a 3-way mode selector: SCP only | NRF only | Both
 
 type SbiClientMode = 'scp' | 'nrf' | 'both';
-
-interface SbiClient {
-  nrf?: Array<{ uri: string }>;
-  scp?: Array<{ uri: string }>;
-}
 
 function detectMode(client: SbiClient | undefined): SbiClientMode {
   const hasNrf = !!(client?.nrf?.[0]?.uri);
