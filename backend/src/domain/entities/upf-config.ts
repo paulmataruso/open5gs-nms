@@ -1,14 +1,14 @@
 import { BaseNfConfig, GtpuConfig, PfcpConfig } from './base-config';
+import { YamlSession } from './open5gs-yaml';
 
-export interface UpfSubnetConfig {
-  addr: string;
-  dnn?: string;
-  dev?: string;
-}
 
-export interface UpfSessionConfig {
-  subnet: UpfSubnetConfig[];
-}
+/**
+ * `upf.session` as it really appears on disk, verified against this host's
+ * upf.yaml: `{ subnet, gateway, dev, dnn }`, all strings. Previously declared
+ * as a nested `UpfSubnetConfig[]`, which no real file produces; see
+ * SmfSessionConfig for the same mistake and how the assertion hid it.
+ */
+export type UpfSessionConfig = YamlSession;
 
 export interface UpfConfig extends BaseNfConfig {
   pfcp: PfcpConfig;

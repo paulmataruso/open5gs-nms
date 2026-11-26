@@ -485,18 +485,30 @@ running history, so trust those numbers over this prose.
       The `unknown` DEFAULT on those generics is the load-bearing part: a call
       site that does not say what it expects has to narrow, instead of
       inheriting `any` the way `Promise<any>` handed it out.
-- [ ] **YAML — all that is left of this phase, and still its own session.**
-      Measured 2026-11-22: **nine files, ~1,350 findings, all touching this one
-      boundary** — `auto-config.ts` (339), `yaml-config-repository.ts` (185),
+- [ ] **YAML — recon done and the first file typed; the rest is mechanical.**
+      Typed document shapes now live in `domain/entities/open5gs-yaml.ts` and
+      `auto-config.ts` is done (339 -> 93), taking the backend 3778 -> 3533
+      (#78). Remaining, measured 2026-11-26: `yaml-config-repository.ts` (185),
       `validation-controller.ts` (154), `pcap.ts` (108),
       `subscriber-management.ts` (106), `yaml-config-repository.test.ts` (91),
       `auto-assign-ips-usecase.ts` (80), `config-mapper.ts` (76),
-      `apn-profile-usecase.ts` (74), `plmn-migration-usecase.ts` (66). That is
-      where the remaining count lives. **Do not change round-trip behaviour
-      while typing it** (CLAUDE.md pattern #2), and read the `rawYaml` path
-      before touching anything. A local, READ-ONLY `yaml.load` is a different
-      thing and is safe to type — `frr-controller.ts` has one, typed in #71
-      with a comment saying why.
+      `apn-profile-usecase.ts` (74), `plmn-migration-usecase.ts` (66).
+      **Two things the recon established that change how to do this work.**
+      First, the reason this phase feared YAML was wrong: comments do NOT
+      survive a save for any of the 17 NFs, so there is no comment-preserving
+      round trip to break. See CLAUDE.md pattern #2's 2026-11-26 correction for
+      the evidence. The real invariant is unknown-KEY preservation via
+      `deepMerge`, which a type cannot break at runtime — only a caller that
+      REBUILDS a document instead of cloning it can.
+      Second, do not reuse `AllConfigsDto`/the frontend's `AllConfigs` as the
+      shape. Verified against the live API: `GET /api/config` returns
+      `data.amf` with keys `['amf','global','logger']`, while `AmfConfigDto`
+      declares that NF's inner fields at its top level — it is off by one
+      nesting level and additionally carries document-level `logger`/`global`
+      as if they were AMF fields. Both sides cast around it (`as any` in
+      `config-mapper.ts`, `configs.amf as any` in `ConfigPage.tsx`). Correcting
+      those is an API-contract change touching the frontend, tracked
+      separately.
 - [x] **Command output.** Done (#71). The framing was right: `executeCommand()`
       already returned a typed `CommandResult`, so every unsafe access was on
       the parsed stdout. The declared parser shapes double as documentation,

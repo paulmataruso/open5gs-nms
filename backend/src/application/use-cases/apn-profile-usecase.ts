@@ -50,8 +50,8 @@ export class ApnProfileUseCase {
       this.configRepo.loadSmf(),
       this.configRepo.loadUpf(),
     ]);
-    const smfSessions = ((smf as any).session ?? []) as any[];
-    const upfSessions = ((upf as any).session ?? []) as any[];
+    const smfSessions = smf.session ?? [];
+    const upfSessions = upf.session ?? [];
     const persistedDnns = new Set(profiles.map((p) => p.dnn));
 
     const pairs = resolveDnnDevPairs(smfSessions, upfSessions, (dnn, subnet) => {

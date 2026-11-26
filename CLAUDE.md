@@ -47,11 +47,39 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    `nsenter`), configure (write host config files), start/stop/restart (`systemctl`).
 
 2. **rawYaml preservation for the 17 core NFs.** Never mutate a parsed config object and
-   expect it to round-trip cleanly — always work through `rawYaml` so comments/structure
-   in the real YAML files survive edits. `yaml-config-repository.ts` handles this.
+   expect it to round-trip cleanly — always work through `rawYaml`, which
+   `yaml-config-repository.ts` handles.
    The 17 core NFs (as of 2026-07-17): nrf, scp, amf, smf, upf, ausf, udm, udr, pcf,
    nssf, bsf, mme, hss, pcrf, sgwc, sgwu, **sepp1** (SEPP was added as the 17th — some
    older lists in the codebase may still say 16, that's stale, fix it when you see it).
+   **Correction 2026-11-26: this entry used to say the point was "so
+   comments/structure in the real YAML files survive edits". That is NOT what
+   the implementation does, and believing it will mislead you.** `rawYaml` is a
+   PARSED OBJECT, not text (`rawYaml?: Record<string, unknown>` in
+   `domain/entities/generic-config.ts`): `loadRaw()` runs `yaml.load()` and
+   throws the string away, and every one of the 17 saves re-serialises with
+   `yaml.dump()`. Comments cannot survive that, and this repo's own test
+   fixture says as much — `yaml-config-repository.test.ts` contains
+   `# This is a comment that will be lost (expected)`. Formatting, quoting and
+   anchors are normalised on every save too (`noRefs: true`).
+   **What `rawYaml` really protects is UNKNOWN KEYS**, and that is worth just
+   as much care: `saveRaw()` re-reads the file from disk and `deepMerge()`s the
+   incoming document on top, so a hand-added field the NMS does not model
+   survives a save. The practical rule is therefore: **clone and mutate
+   (`JSON.parse(JSON.stringify(doc))`), never rebuild a document from
+   scratch** — rebuilding is what silently drops an operator's hand edits.
+   Note also that `deepMerge` means object keys cannot be DELETED through a
+   save; only arrays and scalars are replaced.
+   Two further things to know. The one place that genuinely does
+   comment-preserving, text-level editing is `upsertUdmHnetBlock()` in
+   `suci-management.ts`, whose own comment correctly cites this pattern — copy
+   that approach if you ever need real comment preservation.
+   And `infrastructure/yaml/yaml-updater.ts` (`YamlUpdater`, built on the
+   `yaml` package's comment-preserving `parseDocument`) has **no importers at
+   all** — it is the right tool, unused. Do not delete it as dead code without
+   first checking whether the thing you are writing should be using it.
+   Typed document shapes for the parsed form now live in
+   `domain/entities/open5gs-yaml.ts`.
 
 3. **Optional add-on modules** (IMS, SMS, VoWiFi, eSIM, UE Validation, Subscriber
    Groups, Syslog Forwarding, Sercomm NR, FRR source build) are NOT part of the core-17
