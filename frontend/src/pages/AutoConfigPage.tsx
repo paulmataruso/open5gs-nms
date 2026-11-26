@@ -10,6 +10,7 @@ import { IpPlanTab } from '../components/autoconfig/IpPlanTab';
 import { ipPlanApi } from '../api/ip-plan';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
+import { firstAddress, firstOf } from '../components/config/editors/address-field';
 
 type Tab = 'open5gs' | 'ip-plan' | 'plmn-migration';
 
@@ -79,13 +80,13 @@ export const AutoConfigPage: React.FC = () => {
       setInitializing(true);
       try {
         const configs = await configApi.getAll();
-        const mmeConfig = (configs.mme as any)?.mme;
-        const amfConfig = (configs.amf as any)?.amf;
+        const mmeConfig = configs.mme?.mme;
+        const amfConfig = configs.amf?.amf;
 
         const mmeGummeis = mmeConfig?.gummei || [];
-        const plmn4g: PlmnConfig[] = mmeGummeis.map((gummei: any) => {
+        const plmn4g: PlmnConfig[] = mmeGummeis.map((gummei) => {
           const plmnId = Array.isArray(gummei.plmn_id) ? gummei.plmn_id[0] : gummei.plmn_id;
-          const tai = mmeConfig?.tai?.find((t: any) => {
+          const tai = mmeConfig?.tai?.find((t) => {
             const taiPlmn = Array.isArray(t.plmn_id) ? t.plmn_id[0] : t.plmn_id;
             return taiPlmn?.mcc === plmnId?.mcc && taiPlmn?.mnc === plmnId?.mnc;
           });
@@ -95,10 +96,10 @@ export const AutoConfigPage: React.FC = () => {
         });
 
         const amfGuamis = amfConfig?.guami || [];
-        const plmn5g: PlmnConfig[] = amfGuamis.map((guami: any) => {
+        const plmn5g: PlmnConfig[] = amfGuamis.map((guami) => {
           const plmnId = guami.plmn_id;
-          const tai = amfConfig?.tai?.find((t: any) => t.plmn_id?.mcc === plmnId?.mcc && t.plmn_id?.mnc === plmnId?.mnc);
-          return { mcc: plmnId?.mcc || '999', mnc: plmnId?.mnc || '70', tac: tai?.tac || 1 };
+          const tai = amfConfig?.tai?.find((t) => t.plmn_id?.mcc === plmnId?.mcc && t.plmn_id?.mnc === plmnId?.mnc);
+          return { mcc: plmnId?.mcc || '999', mnc: plmnId?.mnc || '70', tac: firstOf(tai?.tac) ?? 1 };
         });
 
         setConfig({
@@ -108,50 +109,53 @@ export const AutoConfigPage: React.FC = () => {
           applySessionPools: true,
           plmn4g: plmn4g.length > 0 ? plmn4g : [{ mcc: '999', mnc: '70', mme_gid: 2, mme_code: 1, tac: 1 }],
           plmn5g: plmn5g.length > 0 ? plmn5g : [{ mcc: '999', mnc: '70', tac: 1 }],
-          s1mmeIP:  mmeConfig?.s1ap?.server?.[0]?.address || '',
+          s1mmeIP:  firstAddress(mmeConfig?.s1ap?.server?.[0]?.address),
           s1mmeDev: mmeConfig?.s1ap?.server?.[0]?.dev     || '',
-          sgwuGtpIP: (configs.sgwu as any)?.sgwu?.gtpu?.server?.[0]?.address || '',
-          amfNgapIP:  amfConfig?.ngap?.server?.[0]?.address || '',
+          sgwuGtpIP: firstAddress(configs.sgwu?.sgwu?.gtpu?.server?.[0]?.address),
+          amfNgapIP:  firstAddress(amfConfig?.ngap?.server?.[0]?.address),
           amfNgapDev: amfConfig?.ngap?.server?.[0]?.dev     || '',
-          upfGtpIP: (configs.upf as any)?.upf?.gtpu?.server?.[0]?.address || '',
-          smfPfcpIP: (configs.smf as any)?.smf?.pfcp?.server?.find((s: any) => !s.address?.startsWith('127.'))?.address || (configs.smf as any)?.smf?.pfcp?.server?.[0]?.address || '',
-          localUpfPfcpIP: (configs.upf as any)?.upf?.pfcp?.server?.[0]?.address || '',
+          upfGtpIP: firstAddress(configs.upf?.upf?.gtpu?.server?.[0]?.address),
+          smfPfcpIP: firstAddress(
+            configs.smf?.smf?.pfcp?.server?.find((s) => !firstAddress(s.address).startsWith('127.'))?.address
+            ?? configs.smf?.smf?.pfcp?.server?.[0]?.address,
+          ),
+          localUpfPfcpIP: firstAddress(configs.upf?.upf?.pfcp?.server?.[0]?.address),
           localUpfOnly: (() => {
-            const smfUpfs: any[] = (configs.smf as any)?.smf?.pfcp?.client?.upf ?? [];
-            const hasRemoteUpf = smfUpfs.some((u: any) => u.address && !u.address.startsWith('127.'));
+            const smfUpfs = configs.smf?.smf?.pfcp?.client?.upf ?? [];
+            const hasRemoteUpf = smfUpfs.some((u) => u.address && !firstAddress(u.address).startsWith('127.'));
             return !hasRemoteUpf;
           })(),
           localSgwuOnly: (() => {
-            const sgwcSgwus: any[] = (configs.sgwc as any)?.sgwc?.pfcp?.client?.sgwu ?? [];
-            const hasRemoteSgwu = sgwcSgwus.some((u: any) => u.address && !u.address.startsWith('127.'));
+            const sgwcSgwus = configs.sgwc?.sgwc?.pfcp?.client?.sgwu ?? [];
+            const hasRemoteSgwu = sgwcSgwus.some((u) => u.address && !firstAddress(u.address).startsWith('127.'));
             return !hasRemoteSgwu;
           })(),
           sgwcPfcpIP: (() => {
-            const servers: any[] = (configs.sgwc as any)?.sgwc?.pfcp?.server ?? [];
-            return servers.find((s: any) => !s.address?.startsWith('127.'))?.address || '';
+            const servers = configs.sgwc?.sgwc?.pfcp?.server ?? [];
+            return firstAddress(servers.find((s) => !firstAddress(s.address).startsWith('127.'))?.address);
           })(),
           remoteSgwus: (() => {
-            const sgwcSgwus: any[] = (configs.sgwc as any)?.sgwc?.pfcp?.client?.sgwu ?? [];
+            const sgwcSgwus = configs.sgwc?.sgwc?.pfcp?.client?.sgwu ?? [];
             return sgwcSgwus
-              .filter((u: any) => u.address && !u.address.startsWith('127.'))
-              .map((u: any) => ({
-                pfcpIP: u.address,
+              .filter((u) => u.address && !firstAddress(u.address).startsWith('127.'))
+              .map((u) => ({
+                pfcpIP: firstAddress(u.address),
                 gtpuIP: '',
                 tac: u.tac ? (Array.isArray(u.tac) ? u.tac : [u.tac]) : [],
                 label: '',
               }));
           })(),
           sessionPools: (() => {
-            const upfSessions = (configs.upf as any)?.upf?.session || [];
-            if (upfSessions.length > 0) return upfSessions.map((s: any) => ({ subnet: s.subnet || '', gateway: s.gateway || '', dnn: s.dnn || '', dev: s.dev || '' }));
+            const upfSessions = configs.upf?.upf?.session || [];
+            if (upfSessions.length > 0) return upfSessions.map((s) => ({ subnet: s.subnet || '', gateway: s.gateway || '', dnn: s.dnn || '', dev: s.dev || '' }));
             return [
               { subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: '', dev: '' },
               { subnet: '2001:db8:cafe::/48', gateway: '2001:db8:cafe::1', dnn: '', dev: '' },
             ];
           })(),
-          sessionPoolIPv4Subnet: (configs.upf as any)?.upf?.session?.[0]?.subnet || '10.45.0.0/16',
-          sessionPoolIPv4Gateway: (configs.upf as any)?.upf?.session?.[0]?.gateway || '10.45.0.1',
-          sessionPoolIPv6Subnet: (configs.upf as any)?.upf?.session?.[1]?.subnet || '2001:db8:cafe::/48',
+          sessionPoolIPv4Subnet: configs.upf?.upf?.session?.[0]?.subnet || '10.45.0.0/16',
+          sessionPoolIPv4Gateway: configs.upf?.upf?.session?.[0]?.gateway || '10.45.0.1',
+          sessionPoolIPv6Subnet: configs.upf?.upf?.session?.[1]?.subnet || '2001:db8:cafe::/48',
           sessionPoolIPv6Gateway: '2001:db8:cafe::1',
           configureNAT: false,
           natInterface: 'ogstun',

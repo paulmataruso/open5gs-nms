@@ -6,6 +6,7 @@ import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { LabelWithTooltip } from '../../common/UniversalTooltipWrappers';
 import { COMMON_TOOLTIPS, UPF_TOOLTIPS } from '../../../data/tooltips';
 import { useCopyToClipboard } from '../../../hooks/useCopyToClipboard';
+import { addressToText, textToAddress, isAddressList, firstAddress } from './address-field';
 
 interface Props {
   configs: AllConfigs;
@@ -109,19 +110,19 @@ function generateRemoteUpfYaml(form: RemoteUpfForm, smfDisplayAddress: string): 
 
 export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDataConsumed }: Props): JSX.Element {
   // ── Local UPF (upf.yaml) ──
-  const upfFullYaml = configs.upf as any;
+  const upfFullYaml = configs.upf;
   const upf = upfFullYaml?.upf || {};
   const pfcpServer = upf.pfcp?.server?.[0] || { address: '127.0.0.7' };
   const gtpuServer = upf.gtpu?.server?.[0] || { address: '10.0.1.155' };
 
   // ── SMF (smf.yaml) — PFCP UPF client list ──
-  const smfFullYaml = configs.smf as any;
+  const smfFullYaml = configs.smf;
   const smf = smfFullYaml?.smf || {};
-  const upfClients: Array<{ address: string }> = smf.pfcp?.client?.upf || [{ address: '127.0.0.7' }];
+  const upfClients = smf.pfcp?.client?.upf || [{ address: '127.0.0.7' }];
 
-  const smfSbiAddress: string = smf.sbi?.server?.[0]?.address || '';
-  const smfPfcpServer0: string = smf.pfcp?.server?.[0]?.address || '';
-  const smfPfcpServer1: string = smf.pfcp?.server?.[1]?.address || '';
+  const smfSbiAddress = addressToText(smf.sbi?.server?.[0]?.address);
+  const smfPfcpServer0 = addressToText(smf.pfcp?.server?.[0]?.address);
+  const smfPfcpServer1 = addressToText(smf.pfcp?.server?.[1]?.address);
 
   // Find the first real routable (non-loopback) SMF address to show in the
   // remote UPF generator. Priority: PFCP server[1] (the one the user just
@@ -314,8 +315,8 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
             <div className="grid grid-cols-2 gap-4">
               <FieldRow
                 label="Address"
-                value={pfcpServer.address}
-                onChange={(v) => updateUpf({ pfcp: { ...upf.pfcp, server: [{ ...pfcpServer, address: v }] } })}
+                value={addressToText(pfcpServer.address)}
+                onChange={(v) => updateUpf({ pfcp: { ...upf.pfcp, server: [{ ...pfcpServer, address: textToAddress(v, isAddressList(pfcpServer.address)) }] } })}
                 placeholder="127.0.0.7"
                 tooltip="Where this UPF listens for PFCP (N4) control-plane requests from the SMF — session establishment, modification, and deletion rules all arrive here. Can safely be loopback (127.0.0.7) when SMF and UPF run on the same host, unlike the GTP-U address below which must always be real and routable. Must exactly match the address configured on SMF's own pfcp.client.upf list, or the two will never form a PFCP association and PDU sessions will fail even though registration otherwise succeeds."
               />
@@ -346,12 +347,12 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
               <div>
                 <FieldRow
                   label="Address"
-                  value={gtpuServer.address}
-                  onChange={(v) => updateUpf({ gtpu: { server: [{ ...gtpuServer, address: v }] } })}
+                  value={addressToText(gtpuServer.address)}
+                  onChange={(v) => updateUpf({ gtpu: { ...upf.gtpu, server: [{ ...gtpuServer, address: textToAddress(v, isAddressList(gtpuServer.address)) }] } })}
                   placeholder="10.0.1.155"
                   tooltip={UPF_TOOLTIPS.gtpu_address}
                 />
-                {isLoopback(gtpuServer.address) && (
+                {isLoopback(firstAddress(gtpuServer.address)) && (
                   <div className="mt-1.5 flex items-start gap-1.5 text-xs text-amber-400">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                     <span>GTP-U address is loopback — remote radios will not be able to send user traffic here.</span>
@@ -401,7 +402,7 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
                   {(upf.session?.length || 0) > 1 && (
                     <button
                       onClick={() => {
-                        const updated = [...upf.session];
+                        const updated = [...(upf.session ?? [])];
                         updated.splice(i, 1);
                         updateUpf({ session: updated });
                       }}
@@ -467,8 +468,8 @@ export function UpfEditor({ configs, onChange, onApply, editUpfData, onEditUpfDa
             <div className="grid grid-cols-2 gap-4">
               <FieldRow
                 label="Address"
-                value={upf.metrics?.server?.[0]?.address || ''}
-                onChange={(v) => updateUpf({ metrics: { server: [{ address: v, port: upf.metrics?.server?.[0]?.port || 9090 }] } })}
+                value={addressToText(upf.metrics?.server?.[0]?.address)}
+                onChange={(v) => { const f = upf.metrics?.server?.[0] ?? {}; updateUpf({ metrics: { ...upf.metrics, server: [{ ...f, address: textToAddress(v, isAddressList(f.address)), port: f.port ?? 9090 }] } }); }}
                 tooltip={COMMON_TOOLTIPS.metrics_address}
               />
               <FieldRow

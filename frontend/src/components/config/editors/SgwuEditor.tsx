@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import type { AllConfigs } from '../../../types';
 import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { useCopyToClipboard } from '../../../hooks/useCopyToClipboard';
+import { addressToText, firstAddress } from './address-field';
 
 interface Props {
   configs: AllConfigs;
@@ -63,18 +64,18 @@ function generateRemoteSgwuYaml(form: RemoteSgwuForm, sgwcDisplayAddress: string
 
 export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgwuDataConsumed }: Props): JSX.Element {
   // ── Local SGW-U (sgwu.yaml) ──
-  const sgwuFullYaml = configs.sgwu as any;
+  const sgwuFullYaml = configs.sgwu;
   const sgwu = sgwuFullYaml?.sgwu || {};
   const pfcpServer = sgwu.pfcp?.server?.[0] || { address: '127.0.0.6' };
   const gtpuServer = sgwu.gtpu?.server?.[0] || { address: '10.0.1.175' };
 
   // ── SGW-C (sgwc.yaml) — PFCP SGW-U client list ──
-  const sgwcFullYaml = configs.sgwc as any;
+  const sgwcFullYaml = configs.sgwc;
   const sgwc = sgwcFullYaml?.sgwc || {};
-  const sgwuClients: Array<{ address: string }> = sgwc.pfcp?.client?.sgwu || [{ address: '127.0.0.6' }];
+  const sgwuClients = sgwc.pfcp?.client?.sgwu || [{ address: '127.0.0.6' }];
 
-  const sgwcPfcpServer0: string = sgwc.pfcp?.server?.[0]?.address || '';
-  const sgwcPfcpServer1: string = sgwc.pfcp?.server?.[1]?.address || '';
+  const sgwcPfcpServer0 = addressToText(sgwc.pfcp?.server?.[0]?.address);
+  const sgwcPfcpServer1 = addressToText(sgwc.pfcp?.server?.[1]?.address);
 
   const sgwcRealAddress: string =
     (!isLoopback(sgwcPfcpServer1) && sgwcPfcpServer1 ? sgwcPfcpServer1 : '') ||
@@ -284,7 +285,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
             </p>
             <input aria-label="SGW-C address to dial"
               className="nms-input font-mono text-sm"
-              value={(sgwu.pfcp?.client?.sgwc?.[0]?.address) || ''}
+              value={addressToText(sgwu.pfcp?.client?.sgwc?.[0]?.address)}
               onChange={e => {
                 const v = e.target.value.trim();
                 const pfcp = { ...sgwu.pfcp };
@@ -316,7 +317,7 @@ export function SgwuEditor({ configs, onChange, onApply, editSgwuData, onEditSgw
                   onChange={e => updateSgwu({ gtpu: { server: [{ ...gtpuServer, address: e.target.value }] } })}
                   placeholder="10.0.1.175"
                 />
-                {isLoopback(gtpuServer.address) && (
+                {isLoopback(firstAddress(gtpuServer.address)) && (
                   <div className="mt-1.5 flex items-start gap-1.5 text-xs text-amber-400">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                     <span>GTP-U address is loopback — remote eNodeBs cannot send user traffic here.</span>
