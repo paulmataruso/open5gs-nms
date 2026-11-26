@@ -1,4 +1,5 @@
 import { ipv4CidrOverlaps, cidrNetworkRange } from './ip-utils';
+import { YamlSession } from '../entities/open5gs-yaml';
 
 export interface DnnDevEntry {
   dnn: string;
@@ -27,8 +28,8 @@ export interface DnnDevEntry {
 // session with no matching UPF entry, so a caller can warn/log without aborting the
 // whole join — same posture #28 established.
 export function resolveDnnDevPairs(
-  smfSessions: any[],
-  upfSessions: any[],
+  smfSessions: YamlSession[],
+  upfSessions: YamlSession[],
   onUnresolved?: (dnn: string, subnet: string | null) => void,
 ): DnnDevEntry[] {
   const entries: DnnDevEntry[] = [];
@@ -39,11 +40,17 @@ export function resolveDnnDevPairs(
     let dev = upfSessions?.find((u) => u?.dnn === smfSess.dnn)?.dev;
 
     if (!dev && smfSess.subnet) {
-      const isV4 = !String(smfSess.subnet).includes(':');
-      const bySubnet = upfSessions?.find((u) => u?.subnet === smfSess.subnet)
+      // Hoisted out of the closures below: the guard above narrows
+      // smfSess.subnet here, but that narrowing does not survive into a
+      // callback, since TypeScript cannot know the property is unchanged by
+      // the time it runs. The String() wrappers are kept so behaviour is
+      // identical for a hand-edited file holding a non-string subnet.
+      const smfSubnet = smfSess.subnet;
+      const isV4 = !String(smfSubnet).includes(':');
+      const bySubnet = upfSessions?.find((u) => u?.subnet === smfSubnet)
         ?? (isV4
           ? upfSessions?.find((u) => u?.subnet && !String(u.subnet).includes(':')
-            && ipv4CidrOverlaps(u.subnet, smfSess.subnet))
+            && ipv4CidrOverlaps(u.subnet, smfSubnet))
           : undefined);
       dev = bySubnet?.dev;
     }

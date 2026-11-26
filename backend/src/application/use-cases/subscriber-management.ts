@@ -40,8 +40,8 @@ export class SubscriberManagementUseCase {
   // fix) — see that file's comment for the dnn/subnet/CIDR-overlap fallback chain.
   private async resolveDnnDevMap(): Promise<Map<string, string>> {
     const [smf, upf] = await Promise.all([this.configRepo.loadSmf(), this.configRepo.loadUpf()]);
-    const smfSessions = ((smf as any).session ?? []) as any[];
-    const upfSessions = ((upf as any).session ?? []) as any[];
+    const smfSessions = smf.session ?? [];
+    const upfSessions = upf.session ?? [];
 
     const pairs = resolveDnnDevPairs(smfSessions, upfSessions, (dnn, subnet) => {
       this.logger.warn(

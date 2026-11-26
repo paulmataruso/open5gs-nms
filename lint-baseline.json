@@ -37,6 +37,9 @@
     "An eleventh typed SASBench's REST API and Kea's config JSON, 3889 -> 3778.",
     "What is left is concentrated in the YAML config boundary, which CLAUDE.md",
     "pattern #2 reserves for its own session, plus Phase 6's long tail.",
+    "A twelfth typed the Open5GS YAML documents (3778 -> 3533) and a thirteenth",
+    "fixed SmfSessionConfig/UpfSessionConfig, which declared a nested subnet",
+    "list no real file produces, 3533 -> 3488.",
     "The numbers recorded below are the live ones; this prose is not, so trust",
     "the fields.",
     "",
@@ -48,7 +51,7 @@
   ],
   "measuredAt": "2026-11-26",
   "backend": {
-    "errors": 3533,
+    "errors": 3488,
     "warnings": 405,
     "files": 438,
     "filesWithFindings": 243,
