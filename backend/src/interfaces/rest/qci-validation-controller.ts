@@ -22,6 +22,7 @@ import {
   HOST_ROOT, readImsState, ImsState, TestIdentity,
   provisionPyhssTestSubscriber, deprovisionPyhssTestSubscriber, setScscfTestAuthMode,
   ensureLinphoneInstalled, startLinphoneSession, LinphoneSession, linphonerc,
+  randomTestImsi,
 } from './volte-validation-controller';
 
 const execFileAsync = promisify(execFile);
@@ -370,7 +371,9 @@ export async function runQciE2ETest(
 
     const identityA: TestIdentity = { imsi: imsi!, msisdn: '9' + crypto.randomInt(0, 10000000000).toString().padStart(10, '0'), ki: k, opc };
     identityB = {
-      imsi: `${mcc}${mnc.padStart(3, '0')}900${crypto.randomInt(0, 100000).toString().padStart(5, '0')}`.slice(0, 15).padEnd(15, '2'),
+      // MNC at its real width -- see imsiPlmnPrefix(); padding to 3 put this
+      // identity in a different PLMN than the core broadcasts.
+      imsi: randomTestImsi(mcc, mnc, 2),
       msisdn: '9' + crypto.randomInt(0, 10000000000).toString().padStart(10, '0'),
       ki: crypto.randomBytes(16).toString('hex').toUpperCase(),
       opc: crypto.randomBytes(16).toString('hex').toUpperCase(),

@@ -43,9 +43,16 @@
 // defaults and the editors too, not just /etc/open5gs.
 //
 // `mcc`/`mnc`/`sd` are STRINGS, and that is load-bearing rather than cosmetic:
-// js-yaml reads a bare `070` as octal 56, so loadRaw() re-reads those three
-// keys out of the raw text and substitutes the string form back in
-// (fixMccMncSdFromRawYaml). Confirmed live: mcc '001', mnc '01', sd '19cde1'.
+// a bare `mcc: 001` parses to the NUMBER 1 and the leading zeros are gone for
+// good, so loadRaw() re-reads those three keys out of the raw text and
+// substitutes the string form back in (fixMccMncSdFromRawYaml). Confirmed
+// live: mcc '001', mnc '01', sd '19cde1'. Note the width cannot be recovered
+// from the number afterwards -- padding `mnc: 070` (parsed 70) to the 2-digit
+// MNC width gives "70", a different network -- which is why the text is the
+// only source. (Earlier revisions of this comment blamed YAML 1.1 OCTAL and
+// cited 070 = 56. Measured false on js-yaml 4.3.1: `070` is decimal 70 and
+// octal needs an explicit `0o` prefix. Pinned by
+// infrastructure/yaml/__tests__/jsyaml-leading-zero.test.ts.)
 // Typing them as numbers would invite arithmetic on a value that is really a
 // zero-padded identifier.
 //

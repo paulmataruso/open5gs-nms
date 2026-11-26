@@ -1151,7 +1151,6 @@ export function ValidationPage() {
   const [sd, setSd] = useState('');
   const [dnn, setDnn] = useState('');
   const [amfIp, setAmfIp] = useState('');
-  const [upfIp, setUpfIp] = useState('');
 
   // 4G params
   const [enable4G, setEnable4G] = useState(false);
@@ -1227,7 +1226,6 @@ export function ValidationPage() {
       if (cfg.dnns[0]) setDnn(cfg.dnns[0]);
       if (cfg.apns[0]) setApn(cfg.apns[0]);
       if (cfg.amfIp) setAmfIp(cfg.amfIp);
-      if (cfg.upfIp) setUpfIp(cfg.upfIp);
     } catch (e) {
       toast.error(`Config inference failed: ${e}`);
     } finally {
@@ -1251,7 +1249,6 @@ export function ValidationPage() {
         dnnOverride: dnn || undefined,
         apnOverride: apn || undefined,
         amfIpOverride: amfIp || undefined,
-        upfIpOverride: upfIp || undefined,
       }));
     } catch (e) {
       toast.error(`Failed to start: ${e}`);
@@ -1272,7 +1269,7 @@ export function ValidationPage() {
     }]);
 
     startPolling(sessionId);
-  }, [enable5G, enable4G, gnbCount, gnbUeCount, enbCount, enbUeCount, sst, sd, dnn, apn, amfIp, upfIp, startPolling]);
+  }, [enable5G, enable4G, gnbCount, gnbUeCount, enbCount, enbUeCount, sst, sd, dnn, apn, amfIp, startPolling]);
 
   const handleStop = useCallback(async (id: string) => {
     try {
@@ -1477,17 +1474,26 @@ export function ValidationPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-nms-text-dim mb-1">UPF IP <span className="text-nms-text-dim/50">(GTP-U)</span></label>
-                    <input aria-label="UPF IP (GTP-U)"
-                      type="text" value={upfIp} onChange={e => setUpfIp(e.target.value)}
-                      placeholder={inferredCfg?.upfIp ?? '10.0.0.2'}
-                      className="w-full bg-nms-surface border border-nms-border rounded px-2 py-1 text-sm text-nms-text font-mono"
+                    <label className="block text-xs text-nms-text-dim mb-1" htmlFor="validation-upf-ip">
+                      UPF IP <span className="text-nms-text-dim/50">(GTP-U, read-only)</span>
+                    </label>
+                    {/* Read-only on purpose: the simulated RAN has nowhere to put a
+                        UPF address. UERANSIM's gNB learns the GTP-U endpoint over
+                        NGAP and srsenb takes its S-GW from the MME, so this was an
+                        editable field whose value was sent and silently discarded.
+                        Shown because seeing which UPF the core will use is useful. */}
+                    <input id="validation-upf-ip" aria-label="UPF IP (GTP-U), read-only"
+                      type="text" readOnly value={inferredCfg?.upfIp ?? ''}
+                      placeholder="inferred from upf.yaml"
+                      className="w-full bg-nms-surface-2 border border-nms-border rounded px-2 py-1 text-sm text-nms-text-dim font-mono cursor-default"
                     />
                   </div>
                 </div>
                 <p className="text-xs text-nms-text-dim">
-                  AMF must be reachable via SCTP. UPF GTP-U port 2152 must not conflict with open5gs-smfd.
-                  Values are inferred from amf.yaml / upf.yaml automatically.
+                  AMF must be reachable via SCTP, and is inferred from amf.yaml — override it
+                  only if the simulated RAN needs a different address. UPF GTP-U port 2152 must
+                  not conflict with open5gs-smfd; the address is shown for reference only,
+                  because the simulated gNB learns it over NGAP rather than from config.
                 </p>
               </div>
             )}

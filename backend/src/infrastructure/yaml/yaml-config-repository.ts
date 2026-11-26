@@ -239,6 +239,63 @@ export function convertMapsArrayToRepeatedMapKeys(content: string): string {
   return output.join('\n');
 }
 
+/**
+ * Read MCC/MNC/SD values from the raw YAML text to preserve leading zeros
+ * and strip any surrounding quotes that were present in the file.
+ */
+export function restoreMccMncSdFromRawYaml(rawYaml: string, doc: unknown): unknown {
+  const mccValues: string[] = [];
+  const mncValues: string[] = [];
+  const sdValues: string[] = [];
+
+  // These lists are INDEX-matched against the parsed tree in document order
+  // (see replaceMccMncSdValues), so each key must be collected in ONE pass:
+  // scanning bare and quoted forms separately appends in pass order instead
+  // and would assign a value to the wrong occurrence. Quoted forms are
+  // accepted because, while the save path always writes these unquoted, a
+  // hand-edited file can carry either -- previously `mcc`/`mnc` matched the
+  // bare form only, so a quoted one was skipped and every later occurrence
+  // in that file shifted by one.
+  const scalar = (key: string): RegExp =>
+    new RegExp(`^\\s*${key}:\\s*(?:"([0-9a-fA-F]+)"|'([0-9a-fA-F]+)'|([0-9a-fA-F]+))\\s*$`, 'gm');
+  const valueOf = (m: RegExpMatchArray): string => m[1] ?? m[2] ?? m[3];
+
+  for (const m of rawYaml.matchAll(scalar('mcc'))) mccValues.push(valueOf(m));
+  for (const m of rawYaml.matchAll(scalar('mnc'))) mncValues.push(valueOf(m));
+  for (const m of rawYaml.matchAll(scalar('sd'))) sdValues.push(valueOf(m));
+
+  return replaceMccMncSdValues(doc, mccValues, mncValues, sdValues, {
+    mccIndex: 0, mncIndex: 0, sdIndex: 0,
+  });
+}
+
+function replaceMccMncSdValues(
+  obj: unknown,
+  mccValues: string[],
+  mncValues: string[],
+  sdValues: string[],
+  indices: { mccIndex: number; mncIndex: number; sdIndex: number },
+): unknown {
+  if (Array.isArray(obj)) {
+    return obj.map(item => replaceMccMncSdValues(item, mccValues, mncValues, sdValues, indices));
+  }
+  if (!isYamlMap(obj)) return obj;
+
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (key === 'mcc' && indices.mccIndex < mccValues.length) {
+      result[key] = mccValues[indices.mccIndex++];
+    } else if (key === 'mnc' && indices.mncIndex < mncValues.length) {
+      result[key] = mncValues[indices.mncIndex++];
+    } else if (key === 'sd' && indices.sdIndex < sdValues.length) {
+      result[key] = sdValues[indices.sdIndex++];
+    } else {
+      result[key] = replaceMccMncSdValues(value, mccValues, mncValues, sdValues, indices);
+    }
+  }
+  return result;
+}
+
 // NOTE: this class used to keep a `rawCache` of every parsed document. It was
 // written in two places and READ IN NONE, so it cached nothing -- it only held
 // every config in memory and gave a future reader a trap, because saveRaw()
@@ -543,7 +600,7 @@ export class YamlConfigRepository implements IConfigRepository {
       // Convert them to a maps: array so js-yaml can parse all entries.
       const normalized = service === 'mme' ? convertRepeatedMapKeysToArray(content) : content;
 
-      // js-yaml may interpret bare 010 (MNC) as octal/decimal.
+      // A bare `mcc: 001` parses to the number 1, losing the leading zeros.
       // Parse first, then restore MCC/MNC/SD from raw text.
       const loaded: unknown = yaml.load(normalized);
       if (!isYamlMap(loaded)) {
@@ -600,10 +657,13 @@ export class YamlConfigRepository implements IConfigRepository {
     // plain `yaml.load()`, NOT through loadRaw()'s own fixMccMncSdFromRawYaml()
     // string-preservation step. Any partial-patch save (a caller's `doc` that
     // doesn't include, say, plmn_support because it's only patching sbi) merges
-    // in whatever plain yaml.load() produced for the untouched fields — and
-    // js-yaml's default (YAML 1.1) schema reads a leading-zero bare scalar like
-    // `070` as OCTAL (070 = 56 decimal), silently corrupting any mcc/mnc/sd
-    // value with a leading zero that a save call doesn't explicitly re-supply.
+    // in whatever plain yaml.load() produced for the untouched fields — and a
+    // leading-zero bare scalar loses its zeros there (`001` -> the number 1),
+    // silently corrupting any mcc/mnc/sd value with a leading zero that a save
+    // call doesn't explicitly re-supply. (This comment used to say js-yaml read
+    // `070` as OCTAL 56. Measured false on js-yaml 4.3.1 — it is decimal 70,
+    // octal needs `0o` — but the corruption it describes is real and the fix is
+    // unchanged. See __tests__/jsyaml-leading-zero.test.ts.)
     // Confirmed live: amf.yaml's guami/tai/plmn_support mcc/mnc were correctly
     // "001"/"01" right after one save, then silently became the numbers 1/1
     // after a second, sbi-only save merged over them. loadRaw() already solves
@@ -895,61 +955,8 @@ export class YamlConfigRepository implements IConfigRepository {
     return value;
   }
 
-  /**
-   * Read MCC/MNC/SD values from the raw YAML text to preserve leading zeros
-   * and strip any surrounding quotes that were present in the file.
-   */
   private fixMccMncSdFromRawYaml(rawYaml: string, doc: unknown): unknown {
-    const mccValues: string[] = [];
-    const mncValues: string[] = [];
-    const sdValues: string[] = [];
-
-    // These lists are INDEX-matched against the parsed tree in document order
-    // (see replaceMccMncSdValues), so each key must be collected in ONE pass:
-    // scanning bare and quoted forms separately appends in pass order instead
-    // and would assign a value to the wrong occurrence. Quoted forms are
-    // accepted because, while the save path always writes these unquoted, a
-    // hand-edited file can carry either -- previously `mcc`/`mnc` matched the
-    // bare form only, so a quoted one was skipped and every later occurrence
-    // in that file shifted by one.
-    const scalar = (key: string): RegExp =>
-      new RegExp(`^\\s*${key}:\\s*(?:"([0-9a-fA-F]+)"|'([0-9a-fA-F]+)'|([0-9a-fA-F]+))\\s*$`, 'gm');
-    const valueOf = (m: RegExpMatchArray): string => m[1] ?? m[2] ?? m[3];
-
-    for (const m of rawYaml.matchAll(scalar('mcc'))) mccValues.push(valueOf(m));
-    for (const m of rawYaml.matchAll(scalar('mnc'))) mncValues.push(valueOf(m));
-    for (const m of rawYaml.matchAll(scalar('sd'))) sdValues.push(valueOf(m));
-
-    return this.replaceMccMncSdValues(doc, mccValues, mncValues, sdValues, {
-      mccIndex: 0, mncIndex: 0, sdIndex: 0,
-    });
-  }
-
-  private replaceMccMncSdValues(
-    obj: unknown,
-    mccValues: string[],
-    mncValues: string[],
-    sdValues: string[],
-    indices: { mccIndex: number; mncIndex: number; sdIndex: number },
-  ): unknown {
-    if (Array.isArray(obj)) {
-      return obj.map(item => this.replaceMccMncSdValues(item, mccValues, mncValues, sdValues, indices));
-    }
-    if (!isYamlMap(obj)) return obj;
-
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (key === 'mcc' && indices.mccIndex < mccValues.length) {
-        result[key] = mccValues[indices.mccIndex++];
-      } else if (key === 'mnc' && indices.mncIndex < mncValues.length) {
-        result[key] = mncValues[indices.mncIndex++];
-      } else if (key === 'sd' && indices.sdIndex < sdValues.length) {
-        result[key] = sdValues[indices.sdIndex++];
-      } else {
-        result[key] = this.replaceMccMncSdValues(value, mccValues, mncValues, sdValues, indices);
-      }
-    }
-    return result;
+    return restoreMccMncSdFromRawYaml(rawYaml, doc);
   }
 
   private preserveEmptyClient(obj: unknown): unknown {

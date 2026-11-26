@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import * as crypto from 'crypto';
+import { imsiPlmnPrefix, msinLength } from '../../domain/services/read-plmn';
 import * as fs from 'fs';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
@@ -78,10 +79,16 @@ export async function ensureLinphoneInstalled(): Promise<void> {
 // block within the real PLMN so they can never collide with a genuine
 // subscriber and are unambiguous in logs/DBs as test-only.
 
+export const TEST_MSIN_PREFIX = '900';
+
 export function randomTestImsi(mcc: string, mnc: string, idx: number): string {
-  const plmn = mcc + mnc.padStart(3, '0');
-  const suffix = '900' + crypto.randomInt(0, 100000).toString().padStart(5, '0');
-  return (plmn + suffix).slice(0, 15).padEnd(15, String(idx));
+  // MNC at its REAL width -- see imsiPlmnPrefix(). Padding to 3 put these test
+  // subscribers in a DIFFERENT PLMN than the one the comment above claims, so
+  // they were neither "within the real PLMN" nor collision-proof against it.
+  const msinLen = msinLength(mcc, mnc);
+  const random = crypto.randomInt(0, 100000).toString().padStart(5, '0');
+  const msin = (TEST_MSIN_PREFIX + random).slice(0, msinLen).padEnd(msinLen, String(idx));
+  return imsiPlmnPrefix(mcc, mnc) + msin;
 }
 
 export interface TestIdentity {

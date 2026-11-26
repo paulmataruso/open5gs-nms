@@ -10,7 +10,17 @@ import pino from 'pino';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { Subscriber } from '../../domain/entities/subscriber';
 import { requireAdmin } from './middleware/auth-middleware';
-import { convertRepeatedMapKeysToArray } from '../../infrastructure/yaml/yaml-config-repository';
+import { convertRepeatedMapKeysToArray, restoreMccMncSdFromRawYaml } from '../../infrastructure/yaml/yaml-config-repository';
+import {
+  AmfYamlDocument,
+  MmeYamlDocument,
+  SmfYamlDocument,
+  UpfYamlDocument,
+  YamlDocumentCommon,
+  YamlEndpoint,
+  YamlServerEntry,
+  YamlSession,
+} from '../../domain/entities/open5gs-yaml';
 import { createDummyInterface, deleteDummyInterface, nsenter, dummyNetdevPath, dummyNetworkPath } from '../../infrastructure/network/dummy-interface';
 import { ipToNum, numToIp, cidrRange } from '../../domain/services/ip-utils';
 import { killStrayQciHwTestProcesses } from '../../application/use-cases/ran/qci-hw-test-runner';
@@ -325,13 +335,6 @@ export async function dockerKill(name: string): Promise<void> {
   try { await execFileAsync('docker', ['rm', '-f', name], { timeout: 10_000 }); } catch { /* already gone */ }
 }
 
-async function dockerLogs(name: string): Promise<string> {
-  try {
-    const { stdout, stderr } = await execFileAsync('docker', ['logs', '--tail', '500', name], { timeout: 10_000 });
-    return stdout + stderr;
-  } catch { return ''; }
-}
-
 export async function dockerPull(image: string): Promise<void> {
   await execFileAsync('docker', ['pull', image], { timeout: 300_000 });
 }
@@ -359,7 +362,45 @@ export async function dockerBuild(tag: string, contextDir: string): Promise<void
 
 // ─── Config inference ──────────────────────────────────────────────────────
 
-function readYaml(file: string): Record<string, any> | null {
+/**
+ * Legacy pre-v2 Open5GS files this still tries, so an old deployment keeps
+ * working. Neither exists on a current install (PGW-C/PGW-U were folded into
+ * SMF/UPF), and their sections use the flat pre-`server[]` endpoint form.
+ */
+interface LegacyPgwDocument extends YamlDocumentCommon {
+  pgwu?: { gtpu?: YamlEndpoint | YamlServerEntry[] };
+  pgwc?: { session?: YamlSession[]; subnet?: YamlSession[] };
+}
+
+/**
+ * Message text for a caught value. `catch` binds `unknown`, so interpolating it
+ * directly stringifies whatever it happens to be -- "[object Object]" for a
+ * rejection that is not an Error, which is exactly when the detail matters.
+ */
+function errText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  try { return JSON.stringify(e) ?? String(e); } catch { return String(e); }
+}
+
+/** First value of an Open5GS scalar-or-list field. */
+function firstOf<T>(value: T | T[] | undefined): T | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** First address of a scalar-or-list `address`, or undefined. */
+function firstAddress(value: string | string[] | undefined): string | undefined {
+  const first = firstOf(value);
+  return first === undefined || first === '' ? undefined : first;
+}
+
+/** Server entries of an endpoint, accepting the legacy flat-list form. */
+function serverList(endpoint: YamlEndpoint | YamlServerEntry[] | undefined): YamlServerEntry[] {
+  if (Array.isArray(endpoint)) return endpoint;
+  return endpoint?.server ?? [];
+}
+
+function readYaml<TDoc extends YamlDocumentCommon>(file: string): TDoc | null {
   try {
     let content = fs.readFileSync(file, 'utf8');
     // mme.yaml uses duplicate `map:` keys (Open5GS's own non-standard extension
@@ -371,7 +412,19 @@ function readYaml(file: string): Record<string, any> | null {
     // UE validation by pointing simulated eNBs at the wrong address. See the
     // same transform in yaml-config-repository.ts (the canonical fix).
     if (file.endsWith('mme.yaml')) content = convertRepeatedMapKeysToArray(content);
-    return jsyaml.load(content) as Record<string, any>;
+
+    // Recover mcc/mnc/sd from the raw TEXT, exactly as the repository's own
+    // loadRaw() does. A bare `mcc: 001` parses to the number 1 and the width is
+    // then unrecoverable: inferConfig() used to paper over it with
+    // padStart(3)/padStart(2), which is correct only for a 2-digit MNC. A real
+    // 3-digit MNC with a leading zero (`mnc: 070`, which THIS deployment used
+    // before migrating to 001/01) parses to 70 and pads back to "70" -- a
+    // different network. Sharing the one implementation removes the guess.
+    const doc: unknown = jsyaml.load(content);
+    // The one cast: the FILENAME determines the document shape, and only the
+    // caller naming the file can know it. Same parse boundary as the
+    // repository's own loadRaw().
+    return restoreMccMncSdFromRawYaml(content, doc) as TDoc;
   } catch (err) {
     moduleLogger.warn({ file, err: String(err) }, 'Config file not found or failed to parse — falling back to defaults for this file');
     return null;
@@ -379,14 +432,16 @@ function readYaml(file: string): Record<string, any> | null {
 }
 
 export function inferConfig(): InferredConfig {
-  const amf  = readYaml(path.join(OPEN5GS_DIR, 'amf.yaml'))?.amf   ?? {};
-  const mme  = readYaml(path.join(OPEN5GS_DIR, 'mme.yaml'))?.mme   ?? {};
-  const smf  = readYaml(path.join(OPEN5GS_DIR, 'smf.yaml'))?.smf   ?? {};
-  const upf  = readYaml(path.join(OPEN5GS_DIR, 'upf.yaml'))?.upf   ?? {};
-  const pgwu = readYaml(path.join(OPEN5GS_DIR, 'pgwu.yaml'))?.pgwu ?? {};
-  const pgwc = readYaml(path.join(OPEN5GS_DIR, 'pgwc.yaml'))?.pgwc
-            ?? readYaml(path.join(OPEN5GS_DIR, 'smf.yaml'))?.smf
-            ?? {};
+  const at = (name: string): string => path.join(OPEN5GS_DIR, name);
+  const amf  = readYaml<AmfYamlDocument>(at('amf.yaml'))?.amf ?? {};
+  const mme  = readYaml<MmeYamlDocument>(at('mme.yaml'))?.mme ?? {};
+  const smf  = readYaml<SmfYamlDocument>(at('smf.yaml'))?.smf ?? {};
+  const upf  = readYaml<UpfYamlDocument>(at('upf.yaml'))?.upf ?? {};
+  const pgwu = readYaml<LegacyPgwDocument>(at('pgwu.yaml'))?.pgwu ?? {};
+  const pgwc: { session?: YamlSession[]; subnet?: YamlSession[] } =
+    readYaml<LegacyPgwDocument>(at('pgwc.yaml'))?.pgwc
+    ?? readYaml<SmfYamlDocument>(at('smf.yaml'))?.smf
+    ?? {};
 
   // ── PLMN ──
   const plmnRaw = amf.plmn_support?.[0]?.plmn_id
@@ -394,67 +449,77 @@ export function inferConfig(): InferredConfig {
                ?? mme.gummei?.[0]?.plmn_id
                ?? { mcc: '999', mnc: '70' };
   const plmn = {
-    // Both MCC and MNC need zero-padding, not just MNC — the underlying YAML (amf.yaml's
-    // plmn_support[0].plmn_id, or mme.yaml's tai[0]/gummei[0] equivalent) stores these
-    // unquoted, so js-yaml parses "001" as the *number* 1, silently dropping the leading
-    // zeros. Confirmed live 2026-08-29: this real PLMN's mcc="001" came out of inferConfig()
-    // as bare "1", which srsenb's own config parser flatly rejects ("must be a 3-digit
-    // string" / "mnc=0 is not valid" — the mcc failure cascades into corrupting mnc parsing
-    // too) — crashed the QCI validation test's srsenb instantly, and this same bug is
-    // shared with (so equally latent in) the regular 4G/5G UE validation test.
+    // readYaml() now recovers these from the raw text (restoreMccMncSdFromRawYaml),
+    // so the normal path already yields the exact string the file holds —
+    // including a 3-digit MNC, which padding alone cannot reconstruct.
+    //
+    // The padding stays as a width FLOOR for the degenerate case of a file that
+    // really does hold a bare `mcc: 1`, because srsenb's own config parser
+    // rejects anything that is not a 3-digit MCC ("must be a 3-digit string" /
+    // "mnc=0 is not valid", where the mcc failure cascades into corrupting mnc
+    // parsing too — confirmed live 2026-08-29, it crashed the QCI validation
+    // test's srsenb instantly). It is a no-op on a correctly-recovered value.
     mcc: String(plmnRaw.mcc).padStart(3, '0'),
     mnc: String(plmnRaw.mnc).padStart(2, '0'),
   };
 
   // ── 5G AMF ──
-  const ngapServers = amf.ngap?.server ?? [];
-  const amfIp = ngapServers[0]?.address ?? '127.0.0.5';
+  // `address` is scalar-or-list throughout Open5GS, and every consumer of these
+  // three values wants ONE address: amfIp goes into gnb.yaml's
+  // `amfConfigs[].address` and mmeIp into srsenb's `mme_addr`, neither of which
+  // accepts a list. Reading `.address` straight through would hand UERANSIM an
+  // array the moment an operator binds NGAP to more than one address. Found by
+  // the compiler on 2026-11-26, same class as the GTP-C fix in
+  // yaml-config-repository.ts.
+  const amfIp = firstAddress(amf.ngap?.server?.[0]?.address) ?? '127.0.0.5';
 
   // ── UPF (5G) / PGWU (4G) ──
-  const upfGtpu = upf.gtpu?.server ?? upf.gtpu ?? [];
-  const pgwuGtpu = pgwu.gtpu?.server ?? pgwu.gtpu ?? [];
-  const upfIp = (Array.isArray(upfGtpu) ? upfGtpu[0]?.address : null)
-             ?? (Array.isArray(pgwuGtpu) ? pgwuGtpu[0]?.address : null)
+  // Both the nested `gtpu.server[]` form and the legacy flat list are accepted.
+  const upfIp = firstAddress(serverList(upf.gtpu)[0]?.address)
+             ?? firstAddress(serverList(pgwu.gtpu)[0]?.address)
              ?? '127.0.0.7';
 
-  const tai5g = amf.tai?.[0] ?? amf.tai ?? {};
-  const tac5g = Number(tai5g.tac ?? 1);
+  // `amf.tai` is always a LIST, so the former `?? amf.tai` fallback could only
+  // ever yield the array itself, whose `.tac` is undefined -- it silently meant
+  // "tac 1". Dropped rather than kept as a fallback that never fired usefully.
+  const tac5g = Number(firstOf(amf.tai?.[0]?.tac) ?? 1);
 
-  const nssaiRaw = amf.plmn_support?.[0]?.s_nssai ?? amf.slice ?? [{ sst: 1 }];
-  const slices: Array<{ sst: number; sd?: string }> = nssaiRaw.map((s: any) => ({
-    sst: Number(s.sst ?? 1),
-    sd: s.sd !== undefined && s.sd !== null
-      ? String(s.sd).padStart(6, '0')
+  // Slices live at plmn_support[].s_nssai. The old `?? amf.slice` fallback read
+  // a key Open5GS does not define anywhere (the compiler is what surfaced it),
+  // so it could never have matched; removed.
+  const nssaiRaw = amf.plmn_support?.[0]?.s_nssai ?? [{ sst: 1 }];
+  const slices: Array<{ sst: number; sd?: string }> = nssaiRaw.map(entry => ({
+    sst: Number(entry.sst ?? 1),
+    sd: entry.sd !== undefined && entry.sd !== null
+      ? String(entry.sd).padStart(6, '0')
       : undefined,
   }));
 
-  const smfSessions = smf.session ?? smf.subnet ?? [];
+  const smfSessions: YamlSession[] = smf.session ?? [];
   const dnns: string[] = smfSessions.length > 0
-    ? [...new Set<string>(smfSessions.map((s: any) => s.dnn ?? s.apn ?? s.name).filter(Boolean))]
+    ? [...new Set(smfSessions.map(entry => entry.dnn).filter((d): d is string => Boolean(d)))]
     : ['internet'];
 
   const subnets: DnnSubnet[] = smfSessions
-    .filter((s: any) => s.subnet)
-    .map((s: any) => ({
-      dnn: s.dnn ?? s.apn ?? s.name ?? 'internet',
-      cidr: s.subnet as string,
-      gateway: s.gateway ?? s.subnet.split('/')[0].replace(/\.\d+$/, '.1'),
+    .filter((entry): entry is YamlSession & { subnet: string } => Boolean(entry.subnet))
+    .map(entry => ({
+      dnn: entry.dnn ?? 'internet',
+      cidr: entry.subnet,
+      gateway: entry.gateway ?? entry.subnet.split('/')[0].replace(/\.\d+$/, '.1'),
     }));
 
   // ── 4G MME ──
-  const s1apServers = mme.s1ap?.server ?? [];
-  const mmeIp = s1apServers[0]?.address ?? '127.0.0.2';
+  const mmeIp = firstAddress(mme.s1ap?.server?.[0]?.address) ?? '127.0.0.2';
 
-  const tai4g = mme.tai?.[0] ?? {};
-  const tac4g = Number(tai4g.tac ?? 1);
+  const tac4g = Number(firstOf(mme.tai?.[0]?.tac) ?? 1);
 
   const gummei = mme.gummei?.[0] ?? {};
   const mmeGroupId = Number(gummei.mme_gid ?? 2);
   const mmeCode = Number(gummei.mme_code ?? 1);
 
-  const pgwSessions = pgwc.session ?? pgwc.subnet ?? smfSessions;
+  const pgwSessions: YamlSession[] = pgwc.session ?? pgwc.subnet ?? smfSessions;
   const apns: string[] = pgwSessions.length > 0
-    ? [...new Set<string>(pgwSessions.map((s: any) => s.apn ?? s.dnn ?? s.name).filter(Boolean))]
+    ? [...new Set(pgwSessions.map(entry => entry.dnn).filter((d): d is string => Boolean(d)))]
     : dnns;
 
   return { plmn, amfIp, upfIp, tac5g, slices, dnns, subnets, mmeIp, tac4g, mmeGroupId, mmeCode, apns };
@@ -462,7 +527,19 @@ export function inferConfig(): InferredConfig {
 
 // ─── Config file generators ────────────────────────────────────────────────
 
-function buildGnbYaml(idx: number, cfg: InferredConfig, params: any, ngapBindIp: string): string {
+/**
+ * Per-generation overrides handed to the config generators, built at
+ * /start from the request body falling back to the inferred config. Each
+ * generator reads only the fields its own generation has: the 5G pair takes
+ * `dnn`/`amfIp`, the 4G pair takes `apn`.
+ */
+interface GeneratorParams {
+  dnn?: string;
+  apn?: string;
+  amfIp?: string;
+}
+
+function buildGnbYaml(idx: number, cfg: InferredConfig, params: GeneratorParams, ngapBindIp: string): string {
   const { mcc, mnc } = cfg.plmn;
   // linkIp = gtpIp: loopback alias (127.0.3.x).
   //   All of 127.0.0.0/8 routes to lo on Linux — bindable without aliases.
@@ -478,7 +555,7 @@ function buildGnbYaml(idx: number, cfg: InferredConfig, params: any, ngapBindIp:
   const slice = cfg.slices[0];
   const nci = `0x${(idx + 1).toString(16).padStart(9, '0')}`;
 
-  const sliceEntry: Record<string, any> = { sst: slice.sst };
+  const sliceEntry: Record<string, number> = { sst: slice.sst };
   if (slice.sd) sliceEntry.sd = parseInt(slice.sd, 16);
 
   return jsyaml.dump({
@@ -497,17 +574,18 @@ function buildGnbYaml(idx: number, cfg: InferredConfig, params: any, ngapBindIp:
 
 function buildUeYaml(
   imsi: string, k: string, opc: string,
-  gnbIp: string, cfg: InferredConfig, params: any,
+  gnbIp: string, cfg: InferredConfig, params: GeneratorParams,
 ): string {
   const { mcc, mnc } = cfg.plmn;
   const slice = cfg.slices[0];
   const dnn = params.dnn ?? cfg.dnns[0] ?? 'internet';
   const imei = '35' + String(Math.floor(Math.random() * 1e13)).padStart(13, '0');
 
-  const sliceEntry: Record<string, any> = { sst: slice.sst };
+  const sliceEntry: Record<string, number> = { sst: slice.sst };
   if (slice.sd) sliceEntry.sd = parseInt(slice.sd, 16);
 
-  const sessionEntry: Record<string, any> = { type: 'IPv4', apn: dnn, slice: { ...sliceEntry } };
+  const sessionEntry: { type: string; apn: string; slice: Record<string, number> } =
+    { type: 'IPv4', apn: dnn, slice: { ...sliceEntry } };
 
   return jsyaml.dump({
     supi: `imsi-${imsi}`,
@@ -537,7 +615,7 @@ function buildUeYaml(
 // Port allocation: eNB N uses tcp ports (2000+N*2) tx and (2001+N*2) rx.
 // s1c_bind_addr=0.0.0.0: 127.0.4.x can't make SCTP connections to the MME's
 // dummy-interface IP (loopback→non-loopback routing is blocked by the kernel).
-export function buildEnbConf(ueRelIdx: number, cfg: InferredConfig, params: any, s1cBindIp: string): string {
+export function buildEnbConf(ueRelIdx: number, cfg: InferredConfig, params: GeneratorParams, s1cBindIp: string): string {
   const gtpIp  = `${ENB_BASE}.${ueRelIdx + 1}`;
   const enbId = (ueRelIdx + 1).toString(16).padStart(3, '0').toUpperCase();
   const txPort = 2000 + ueRelIdx * 2;
@@ -635,7 +713,7 @@ nr_cell_list = ();
 `.trim();
 }
 
-export function buildUeConf(imsi: string, k: string, opc: string, ueRelIdx: number, cfg: InferredConfig, params: any): string {
+export function buildUeConf(imsi: string, k: string, opc: string, ueRelIdx: number, cfg: InferredConfig, params: GeneratorParams): string {
   // UE N pairs with eNB N: swap tx/rx relative to eNB's ports
   const enbTxPort = 2000 + ueRelIdx * 2;
   const enbRxPort = enbTxPort + 1;
@@ -898,7 +976,7 @@ export function makeSubscriber(
   imsi: string, k: string, opc: string,
   sessionId: string, idx: number,
   ueIp: string,
-  cfg: InferredConfig, params: any,
+  cfg: InferredConfig, params: GeneratorParams,
 ): Subscriber {
   const slice = cfg.slices[0];
   const dnn = params.dnn ?? params.apn ?? cfg.dnns[0] ?? 'internet';
@@ -1355,21 +1433,34 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
   });
 
   // POST /api/validation/start — create and start a test session
-  router.post('/start', requireAdmin, async (req: Request, res: Response) => {
+  // Not `async`: this handler validates, answers immediately and detaches the
+  // provisioning task below, so it has nothing to await.
+  router.post('/start', requireAdmin, (req: Request, res: Response) => {
     const {
       enable5G = true, enable4G = false,
       gnbCount = 1, gnbUeCount = 5,
       enbCount = 1, enbUeCount = 5,
       sliceOverride, dnnOverride, apnOverride,
-      amfIpOverride, upfIpOverride,
+      amfIpOverride,
     } = req.body as {
       enable5G?: boolean; enable4G?: boolean;
       gnbCount?: number; gnbUeCount?: number;
       enbCount?: number; enbUeCount?: number;
       sliceOverride?: { sst: number; sd?: string };
       dnnOverride?: string; apnOverride?: string;
-      amfIpOverride?: string; upfIpOverride?: string;
+      amfIpOverride?: string;
     };
+    // `upfIpOverride` was accepted here, declared in the frontend client and
+    // sent from an editable "UPF IP (GTP-U)" field -- and then never read, while
+    // amfIpOverride two lines below IS applied. It could not have worked:
+    // UERANSIM's gNB config has no UPF address key at all (it learns the GTP-U
+    // endpoint from the PDU Session Resource Setup over NGAP), and srsenb takes
+    // its S-GW address from the MME. cfg.upfIp therefore only ever reached a
+    // progress log line. Removed from all three places on 2026-11-26 rather
+    // than wired up, so a stale caller fails to compile -- the same reasoning
+    // the SAS Update control was deleted under: a control that cannot do what
+    // it appears to do is worse than no control. The inferred UPF address is
+    // still SHOWN, read-only, since it is genuinely useful to see.
 
     const sessionId = crypto.randomBytes(6).toString('hex');
     const sessionDir = path.join(VALIDATION_DIR, sessionId);
@@ -1389,8 +1480,10 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
 
     res.json({ ok: true, sessionId });
 
-    // Run async — each step logs to session.logs so the UI can show progress
-    (async () => {
+    // Run async — each step logs to session.logs so the UI can show progress.
+    // `void`: the response has already been sent, so this is a deliberately
+    // detached task; its own try/catch records any failure on the session.
+    void (async (): Promise<void> => {
       try {
         step(session, `Session ${sessionId} starting provisioning`, logger);
 
@@ -1404,7 +1497,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           step(session, `Subnets: ${cfg.subnets.map(s => `${s.dnn}=${s.cidr}`).join(', ') || '(none found in smf.yaml)'}`, logger);
           step(session, `DNNs: ${cfg.dnns.join(', ')} | APNs: ${cfg.apns.join(', ')}`, logger);
         } catch (e) {
-          throw new Error(`Failed to read Open5GS config: ${e}`);
+          throw new Error(`Failed to read Open5GS config: ${errText(e)}`);
         }
 
         // ── Step 2: Create working dirs ──
@@ -1423,7 +1516,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           fs.mkdirSync(path.join(sessionDir, 'logs5g'), { recursive: true });
           fs.mkdirSync(path.join(sessionDir, 'logs4g'), { recursive: true });
         } catch (e) {
-          throw new Error(`Failed to create session directory ${sessionDir}: ${e}`);
+          throw new Error(`Failed to create session directory ${sessionDir}: ${errText(e)}`);
         }
 
         const total5G = enable5G ? Number(gnbCount) * Number(gnbUeCount) : 0;
@@ -1446,7 +1539,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           baseImsi = await allocateImsiBlock(totalUes, subscriberRepo, cfg.plmn.mcc + cfg.plmn.mnc);
           step(session, `IMSI block: ${baseImsi} → ${makeImsi(baseImsi, totalUes - 1)}`, logger);
         } catch (e) {
-          throw new Error(`IMSI allocation failed: ${e}`);
+          throw new Error(`IMSI allocation failed: ${errText(e)}`);
         }
 
         // ── Step 4: Allocate IP block ──
@@ -1459,7 +1552,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           baseIpNum = ipToNum(baseIpStr);
           step(session, `IP block: ${baseIpStr} → ${numToIp(baseIpNum + totalUes - 1)}`, logger);
         } catch (e) {
-          throw new Error(`IP allocation failed: ${e}`);
+          throw new Error(`IP allocation failed: ${errText(e)}`);
         }
 
         // ── Step 5: Create subscribers in MongoDB ──
@@ -1476,7 +1569,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           try {
             await subscriberRepo.create(makeSubscriber(imsi, k, opc, sessionId, i, ueIp, cfg, params));
           } catch (e) {
-            throw new Error(`Failed to create subscriber ${imsi} (UE ${i + 1}/${totalUes}): ${e}`);
+            throw new Error(`Failed to create subscriber ${imsi} (UE ${i + 1}/${totalUes}): ${errText(e)}`);
           }
           session.imsis.push(imsi);
 
@@ -1541,7 +1634,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
         if (enable5G) {
           step(session, `Pulling UERANSIM image ${UERANSIM_IMAGE}...`, logger);
           try { await dockerPull(UERANSIM_IMAGE); step(session, 'UERANSIM image ready', logger); }
-          catch (e) { step(session, `WARN: image pull failed (${e}), will try docker run anyway`, logger); }
+          catch (e) { step(session, `WARN: image pull failed (${errText(e)}), will try docker run anyway`, logger); }
         }
         if (enable4G) {
           if (await dockerImageExists(SRSRAN_IMAGE)) {
@@ -1552,7 +1645,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
               await dockerBuild(SRSRAN_IMAGE, SRSRAN_BUILD_CONTEXT);
               step(session, 'srsRAN image built successfully', logger);
             } catch (e) {
-              throw new Error(`Failed to build srsRAN image (${SRSRAN_IMAGE}) from ${SRSRAN_BUILD_CONTEXT}: ${e}`);
+              throw new Error(`Failed to build srsRAN image (${SRSRAN_IMAGE}) from ${SRSRAN_BUILD_CONTEXT}: ${errText(e)}`);
             }
           }
         }
@@ -1585,7 +1678,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
             session.containers.push(name);
             step(session, `5G container started: ${name}`, logger);
           } catch (e) {
-            throw new Error(`Failed to start UERANSIM container: ${e}`);
+            throw new Error(`Failed to start UERANSIM container: ${errText(e)}`);
           }
         }
 
@@ -1609,7 +1702,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
             session.containers.push(name);
             step(session, `4G container started: ${name}`, logger);
           } catch (e) {
-            throw new Error(`Failed to start srsRAN container: ${e}`);
+            throw new Error(`Failed to start srsRAN container: ${errText(e)}`);
           }
         }
 
@@ -1672,9 +1765,12 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
         avgRttMs: rttMatch ? Number(rttMatch[1]) : undefined,
         raw: stdout,
       });
-    } catch (err: any) {
-      // ping exits non-zero on 100% loss — still a valid (negative) result
-      res.json({ ok: true, reachable: false, lossPct: 100, raw: String(err?.stdout ?? err) });
+    } catch (err: unknown) {
+      // ping exits non-zero on 100% loss — still a valid (negative) result.
+      // execFile rejects with an Error carrying the captured streams, so the
+      // output is still worth reporting.
+      const out = (err as { stdout?: string } | null)?.stdout;
+      res.json({ ok: true, reachable: false, lossPct: 100, raw: String(out ?? err) });
     }
   });
 
@@ -1750,7 +1846,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
         try {
           await execFileAsync('docker', ['rm', '-f', name], { timeout: 15_000 });
           results.push(`Removed container: ${name}`);
-        } catch (e) { results.push(`Failed to remove ${name}: ${e}`); }
+        } catch (e) { results.push(`Failed to remove ${name}: ${errText(e)}`); }
       }
 
       // Delete all VAL-TEST-* subscribers directly from MongoDB
@@ -1761,7 +1857,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
           try {
             await subscriberRepo.delete(sub.imsi);
             deleted++;
-          } catch (e) { results.push(`Failed to delete ${sub.imsi}: ${e}`); }
+          } catch (e) { results.push(`Failed to delete ${sub.imsi}: ${errText(e)}`); }
         }
       }
       results.push(`Deleted ${deleted} test subscribers`);
@@ -1785,7 +1881,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
         try {
           await deleteDummyInterface(name);
           results.push(`Removed dummy interface: ${name}`);
-        } catch (e) { results.push(`Failed to remove interface ${name}: ${e}`); }
+        } catch (e) { results.push(`Failed to remove interface ${name}: ${errText(e)}`); }
       }
 
       // Clear in-memory sessions
@@ -1799,7 +1895,7 @@ export function createValidationRouter(subscriberRepo: ISubscriberRepository, lo
       try {
         results.push(...await killStrayQciHwTestProcesses());
         resetQciHwTestRunningFlag();
-      } catch (e) { results.push(`QCI hw test cleanup failed: ${e}`); }
+      } catch (e) { results.push(`QCI hw test cleanup failed: ${errText(e)}`); }
 
       res.json({ ok: true, results });
     } catch (err) {
