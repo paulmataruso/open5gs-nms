@@ -3,6 +3,7 @@ import {
   textToAddress,
   isAddressList,
   firstAddress,
+  firstOf,
 } from '../../../../../frontend/src/components/config/editors/address-field';
 
 // These helpers live in the frontend, which has no test runner of its own
@@ -84,6 +85,29 @@ describe('address field round trip', () => {
       // ...and the reverse ordering is where the join actually breaks:
       expect(isLoopback(firstAddress(['10.0.0.1', '127.0.0.1']))).toBe(false);
       expect(isLoopback(addressToText(['10.0.0.1', '127.0.0.1']))).toBe(false);
+    });
+  });
+
+  describe('firstOf', () => {
+    // Open5GS's scalar-or-list convention is not limited to addresses: tac,
+    // dnn, apn, e_cell_id and nr_cell_id all follow it. A list-valued `tac`
+    // reaching a `number` field is a bug this project has already had on the
+    // backend side, which is why this mirrors auto-config.ts's own firstOf().
+    it('returns a scalar unchanged', () => {
+      expect(firstOf(7)).toBe(7);
+      expect(firstOf('internet')).toBe('internet');
+    });
+    it('returns the first of a list', () => {
+      expect(firstOf([26000, 27000])).toBe(26000);
+      expect(firstOf(['internet', 'ims'])).toBe('internet');
+    });
+    it('returns undefined for absent or empty, so a caller can default', () => {
+      expect(firstOf(undefined)).toBeUndefined();
+      expect(firstOf([])).toBeUndefined();
+    });
+    it('preserves 0, which a `||` fallback would discard', () => {
+      expect(firstOf(0)).toBe(0);
+      expect(firstOf([0])).toBe(0);
     });
   });
 

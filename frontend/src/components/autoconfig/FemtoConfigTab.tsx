@@ -13,6 +13,7 @@ import { CwmpScreenshotsModal } from './CwmpScreenshotsModal';
 import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 import toast from 'react-hot-toast';
 import { clsx } from 'clsx';
+import { firstAddress } from '../config/editors/address-field';
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -962,7 +963,7 @@ export function FemtoConfigTab() {
 
   useEffect(() => {
     configApi.getAll().then(configs => {
-      const ip = (configs.mme as any)?.mme?.s1ap?.server?.[0]?.address || '';
+      const ip = firstAddress(configs.mme?.mme?.s1ap?.server?.[0]?.address);
       if (ip) setMmeIpDefault(ip);
     }).catch(() => {});
     radioTagsApi.getAll().then(setRadioTags).catch(() => {});

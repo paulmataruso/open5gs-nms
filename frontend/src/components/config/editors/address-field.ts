@@ -1,6 +1,6 @@
-// Helpers for editing an Open5GS `address` / `advertise` / `local_address`
-// field, every one of which is `string | string[]` because Open5GS lets an NF
-// bind a single address or a list.
+// Helpers for Open5GS's scalar-or-list convention, which applies to far more
+// than addresses: `address`, `advertise`, `local_address`, `tac`, `dnn`, `apn`,
+// `e_cell_id` and `nr_cell_id` are all "one value, or a list of them".
 //
 // Rendering a list straight into an <input> displays "a, b" and then writes
 // that joined string back as ONE bogus address, silently collapsing the list.
@@ -48,4 +48,17 @@ export function isAddressList(value: string | string[] | undefined): boolean {
 export function firstAddress(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value[0] ?? '';
   return value ?? '';
+}
+
+/**
+ * The first of a scalar-or-list value, for the non-address keys that follow the
+ * same convention: `tac`, `dnn`, `apn`, `e_cell_id`, `nr_cell_id`.
+ *
+ * Named to match the backend's own firstOf() in auto-config.ts, where the same
+ * rule is applied on the way into a config -- a list-valued `tac` reaching a
+ * `number` field is a bug this project has already had on the backend side.
+ */
+export function firstOf<T>(value: T | T[] | undefined): T | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
