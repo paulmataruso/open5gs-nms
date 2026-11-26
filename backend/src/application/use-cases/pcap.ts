@@ -1,7 +1,8 @@
 import pino from 'pino';
 import { XMLParser } from 'fast-xml-parser';
-import { IHostExecutor } from '../../domain/interfaces/host-executor';
+import { IHostExecutor, CommandResult } from '../../domain/interfaces/host-executor';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import type { YamlEndpoint, YamlServerEntry } from '../../domain/entities/open5gs-yaml';
 import { ServiceName } from '../../domain/entities/service-status';
 import { parseIpLinkAddr, HostInterface } from '../../infrastructure/network/ip-link-parser';
 import { readCurrentImsConfig } from '../../interfaces/rest/ims-controller';
@@ -169,7 +170,7 @@ function validateId(id: string): void {
 const pdmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
-  isArray: (name: string) => name === 'proto' || name === 'field' || name === 'packet',
+  isArray: (name: string): boolean => name === 'proto' || name === 'field' || name === 'packet',
   // Wireshark's showname text routinely contains apostrophes ("Don't fragment") and
   // other punctuation XML-escapes as numeric character references (&#x27;) rather
   // than the 5 predefined XML entities — fast-xml-parser only decodes those 5 by
@@ -178,7 +179,27 @@ const pdmlParser = new XMLParser({
   htmlEntities: true,
 });
 
-function pdmlNodeToTree(node: any): PacketTreeNode {
+/**
+ * One `<proto>` or `<field>` element of tshark's PDML, as fast-xml-parser
+ * yields it: attributes prefixed `@_`, and `proto`/`field` children forced to
+ * arrays by the `isArray` option above (without which a lone child collapses
+ * to a bare object and this recursion would be type-inconsistent).
+ */
+interface PdmlNode {
+  '@_name'?: string;
+  '@_showname'?: string;
+  '@_show'?: string;
+  '@_hide'?: string;
+  field?: PdmlNode[];
+  proto?: PdmlNode[];
+}
+
+/** The root PDML document, of which only the first packet is read. */
+interface PdmlDocument {
+  pdml?: { packet?: Array<{ proto?: PdmlNode[] }> };
+}
+
+function pdmlNodeToTree(node: PdmlNode): PacketTreeNode {
   const children: PacketTreeNode[] = [];
   const rawChildren = [
     ...(Array.isArray(node.field) ? node.field : []),
@@ -196,9 +217,10 @@ function pdmlNodeToTree(node: any): PacketTreeNode {
 // the packet list columns) — Wireshark's own Packet Details tree never shows it as
 // a node, so it's dropped here to match.
 function parsePacketTree(pdmlXml: string): PacketTreeNode[] {
-  const parsed = pdmlParser.parse(pdmlXml);
+  // parse() returns `any`; the shape is asserted once here, at the boundary.
+  const parsed = pdmlParser.parse(pdmlXml) as PdmlDocument;
   const packet = parsed?.pdml?.packet?.[0];
-  const protos: any[] = Array.isArray(packet?.proto) ? packet.proto : [];
+  const protos: PdmlNode[] = Array.isArray(packet?.proto) ? packet.proto : [];
   return protos
     .filter(p => p['@_hide'] !== 'yes' && p['@_name'] !== 'geninfo')
     .map(pdmlNodeToTree);
@@ -243,12 +265,12 @@ export class PcapUseCase {
     const all = await this.configRepo.loadAll();
     const descriptors: NfCaptureDescriptor[] = [];
 
-    const sbiPorts = (cfg: any, nf: string, label: string, group: PcapGroup): PcapHostPort[] => {
-      const hostPorts: PcapHostPort[] = [];
-      const sbiAddr = cfg?.sbi?.addr;
-      const addr = Array.isArray(sbiAddr) ? sbiAddr[0] : sbiAddr;
-      if (addr) hostPorts.push({ proto: 'tcp', addr, port: cfg.sbi.port ?? SBI_PORT, role: 'SBI' });
-      return hostPorts;
+    // `nf`, `label` and `group` were parameters this never read -- the
+    // descriptor is assembled by the caller. Dropped 2026-11-26.
+    const sbiPorts = (cfg: { sbi?: { addr: string | string[]; port?: number } } | undefined): PcapHostPort[] => {
+      const addr = firstAddr(cfg?.sbi?.addr);
+      if (!addr) return [];
+      return [{ proto: 'tcp', addr, port: cfg?.sbi?.port ?? SBI_PORT, role: 'SBI' }];
     };
 
     // NFs loaded via YamlConfigRepository's loadGeneric() (mme/hss/pcrf/sgwc/sgwu/
@@ -269,96 +291,122 @@ export class PcapUseCase {
     // than this rawYaml workaround, so it had kept the broken value and was
     // building its filter as `host 127.0.0.1 and udp port 2123` against a real
     // SMF GTP-C address of 127.0.0.4, matching nothing.
-    const rawServer = (section: any): { address?: string; port?: number } | undefined => {
-      const s = section?.server;
-      return Array.isArray(s) ? s[0] : undefined;
+    const rawServer = (endpoint: YamlEndpoint | undefined): YamlServerEntry | undefined => {
+      const servers = endpoint?.server;
+      return Array.isArray(servers) ? servers[0] : undefined;
+    };
+
+    // `address` is scalar-or-list throughout Open5GS, and a BPF filter needs
+    // ONE address. Pushing the raw value put an ARRAY into PcapHostPort.addr
+    // (typed `string`, so nothing complained): `hp.addr.includes('/')` then
+    // resolved to Array.prototype.includes and returned false, and the filter
+    // came out as `host 127.0.0.4,10.0.0.4 and udp port 2152` -- which dumpcap
+    // rejects outright, exiting immediately. That is the same
+    // near-zero-duration-capture symptom the net/host comment below describes.
+    // sbiPorts() 25 lines above already normalised; its neighbours did not.
+    const firstAddr = (value: string | string[] | undefined): string | undefined => {
+      const first = Array.isArray(value) ? value[0] : value;
+      return first === undefined || first === '' ? undefined : first;
     };
 
     // 5G core — SBI mesh, plus role-specific ports where present.
-    const sgc: Array<{ key: keyof typeof all; nf: string; label: string }> = [
-      { key: 'nrf', nf: 'nrf', label: 'NRF' },
-      { key: 'scp', nf: 'scp', label: 'SCP' },
-      { key: 'amf', nf: 'amf', label: 'AMF' },
-      { key: 'smf', nf: 'smf', label: 'SMF' },
-      { key: 'ausf', nf: 'ausf', label: 'AUSF' },
-      { key: 'udm', nf: 'udm', label: 'UDM' },
-      { key: 'udr', nf: 'udr', label: 'UDR' },
-      { key: 'pcf', nf: 'pcf', label: 'PCF' },
-      { key: 'nssf', nf: 'nssf', label: 'NSSF' },
-      { key: 'bsf', nf: 'bsf', label: 'BSF' },
+    // Written out per NF rather than indexed through `(all as any)[key]`: the
+    // SBI-only NFs share one shape, and AMF/SMF have their own extra endpoints
+    // that only exist on their own entity types.
+    const sbiOnly: Array<[string, string, { sbi?: { addr: string | string[]; port?: number } } | undefined]> = [
+      ['nrf', 'NRF', all.nrf],
+      ['scp', 'SCP', all.scp],
+      ['ausf', 'AUSF', all.ausf],
+      ['udm', 'UDM', all.udm],
+      ['udr', 'UDR', all.udr],
+      ['pcf', 'PCF', all.pcf],
+      ['nssf', 'NSSF', all.nssf],
+      ['bsf', 'BSF', all.bsf],
     ];
-    for (const { key, nf, label } of sgc) {
-      const cfg: any = (all as any)[key];
-      if (!cfg) continue;
-      const hostPorts = sbiPorts(cfg, nf, label, '5G');
-      if (nf === 'amf') {
-        const ngapAddr = cfg.ngap?.addr;
-        const addr = Array.isArray(ngapAddr) ? ngapAddr[0] : ngapAddr;
-        if (addr) hostPorts.push({ proto: 'sctp', addr, port: 38412, role: 'NGAP' });
-      }
-      if (nf === 'smf') {
-        const gtpcAddr = cfg.gtpc?.addr;
-        const addr = Array.isArray(gtpcAddr) ? gtpcAddr[0] : gtpcAddr;
-        if (addr) hostPorts.push({ proto: 'udp', addr, port: 2123, role: 'GTP-C' });
-        if (cfg.pfcp?.addr) hostPorts.push({ proto: 'udp', addr: cfg.pfcp.addr, port: cfg.pfcp.port ?? 8805, role: 'PFCP' });
-        if (cfg.freeDiameter) hostPorts.push({ proto: 'tcp', addr: '127.0.0.0/8', port: 3868, role: 'Diameter' });
-      }
+    for (const [nf, label, cfg] of sbiOnly) {
+      const hostPorts = sbiPorts(cfg);
       if (hostPorts.length) descriptors.push({ nf, label, group: '5G', hostPorts });
     }
 
+    if (all.amf) {
+      const hostPorts = sbiPorts(all.amf);
+      const ngap = firstAddr(all.amf.ngap?.addr);
+      if (ngap) hostPorts.push({ proto: 'sctp', addr: ngap, port: 38412, role: 'NGAP' });
+      if (hostPorts.length) descriptors.push({ nf: 'amf', label: 'AMF', group: '5G', hostPorts });
+    }
+
+    if (all.smf) {
+      const hostPorts = sbiPorts(all.smf);
+      const gtpc = firstAddr(all.smf.gtpc?.addr);
+      if (gtpc) hostPorts.push({ proto: 'udp', addr: gtpc, port: all.smf.gtpc?.port ?? 2123, role: 'GTP-C' });
+      const pfcp = firstAddr(all.smf.pfcp?.addr);
+      if (pfcp) hostPorts.push({ proto: 'udp', addr: pfcp, port: all.smf.pfcp?.port ?? 8805, role: 'PFCP' });
+      if (all.smf.freeDiameter) hostPorts.push({ proto: 'tcp', addr: '127.0.0.0/8', port: 3868, role: 'Diameter' });
+      if (hostPorts.length) descriptors.push({ nf: 'smf', label: 'SMF', group: '5G', hostPorts });
+    }
+
     // SEPP1 — real top-level YAML key is "sepp", not "sepp1" (rawYaml only).
-    const sepp1Raw: any = (all as any).sepp1?.rawYaml?.sepp;
+    const sepp1Raw = all.sepp1?.rawYaml?.sepp;
     if (sepp1Raw) {
       const hostPorts: PcapHostPort[] = [];
       const s = rawServer(sepp1Raw.sbi);
-      if (s?.address) hostPorts.push({ proto: 'tcp', addr: s.address, port: s.port ?? SBI_PORT, role: 'SBI' });
+      const addr = firstAddr(s?.address);
+      if (addr) hostPorts.push({ proto: 'tcp', addr, port: s?.port ?? SBI_PORT, role: 'SBI' });
       if (hostPorts.length) descriptors.push({ nf: 'sepp1', label: 'SEPP', group: '5G', hostPorts });
     }
 
     // UPF — GTP-U + PFCP, no SBI. Dedicated loader (loadUpf), flat shape is reliable.
-    const upf: any = (all as any).upf;
+    const upf = all.upf;
     if (upf) {
       const hostPorts: PcapHostPort[] = [];
-      if (upf.gtpu?.addr) hostPorts.push({ proto: 'udp', addr: upf.gtpu.addr, port: upf.gtpu.port ?? 2152, role: 'GTP-U' });
-      if (upf.pfcp?.addr) hostPorts.push({ proto: 'udp', addr: upf.pfcp.addr, port: upf.pfcp.port ?? 8805, role: 'PFCP' });
+      const gtpu = firstAddr(upf.gtpu?.addr);
+      if (gtpu) hostPorts.push({ proto: 'udp', addr: gtpu, port: upf.gtpu?.port ?? 2152, role: 'GTP-U' });
+      const pfcp = firstAddr(upf.pfcp?.addr);
+      if (pfcp) hostPorts.push({ proto: 'udp', addr: pfcp, port: upf.pfcp?.port ?? 8805, role: 'PFCP' });
       if (hostPorts.length) descriptors.push({ nf: 'upf', label: 'UPF', group: '5G', hostPorts });
     }
 
     // 4G EPC — all rawYaml (see note above).
-    const mmeRaw: any = (all as any).mme?.rawYaml?.mme;
+    const mmeRaw = all.mme?.rawYaml?.mme;
     if (mmeRaw) {
       const hostPorts: PcapHostPort[] = [];
       const s1ap = rawServer(mmeRaw.s1ap);
-      if (s1ap?.address) hostPorts.push({ proto: 'sctp', addr: s1ap.address, port: 36412, role: 'S1AP' });
+      const s1apAddr = firstAddr(s1ap?.address);
+      if (s1apAddr) hostPorts.push({ proto: 'sctp', addr: s1apAddr, port: s1ap?.port ?? 36412, role: 'S1AP' });
       const gtpc = rawServer(mmeRaw.gtpc);
-      if (gtpc?.address) hostPorts.push({ proto: 'udp', addr: gtpc.address, port: 2123, role: 'GTP-C' });
+      const gtpcAddr = firstAddr(gtpc?.address);
+      if (gtpcAddr) hostPorts.push({ proto: 'udp', addr: gtpcAddr, port: gtpc?.port ?? 2123, role: 'GTP-C' });
       if (mmeRaw.freeDiameter) hostPorts.push({ proto: 'tcp', addr: '127.0.0.0/8', port: 3868, role: 'Diameter' });
       if (hostPorts.length) descriptors.push({ nf: 'mme', label: 'MME', group: '4G', hostPorts });
     }
-    const hssRaw: any = (all as any).hss?.rawYaml?.hss;
+    const hssRaw = all.hss?.rawYaml?.hss;
     if (hssRaw?.freeDiameter) {
       descriptors.push({ nf: 'hss', label: 'HSS', group: '4G', hostPorts: [{ proto: 'tcp', addr: '127.0.0.0/8', port: 3868, role: 'Diameter' }] });
     }
-    const pcrfRaw: any = (all as any).pcrf?.rawYaml?.pcrf;
+    const pcrfRaw = all.pcrf?.rawYaml?.pcrf;
     if (pcrfRaw?.freeDiameter) {
       descriptors.push({ nf: 'pcrf', label: 'PCRF', group: '4G', hostPorts: [{ proto: 'tcp', addr: '127.0.0.0/8', port: 3868, role: 'Diameter' }] });
     }
-    const sgwcRaw: any = (all as any).sgwc?.rawYaml?.sgwc;
+    const sgwcRaw = all.sgwc?.rawYaml?.sgwc;
     if (sgwcRaw) {
       const hostPorts: PcapHostPort[] = [];
       const pfcp = rawServer(sgwcRaw.pfcp);
-      if (pfcp?.address) hostPorts.push({ proto: 'udp', addr: pfcp.address, port: 8805, role: 'PFCP' });
+      const pfcpAddr = firstAddr(pfcp?.address);
+      if (pfcpAddr) hostPorts.push({ proto: 'udp', addr: pfcpAddr, port: pfcp?.port ?? 8805, role: 'PFCP' });
       const gtpc = rawServer(sgwcRaw.gtpc);
-      if (gtpc?.address) hostPorts.push({ proto: 'udp', addr: gtpc.address, port: 2123, role: 'GTP-C' });
+      const gtpcAddr = firstAddr(gtpc?.address);
+      if (gtpcAddr) hostPorts.push({ proto: 'udp', addr: gtpcAddr, port: gtpc?.port ?? 2123, role: 'GTP-C' });
       if (hostPorts.length) descriptors.push({ nf: 'sgwc', label: 'SGW-C', group: '4G', hostPorts });
     }
-    const sgwuRaw: any = (all as any).sgwu?.rawYaml?.sgwu;
+    const sgwuRaw = all.sgwu?.rawYaml?.sgwu;
     if (sgwuRaw) {
       const hostPorts: PcapHostPort[] = [];
       const pfcp = rawServer(sgwuRaw.pfcp);
-      if (pfcp?.address) hostPorts.push({ proto: 'udp', addr: pfcp.address, port: 8805, role: 'PFCP' });
+      const pfcpAddr = firstAddr(pfcp?.address);
+      if (pfcpAddr) hostPorts.push({ proto: 'udp', addr: pfcpAddr, port: pfcp?.port ?? 8805, role: 'PFCP' });
       const gtpu = rawServer(sgwuRaw.gtpu);
-      if (gtpu?.address) hostPorts.push({ proto: 'udp', addr: gtpu.address, port: 2152, role: 'GTP-U' });
+      const gtpuAddr = firstAddr(gtpu?.address);
+      if (gtpuAddr) hostPorts.push({ proto: 'udp', addr: gtpuAddr, port: gtpu?.port ?? 2152, role: 'GTP-U' });
       if (hostPorts.length) descriptors.push({ nf: 'sgwu', label: 'SGW-U', group: '4G', hostPorts });
     }
 
@@ -501,7 +549,11 @@ export class PcapUseCase {
   private async loadManifest(id: string): Promise<PcapManifest> {
     validateId(id);
     const raw = await this.hostExecutor.readFile(this.manifestPath(id));
-    return JSON.parse(raw);
+    // Asserted, not validated: this file is written only by saveManifest() in
+    // this same class. A hand-edited manifest would flow through unchecked,
+    // which is a smell rather than a live risk -- worth real validation if
+    // anything else ever gains write access to PCAP_DIR.
+    return JSON.parse(raw) as PcapManifest;
   }
 
   async start(input: {
@@ -561,7 +613,7 @@ export class PcapUseCase {
     };
     await this.saveManifest(manifest);
 
-    const startUnit = () => this.hostExecutor.executeCommand('systemd-run', [
+    const startUnit = (): Promise<CommandResult> => this.hostExecutor.executeCommand('systemd-run', [
       `--unit=${unitName}`,
       '--collect',
       `--description=NMS packet capture ${id}`,
@@ -591,7 +643,7 @@ export class PcapUseCase {
     // a moment to either settle or fail, then verify — and retry once, since a
     // freshly-created interface failing this way looks like a genuine transient
     // race (a same-interface retry moments later succeeded when reproduced live).
-    const settle = () => new Promise(resolve => setTimeout(resolve, 500));
+    const settle = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 500));
     await settle();
     let active = await this.hostExecutor.isServiceActive(unitName);
     if (!active) {
