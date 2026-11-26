@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
-import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { SERVICE_UNIT_MAP } from '../../domain/entities/service-status';
 import { DnsMigrationUseCase } from './dns-migration-usecase';
@@ -110,6 +110,49 @@ export class PlmnMigrationUseCase {
     return (entries ?? []).map(e => ({ ...e, plmn_id: { ...(e.plmn_id ?? {}), mcc, mnc } }));
   }
 
+  /**
+   * Every PLMN-bearing list Phase A rewrites, declared ONCE.
+   *
+   * Real gap, fixed 2026-11-26: Phase A rewrites six of these, and Phase E
+   * verified three -- `mme.gummei`, `amf.plmn_support` and `nrf.serving`. A
+   * stale `mme.tai`, `amf.guami`, `amf.tai` or `smf.info[].tai` therefore
+   * reported the migration as consistent while the network was still half on
+   * the old PLMN: a stale `amf.guami` has AMF handing out 5G-GUTIs under the
+   * old PLMN, and a stale `mme.tai` has MME broadcasting the old TAI. For a
+   * wizard whose entire job is to say whether the migration completed, that
+   * is the worst possible failure mode.
+   *
+   * `required` distinguishes a list the NF cannot work without from one that
+   * is legitimately absent -- `smf.info[].tai` only exists when the operator
+   * configured per-TAI slice selection, which Phase A's own comment notes.
+   * An NF whose config is absent entirely is skipped rather than failed, so a
+   * 5G-only deployment does not fail on mme.yaml.
+   */
+  private plmnBearingLists(configs: AllConfigs): Array<{
+    label: string;
+    present: boolean;
+    required: boolean;
+    entries: Array<{ plmn_id?: { mcc?: string; mnc?: string } }>;
+  }> {
+    const mme = configs.mme?.rawYaml?.mme;
+    const amf = configs.amf?.rawYaml?.amf;
+    const smf = configs.smf?.rawYaml?.smf;
+    const nrf = configs.nrf?.rawYaml?.nrf;
+
+    const smfTais = (smf?.info ?? []).flatMap(info => info.tai ?? []);
+
+    return [
+      { label: 'mme.yaml gummei plmn_id', present: configs.mme !== undefined, required: true, entries: mme?.gummei ?? [] },
+      { label: 'mme.yaml tai plmn_id', present: configs.mme !== undefined, required: true, entries: mme?.tai ?? [] },
+      { label: 'amf.yaml guami plmn_id', present: configs.amf !== undefined, required: true, entries: amf?.guami ?? [] },
+      { label: 'amf.yaml tai plmn_id', present: configs.amf !== undefined, required: true, entries: amf?.tai ?? [] },
+      { label: 'amf.yaml plmn_support plmn_id', present: configs.amf !== undefined, required: true, entries: amf?.plmn_support ?? [] },
+      { label: 'nrf.yaml serving plmn_id', present: configs.nrf !== undefined, required: true, entries: nrf?.serving ?? [] },
+      // Optional by design: only present when per-TAI slice selection is configured.
+      { label: 'smf.yaml info[].tai plmn_id', present: configs.smf !== undefined, required: false, entries: smfTais },
+    ];
+  }
+
   // ── Phase "plan" — dry-run diff, writes nothing ──────────────────────────
 
   async computeMigrationPlan(newMcc: string, newMnc: string): Promise<PlmnMigrationPlan> {
@@ -191,21 +234,21 @@ export class PlmnMigrationUseCase {
     const details: string[] = [];
     try {
       const mmeConfig = await this.configRepo.loadMme();
-      const mmeRaw = mmeConfig.rawYaml as any;
+      const mmeRaw = mmeConfig.rawYaml;
       if (mmeRaw?.mme) {
         mmeRaw.mme.gummei = this.replacePlmnId(mmeRaw.mme.gummei, plan.newMcc, plan.newMnc);
         mmeRaw.mme.tai = this.replacePlmnId(mmeRaw.mme.tai, plan.newMcc, plan.newMnc);
-        await this.configRepo.saveMme({ rawYaml: mmeRaw } as any);
+        await this.configRepo.saveMme(mmeConfig);
         details.push(`Rewrote mme.yaml: gummei/tai plmn_id -> ${plan.newMcc}/${plan.newMnc}`);
       }
 
       const amfConfig = await this.configRepo.loadAmf();
-      const amfRaw = amfConfig.rawYaml as any;
+      const amfRaw = amfConfig.rawYaml;
       if (amfRaw?.amf) {
         amfRaw.amf.guami = this.replacePlmnId(amfRaw.amf.guami, plan.newMcc, plan.newMnc);
         amfRaw.amf.tai = this.replacePlmnId(amfRaw.amf.tai, plan.newMcc, plan.newMnc);
         amfRaw.amf.plmn_support = this.replacePlmnId(amfRaw.amf.plmn_support, plan.newMcc, plan.newMnc);
-        await this.configRepo.saveAmf({ rawYaml: amfRaw } as any);
+        await this.configRepo.saveAmf(amfConfig);
         details.push(`Rewrote amf.yaml: guami/tai/plmn_support plmn_id -> ${plan.newMcc}/${plan.newMnc}`);
       }
 
@@ -214,7 +257,7 @@ export class PlmnMigrationUseCase {
       // if found, add nothing if absent (per the decided default: no separate
       // manual-step branch for this).
       const smfConfig = await this.configRepo.loadSmf();
-      const smfRaw = smfConfig.rawYaml as any;
+      const smfRaw = smfConfig.rawYaml;
       let smfPlmnUpdated = false;
       for (const infoEntry of (smfRaw?.smf?.info ?? [])) {
         for (const taiEntry of (infoEntry?.tai ?? [])) {
@@ -226,7 +269,7 @@ export class PlmnMigrationUseCase {
         }
       }
       if (smfPlmnUpdated) {
-        await this.configRepo.saveSmf({ rawYaml: smfRaw } as any);
+        await this.configRepo.saveSmf(smfConfig);
         details.push(`Rewrote smf.yaml: info[].tai[].plmn_id -> ${plan.newMcc}/${plan.newMnc}`);
       } else {
         details.push('smf.yaml has no info[].tai[].plmn_id block configured — left untouched (nothing to migrate)');
@@ -240,10 +283,10 @@ export class PlmnMigrationUseCase {
       // before this one. Same replacePlmnId() shape as everywhere else — nrf.serving
       // is an array of {plmn_id: {mcc, mnc}} entries, identical to amf.plmn_support.
       const nrfConfig = await this.configRepo.loadNrf();
-      const nrfRaw = nrfConfig.rawYaml as any;
+      const nrfRaw = nrfConfig.rawYaml;
       if (nrfRaw?.nrf) {
         nrfRaw.nrf.serving = this.replacePlmnId(nrfRaw.nrf.serving, plan.newMcc, plan.newMnc);
-        await this.configRepo.saveNrf({ rawYaml: nrfRaw } as any);
+        await this.configRepo.saveNrf(nrfConfig);
         details.push(`Rewrote nrf.yaml: serving plmn_id -> ${plan.newMcc}/${plan.newMnc}`);
       }
 
@@ -420,23 +463,27 @@ export class PlmnMigrationUseCase {
         if (issue.severity === 'error') consistent = false;
       }
 
-      // mme/amf raw plmn_id fields
-      const mmeRaw = (allConfigs.mme as any)?.rawYaml?.mme;
-      const mmeOk = (mmeRaw?.gummei ?? []).every((g: any) => g?.plmn_id?.mcc === plan.newMcc && g?.plmn_id?.mnc === plan.newMnc);
-      details.push(`mme.yaml gummei plmn_id: ${mmeOk ? 'OK' : 'MISMATCH'}`);
-      if (!mmeOk) consistent = false;
-
-      const amfPlmnSupport = allConfigs.amf.plmn_support ?? [];
-      const amfOk = amfPlmnSupport.length > 0 && amfPlmnSupport.every(p => p.plmn_id?.mcc === plan.newMcc && p.plmn_id?.mnc === plan.newMnc);
-      details.push(`amf.yaml plmn_support: ${amfOk ? 'OK' : 'MISMATCH'}`);
-      if (!amfOk) consistent = false;
-
-      // nrf.yaml's own serving plmn_id — not in NrfConfig's typed fields, read via
-      // rawYaml like mme above. Was never checked (or migrated) before this fix.
-      const nrfServing = (allConfigs.nrf as any)?.rawYaml?.nrf?.serving ?? [];
-      const nrfOk = nrfServing.length > 0 && nrfServing.every((s: any) => s?.plmn_id?.mcc === plan.newMcc && s?.plmn_id?.mnc === plan.newMnc);
-      details.push(`nrf.yaml serving plmn_id: ${nrfOk ? 'OK' : 'MISMATCH'}`);
-      if (!nrfOk) consistent = false;
+      // Every PLMN-bearing list Phase A rewrites, from the one declaration in
+      // plmnBearingLists() -- so this can no longer check a subset of what was
+      // written. Compared as STRINGS: mcc/mnc width is significant (70 and 070
+      // are different networks), and loadRaw() recovers them from the raw text
+      // as strings for exactly that reason.
+      for (const list of this.plmnBearingLists(allConfigs)) {
+        if (!list.present) {
+          details.push(`${list.label}: skipped (NF not configured)`);
+          continue;
+        }
+        if (list.entries.length === 0) {
+          // An absent optional list is fine; an absent required one is not,
+          // and reporting it as OK is what let a half-migration pass.
+          details.push(`${list.label}: ${list.required ? 'MISSING' : 'none configured'}`);
+          if (list.required) consistent = false;
+          continue;
+        }
+        const ok = list.entries.every(e => e.plmn_id?.mcc === plan.newMcc && e.plmn_id?.mnc === plan.newMnc);
+        details.push(`${list.label}: ${ok ? 'OK' : 'MISMATCH'}`);
+        if (!ok) consistent = false;
+      }
 
       // freeDiameter Identity for the EPC mesh — the real source of truth for
       // mme/hss/pcrf/smf's PLMN, since none of their yaml schemas carry it directly.
