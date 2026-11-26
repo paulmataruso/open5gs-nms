@@ -741,8 +741,26 @@ export class YamlConfigRepository implements IConfigRepository {
   // ── Type helpers ────────────────────────────────────────────────────────────
 
   /**
-   * Recursively convert numeric strings to actual numbers, EXCEPT mcc/mnc/sd
-   * which must remain strings to preserve leading zeros and quoted SD.
+   * Keys whose value must survive a save as a STRING even though it looks
+   * numeric. See ensureNumericTypes() for why each one is here.
+   */
+  private static readonly STRING_VALUED_KEYS: ReadonlySet<string> = new Set([
+    'mcc', 'mnc', 'sd', 'qos_index',
+  ]);
+
+  /**
+   * Recursively convert numeric strings to actual numbers, EXCEPT the keys in
+   * STRING_VALUED_KEYS, which must stay strings.
+   *
+   * mcc/mnc/sd are here to preserve leading zeros and quoted SD. `qos_index`
+   * is here because PCF's own qos_profiles entry is deliberately quoted
+   * (`qos_index: "1"`) in config/defaults/pcf.yaml, where the comment records
+   * that a wrong value there is what produced
+   * `403: Unknown qosReference - check PCF qos_profiles config` and blocked
+   * 4G<->5G cross-RAT calling. Without the exemption, every single Apply
+   * Config rewrote it as a bare `1`, silently undoing the shipped intent --
+   * confirmed live 2026-11-26 by diffing the written file against a
+   * pre-apply backup.
    */
   private ensureNumericTypes(obj: any, parentKey?: string): any {
     if (obj === null || obj === undefined) return obj;
@@ -754,7 +772,7 @@ export class YamlConfigRepository implements IConfigRepository {
     if (typeof obj === 'object') {
       const result: any = {};
       for (const [key, value] of Object.entries(obj)) {
-        if (key === 'mcc' || key === 'mnc' || key === 'sd') {
+        if (YamlConfigRepository.STRING_VALUED_KEYS.has(key)) {
           result[key] = value; // preserve as string
         } else {
           result[key] = this.ensureNumericTypes(value, key);
@@ -763,7 +781,7 @@ export class YamlConfigRepository implements IConfigRepository {
       return result;
     }
 
-    if (parentKey === 'mcc' || parentKey === 'mnc' || parentKey === 'sd') return obj;
+    if (parentKey !== undefined && YamlConfigRepository.STRING_VALUED_KEYS.has(parentKey)) return obj;
 
     if (typeof obj === 'string' && /^\d+(\.\d+)?$/.test(obj)) {
       const num = Number(obj);
