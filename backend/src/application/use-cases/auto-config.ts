@@ -10,6 +10,10 @@ import {
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
+import type {
+  AmfYamlDocument, MmeYamlDocument, SmfYamlDocument, UpfYamlDocument,
+  SgwcYamlDocument, SgwuYamlDocument, YamlServerEntry, YamlPlmnId, YamlSnssai,
+} from '../../domain/entities/open5gs-yaml';
 
 export interface PlmnConfig {
   mcc: string;
@@ -150,60 +154,73 @@ export interface AutoConfigPreviewResult {
 // localUpfOnly/localSgwuOnly, kept in sync by comment cross-reference since
 // there's no shared-types package between the two.
 export function deriveCurrentAutoConfigInput(configs: AllConfigs): AutoConfigInput {
-  const mmeRaw = (configs.mme as any)?.rawYaml?.mme;
-  const amfRaw = (configs.amf as any)?.rawYaml?.amf;
-  const sgwuRaw = (configs.sgwu as any)?.rawYaml?.sgwu;
-  const upfRaw = (configs.upf as any)?.rawYaml?.upf;
-  const smfRaw = (configs.smf as any)?.rawYaml?.smf;
-  const sgwcRaw = (configs.sgwc as any)?.rawYaml?.sgwc;
+  const mmeRaw = (configs.mme?.rawYaml as MmeYamlDocument | undefined)?.mme;
+  const amfRaw = (configs.amf?.rawYaml as AmfYamlDocument | undefined)?.amf;
+  const sgwuRaw = (configs.sgwu?.rawYaml as SgwuYamlDocument | undefined)?.sgwu;
+  const upfRaw = (configs.upf?.rawYaml as UpfYamlDocument | undefined)?.upf;
+  const smfRaw = (configs.smf?.rawYaml as SmfYamlDocument | undefined)?.smf;
+  const sgwcRaw = (configs.sgwc?.rawYaml as SgwcYamlDocument | undefined)?.sgwc;
 
-  const mmeGummeis: any[] = mmeRaw?.gummei || [];
-  const plmn4g: PlmnConfig[] = mmeGummeis.map((gummei: any) => {
-    const plmnId = Array.isArray(gummei.plmn_id) ? gummei.plmn_id[0] : gummei.plmn_id;
-    const tai = mmeRaw?.tai?.find((t: any) => {
-      const taiPlmn = Array.isArray(t.plmn_id) ? t.plmn_id[0] : t.plmn_id;
+  // Open5GS allows `address:` and `tac:` to be either a scalar or a list, and
+  // this snapshot feeds single-valued fields (PlmnConfig.tac is `number`,
+  // s1mmeIP is `string`). The MME branch below already did this by hand for
+  // tac; typing the document showed the AMF branch and every address read did
+  // NOT, so a deployment with `tac: [1, 2]` or a multi-address server put an
+  // ARRAY into a field declared as a scalar. Normalising in one place makes
+  // the two branches agree, which is plainly what was intended.
+  const firstOf = <T,>(value: T | T[] | undefined): T | undefined =>
+    Array.isArray(value) ? value[0] : value;
+
+  /** An entry's address as a plain string, or '' when absent or list-valued. */
+  const addrOf = (entry: YamlServerEntry | undefined): string =>
+    typeof entry?.address === 'string' ? entry.address : '';
+
+  const mmeGummeis = mmeRaw?.gummei ?? [];
+  const plmn4g: PlmnConfig[] = mmeGummeis.map((gummei) => {
+    const plmnId = firstOf(gummei.plmn_id);
+    const tai = mmeRaw?.tai?.find((t) => {
+      const taiPlmn = firstOf(t.plmn_id);
       return taiPlmn?.mcc === plmnId?.mcc && taiPlmn?.mnc === plmnId?.mnc;
     });
-    const tacValue = tai?.tac;
-    const tac = Array.isArray(tacValue) ? tacValue[0] : tacValue;
+    const tac = firstOf(tai?.tac);
     return { mcc: plmnId?.mcc || '999', mnc: plmnId?.mnc || '70', mme_gid: gummei.mme_gid || 2, mme_code: gummei.mme_code || 1, tac: tac || 1 };
   });
 
-  const amfGuamis: any[] = amfRaw?.guami || [];
-  const plmn5g: PlmnConfig[] = amfGuamis.map((guami: any) => {
+  const amfGuamis = amfRaw?.guami ?? [];
+  const plmn5g: PlmnConfig[] = amfGuamis.map((guami) => {
     const plmnId = guami.plmn_id;
-    const tai = amfRaw?.tai?.find((t: any) => t.plmn_id?.mcc === plmnId?.mcc && t.plmn_id?.mnc === plmnId?.mnc);
-    return { mcc: plmnId?.mcc || '999', mnc: plmnId?.mnc || '70', tac: tai?.tac || 1 };
+    const tai = amfRaw?.tai?.find((t) => t.plmn_id?.mcc === plmnId?.mcc && t.plmn_id?.mnc === plmnId?.mnc);
+    return { mcc: plmnId?.mcc || '999', mnc: plmnId?.mnc || '70', tac: firstOf(tai?.tac) || 1 };
   });
 
-  const smfUpfs: any[] = smfRaw?.pfcp?.client?.upf ?? [];
-  const hasRemoteUpf = smfUpfs.some((u: any) => u.address && !u.address.startsWith('127.'));
-  const sgwcSgwus: any[] = sgwcRaw?.pfcp?.client?.sgwu ?? [];
-  const hasRemoteSgwu = sgwcSgwus.some((u: any) => u.address && !u.address.startsWith('127.'));
-  const sgwcServers: any[] = sgwcRaw?.pfcp?.server ?? [];
-  const smfServers: any[] = smfRaw?.pfcp?.server ?? [];
-  const upfSessions: any[] = upfRaw?.session || [];
+  const smfUpfs = smfRaw?.pfcp?.client?.upf ?? [];
+  const hasRemoteUpf = smfUpfs.some((u) => addrOf(u) !== '' && !addrOf(u).startsWith('127.'));
+  const sgwcSgwus = sgwcRaw?.pfcp?.client?.sgwu ?? [];
+  const hasRemoteSgwu = sgwcSgwus.some((u) => addrOf(u) !== '' && !addrOf(u).startsWith('127.'));
+  const sgwcServers = sgwcRaw?.pfcp?.server ?? [];
+  const smfServers = smfRaw?.pfcp?.server ?? [];
+  const upfSessions = upfRaw?.session ?? [];
 
   return {
     applyPlmn: true, applyInterfaces: true, applyPfcp: true, applySessionPools: true,
     plmn4g: plmn4g.length > 0 ? plmn4g : [{ mcc: '999', mnc: '70', mme_gid: 2, mme_code: 1, tac: 1 }],
     plmn5g: plmn5g.length > 0 ? plmn5g : [{ mcc: '999', mnc: '70', tac: 1 }],
-    s1mmeIP: mmeRaw?.s1ap?.server?.[0]?.address || '',
+    s1mmeIP: firstOf(mmeRaw?.s1ap?.server?.[0]?.address) || '',
     s1mmeDev: mmeRaw?.s1ap?.server?.[0]?.dev || '',
-    sgwuGtpIP: sgwuRaw?.gtpu?.server?.[0]?.address || '',
-    amfNgapIP: amfRaw?.ngap?.server?.[0]?.address || '',
+    sgwuGtpIP: firstOf(sgwuRaw?.gtpu?.server?.[0]?.address) || '',
+    amfNgapIP: firstOf(amfRaw?.ngap?.server?.[0]?.address) || '',
     amfNgapDev: amfRaw?.ngap?.server?.[0]?.dev || '',
-    upfGtpIP: upfRaw?.gtpu?.server?.[0]?.address || '',
-    smfPfcpIP: smfServers.find((s: any) => !s.address?.startsWith('127.'))?.address || smfServers[0]?.address || '',
-    localUpfPfcpIP: upfRaw?.pfcp?.server?.[0]?.address || '',
+    upfGtpIP: firstOf(upfRaw?.gtpu?.server?.[0]?.address) || '',
+    smfPfcpIP: addrOf(smfServers.find((s) => !addrOf(s).startsWith('127.'))) || addrOf(smfServers[0]),
+    localUpfPfcpIP: firstOf(upfRaw?.pfcp?.server?.[0]?.address) || '',
     localUpfOnly: !hasRemoteUpf,
     localSgwuOnly: !hasRemoteSgwu,
-    sgwcPfcpIP: sgwcServers.find((s: any) => !s.address?.startsWith('127.'))?.address || '',
+    sgwcPfcpIP: addrOf(sgwcServers.find((s) => !addrOf(s).startsWith('127.'))),
     remoteSgwus: sgwcSgwus
-      .filter((u: any) => u.address && !u.address.startsWith('127.'))
-      .map((u: any) => ({ pfcpIP: u.address, gtpuIP: '', tac: u.tac ? (Array.isArray(u.tac) ? u.tac : [u.tac]) : [], label: '' })),
+      .filter((u) => addrOf(u) !== '' && !addrOf(u).startsWith('127.'))
+      .map((u) => ({ pfcpIP: addrOf(u), gtpuIP: '', tac: u.tac === undefined ? [] : (Array.isArray(u.tac) ? u.tac : [u.tac]), label: '' })),
     sessionPools: upfSessions.length > 0
-      ? upfSessions.map((s: any) => ({ subnet: s.subnet || '', gateway: s.gateway || '', dnn: s.dnn || '', dev: s.dev || '' }))
+      ? upfSessions.map((s) => ({ subnet: s.subnet || '', gateway: s.gateway || '', dnn: s.dnn || '', dev: s.dev || '' }))
       : [
           { subnet: '10.45.0.0/16', gateway: '10.45.0.1', dnn: '', dev: '' },
           { subnet: '2001:db8:cafe::/48', gateway: '2001:db8:cafe::1', dnn: '', dev: '' },
@@ -217,10 +234,10 @@ export function deriveCurrentAutoConfigInput(configs: AllConfigs): AutoConfigInp
 // Merges existing servers with a new address, ensuring no duplicate IPs.
 // When newAddress is a loopback and replaceAll is true, wipes the list first.
 function mergePfcpServers(
-  existing: Array<{ address: string }>,
+  existing: YamlServerEntry[],
   newAddress: string,
   replaceAll = false,
-): Array<{ address: string }> {
+): YamlServerEntry[] {
   if (!newAddress) return existing;
   if (replaceAll) return [{ address: newAddress }];
   const deduped = existing.filter(
@@ -257,16 +274,23 @@ export class AutoConfigUseCase {
   private buildPlmnSupport(
     existing: unknown,
     plmns: Array<{ mcc: string; mnc: string }>,
-  ): Array<{ plmn_id: { mcc: string; mnc: string }; s_nssai: unknown }> {
-    const prior: any[] = Array.isArray(existing) ? existing : [];
+  ): Array<{ plmn_id: YamlPlmnId; s_nssai: YamlSnssai[] }> {
+    // Array.isArray only proves it is an array, not what the elements are, so
+    // the element shape is asserted and then read defensively below: mcc/mnc
+    // go through samePlmn(), and s_nssai is re-checked with isArray.
+    type PriorEntry = { plmn_id?: { mcc?: unknown; mnc?: unknown }; s_nssai?: unknown };
+    const prior: PriorEntry[] = Array.isArray(existing) ? (existing as PriorEntry[]) : [];
     const samePlmn = (a: unknown, b: unknown) =>
       a !== undefined && a !== null && b !== undefined && b !== null
       && Number(a) === Number(b);
     return plmns.map(plmn => {
-      const match = prior.find((e: any) =>
+      const match = prior.find((e) =>
         samePlmn(e?.plmn_id?.mcc, plmn.mcc) && samePlmn(e?.plmn_id?.mnc, plmn.mnc));
-      const slices = Array.isArray(match?.s_nssai) && match.s_nssai.length > 0
-        ? match.s_nssai
+      // Asserted, not inspected: the guard proves it is a non-empty array, and
+      // the elements are deliberately passed through as the operator wrote
+      // them rather than being re-validated field by field.
+      const slices: YamlSnssai[] = Array.isArray(match?.s_nssai) && match.s_nssai.length > 0
+        ? match.s_nssai as YamlSnssai[]
         : [{ sst: 1 }];
       return { plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc }, s_nssai: slices };
     });
@@ -290,7 +314,7 @@ export class AutoConfigUseCase {
 
       // MME diff
       if (configs.mme && (applyPlmn || applyInterfaces)) {
-        const original = configs.mme.rawYaml as any;
+        const original = configs.mme.rawYaml as MmeYamlDocument;
         const modified = JSON.parse(JSON.stringify(original)); // Deep clone
 
         // Apply MME changes to rawYaml structure
@@ -329,7 +353,7 @@ export class AutoConfigUseCase {
 
       // SGW-U diff
       if (configs.sgwu && applyInterfaces) {
-        const original = configs.sgwu.rawYaml as any;
+        const original = configs.sgwu.rawYaml as SgwuYamlDocument;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.sgwu) modified.sgwu = {};
@@ -352,7 +376,7 @@ export class AutoConfigUseCase {
 
       // AMF diff
       if (configs.amf && (applyPlmn || applyInterfaces)) {
-        const original = configs.amf.rawYaml as any;
+        const original = configs.amf.rawYaml as AmfYamlDocument;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.amf) modified.amf = {};
@@ -396,7 +420,7 @@ export class AutoConfigUseCase {
 
       // UPF diff
       if (configs.upf && (applyInterfaces || applySessionPools)) {
-        const original = configs.upf.rawYaml as any;
+        const original = configs.upf.rawYaml as UpfYamlDocument;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.upf) modified.upf = {};
@@ -430,7 +454,7 @@ export class AutoConfigUseCase {
 
       // SMF diff
       if (configs.smf && applySessionPools) {
-        const original = configs.smf.rawYaml as any;
+        const original = configs.smf.rawYaml as SmfYamlDocument;
         const modified = JSON.parse(JSON.stringify(original));
 
         if (!modified.smf) modified.smf = {};
@@ -538,7 +562,7 @@ export class AutoConfigUseCase {
       // Update MME (4G) with multiple PLMNs
       if (configs.mme && (applyPlmn || applyInterfaces)) {
         this.logger.info({ plmnCount: input.plmn4g.length }, 'Updating MME configuration');
-        const raw = configs.mme.rawYaml as any;
+        const raw = configs.mme.rawYaml as MmeYamlDocument;
 
         if (!raw.mme) raw.mme = {};
 
@@ -575,7 +599,7 @@ export class AutoConfigUseCase {
       // Update SGW-U (4G User Plane)
       if (configs.sgwu && applyInterfaces) {
         this.logger.info('Updating SGW-U configuration');
-        const raw = configs.sgwu.rawYaml as any;
+        const raw = configs.sgwu.rawYaml as SgwuYamlDocument;
 
         if (!raw.sgwu) raw.sgwu = {};
         if (!raw.sgwu.gtpu) raw.sgwu.gtpu = {};
@@ -594,7 +618,7 @@ export class AutoConfigUseCase {
       // Update SGW-C PFCP (4G control plane for SGW-U)
       if (configs.sgwc && applyPfcp) {
         this.logger.info('Updating SGW-C PFCP configuration');
-        const raw = configs.sgwc.rawYaml as any;
+        const raw = configs.sgwc.rawYaml as SgwcYamlDocument;
         if (!raw.sgwc) raw.sgwc = {};
         if (!raw.sgwc.pfcp) raw.sgwc.pfcp = {};
 
@@ -628,7 +652,7 @@ export class AutoConfigUseCase {
 
       // Update local SGW-U PFCP server address
       if (configs.sgwu && applyPfcp) {
-        const raw = configs.sgwu.rawYaml as any;
+        const raw = configs.sgwu.rawYaml as SgwuYamlDocument;
         if (!raw.sgwu) raw.sgwu = {};
         if (!raw.sgwu.pfcp) raw.sgwu.pfcp = {};
         // Always the loopback. This used to read
@@ -654,7 +678,7 @@ export class AutoConfigUseCase {
       // Update AMF (5G) with multiple PLMNs
       if (configs.amf && (applyPlmn || applyInterfaces)) {
         this.logger.info({ plmnCount: input.plmn5g.length }, 'Updating AMF configuration');
-        const raw = configs.amf.rawYaml as any;
+        const raw = configs.amf.rawYaml as AmfYamlDocument;
 
         if (!raw.amf) raw.amf = {};
 
@@ -729,7 +753,7 @@ export class AutoConfigUseCase {
       // Update UPF (5G User Plane)
       if (configs.upf && (applyInterfaces || applyPfcp || applySessionPools)) {
         this.logger.info('Updating UPF configuration');
-        const raw = configs.upf.rawYaml as any;
+        const raw = configs.upf.rawYaml as UpfYamlDocument;
 
         if (!raw.upf) raw.upf = {};
 
@@ -781,7 +805,7 @@ export class AutoConfigUseCase {
       // Update SMF (Session Management)
       if (configs.smf && (applyPfcp || applySessionPools)) {
         this.logger.info('Updating SMF configuration');
-        const raw = configs.smf.rawYaml as any;
+        const raw = configs.smf.rawYaml as SmfYamlDocument;
 
         if (!raw.smf) raw.smf = {};
 
@@ -810,8 +834,15 @@ export class AutoConfigUseCase {
               raw.smf.pfcp.client.upf = [{ address: localUpfAddr }];
             } else {
               // Keep existing remote UPFs, update local entry
-              const existingUpfs: Array<{address: string}> = raw.smf.pfcp.client.upf || [];
-              const remoteUpfs = existingUpfs.filter(u => !u.address.startsWith('127.') && u.address !== localUpfAddr);
+              const existingUpfs: YamlServerEntry[] = raw.smf.pfcp.client.upf || [];
+              // The old annotation claimed `address: string`, so this called
+              // .startsWith() on it unguarded -- an entry with no address, or
+              // a list-valued one, threw and took the whole apply down. A peer
+              // with no usable address is not a peer, so it is dropped.
+              const remoteUpfs = existingUpfs.filter((u) => {
+                const addr = typeof u.address === 'string' ? u.address : undefined;
+                return addr !== undefined && !addr.startsWith('127.') && addr !== localUpfAddr;
+              });
               raw.smf.pfcp.client.upf = [{ address: localUpfAddr }, ...remoteUpfs];
             }
             this.logger.info({ localUpfAddr, localUpfOnly: input.localUpfOnly }, 'Updated SMF UPF client list');
