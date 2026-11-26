@@ -10,6 +10,29 @@ import { TunManagementUseCase } from './tun-management';
 import { ipv4CidrOverlaps } from '../../domain/services/ip-utils';
 import { resolveDnnDevPairs, findSmfPoolsWiderThanUpf } from '../../domain/services/dnn-dev-resolver';
 
+/** One static host route the NMS manages for a Framed-Routing session. */
+interface StaticRoute {
+  dnn: string;
+  cidr: string;
+}
+
+/**
+ * Just the slice fields the Framed-Routing helpers below read.
+ *
+ * Structural rather than `SubscriberSlice[]` so both the entity's slice list
+ * and the DTO's satisfy it without a cast at the four call sites (they differ
+ * only in an optional `_id`). Every field is optional because these helpers run
+ * against request input as well as stored documents.
+ */
+interface SubscriberSliceLike {
+  session?: Array<{
+    name?: string;
+    framed_routes_static?: boolean;
+    ipv4_framed_routes?: string[];
+    ipv6_framed_routes?: string[];
+  }>;
+}
+
 export class SubscriberManagementUseCase {
   constructor(
     private readonly subscriberRepo: ISubscriberRepository,
@@ -22,14 +45,30 @@ export class SubscriberManagementUseCase {
 
   // ── Framed Routing: static host route management ───────────────────────────
 
-  private collectStaticRoutes(slices: any[] | undefined): Map<string, string> {
-    const map = new Map<string, string>(); // key: `${dnn}::${cidr}`, value: dnn
+  /**
+   * Static framed routes to install, keyed so a dnn+cidr pair is comparable
+   * between the old and new slice lists.
+   *
+   * The VALUE carries dnn and cidr as separate fields rather than making the
+   * caller parse them back out of the key. Real bug, fixed 2026-11-26: the key
+   * is `${dnn}::${cidr}` and the caller recovered the cidr with
+   * `key.split('::')[1]`, but `::` is IPv6 zero-compression -- so
+   * `internet::2001:db8::/64` split to `2001:db8`, and EVERY IPv6 static
+   * framed route was handed to `ip route add/del` as a truncated prefix.
+   * It failed into a catch that only logs a warning, so the route silently
+   * never appeared. IPv4 was unaffected, which is why it survived.
+   */
+  private collectStaticRoutes(
+    slices: SubscriberSliceLike[] | undefined,
+  ): Map<string, StaticRoute> {
+    const map = new Map<string, StaticRoute>();
     for (const sl of slices ?? []) {
       for (const sess of sl.session ?? []) {
         if (!sess.framed_routes_static) continue;
         const dnn = sess.name;
+        if (!dnn) continue;
         for (const cidr of [...(sess.ipv4_framed_routes ?? []), ...(sess.ipv6_framed_routes ?? [])]) {
-          map.set(`${dnn}::${cidr}`, dnn);
+          map.set(`${dnn}::${cidr}`, { dnn, cidr });
         }
       }
     }
@@ -71,18 +110,21 @@ export class SubscriberManagementUseCase {
 
   // Diffs old vs new session state and adds/removes static host routes for the delta.
   // `newSlices === undefined` means this update didn't touch sessions at all — skip.
-  private async syncStaticRoutes(oldSlices: any[] | undefined, newSlices: any[] | undefined): Promise<void> {
+  private async syncStaticRoutes(
+    oldSlices: SubscriberSliceLike[] | undefined,
+    newSlices: SubscriberSliceLike[] | undefined,
+  ): Promise<void> {
     if (newSlices === undefined) return;
     const oldMap = this.collectStaticRoutes(oldSlices);
     const newMap = this.collectStaticRoutes(newSlices);
 
-    const toAdd: Array<{ cidr: string; dnn: string }> = [];
-    const toRemove: Array<{ cidr: string; dnn: string }> = [];
-    for (const [key, dnn] of newMap) {
-      if (!oldMap.has(key)) toAdd.push({ cidr: key.split('::')[1], dnn });
+    const toAdd: StaticRoute[] = [];
+    const toRemove: StaticRoute[] = [];
+    for (const [key, route] of newMap) {
+      if (!oldMap.has(key)) toAdd.push(route);
     }
-    for (const [key, dnn] of oldMap) {
-      if (!newMap.has(key)) toRemove.push({ cidr: key.split('::')[1], dnn });
+    for (const [key, route] of oldMap) {
+      if (!newMap.has(key)) toRemove.push(route);
     }
     if (toAdd.length === 0 && toRemove.length === 0) return;
 
@@ -110,7 +152,7 @@ export class SubscriberManagementUseCase {
   // parse) — so the schema's max(8)-per-family framed-route cap never applies here.
   // Enforced directly instead, since a 9th route isn't rejected by Open5GS, it's
   // silently dropped (OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDN).
-  private validateFramedRouteLimits(slices: any[] | undefined): void {
+  private validateFramedRouteLimits(slices: SubscriberSliceLike[] | undefined): void {
     for (const sl of slices ?? []) {
       for (const sess of sl.session ?? []) {
         const dnn = sess.name ?? '(unnamed)';
@@ -124,13 +166,14 @@ export class SubscriberManagementUseCase {
 
   // ── Framed Routing: non-blocking overlap/duplicate warnings ────────────────
 
-  private async computeFramedRouteWarnings(imsi: string, slices: any[]): Promise<string[]> {
+  private async computeFramedRouteWarnings(imsi: string, slices: SubscriberSliceLike[]): Promise<string[]> {
     const warnings: string[] = [];
     const newRoutes: Array<{ dnn: string; cidr: string; family: 'v4' | 'v6' }> = [];
     for (const sl of slices ?? []) {
       for (const sess of sl.session ?? []) {
-        for (const cidr of sess.ipv4_framed_routes ?? []) newRoutes.push({ dnn: sess.name, cidr, family: 'v4' });
-        for (const cidr of sess.ipv6_framed_routes ?? []) newRoutes.push({ dnn: sess.name, cidr, family: 'v6' });
+        const dnn = sess.name ?? '(unnamed)';
+        for (const cidr of sess.ipv4_framed_routes ?? []) newRoutes.push({ dnn, cidr, family: 'v4' });
+        for (const cidr of sess.ipv6_framed_routes ?? []) newRoutes.push({ dnn, cidr, family: 'v6' });
       }
     }
     if (newRoutes.length === 0) return warnings;
@@ -224,8 +267,8 @@ export class SubscriberManagementUseCase {
     };
 
     await this.subscriberRepo.create(subscriber);
-    await this.syncStaticRoutes(undefined, subscriber.slice as any);
-    const warnings = await this.computeFramedRouteWarnings(dto.imsi, subscriber.slice as any);
+    await this.syncStaticRoutes(undefined, subscriber.slice);
+    const warnings = await this.computeFramedRouteWarnings(dto.imsi, subscriber.slice);
 
     this.logger.info({ imsi: dto.imsi }, 'Subscriber created');
     await this.auditLogger.log({
@@ -255,11 +298,11 @@ export class SubscriberManagementUseCase {
       }
     }
 
-    if (dto.slice) this.validateFramedRouteLimits(dto.slice as any);
+    if (dto.slice) this.validateFramedRouteLimits(dto.slice);
 
     await this.subscriberRepo.update(imsi, dto);
-    await this.syncStaticRoutes(existing.slice as any, dto.slice as any);
-    const warnings = dto.slice ? await this.computeFramedRouteWarnings(imsi, dto.slice as any) : [];
+    await this.syncStaticRoutes(existing.slice, dto.slice);
+    const warnings = dto.slice ? await this.computeFramedRouteWarnings(imsi, dto.slice) : [];
 
     if (renamingImsi) {
       const newImsi = dto.imsi!;
@@ -352,7 +395,7 @@ export class SubscriberManagementUseCase {
     }
 
     await this.subscriberRepo.delete(imsi);
-    await this.syncStaticRoutes(existing.slice as any, []);
+    await this.syncStaticRoutes(existing.slice, []);
 
     // Both collections reference members by raw IMSI value, not a foreign
     // key (same reason the rename path above cascades to

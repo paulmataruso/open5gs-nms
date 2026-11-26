@@ -51,10 +51,10 @@
   ],
   "measuredAt": "2026-11-26",
   "backend": {
-    "errors": 2993,
-    "warnings": 381,
-    "files": 432,
-    "filesWithFindings": 237,
+    "errors": 2852,
+    "warnings": 378,
+    "files": 436,
+    "filesWithFindings": 236,
     "fatals": 0
   },
   "frontend": {

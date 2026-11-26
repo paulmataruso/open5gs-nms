@@ -12,7 +12,8 @@ import { IConfigRepository, AllConfigs } from '../../domain/interfaces/config-re
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import type {
   AmfYamlDocument, MmeYamlDocument, SmfYamlDocument, UpfYamlDocument,
-  SgwcYamlDocument, SgwuYamlDocument, YamlServerEntry, YamlPlmnId, YamlSnssai,
+  SgwcYamlDocument, SgwuYamlDocument, NrfYamlDocument,
+  YamlServerEntry, YamlPlmnId, YamlSnssai, YamlSession, YamlPeerEntry,
 } from '../../domain/entities/open5gs-yaml';
 
 export interface PlmnConfig {
@@ -153,13 +154,25 @@ export interface AutoConfigPreviewResult {
 // this does not) — same field paths, same loopback-prefix heuristics for
 // localUpfOnly/localSgwuOnly, kept in sync by comment cross-reference since
 // there's no shared-types package between the two.
+/**
+ * Message text for a caught value. `catch` binds `unknown`, so interpolating it
+ * directly renders "[object Object]" for a rejection that is not an Error --
+ * exactly when the detail matters.
+ */
+function errText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  if (typeof e === 'string') return e;
+  try { return JSON.stringify(e) ?? String(e); } catch { return String(e); }
+}
+
 export function deriveCurrentAutoConfigInput(configs: AllConfigs): AutoConfigInput {
-  const mmeRaw = (configs.mme?.rawYaml as MmeYamlDocument | undefined)?.mme;
-  const amfRaw = (configs.amf?.rawYaml as AmfYamlDocument | undefined)?.amf;
-  const sgwuRaw = (configs.sgwu?.rawYaml as SgwuYamlDocument | undefined)?.sgwu;
-  const upfRaw = (configs.upf?.rawYaml as UpfYamlDocument | undefined)?.upf;
-  const smfRaw = (configs.smf?.rawYaml as SmfYamlDocument | undefined)?.smf;
-  const sgwcRaw = (configs.sgwc?.rawYaml as SgwcYamlDocument | undefined)?.sgwc;
+  // No casts needed: AllConfigs types each `rawYaml` as its own document (#82).
+  const mmeRaw = configs.mme?.rawYaml?.mme;
+  const amfRaw = configs.amf?.rawYaml?.amf;
+  const sgwuRaw = configs.sgwu?.rawYaml?.sgwu;
+  const upfRaw = configs.upf?.rawYaml?.upf;
+  const smfRaw = configs.smf?.rawYaml?.smf;
+  const sgwcRaw = configs.sgwc?.rawYaml?.sgwc;
 
   // Open5GS allows `address:` and `tac:` to be either a scalar or a list, and
   // this snapshot feeds single-valued fields (PlmnConfig.tac is `number`,
@@ -271,21 +284,242 @@ export class AutoConfigUseCase {
   // with no existing entry (a genuinely new one). Open5GS yields mcc/mnc as
   // numbers on some parse paths and zero-padded strings on others, so compare
   // numerically rather than by string equality.
+  /**
+   * Is this the same PLMN component?
+   *
+   * Two rules, because two different ambiguities collide here.
+   *
+   * When BOTH sides are strings they are compared EXACTLY, so width counts:
+   * `70` and `070` are different networks (3GPP TS 23.003), and the previous
+   * unconditional `Number(a) === Number(b)` treated them as equal -- an
+   * operator on MNC 070 whose input said 70 would have had the 070 entry's
+   * slices and amf_id preserved and then rewritten under 70, moving one
+   * network's configuration onto another.
+   *
+   * When EITHER side is not a string, the numeric comparison is kept. That is
+   * load-bearing and pinned by auto-config-plmn-support.test.ts: a document
+   * that yields `mcc` as the NUMBER 1 has already lost its zeros, so `1` and
+   * `'001'` cannot be distinguished and must match or the operator's slices
+   * are silently dropped. Matching leniently there is the safe direction --
+   * the strict rule above is what prevents the two string forms being
+   * conflated. Both cases covered 2026-11-26.
+   */
+  private static samePlmnPart(a: unknown, b: unknown): boolean {
+    if (a === undefined || a === null || b === undefined || b === null) return false;
+    if (typeof a === 'string' && typeof b === 'string') return a.trim() === b.trim();
+    return Number(a) === Number(b);
+  }
+
+  /** The prior entry for a PLMN, so its operator-set fields can be preserved. */
+  private static priorFor<T extends { plmn_id?: { mcc?: unknown; mnc?: unknown } }>(
+    existing: unknown,
+    plmn: { mcc: string; mnc: string },
+  ): T | undefined {
+    const prior: T[] = Array.isArray(existing) ? (existing as T[]) : [];
+    return prior.find((e) =>
+      AutoConfigUseCase.samePlmnPart(e?.plmn_id?.mcc, plmn.mcc)
+      && AutoConfigUseCase.samePlmnPart(e?.plmn_id?.mnc, plmn.mnc));
+  }
+
+  /**
+   * The session pools to write, from the explicit list or the legacy single
+   * IPv4/IPv6 pair.
+   *
+   * REFUSES an empty result rather than writing `session: []`. Real hazard:
+   * with `applySessionPools` requested, no explicit pools, and both legacy
+   * subnets blank, the filter below produced an empty array and Apply deleted
+   * EVERY UE address pool from upf.yaml and smf.yaml -- with no pool the UPF
+   * cannot allocate a UE address at all, so that is a total data-plane outage
+   * written by a successful-looking apply. Asking to apply pools while
+   * supplying none is a mistake, not an instruction to delete them, and this
+   * file already fails hard rather than guessing elsewhere (see the
+   * bind-address pre-flight).
+   */
+  private resolveSessionPools(input: AutoConfigInput): SessionPool[] {
+    if (input.sessionPools?.length) return input.sessionPools;
+    const legacy: SessionPool[] = [
+      { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
+      { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
+    ].filter(p => p.subnet);
+    if (legacy.length === 0) {
+      throw new Error(
+        'Session pools were requested but none were supplied: refusing to write an empty '
+        + 'session list, which would delete every UE address pool from upf.yaml and smf.yaml. '
+        + 'Provide at least one pool, or clear the "apply session pools" option.',
+      );
+    }
+    return legacy;
+  }
+
+  /**
+   * Pool list -> Open5GS session entries, MERGED over the matching on-disk
+   * entry so keys this project does not model survive.
+   *
+   * Real data loss, found 2026-11-26 against this deployment's own smf.yaml:
+   * these entries were REBUILT as `{subnet, gateway, dnn, dev}`, so the live
+   * `ims` pool's per-session `dns: [10.0.1.178]` was deleted by any apply that
+   * touched session pools -- sending IMS-APN UEs to the global resolver
+   * instead of the IMS one. CLAUDE.md pattern #2: clone and mutate, never
+   * rebuild. Matching is by `subnet`, the one field always present and the
+   * natural identity of a pool.
+   *
+   * The four fields the NMS models are still set OR DELETED from the input, so
+   * clearing a gateway in the UI really clears it; everything else is left
+   * exactly as the operator wrote it.
+   */
+  private toSessionEntries(existing: unknown, pools: SessionPool[]): YamlSession[] {
+    const prior: YamlSession[] = Array.isArray(existing) ? (existing as YamlSession[]) : [];
+    return pools.map(p => {
+      const match = prior.find(e => e?.subnet === p.subnet);
+      const entry: YamlSession = { ...(match ?? {}) };
+      entry.subnet = p.subnet;
+      if (p.gateway) entry.gateway = p.gateway; else delete entry.gateway;
+      if (p.dnn) entry.dnn = p.dnn; else delete entry.dnn;
+      if (p.dev) entry.dev = p.dev; else delete entry.dev;
+      return entry;
+    });
+  }
+
+  /**
+   * DNN-specific pools before default ones, which is how smf.yaml is written.
+   *
+   * Open5GS takes the first applicable pool, so a default (no-DNN) pool listed
+   * ahead of a DNN-specific one would shadow it. The APPLY path has always
+   * done this; the PREVIEW path did not, so the diff an operator approved was
+   * not in the order Apply would write. Shared from 2026-11-26 so they cannot
+   * disagree again.
+   */
+  private dnnFirst(entries: YamlSession[]): YamlSession[] {
+    return [...entries.filter(e => e.dnn), ...entries.filter(e => !e.dnn)];
+  }
+
+  /**
+   * Set an endpoint's bind target, PRESERVING every other field on it.
+   *
+   * These assignments used to replace the whole array -- `server = [{ address }]`
+   * -- which drops anything else the operator put on that entry. The one that
+   * matters in practice is `advertise`: Open5GS supports it on gtpu so a UPF
+   * behind NAT can advertise its public address, and on s1ap/ngap for the same
+   * reason, and losing it silently breaks the data path for remote peers while
+   * the config still looks right. `port` is the other one. Neither is set on
+   * this deployment's own endpoints, which is why it went unnoticed; the
+   * DNS/FQDN migration already uses this spread idiom (see
+   * dns-migration-usecase.ts, `[{ ...currentServer, advertise }]`).
+   *
+   * `address` and `dev` are alternatives, so whichever is NOT chosen is
+   * removed rather than left behind as a stale sibling.
+   *
+   * Collapsing to a single entry is deliberate and unchanged: Auto-Config's
+   * documented scope is one interface on a flat L2 segment.
+   */
+  private setServerBind(
+    existing: YamlServerEntry[] | undefined,
+    bind: { dev: string } | { address: string },
+  ): YamlServerEntry[] {
+    const first: YamlServerEntry = Array.isArray(existing) && existing.length > 0 ? existing[0] : {};
+    const next: YamlServerEntry = { ...first, ...bind };
+    if ('dev' in bind) delete next.address;
+    else delete next.dev;
+    return [next];
+  }
+
+  /**
+   * AMF GUAMI list, PRESERVING each PLMN's configured `amf_id`.
+   *
+   * Real bug, fixed 2026-11-26: both the preview and the apply path rebuilt
+   * this with `amf_id: { region: 2, set: 1 }` hardcoded, so Auto-Config
+   * silently overwrote an operator's real AMF region/set and dropped `pointer`
+   * entirely. The GUAMI is part of the 5G-S-TMSI, so changing it invalidates
+   * every UE's temporary identity. It went unnoticed because this deployment
+   * happens to run region 2 / set 1 -- exactly the hardcoded pair. The fix is
+   * the idiom buildPlmnSupport() already used two lines below the defect.
+   */
+  private buildGuami(
+    existing: unknown,
+    plmns: Array<{ mcc: string; mnc: string }>,
+  ): Array<{ plmn_id: YamlPlmnId; amf_id: Record<string, unknown> }> {
+    type PriorGuami = { plmn_id?: { mcc?: unknown; mnc?: unknown }; amf_id?: unknown };
+    return plmns.map(plmn => {
+      const match = AutoConfigUseCase.priorFor<PriorGuami>(existing, plmn);
+      const amfId = match?.amf_id;
+      return {
+        plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+        // Passed through as the operator wrote it (region/set/pointer, plus
+        // anything Open5GS gains later), defaulted only when genuinely absent.
+        amf_id: (typeof amfId === 'object' && amfId !== null && !Array.isArray(amfId))
+          ? amfId as Record<string, unknown>
+          : { region: 2, set: 1 },
+      };
+    });
+  }
+
+  /**
+   * TAI list for amf.yaml / mme.yaml, PRESERVING a configured `tac`.
+   *
+   * Real bug, fixed 2026-11-26: this was `tac: plmn.tac ?? 1`, so when the
+   * input carried no TAC the operator's existing value was replaced by 1 --
+   * and a LIST-valued `tac: [1, 2]` (Open5GS's scalar-or-list form, used to
+   * serve several tracking areas from one TAI entry) was collapsed to a single
+   * value on the next apply. Precedence is now input, then what is on disk,
+   * then 1.
+   */
+  private buildTaiList(
+    existing: unknown,
+    plmns: Array<{ mcc: string; mnc: string; tac?: number }>,
+  ): Array<{ plmn_id: YamlPlmnId; tac: number | number[] }> {
+    type PriorTai = { plmn_id?: { mcc?: unknown; mnc?: unknown }; tac?: unknown };
+    return plmns.map(plmn => {
+      const match = AutoConfigUseCase.priorFor<PriorTai>(existing, plmn);
+      const priorTac = match?.tac;
+      const keepable = typeof priorTac === 'number'
+        || (Array.isArray(priorTac) && priorTac.length > 0 && priorTac.every(t => typeof t === 'number'));
+      return {
+        plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+        tac: plmn.tac ?? (keepable ? priorTac : 1),
+      };
+    });
+  }
+
+  /**
+   * MME GUMMEI list, PRESERVING a configured `mme_gid` / `mme_code`.
+   *
+   * Same defect as buildGuami: `?? 2` / `?? 1` replaced the operator's real
+   * values whenever the input omitted them. The GUMMEI is part of the GUTI,
+   * so changing it invalidates every attached UE's temporary identity.
+   */
+  private buildGummei(
+    existing: unknown,
+    plmns: Array<{ mcc: string; mnc: string; mme_gid?: number; mme_code?: number }>,
+  ): Array<{ plmn_id: YamlPlmnId; mme_gid: number; mme_code: number }> {
+    type PriorGummei = {
+      plmn_id?: { mcc?: unknown; mnc?: unknown };
+      mme_gid?: unknown;
+      mme_code?: unknown;
+    };
+    const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+    return plmns.map(plmn => {
+      const match = AutoConfigUseCase.priorFor<PriorGummei>(existing, plmn);
+      return {
+        plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
+        mme_gid: plmn.mme_gid ?? num(match?.mme_gid) ?? 2,
+        mme_code: plmn.mme_code ?? num(match?.mme_code) ?? 1,
+      };
+    });
+  }
+
   private buildPlmnSupport(
     existing: unknown,
     plmns: Array<{ mcc: string; mnc: string }>,
   ): Array<{ plmn_id: YamlPlmnId; s_nssai: YamlSnssai[] }> {
     // Array.isArray only proves it is an array, not what the elements are, so
     // the element shape is asserted and then read defensively below: mcc/mnc
-    // go through samePlmn(), and s_nssai is re-checked with isArray.
+    // go through samePlmnPart(), and s_nssai is re-checked with isArray.
     type PriorEntry = { plmn_id?: { mcc?: unknown; mnc?: unknown }; s_nssai?: unknown };
     const prior: PriorEntry[] = Array.isArray(existing) ? (existing as PriorEntry[]) : [];
-    const samePlmn = (a: unknown, b: unknown) =>
-      a !== undefined && a !== null && b !== undefined && b !== null
-      && Number(a) === Number(b);
     return plmns.map(plmn => {
       const match = prior.find((e) =>
-        samePlmn(e?.plmn_id?.mcc, plmn.mcc) && samePlmn(e?.plmn_id?.mnc, plmn.mnc));
+        AutoConfigUseCase.samePlmnPart(e?.plmn_id?.mcc, plmn.mcc)
+        && AutoConfigUseCase.samePlmnPart(e?.plmn_id?.mnc, plmn.mnc));
       // Asserted, not inspected: the guard proves it is a non-empty array, and
       // the elements are deliberately passed through as the operator wrote
       // them rather than being re-validated field by field.
@@ -315,7 +549,10 @@ export class AutoConfigUseCase {
       // MME diff
       if (configs.mme && (applyPlmn || applyInterfaces)) {
         const original = configs.mme.rawYaml as MmeYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original)); // Deep clone
+        // Typed: JSON.parse returns `any`, so every mutation below was
+        // unchecked -- which is how the hardcoded identity fields and the
+        // rebuilt sub-trees went unnoticed in review.
+        const modified = JSON.parse(JSON.stringify(original)) as MmeYamlDocument;
 
         // Apply MME changes to rawYaml structure
         if (!modified.mme) modified.mme = {};
@@ -324,25 +561,17 @@ export class AutoConfigUseCase {
           if (!modified.mme.s1ap) modified.mme.s1ap = {};
           // Use dev: if provided, otherwise address:
           if (input.s1mmeDev) {
-            modified.mme.s1ap.server = [{ dev: input.s1mmeDev }];
+            modified.mme.s1ap.server = this.setServerBind(modified.mme.s1ap.server, { dev: input.s1mmeDev });
           } else if (input.s1mmeIP) {
-            modified.mme.s1ap.server = [{ address: input.s1mmeIP }];
+            modified.mme.s1ap.server = this.setServerBind(modified.mme.s1ap.server, { address: input.s1mmeIP });
           }
         }
 
         if (applyPlmn) {
-          // Update GUMMEI with multiple PLMNs
-          modified.mme.gummei = input.plmn4g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            mme_gid: plmn.mme_gid ?? 2,
-            mme_code: plmn.mme_code ?? 1,
-          }));
-
-          // Update TAI with multiple PLMNs
-          modified.mme.tai = input.plmn4g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            tac: plmn.tac ?? 1,
-          }));
+          // GUMMEI and TAI both PRESERVE the operator's configured values --
+          // see buildGummei/buildTaiList. Never hardcode an identity field.
+          modified.mme.gummei = this.buildGummei(modified.mme.gummei, input.plmn4g);
+          modified.mme.tai = this.buildTaiList(modified.mme.tai, input.plmn4g);
         }
 
         const originalYaml = yaml.stringify(original);
@@ -354,7 +583,7 @@ export class AutoConfigUseCase {
       // SGW-U diff
       if (configs.sgwu && applyInterfaces) {
         const original = configs.sgwu.rawYaml as SgwuYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as SgwuYamlDocument;
 
         if (!modified.sgwu) modified.sgwu = {};
         if (!modified.sgwu.gtpu) modified.sgwu.gtpu = {};
@@ -365,7 +594,7 @@ export class AutoConfigUseCase {
         // replaces a working GTP-U bind on a core NF with an unusable one.
         // Leaving the existing value alone is always the better failure mode.
         if (input.sgwuGtpIP) {
-          modified.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
+          modified.sgwu.gtpu.server = this.setServerBind(modified.sgwu.gtpu.server, { address: input.sgwuGtpIP });
         }
 
         const originalYaml = yaml.stringify(original);
@@ -377,7 +606,7 @@ export class AutoConfigUseCase {
       // AMF diff
       if (configs.amf && (applyPlmn || applyInterfaces)) {
         const original = configs.amf.rawYaml as AmfYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as AmfYamlDocument;
 
         if (!modified.amf) modified.amf = {};
 
@@ -385,27 +614,17 @@ export class AutoConfigUseCase {
           if (!modified.amf.ngap) modified.amf.ngap = {};
           // Use dev: if provided, otherwise address:
           if (input.amfNgapDev) {
-            modified.amf.ngap.server = [{ dev: input.amfNgapDev }];
+            modified.amf.ngap.server = this.setServerBind(modified.amf.ngap.server, { dev: input.amfNgapDev });
           } else if (input.amfNgapIP) {
-            modified.amf.ngap.server = [{ address: input.amfNgapIP }];
+            modified.amf.ngap.server = this.setServerBind(modified.amf.ngap.server, { address: input.amfNgapIP });
           }
         }
 
         if (applyPlmn) {
-          // Update GUAMI with multiple PLMNs
-          modified.amf.guami = input.plmn5g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            amf_id: {
-              region: 2,
-              set: 1,
-            },
-          }));
-
-          // Update TAI with multiple PLMNs
-          modified.amf.tai = input.plmn5g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            tac: plmn.tac ?? 1,
-          }));
+          // GUAMI and TAI both PRESERVE the operator's configured values --
+          // see buildGuami/buildTaiList. Never hardcode an identity field.
+          modified.amf.guami = this.buildGuami(modified.amf.guami, input.plmn5g);
+          modified.amf.tai = this.buildTaiList(modified.amf.tai, input.plmn5g);
 
           // Update plmn_support PLMN ids, PRESERVING each PLMN's configured
           // s_nssai -- see buildPlmnSupport. Never hardcode the slice list.
@@ -421,29 +640,19 @@ export class AutoConfigUseCase {
       // UPF diff
       if (configs.upf && (applyInterfaces || applySessionPools)) {
         const original = configs.upf.rawYaml as UpfYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as UpfYamlDocument;
 
         if (!modified.upf) modified.upf = {};
 
         if (applyInterfaces && input.upfGtpIP) {
           // Emptiness-guarded for the same reason as sgwu.gtpu above.
           if (!modified.upf.gtpu) modified.upf.gtpu = {};
-          modified.upf.gtpu.server = [{ address: input.upfGtpIP }];
+          modified.upf.gtpu.server = this.setServerBind(modified.upf.gtpu.server, { address: input.upfGtpIP });
         }
 
         if (applySessionPools) {
-          // Update Session pools — support dnn and dev fields
-          const pools = input.sessionPools?.length ? input.sessionPools : [
-            { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-            { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-          ].filter(p => p.subnet);
-          modified.upf.session = pools.map(p => {
-            const entry: any = { subnet: p.subnet };
-            if (p.gateway) entry.gateway = p.gateway;
-            if (p.dnn)     entry.dnn     = p.dnn;
-            if (p.dev)     entry.dev     = p.dev;
-            return entry;
-          });
+          modified.upf.session = this.toSessionEntries(
+            modified.upf.session, this.resolveSessionPools(input));
         }
 
         const originalYaml = yaml.stringify(original);
@@ -455,22 +664,12 @@ export class AutoConfigUseCase {
       // SMF diff
       if (configs.smf && applySessionPools) {
         const original = configs.smf.rawYaml as SmfYamlDocument;
-        const modified = JSON.parse(JSON.stringify(original));
+        const modified = JSON.parse(JSON.stringify(original)) as SmfYamlDocument;
 
         if (!modified.smf) modified.smf = {};
 
-        // Update Session pools — support dnn and dev fields
-        const smfPools = input.sessionPools?.length ? input.sessionPools : [
-          { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-          { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-        ].filter(p => p.subnet);
-        modified.smf.session = smfPools.map(p => {
-          const entry: any = { subnet: p.subnet };
-          if (p.gateway) entry.gateway = p.gateway;
-          if (p.dnn)     entry.dnn     = p.dnn;
-          if (p.dev)     entry.dev     = p.dev;
-          return entry;
-        });
+        modified.smf.session = this.dnnFirst(this.toSessionEntries(
+          modified.smf.session, this.resolveSessionPools(input)));
 
         const originalYaml = yaml.stringify(original);
         const modifiedYaml = yaml.stringify(modified);
@@ -486,7 +685,7 @@ export class AutoConfigUseCase {
       this.logger.error({ error }, 'Failed to generate preview');
       return {
         success: false,
-        message: `Preview failed: ${error}`,
+        message: `Preview failed: ${errText(error)}`,
         diffs: {},
       };
     }
@@ -570,25 +769,17 @@ export class AutoConfigUseCase {
           if (!raw.mme.s1ap) raw.mme.s1ap = {};
           // Use dev: if provided, otherwise address:
           if (input.s1mmeDev) {
-            raw.mme.s1ap.server = [{ dev: input.s1mmeDev }];
+            raw.mme.s1ap.server = this.setServerBind(raw.mme.s1ap.server, { dev: input.s1mmeDev });
           } else if (input.s1mmeIP) {
-            raw.mme.s1ap.server = [{ address: input.s1mmeIP }];
+            raw.mme.s1ap.server = this.setServerBind(raw.mme.s1ap.server, { address: input.s1mmeIP });
           }
         }
 
         if (applyPlmn) {
-          // Update GUMMEI with multiple PLMNs
-          raw.mme.gummei = input.plmn4g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            mme_gid: plmn.mme_gid ?? 2,
-            mme_code: plmn.mme_code ?? 1,
-          }));
-
-          // Update TAI with multiple PLMNs
-          raw.mme.tai = input.plmn4g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            tac: plmn.tac ?? 1,
-          }));
+          // GUMMEI and TAI both PRESERVE the operator's configured values --
+          // see buildGummei/buildTaiList. Never hardcode an identity field.
+          raw.mme.gummei = this.buildGummei(raw.mme.gummei, input.plmn4g);
+          raw.mme.tai = this.buildTaiList(raw.mme.tai, input.plmn4g);
         }
 
         configs.mme.rawYaml = raw;
@@ -605,7 +796,7 @@ export class AutoConfigUseCase {
         if (!raw.sgwu.gtpu) raw.sgwu.gtpu = {};
         // Emptiness-guarded — see the matching comment in preview().
         if (input.sgwuGtpIP) {
-          raw.sgwu.gtpu.server = [{ address: input.sgwuGtpIP }];
+          raw.sgwu.gtpu.server = this.setServerBind(raw.sgwu.gtpu.server, { address: input.sgwuGtpIP });
         } else {
           this.logger.warn('sgwuGtpIP is empty — leaving sgwu.yaml gtpu.server unchanged');
         }
@@ -633,11 +824,13 @@ export class AutoConfigUseCase {
         );
 
         // SGW-C PFCP client — local SGW-U always present, remote entries appended
-        const sgwuClients: any[] = [{ address: '127.0.0.6' }];
+        const sgwuClients: YamlPeerEntry[] = [{ address: '127.0.0.6' }];
         if (!localSgwuOnly && input.remoteSgwus?.length) {
           for (const remote of input.remoteSgwus) {
             if (!remote.pfcpIP) continue;
-            const entry: any = { address: remote.pfcpIP };
+            const entry: YamlPeerEntry = { address: remote.pfcpIP };
+            // Open5GS takes a scalar or a list here; a single TAC is written
+            // bare so the file reads the way an operator would write it.
             if (remote.tac?.length) entry.tac = remote.tac.length === 1 ? remote.tac[0] : remote.tac;
             sgwuClients.push(entry);
           }
@@ -664,7 +857,9 @@ export class AutoConfigUseCase {
         // all, so this NF's own PFCP server can only ever be the loopback.
         // `localSgwuOnly` below is about which OTHER SGW-Us this SGW-C talks
         // to, not about moving this one's own bind address.
-        raw.sgwu.pfcp.server = [{ address: '127.0.0.6' }];
+        // The ADDRESS is fixed for the reason above; `port` and anything else
+        // on the entry are still the operator's, so preserve them.
+        raw.sgwu.pfcp.server = this.setServerBind(raw.sgwu.pfcp.server, { address: '127.0.0.6' });
         const localSgwuOnly = input.localSgwuOnly ?? true;
         // SGW-U also needs to know the SGW-C address if remote
         if (!localSgwuOnly && input.sgwcPfcpIP) {
@@ -686,27 +881,17 @@ export class AutoConfigUseCase {
           if (!raw.amf.ngap) raw.amf.ngap = {};
           // Use dev: if provided, otherwise address:
           if (input.amfNgapDev) {
-            raw.amf.ngap.server = [{ dev: input.amfNgapDev }];
+            raw.amf.ngap.server = this.setServerBind(raw.amf.ngap.server, { dev: input.amfNgapDev });
           } else if (input.amfNgapIP) {
-            raw.amf.ngap.server = [{ address: input.amfNgapIP }];
+            raw.amf.ngap.server = this.setServerBind(raw.amf.ngap.server, { address: input.amfNgapIP });
           }
         }
 
         if (applyPlmn) {
-          // Update GUAMI with multiple PLMNs
-          raw.amf.guami = input.plmn5g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            amf_id: {
-              region: 2,
-              set: 1,
-            },
-          }));
-
-          // Update TAI with multiple PLMNs
-          raw.amf.tai = input.plmn5g.map(plmn => ({
-            plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
-            tac: plmn.tac ?? 1,
-          }));
+          // GUAMI and TAI both PRESERVE the operator's configured values --
+          // see buildGuami/buildTaiList. Never hardcode an identity field.
+          raw.amf.guami = this.buildGuami(raw.amf.guami, input.plmn5g);
+          raw.amf.tai = this.buildTaiList(raw.amf.tai, input.plmn5g);
 
           // Update plmn_support PLMN ids, PRESERVING each PLMN's configured
           // s_nssai -- see buildPlmnSupport. Never hardcode the slice list.
@@ -740,7 +925,7 @@ export class AutoConfigUseCase {
       const nrfPlmns = input.plmn5g.length > 0 ? input.plmn5g : input.plmn4g;
       if (configs.nrf && applyPlmn && nrfPlmns.length > 0) {
         this.logger.info({ plmnCount: nrfPlmns.length }, 'Updating NRF serving PLMN');
-        const raw = configs.nrf.rawYaml as any;
+        const raw = configs.nrf.rawYaml as NrfYamlDocument;
         if (!raw.nrf) raw.nrf = {};
         raw.nrf.serving = nrfPlmns.map(plmn => ({
           plmn_id: { mcc: plmn.mcc, mnc: plmn.mnc },
@@ -761,7 +946,7 @@ export class AutoConfigUseCase {
           // Emptiness-guarded — see the matching comment in preview().
           if (input.upfGtpIP) {
             if (!raw.upf.gtpu) raw.upf.gtpu = {};
-            raw.upf.gtpu.server = [{ address: input.upfGtpIP }];
+            raw.upf.gtpu.server = this.setServerBind(raw.upf.gtpu.server, { address: input.upfGtpIP });
           } else {
             this.logger.warn('upfGtpIP is empty — leaving upf.yaml gtpu.server unchanged');
           }
@@ -783,18 +968,8 @@ export class AutoConfigUseCase {
         }
 
         if (applySessionPools) {
-          // Update Session pools — support multiple entries with dnn and dev
-          const execPools = input.sessionPools?.length ? input.sessionPools : [
-            { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-            { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-          ].filter((p: any) => p.subnet);
-          raw.upf.session = execPools.map(p => {
-            const entry: any = { subnet: p.subnet };
-            if (p.gateway) entry.gateway = p.gateway;
-            if (p.dnn)     entry.dnn     = p.dnn;
-            if (p.dev)     entry.dev     = p.dev;
-            return entry;
-          });
+          raw.upf.session = this.toSessionEntries(
+            raw.upf.session, this.resolveSessionPools(input));
         }
 
         configs.upf.rawYaml = raw;
@@ -850,22 +1025,8 @@ export class AutoConfigUseCase {
         }
 
         if (applySessionPools) {
-          // Build session pools — DNN-specific pools first, then default (no-DNN) pools
-          const execSmfPools = input.sessionPools?.length ? input.sessionPools : [
-            { subnet: input.sessionPoolIPv4Subnet || '', gateway: input.sessionPoolIPv4Gateway || '', dnn: '', dev: '' },
-            { subnet: input.sessionPoolIPv6Subnet || '', gateway: input.sessionPoolIPv6Gateway || '', dnn: '', dev: '' },
-          ].filter((p: any) => p.subnet);
-          const smfNewPools = execSmfPools.map((p: any) => {
-            const entry: any = { subnet: p.subnet };
-            if (p.gateway) entry.gateway = p.gateway;
-            if (p.dnn)     entry.dnn     = p.dnn;
-            if (p.dev)     entry.dev     = p.dev;
-            return entry;
-          });
-          raw.smf.session = [
-            ...smfNewPools.filter((p: any) => p.dnn),
-            ...smfNewPools.filter((p: any) => !p.dnn),
-          ];
+          raw.smf.session = this.dnnFirst(this.toSessionEntries(
+            raw.smf.session, this.resolveSessionPools(input)));
         }
 
         configs.smf.rawYaml = raw;
@@ -906,7 +1067,7 @@ export class AutoConfigUseCase {
       //
       // Each rule is added idempotently (-C check before -A/-I) so re-running
       // Apply Config never piles up duplicates.
-      const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string) => {
+      const ensureRule = async (bin: string, checkArgs: string[], addArgs: string[], label: string): Promise<void> => {
         const check = await this.hostExecutor.executeCommand(bin, checkArgs);
         if (check.exitCode !== 0) {
           await this.hostExecutor.executeCommand(bin, addArgs);
@@ -1159,13 +1320,13 @@ export class AutoConfigUseCase {
         user,
         action: 'config_apply',
         target: 'auto_config',
-        details: `Auto-configuration failed: ${error}`,
+        details: `Auto-configuration failed: ${errText(error)}`,
         success: false,
       });
 
       return {
         success: false,
-        message: `Auto-configuration failed: ${error}`,
+        message: `Auto-configuration failed: ${errText(error)}`,
         updatedFiles,
         errors: [String(error)],
       };
