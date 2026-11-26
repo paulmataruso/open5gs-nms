@@ -38,6 +38,17 @@ describe('AutoConfigUseCase.buildPlmnSupport', () => {
     expect(out[0].s_nssai).toEqual([{ sst: 1, sd: '19cde1' }, { sst: 1 }]);
   });
 
+  it('does NOT conflate the STRING forms 70 and 070, which are different networks', () => {
+    // The numeric bridge below is only for a side that is already a NUMBER and
+    // has therefore lost its zeros. Two strings are compared exactly, or one
+    // network's slices get rewritten under another. Added 2026-11-26.
+    const existing = [
+      { plmn_id: { mcc: '001', mnc: '070' }, s_nssai: [{ sst: 1, sd: '19cde1' }] },
+    ];
+    const out = buildPlmnSupport(existing, [{ mcc: '001', mnc: '70' }]);
+    expect(out[0].s_nssai).toEqual([{ sst: 1 }]); // no match -> default, not the 070 slices
+  });
+
   it('matches mcc/mnc numerically, since Open5GS yields them as both numbers and zero-padded strings', () => {
     // amf.yaml parses `mcc: 001` as the number 1; the wizard passes '001'.
     const existing = [
