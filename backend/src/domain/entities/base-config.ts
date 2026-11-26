@@ -1,3 +1,5 @@
+import { YamlDocumentCommon } from './open5gs-yaml';
+
 export interface PlmnId {
   mcc: string;
   mnc: string;
@@ -43,8 +45,15 @@ export interface AmbrConfig {
   downlink: string;
 }
 
-export interface BaseNfConfig {
+/**
+ * `TDoc` is the shape of the whole parsed YAML file this config came from --
+ * see open5gs-yaml.ts, and Open5gsConfigDocuments in
+ * domain/interfaces/config-repository.ts for the service-name -> document map.
+ * It defaults to the loose form so an entity that has no document type yet
+ * still compiles; naming the real one is what makes `rawYaml` reads checked.
+ */
+export interface BaseNfConfig<TDoc extends YamlDocumentCommon = YamlDocumentCommon> {
   logger?: LoggerConfig;
   metrics?: MetricsConfig;
-  rawYaml?: Record<string, unknown>;
+  rawYaml?: TDoc;
 }

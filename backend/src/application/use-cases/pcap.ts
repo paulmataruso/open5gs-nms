@@ -252,16 +252,23 @@ export class PcapUseCase {
     };
 
     // NFs loaded via YamlConfigRepository's loadGeneric() (mme/hss/pcrf/sgwc/sgwu/
-    // sepp1) only expose sbi/pfcp/gtpu/ngap through parsers that normalize BOTH the
-    // flat {addr,port} and nested {server:[{address,port}]} raw shapes — but it has
-    // NO equivalent parser at all for s1ap/freeDiameter, and its own "gtpc" handling
-    // is a flat-only passthrough that doesn't check server[] like the others do.
+    // sepp1) only expose sbi/pfcp/gtpu/gtpc/ngap through parsers that normalize BOTH
+    // the flat {addr,port} and nested {server:[{address,port}]} raw shapes — but it
+    // has NO equivalent parser at all for s1ap/freeDiameter.
     // Confirmed live (2026-07-19): mme/hss/pcrf/sgwc/sgwu/sepp1 all silently vanished
     // from the NF picker because of this — sepp1 additionally has a real top-level
     // YAML key of "sepp", not "sepp1" (matches the file/service name, not the doc
     // key). Read every field for these 6 NFs directly off the preserved rawYaml
     // instead of trusting the generic loader's typed output, same technique already
     // proven in plmn-migration-usecase.ts for this exact class of problem.
+    //
+    // Updated 2026-11-26: "gtpc" USED to be named here too, as a flat-only
+    // passthrough that didn't check server[] like its siblings. That is fixed at
+    // the source (parseGtpc in yaml-config-repository.ts), which also fixed SMF's
+    // own GTP-C descriptor below — SMF goes through the dedicated loadSmf() rather
+    // than this rawYaml workaround, so it had kept the broken value and was
+    // building its filter as `host 127.0.0.1 and udp port 2123` against a real
+    // SMF GTP-C address of 127.0.0.4, matching nothing.
     const rawServer = (section: any): { address?: string; port?: number } | undefined => {
       const s = section?.server;
       return Array.isArray(s) ? s[0] : undefined;

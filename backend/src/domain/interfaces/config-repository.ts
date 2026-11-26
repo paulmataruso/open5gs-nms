@@ -3,39 +3,112 @@ import { AmfConfig } from '../entities/amf-config';
 import { SmfConfig } from '../entities/smf-config';
 import { UpfConfig } from '../entities/upf-config';
 import { AusfConfig } from '../entities/ausf-config';
-import { ScpConfig } from '../entities/scp-config';
-import { UdmConfig } from '../entities/udm-config';
-import { UdrConfig } from '../entities/udr-config';
-import { PcfConfig } from '../entities/pcf-config';
-import { NssfConfig } from '../entities/nssf-config';
-import { BsfConfig } from '../entities/bsf-config';
-import { SeppConfig } from '../entities/sepp-config';
-import { MmeConfig } from '../entities/mme-config';
-import { HssConfig } from '../entities/hss-config';
-import { PcrfConfig } from '../entities/pcrf-config';
-import { SgwcConfig } from '../entities/sgwc-config';
-import { SgwuConfig } from '../entities/sgwu-config';
+import { GenericServiceConfig } from '../entities/generic-config';
+import {
+  AmfYamlDocument,
+  AusfYamlDocument,
+  BsfYamlDocument,
+  HssYamlDocument,
+  MmeYamlDocument,
+  NrfYamlDocument,
+  NssfYamlDocument,
+  PcfYamlDocument,
+  PcrfYamlDocument,
+  ScpYamlDocument,
+  SeppYamlDocument,
+  SgwcYamlDocument,
+  SgwuYamlDocument,
+  SmfYamlDocument,
+  UdmYamlDocument,
+  UdrYamlDocument,
+  UpfYamlDocument,
+  YamlDocumentCommon,
+} from '../entities/open5gs-yaml';
+
+/**
+ * Every config file basename the NMS reads or writes under /etc/open5gs, and
+ * the single source of truth for the set -- backupAll()/restoreBackup() walk
+ * this list rather than each keeping its own copy.
+ */
+export const ALL_CONFIG_SERVICES = [
+  'nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf',
+  'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1', 'sepp2',
+] as const;
+
+/** Any config file basename the NMS knows about. */
+export type Open5gsServiceName = (typeof ALL_CONFIG_SERVICES)[number];
+
+/**
+ * Config-file basename -> parsed document shape, for every file the NMS reads
+ * or writes under /etc/open5gs.
+ *
+ * This is the ONE place the filename -> shape mapping is allowed to live,
+ * because the filename is the only thing that determines it. Note `sepp1` and
+ * `sepp2` both map to `SeppYamlDocument`: the document key is `sepp:` in both
+ * files, so the service name and the top-level YAML key genuinely differ here
+ * and a per-service type is the only way to say so.
+ *
+ * The `extends Record<Open5gsServiceName, YamlDocumentCommon>` guarantees that
+ * EVERY name in ALL_CONFIG_SERVICES has a document type here, so
+ * `Open5gsConfigDocuments[K]` is always valid. It does NOT force a new service
+ * to be given a SPECIFIC document type -- an interface inherits a key it does
+ * not declare, so a nineteenth service added to the list above silently gets
+ * the loose `YamlDocumentCommon` instead of failing to compile. Checked by
+ * experiment on 2026-11-26, not assumed: adding one produced zero tsc errors.
+ * If you add an NF, add its document type here too.
+ *
+ * Added 2026-11-26 replacing twelve hand-written entity interfaces (ScpConfig,
+ * UdmConfig, ... SeppConfig) that the implementation satisfied by casting
+ * through `as any`. They were never populated: `MmeConfig` for instance
+ * declared `s1ap` as REQUIRED while `loadGeneric()` has never set it, so any
+ * caller trusting that declaration and reading `mme.s1ap.server[0]` would
+ * have thrown. Every one of them was imported by this file and nothing else.
+ */
+export interface Open5gsConfigDocuments extends Record<Open5gsServiceName, YamlDocumentCommon> {
+  nrf: NrfYamlDocument;
+  scp: ScpYamlDocument;
+  amf: AmfYamlDocument;
+  smf: SmfYamlDocument;
+  upf: UpfYamlDocument;
+  ausf: AusfYamlDocument;
+  udm: UdmYamlDocument;
+  udr: UdrYamlDocument;
+  pcf: PcfYamlDocument;
+  nssf: NssfYamlDocument;
+  bsf: BsfYamlDocument;
+  sepp1: SeppYamlDocument;
+  sepp2: SeppYamlDocument;
+  mme: MmeYamlDocument;
+  hss: HssYamlDocument;
+  pcrf: PcrfYamlDocument;
+  sgwc: SgwcYamlDocument;
+  sgwu: SgwuYamlDocument;
+}
+
+/** The generic (unparsed-beyond-the-basics) config for one named service. */
+export type NfConfig<K extends Open5gsServiceName> =
+  GenericServiceConfig<Open5gsConfigDocuments[K]>;
 
 export interface AllConfigs {
   // 5G Core
   nrf: NrfConfig;
-  scp?: ScpConfig;
+  scp?: NfConfig<'scp'>;
   amf: AmfConfig;
   smf: SmfConfig;
   upf: UpfConfig;
   ausf: AusfConfig;
-  udm?: UdmConfig;
-  udr?: UdrConfig;
-  pcf?: PcfConfig;
-  nssf?: NssfConfig;
-  bsf?: BsfConfig;
-  sepp1?: SeppConfig;
+  udm?: NfConfig<'udm'>;
+  udr?: NfConfig<'udr'>;
+  pcf?: NfConfig<'pcf'>;
+  nssf?: NfConfig<'nssf'>;
+  bsf?: NfConfig<'bsf'>;
+  sepp1?: NfConfig<'sepp1'>;
   // 4G EPC
-  mme?: MmeConfig;
-  hss?: HssConfig;
-  pcrf?: PcrfConfig;
-  sgwc?: SgwcConfig;
-  sgwu?: SgwuConfig;
+  mme?: NfConfig<'mme'>;
+  hss?: NfConfig<'hss'>;
+  pcrf?: NfConfig<'pcrf'>;
+  sgwc?: NfConfig<'sgwc'>;
+  sgwu?: NfConfig<'sgwu'>;
 }
 
 export interface IConfigRepository {
@@ -44,38 +117,38 @@ export interface IConfigRepository {
   loadSmf(): Promise<SmfConfig>;
   loadUpf(): Promise<UpfConfig>;
   loadAusf(): Promise<AusfConfig>;
-  loadScp(): Promise<ScpConfig>;
-  loadUdm(): Promise<UdmConfig>;
-  loadUdr(): Promise<UdrConfig>;
-  loadPcf(): Promise<PcfConfig>;
-  loadNssf(): Promise<NssfConfig>;
-  loadBsf(): Promise<BsfConfig>;
-  loadSepp1(): Promise<SeppConfig>;
-  loadMme(): Promise<MmeConfig>;
-  loadHss(): Promise<HssConfig>;
-  loadPcrf(): Promise<PcrfConfig>;
-  loadSgwc(): Promise<SgwcConfig>;
-  loadSgwu(): Promise<SgwuConfig>;
+  loadScp(): Promise<NfConfig<'scp'>>;
+  loadUdm(): Promise<NfConfig<'udm'>>;
+  loadUdr(): Promise<NfConfig<'udr'>>;
+  loadPcf(): Promise<NfConfig<'pcf'>>;
+  loadNssf(): Promise<NfConfig<'nssf'>>;
+  loadBsf(): Promise<NfConfig<'bsf'>>;
+  loadSepp1(): Promise<NfConfig<'sepp1'>>;
+  loadMme(): Promise<NfConfig<'mme'>>;
+  loadHss(): Promise<NfConfig<'hss'>>;
+  loadPcrf(): Promise<NfConfig<'pcrf'>>;
+  loadSgwc(): Promise<NfConfig<'sgwc'>>;
+  loadSgwu(): Promise<NfConfig<'sgwu'>>;
   loadAll(): Promise<AllConfigs>;
-  
+
   saveNrf(config: NrfConfig): Promise<void>;
   saveAmf(config: AmfConfig): Promise<void>;
   saveSmf(config: SmfConfig): Promise<void>;
   saveUpf(config: UpfConfig): Promise<void>;
   saveAusf(config: AusfConfig): Promise<void>;
-  saveScp(config: ScpConfig): Promise<void>;
-  saveUdm(config: UdmConfig): Promise<void>;
-  saveUdr(config: UdrConfig): Promise<void>;
-  savePcf(config: PcfConfig): Promise<void>;
-  saveNssf(config: NssfConfig): Promise<void>;
-  saveBsf(config: BsfConfig): Promise<void>;
-  saveSepp1(config: SeppConfig): Promise<void>;
-  saveMme(config: MmeConfig): Promise<void>;
-  saveHss(config: HssConfig): Promise<void>;
-  savePcrf(config: PcrfConfig): Promise<void>;
-  saveSgwc(config: SgwcConfig): Promise<void>;
-  saveSgwu(config: SgwuConfig): Promise<void>;
-  
+  saveScp(config: NfConfig<'scp'>): Promise<void>;
+  saveUdm(config: NfConfig<'udm'>): Promise<void>;
+  saveUdr(config: NfConfig<'udr'>): Promise<void>;
+  savePcf(config: NfConfig<'pcf'>): Promise<void>;
+  saveNssf(config: NfConfig<'nssf'>): Promise<void>;
+  saveBsf(config: NfConfig<'bsf'>): Promise<void>;
+  saveSepp1(config: NfConfig<'sepp1'>): Promise<void>;
+  saveMme(config: NfConfig<'mme'>): Promise<void>;
+  saveHss(config: NfConfig<'hss'>): Promise<void>;
+  savePcrf(config: NfConfig<'pcrf'>): Promise<void>;
+  saveSgwc(config: NfConfig<'sgwc'>): Promise<void>;
+  saveSgwu(config: NfConfig<'sgwu'>): Promise<void>;
+
   backupAll(backupDir: string): Promise<void>;
   restoreBackup(backupDir: string): Promise<void>;
   getRawYaml(service: string): Promise<string>;
