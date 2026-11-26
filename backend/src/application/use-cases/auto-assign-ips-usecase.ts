@@ -1,7 +1,8 @@
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { IApnProfileRepository } from '../../domain/interfaces/apn-profile-repository';
-import { ipv4CidrOverlaps } from '../../domain/services/ip-utils';
+import { ipToNum, numToIp, ipv4CidrOverlaps } from '../../domain/services/ip-utils';
+import type { YamlSession } from '../../domain/entities/open5gs-yaml';
 import pino from 'pino';
 
 export interface AutoAssignIPsResult {
@@ -88,19 +89,19 @@ export class AutoAssignIPsUseCase {
 
   async getPoolInfo(): Promise<IPPoolInfo> {
     const [upfConfig, smfConfig] = await Promise.all([this.configRepo.loadUpf(), this.configRepo.loadSmf()]);
-    const rawYaml = (upfConfig as any).rawYaml;
-    const sessions: any[] = rawYaml?.upf?.session ?? [];
-    const smfRawYaml = (smfConfig as any).rawYaml;
-    const smfSessions: any[] = smfRawYaml?.smf?.session ?? [];
+    const rawYaml = upfConfig.rawYaml;
+    const sessions: YamlSession[] = rawYaml?.upf?.session ?? [];
+    const smfRawYaml = smfConfig.rawYaml;
+    const smfSessions: YamlSession[] = smfRawYaml?.smf?.session ?? [];
 
     // Primary internet session: first IPv4 session without a DNN restriction (or dnn=internet)
-    const internetSession = sessions.find((s: any) =>
+    const internetSession = sessions.find((s: YamlSession) =>
       s.subnet && !s.subnet.includes(':') && (!s.dnn || s.dnn === 'internet')
-    ) ?? sessions.find((s: any) => s.subnet && !s.subnet.includes(':'));
+    ) ?? sessions.find((s: YamlSession) => s.subnet && !s.subnet.includes(':'));
     if (!internetSession?.subnet) throw new Error('No IPv4 session pool subnet found in UPF configuration');
 
-    const ipPool = internetSession.subnet as string;
-    const gatewayIp = (internetSession.gateway as string) ?? null;
+    const ipPool = internetSession.subnet;
+    const gatewayIp = internetSession.gateway ?? null;
     const { startIp, endIp } = this.parseSubnet(ipPool);
 
     // IMS session: a UPF session tagged dnn=ims. upf.yaml's own dnn field is a
@@ -112,20 +113,24 @@ export class AutoAssignIPsUseCase {
     // otherwise a upf.yaml missing dnn silently reports "no IMS session configured"
     // even when one exists.
     const IMS_APNS = ['ims', 'IMS'];
-    let imsUpfSession = sessions.find((s: any) =>
-      s.subnet && !s.subnet.includes(':') && IMS_APNS.includes(s.dnn)
+    const isImsDnn = (dnn: string | undefined): boolean => dnn !== undefined && IMS_APNS.includes(dnn);
+    let imsUpfSession = sessions.find((s: YamlSession) =>
+      s.subnet && !s.subnet.includes(':') && isImsDnn(s.dnn)
     );
     if (!imsUpfSession) {
-      const imsSmfSession = smfSessions.find((s: any) =>
-        s?.subnet && !String(s.subnet).includes(':') && IMS_APNS.includes(s.dnn)
+      const imsSmfSession = smfSessions.find((s: YamlSession) =>
+        s?.subnet && !String(s.subnet).includes(':') && isImsDnn(s.dnn)
       );
-      if (imsSmfSession?.subnet) {
-        imsUpfSession = sessions.find((s: any) => s?.subnet === imsSmfSession.subnet)
-          ?? sessions.find((s: any) => s?.subnet && !String(s.subnet).includes(':')
-            && ipv4CidrOverlaps(s.subnet, imsSmfSession.subnet));
+      const imsSmfSubnet = imsSmfSession?.subnet;
+      if (imsSmfSubnet) {
+        // Bound to a local because the guard above does not narrow the
+        // property inside these closures.
+        imsUpfSession = sessions.find((s: YamlSession) => s?.subnet === imsSmfSubnet)
+          ?? sessions.find((s: YamlSession) => s?.subnet && !String(s.subnet).includes(':')
+            && ipv4CidrOverlaps(s.subnet, imsSmfSubnet));
         if (!imsUpfSession) {
           this.logger.warn(
-            { subnet: imsSmfSession.subnet },
+            { subnet: imsSmfSubnet },
             'smf.yaml has an IMS DNN but no matching UPF session (by dnn or subnet) — IMS IP pool info unavailable',
           );
         }
@@ -170,8 +175,8 @@ export class AutoAssignIPsUseCase {
       let imsGatewayIp: string | null = null;
 
       if (imsUpfSession?.subnet) {
-        imsPool = imsUpfSession.subnet as string;
-        imsGatewayIp = (imsUpfSession.gateway as string) ?? null;
+        imsPool = imsUpfSession.subnet;
+        imsGatewayIp = imsUpfSession.gateway ?? null;
         const parsed = this.parseSubnet(imsPool);
         imsStartIp = parsed.startIp;
         imsEndIp = parsed.endIp;
@@ -201,15 +206,15 @@ export class AutoAssignIPsUseCase {
 
       // Step 1: Get IP pool from UPF configuration
       const upfConfig = await this.configRepo.loadUpf();
-      const rawYaml = (upfConfig as any).rawYaml;
-      const upfSessions: any[] = rawYaml?.upf?.session ?? [];
+      const rawYaml = upfConfig.rawYaml;
+      const upfSessions: YamlSession[] = rawYaml?.upf?.session ?? [];
 
-      const internetSession = upfSessions.find((s: any) =>
+      const internetSession = upfSessions.find((s: YamlSession) =>
         s.subnet && !s.subnet.includes(':') && (!s.dnn || s.dnn === 'internet')
-      ) ?? upfSessions.find((s: any) => s.subnet && !s.subnet.includes(':'));
+      ) ?? upfSessions.find((s: YamlSession) => s.subnet && !s.subnet.includes(':'));
       if (!internetSession?.subnet) throw new Error('No IPv4 session pool subnet found in UPF configuration');
 
-      const ipPool = internetSession.subnet as string;
+      const ipPool = internetSession.subnet;
       const gatewayIP = internetSession.gateway;
       this.logger.info({ ipPool, gatewayIP }, 'Using IP pool from UPF configuration');
 
@@ -335,6 +340,13 @@ export class AutoAssignIPsUseCase {
         );
         const imsEndIpNum = this.ipToNumber(imsEndIp);
 
+        // execute() never loaded the IMS gateway at all -- which is WHY it
+        // could not exclude it. Same selection getPoolInfo() uses.
+        const imsUpfSession = upfSessions.find((sess) =>
+          typeof sess.subnet === 'string' && !sess.subnet.includes(':')
+          && sess.dnn !== undefined && IMS_APNS.includes(sess.dnn));
+        const imsGatewayIpForRun = imsUpfSession?.gateway ?? null;
+
         const imsOccupied = new Set<number>();
         for (const s of allSubscribersFull) {
           const sess = s.slice?.flatMap(sl => sl.session ?? []).find(x => IMS_APNS.includes(x.name));
@@ -345,10 +357,23 @@ export class AutoAssignIPsUseCase {
           imsOccupied.add(this.ipToNumber(ip));
         }
 
+        // The IMS gateway is excluded exactly as the internet loop above
+        // excludes its own. Real gap, fixed 2026-11-26: this loop checked only
+        // `imsOccupied`, and parseSubnet() starts a pool at network+1 -- which
+        // for the live 10.46.0.0/24 IMS pool is 10.46.0.1, the gateway itself.
+        // The only thing preventing a UE being handed the gateway was the
+        // dynamic-range clamp above happening to start at .2, which depends on
+        // an APN profile existing with a range set. That is an accident, not a
+        // guarantee. `imsGatewayIp` was already being read for pool info and
+        // simply never used here.
+        const imsGatewayNum = imsGatewayIpForRun === null ? null : this.parseIpOrNullSafe(imsGatewayIpForRun);
         let imsCursor = this.ipToNumber(imsStartIp);
         const nextFreeImsIp = (): number | null => {
           while (imsCursor <= imsEndIpNum) {
-            if (imsOccupied.has(imsCursor)) { imsCursor++; continue; }
+            if ((imsGatewayNum !== null && imsCursor === imsGatewayNum) || imsOccupied.has(imsCursor)) {
+              imsCursor++;
+              continue;
+            }
             return imsCursor;
           }
           return null;
@@ -452,17 +477,33 @@ export class AutoAssignIPsUseCase {
     return { baseIp, netmask, startIp, endIp };
   }
 
+  /**
+   * Parse a stored/derived address, returning null rather than throwing.
+   *
+   * Used where a bad value must not abort the whole run: an existing UE
+   * address read out of Mongo, or a gateway read from YAML. The strict
+   * ipToNum() is used for operator-supplied range bounds, where silently
+   * continuing with a different address than the operator typed is worse.
+   */
+  private parseIpOrNullSafe(ip: string): number | null {
+    try { return ipToNum(ip); } catch { return null; }
+  }
+
+  /**
+   * Delegates to the VALIDATED shared helper.
+   *
+   * This used to be a local copy that silently accepted malformed input:
+   * '10.45.0' and '10.45.0.x' both became 10.45.0.0 -- a plausible-looking
+   * wrong address rather than an error -- and '' became 0.0.0.0. Measured
+   * 2026-11-26. domain/services/ip-utils.ts's ipToNum() throws on all three,
+   * and it also carries the signed-int fix (`>>> 0` after the AND) that any
+   * new IP maths here would otherwise have to rediscover.
+   */
   private ipToNumber(ip: string): number {
-    const parts = ip.split('.').map(Number);
-    return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+    return ipToNum(ip);
   }
 
   private numberToIp(num: number): string {
-    return [
-      (num >>> 24) & 0xFF,
-      (num >>> 16) & 0xFF,
-      (num >>> 8) & 0xFF,
-      num & 0xFF,
-    ].join('.');
+    return numToIp(num);
   }
 }
