@@ -4,6 +4,408 @@ All notable changes to open5gs-nms are documented here.
 
 ---
 
+## [v2.0-beta_0.83] - 2026-11-27
+
+### Fixed — a MongoDB boot race left four NFs down with nothing to reset
+
+Twice after a power loss, a host came back with 13 of 17 network functions
+healthy and exactly four stopped: `udr`, `pcf`, `hss`, `pcrf` — the only four
+that open a MongoDB connection. They had started before MongoDB was accepting
+connections.
+
+Open5GS exits with status 0 when it cannot reach the database, so systemd
+records `Result=success`, `NRestarts=0`, "Deactivated successfully". The stock
+`Restart=on-failure` never fires, nothing is ever in `failed` state, and
+`systemctl reset-failed` finds nothing to reset. A transient condition became a
+permanent outage — and 13/17 "active" reads almost healthy while 4G S6a/Gx and
+5G subscriber data are both down.
+
+Two layers now, the same shape as the DNS boot gate, because the liability is
+the amplifier rather than any one cause. `open5gs-mongo-ready.service` blocks
+until MongoDB actually answers, and a drop-in puts the four DB-backed NFs on
+`Restart=always` — the half that fixes the bug, since `on-failure` cannot retry
+an exit-0 failure however patient the budget is.
+
+The readiness check never asks how MongoDB is deployed. It reads the endpoints
+out of the NFs' own `db_uri` values and waits for one to answer, which is the
+same correct question for a host `mongod`, the `mongo:4.4` container used on
+hosts without AVX, and a remote or replica-set MongoDB — and it re-derives them
+on every boot, so changing `db_uri` needs no reinstall. Only the systemd
+ordering is per-host, generated from the units a given host actually has.
+
+A real query is preferred over an open port, but cannot veto readiness: the
+two failure directions are not symmetric. Declaring ready early costs a few
+retries and self-heals in seconds, while refusing to declare ready costs the
+whole timeout on every boot, silently — so a ping that fails for an unrelated
+reason holds the gate for 30 seconds and then releases on TCP alone, naming
+the weaker proof in the log.
+
+Applied on every backend start, idempotent and rev-gated, so a deployment picks
+it up from a plain `git pull && docker compose build && docker compose up -d`.
+Verified on a live core: with MongoDB stopped the NF retried instead of staying
+down, and when MongoDB returned it came back by itself within six seconds.
+
+### Added — one local entry point that runs exactly what CI runs
+
+`scripts/verify.sh` runs CI's checks in CI's order and, like CI, runs all of
+them before reporting a verdict rather than stopping at the first failure.
+
+It exists to close three traps. `tsc --noEmit -p backend/tsconfig.json` reports
+clean no matter what state a test file is in, because that config excludes the
+test directories and only ts-jest typechecks them. An `npm install` on one
+branch leaves its resolutions behind in `node_modules`, which once produced a
+frontend lint reading that looked like 131 new findings and was entirely the
+toolchain — so `scripts/check-deps-fresh.mjs` is step 0, comparing what is on
+disk against the lockfile. And a gate run while anything else mutates the git
+tree measures a tree that no longer exists.
+
+### Fixed — 58 async routes could leave an HTTP request with no reply at all
+
+Express types a route handler as returning `void`, so an `async` handler hands
+Express a Promise it never awaits. Anything thrown outside the handler's own
+`try/catch` becomes an unhandled rejection and **no response is ever written**:
+the client waits for its own timeout, with no status, no body and nothing in the
+log tying the two together.
+
+Of 496 async route handlers, 438 were already guarded and were lint findings
+with no defect behind them. **58 were real hang risks**: 51 with no `try/catch`
+at all, and 7 that had one but awaited before it opened (radio-signal's
+`POST /poll` awaited `getActive4GUEs()`, a network call, ahead of its `try`).
+The handlers that genuinely await are now wrapped in `asyncRoute()`, which hands
+the rejection to the app's error handler, so a route that used to hang answers
+500 and logs why. The 15 that had nothing to await lost their `async` instead: a
+non-async handler throws synchronously, which Express already routes to the
+error handler by itself.
+
+A second defect was found while checking that claim rather than assuming it.
+15 of the 51 are the streaming install endpoints, whose headers are already sent
+by the time anything fails, so the error handler's `res.status(500)` would throw
+`ERR_HTTP_HEADERS_SENT` from inside the error handler, and Express would destroy
+the socket with the real error buried under a second one. The error handler now
+ends the response when `res.headersSent`.
+
+### Fixed — real defects surfaced by typing the Open5GS config boundary
+
+The backend lint effort (below) turned up defects that no lint rule named.
+Each was confirmed before it was fixed, and the fixes carry tests that the
+commits record as mutation-checked.
+
+- **An APN profile could overwrite the main `internet` UE pool.**
+  `apn-profile-usecase.ts` identified a profile's UPF pool by `dev`, which is a
+  shared interface that defaults to `ogstun` — the same device the `internet`
+  pool uses. Creating any further profile left on the default `dev` matched the
+  internet pool first and rewrote it with the new profile's subnet and DNN, and
+  deleting such a profile removed every other pool on that interface. Identity
+  is now the DNN, falling back to the subnet for a legacy entry with no `dnn`,
+  never `dev`. Renaming a DNN also used to orphan the old pool; it is now
+  removed on a real rename. The pool upsert spreads over the existing entry, so
+  the live `ims` pool's `dns` survives.
+- **Auto-Config overwrote config the operator had set.** Six defects, all from
+  rebuilding document sub-trees instead of cloning them (CLAUDE.md pattern #2):
+  `amf.guami`'s `amf_id` was written as a hardcoded `{ region: 2, set: 1 }` with
+  `pointer` dropped, and `mme.gummei` and both `tai.tac` fields were replaced
+  whenever the input omitted them (the GUAMI and GUMMEI are part of every UE's
+  temporary identity); a per-session `dns` on an SMF pool was deleted, which
+  sent IMS-APN UEs to the global resolver; requesting session pools with none
+  supplied wrote `session: []`, leaving the UPF unable to allocate an address;
+  `advertise` and `port` were wiped from every bind touched; PLMN matching
+  treated `70` and `070` as the same network; and the preview did not apply the
+  DNN-first ordering that apply does, so the diff an operator approved was not
+  the order written.
+- **IPv6 static framed routes were truncated at `::`.** Routes were keyed
+  `${dnn}::${cidr}` and the CIDR recovered with `key.split('::')[1]`, so
+  `internet::2001:db8::/64` yielded `2001:db8` and every IPv6 route reached
+  `ip route add/del` as a truncated prefix, failing into a catch that only logs
+  a warning. IPv4 was unaffected.
+- **A PLMN migration reported success while half-applied.** Phase A rewrites
+  seven PLMN-bearing paths; Phase E verified three. A stale `amf.guami` has the
+  AMF handing out 5G-GUTIs under the old PLMN, and a stale `mme.tai` has the MME
+  broadcasting the old TAI, while the wizard reported the migration consistent.
+  Every PLMN-bearing list is now declared once and verification iterates it.
+  The MME check also used `.every` on a possibly-empty array, so a missing
+  `gummei` read as OK.
+- **The packet-capture filter pointed at the wrong address.** `gtpc` was the one
+  endpoint read without a `server[]` branch, so SMF's GTP-C filter was built as
+  `host 127.0.0.1 and udp port 2123` against a real address of `127.0.0.4`,
+  matching nothing, and the topology endpoint reported MME at `127.0.0.1:2123`.
+  Separately, a list-valued `address` produced `host 127.0.0.4,10.0.0.4 and udp
+  port 2152`, which `dumpcap` rejects and exits at once. Every endpoint except
+  SBI also ignored a configured `server[0].port`.
+- **`saveRaw()` overwrote a file it could not parse.** A parse failure was
+  reported as an empty document, indistinguishable from "no file", so one
+  hand-edit with a YAML syntax error turned the next Apply Config into a silent
+  full overwrite that dropped every unknown key and the operator's edit. It now
+  refuses and names the file.
+- **Every Apply Config unquoted PCF's `qos_index`.** `ensureNumericTypes()`
+  coerced all-digit strings to numbers, and only `mcc`/`mnc`/`sd` were exempt.
+  `config/defaults/pcf.yaml` ships `qos_index: "1"` deliberately quoted, because
+  the wrong value produces `403: Unknown qosReference` and blocked 4G/5G
+  cross-RAT calling until it was found. The rewrite to a bare `1` silently undid
+  that on every save.
+- **The IMS gateway could be handed to a UE.** The internet allocator had a
+  gateway guard; the IMS allocator checked only occupied addresses, and a pool
+  starts at network+1, so the first address offered for `10.46.0.0/24` was the
+  gateway.
+- **Local IP maths invented addresses instead of rejecting them.** A private
+  `ipToNumber()` turned `10.45.0` and `10.45.0.x` into `10.45.0.0` and `''` into
+  `0.0.0.0`; it now delegates to the validated helper, which throws.
+- **Test and bot IMSIs were built in the wrong PLMN.** Three builders padded the
+  MNC to three digits, so on this deployment's MCC 001 / MNC 01 they produced
+  `001001...`. An IMSI uses the MNC at its real width; only an FQDN always pads
+  to three. The IMS Test Number reconcile pass matches the legacy prefix too, so
+  an existing bot is not orphaned in PyHSS.
+- **`inferConfig()` could not reproduce a three-digit MNC.** It skipped the
+  repository's leading-zero recovery, and padding a parsed number cannot recover
+  width (`070` parses to 70 and pads back to `70`). It now shares the
+  repository's recovery. Six comments that said js-yaml reads `070` as octal 56
+  were wrong (it is decimal 70; the loss of leading zeros was real, the mechanism
+  was not) and are corrected and pinned by a test.
+- **Several config editors threw or silently rewrote data.** Removing every
+  `as any` config unwrap from the frontend turned up: editing an SGW-C, SMF,
+  metrics or GTP address rebuilt the entry and discarded `tac`, `e_cell_id`,
+  `apn`, `port`, `advertise`, `dev` and every peer past the first; `mme.gummei`,
+  `mme.tai`, `nrf.serving`, `amf.guami` and similar optional lists were spread
+  unguarded and would have white-screened the config page for a file missing one;
+  a list-valued `address` or `tac` rendered as `a,b` and was written back as one
+  bogus value; `parseInt(v) ?? 0` on the GUAMI fields wrote `NaN` (serialised as
+  `.nan`) because `??` does not catch it; and `g.plmn_id.mcc` was not
+  optional-chained on seven fields.
+- **The config API's declared types described a payload it never sent.** All 17
+  `*ConfigDto` types were one nesting level off, with further shape errors for
+  smf/upf (`subnet:` where the key is `session:`), sepp and nssf, hidden behind
+  `as any`. `SmfSessionConfig`/`UpfSessionConfig` declared a nested subnet list
+  that no real file matches. The types now match the live files, and the
+  frontend's copy is a verbatim mirror guarded by a drift test.
+- **The topology endpoint returned `0.0.0.0:0` for every node.** It read
+  entity-shaped names off a DTO document where they do not exist. Not
+  user-visible (the page reads only `active`).
+- **The mcc/mnc text scan skipped quoted values.** It matched the bare form only
+  while being index-matched against the parsed tree, so a file mixing `mcc: 001`
+  with `mcc: "001"` shifted every later occurrence onto the wrong entry.
+- **PyHSS and IMS reads assumed fields were present.** An APN with no id
+  set `apn_id` to undefined; an IMS subscriber with no id could only produce
+  `DELETE /ims_subscriber/undefined`; an IMS Test Number restored from an AUC row
+  with no key material started anyway and failed later (it now throws into the
+  existing deprovision path); IMS setters dereferenced `state.config` on a host
+  that had installed but never configured, and `syncImsSubscribers()` could
+  write the literal string `undefined` into PyHSS's own config.
+- **`upfIpOverride` was accepted, sent and never used** (UE Validation). UERANSIM
+  and srsenb take no UPF address, so it only reached a log line. Removed from
+  all three places, and the field is now read-only.
+- **Smaller:** a corrupt `gsm` state file holding a string or array merged its
+  indices into the state and now falls back to defaults; the SAS occupancy
+  calculation drops a grant missing an edge instead of coercing it to a `0..0`
+  range at the band floor.
+
+### Fixed — mme.yaml lost its trailing newline on every save
+
+`convertMapsArrayToRepeatedMapKeys`, the one save step gated on `service ===
+'mme'`, consumed the file's final empty line while skipping blanks inside the
+sgsap `maps:` block, so `output.join('\n')` never restored it. Found by a
+same-PLMN migration test on the live host: 17 of 18 configs came back
+byte-identical and mme.yaml differed by exactly one newline. Cosmetic — Open5GS
+parses it either way — but it made every mme.yaml save a non-identity
+round-trip. Fixed at the boundary, leaving the per-item blank-line removal inside
+map sequences alone, since that is what produces the clean `map:` blocks
+Open5GS wants.
+
+### Fixed — the EIGRP health guard logged 1,440 errors a day on an OSPF deployment
+
+`check()` returned early only when frr was inactive, but frr runs each routing
+daemon as its own process, so frr being up says nothing about eigrpd. On this
+host (OSPF since 2026-11-04, `eigrpd=no`) both EIGRP queries failed every
+2-minute cycle, and because `executeCommand()` reports failure rather than
+throwing, `LocalHostExecutor` logged each at ERROR: 1,440 error-level lines a
+day, burying real errors. The guard now asks `vtysh -c "show daemons"` and idles
+quietly, once per transition, when eigrpd is absent. Deliberately not removed: a
+deployment still running EIGRP keeps its safety net. The guard had no tests;
+it now has six, mutation-checked. There is still no forwarding-health guard for
+OSPF, which is a feature rather than cleanup.
+
+### Fixed — four real bugs in the frontend, found by its first working lint config
+
+`npm run lint` in `frontend/` had never worked: no ESLint config existed in the
+tree or in git history. Adding one (standard tier, not type-aware) found:
+
+- `SgwcEditor` called `useState` twice after an early return, so
+  `sgwc.gtpc.server` appearing or vanishing while the tab was mounted threw
+  "Rendered more/fewer hooks than during the previous render" and took the config
+  page down.
+- `FRRPage`'s unmount cleanup read `neighborTimer` from a closure that had
+  captured `null`, so leaving the page mid-poll leaked the 5 s
+  `validateNeighbor()` poll for the rest of the session.
+- `RadioSignalPage`'s 15 s refresh closed over `selectedKey` as it stood when
+  search/hours last changed, so every poll re-selected the first UE and
+  overwrote the operator's own selection.
+- `RANPage` had a memo reading `gsm2g.btsEntries` while listing only
+  `gsm2g.samples`, so a `btsEntries`-only change left every 2G row's Radio column
+  blank.
+
+Also: the auth and theme contexts were split so only the provider lives in the
+`.tsx`, since a non-component export disables Fast Refresh for the whole module
+(editing `AuthContext.tsx` forced a full reload, which re-checks the session and
+drops you back through the auth gate). The 17 remaining `exhaustive-deps`
+omissions are deliberate and each carries a line-scoped disable naming the
+reason (TwampPage's `reloadKey` is unused inside its callback by design: bumping
+it is what makes Refresh refetch).
+
+### Added — CI, and lint gates that can only tighten
+
+Three jobs run on pushes to `main` and every pull request (Node 20, matching
+`engines` and both Dockerfiles): backend typecheck and tests, frontend build, and
+lint. `package-lock.json` is now tracked so `npm ci` can run; before this it was
+in `.gitignore`, so neither lockfile was tracked and CI could not have been
+reproducible.
+
+- **A lint ratchet** (`scripts/lint-ratchet.mjs`, baselines in
+  `lint-baseline.json`) fails only when a workspace's count rises above its
+  baseline. Fatals (a parse failure, meaning the file was not linted at all) are
+  ratcheted separately, because an unlinted file reports zero errors and looks
+  clean. Failure paths are tested: empty stdin, non-JSON and a non-array all exit
+  2, so a crashed eslint cannot parse as "no findings" and overwrite the baseline
+  with zeros.
+- **A changed-lines gate** (`scripts/lint-changed-lines.mjs`) holds the lines a
+  change adds to the full type-aware rule set. It gates lines rather than files
+  on purpose: the backend has 303 affected files at a median of 2 findings, so a
+  per-file gate would fail a one-line edit to almost anything and push people to
+  move the edit into a new file to dodge it.
+- **The gate's first six real pull requests all failed on its own bugs, not
+  theirs.** It read only `@@` hunk headers, so a byte-identical `-`/`+` pair
+  counted as an addition (it now compares the hunk body as a multiset); and it
+  was passed the base the PR had when opened rather than the branch tip, so a
+  contributor was blamed for `main`'s own commits (46 files reported on a
+  one-file PR). The three lint checks also now all run in one pass, so a failing
+  ratchet no longer hides the gate's per-line result.
+- **120 backend test files had never been linted.** `tsconfig.json` excludes them
+  from the production compile, which made type-aware parsing fatal on each one;
+  `tsconfig.eslint.json` now includes them. The backend baseline rose from
+  5658 to 6293 as a result — the ratchet working as designed.
+- **Dependabot**, weekly, with minor and patch grouped per workspace. It ignores
+  `mongodb` majors: server 5.0+ requires AVX and this deployment's CPU has none,
+  so the server stays at `mongo:4.4`. Driver 7 still supports 4.4, so that is not
+  itself the blocker; it is that 4.4 is the oldest release any current driver
+  supports, on the one data layer holding real keys and live grants. GitHub
+  Actions bumped to `checkout@7`, `setup-node@7` and `cache@6`.
+
+A docker-compose build smoke job is deliberately not added: the image pulls from
+download.docker.com, repo.mongodb.org and PyPI at build time, so as a required
+check it would go red on someone else's outage. CI also does not cover the live
+verification this deployment depends on.
+
+### Changed — backend lint errors 6293 → 2538 (Phase 5)
+
+The count is the means, not the point: nearly every `no-unsafe-*` finding came
+from an untyped value crossing an I/O boundary, so the work was to declare the
+boundary once. The defects above are what that surfaced. Boundaries typed:
+Mongo aggregate rows (TWAMP history), `req.body` (narrowed through a shared,
+tested `asRecord()`), the GenieACS device document, FRR and iproute2 command
+output, PyHSS's REST responses (`pyhssApiCall()` now defaults to `unknown`
+instead of `any`), the `.ims-config.json` state file (23 read sites), SASBench's
+REST API, Kea's config JSON, and the Open5GS YAML documents themselves
+(`domain/entities/open5gs-yaml.ts`). 268 `(req as any).user` casts across 46
+files were defeating a type `auth-middleware.ts` had already declared correctly,
+worth 1,254 errors with no behaviour change. `IConfigRepository`'s twelve
+entity types, which `loadGeneric()` never produced and which were satisfied with
+`as any`, are deleted. Backend tests went from 119 suites / 1652 to 140 / 1867.
+The frontend baseline moved 459 → 379 from the config typing, then to 510 with
+the plugin bump below.
+
+### Changed — CLAUDE.md pattern #2 corrected
+
+It said to work through `rawYaml` "so comments/structure in the real YAML files
+survive edits". `rawYaml` is a parsed object and every save re-serialises with
+`yaml.dump()`, so comments cannot survive, and the repo's own test fixture says
+so. What it actually protects is unknown keys: `saveRaw()` re-reads the file and
+`deepMerge()`s, so a hand-added field survives. The rule stands, with the
+correct reason: clone and mutate, never rebuild a document from scratch.
+
+### Added — community contributions from @cecrevier
+
+Merged through resolution branches, with the contributor credited as co-author.
+
+- **Subscriber APN selection no longer reverted by a profile QoS update, and a
+  subscriber profile copy action** (PRs #38 and #39, merged as #88). Copying
+  highlights the fields that must stay unique. The conflict outline used a
+  literal `#f87171`; it now uses the theme's `nms-red` variable so it follows all
+  five themes.
+- **Inter-MME Mobility** (PR #41, merged as #94). A section in the MME editor
+  to add neighbouring MMEs for context transfer, tracking-area updates and S1
+  handover over S10, written to the native `mme.gtpc.client.mme` configuration.
+  It is gated on the running MME actually containing the mobility handlers from
+  Open5GS PR #5019 (it inspects the executable, not the version string) and
+  stays blocked on any build it cannot confirm. Invalid ports, identity ranges,
+  duplicate GUMMEIs and ambiguous TAI routes are rejected before any backup,
+  write or restart.
+- **Baicells UE signal monitoring** (PR #40, merged as #92). An online-only UE
+  list, per-radio poll status, an extracted Baicells parser and an SVG signal
+  gauge. The parser work is kept whole: UE ids are cell-prefixed, because the
+  radio's ids are cell-local and two cells genuinely collided; a login or error
+  page throws instead of returning an empty list; and a missing SINR no longer
+  reads as a real 0 dB. Six changes on top, two of them live bugs. `POST
+  /discover` and `POST /wake` were bare `async` handlers with no `try`/`catch`
+  around real network I/O, so a rejection left the request with no reply —
+  the same defect class as the 58 above, and `no-misused-promises` was pointing
+  at live paths rather than style. Both are wrapped. The PR also added
+  `requireAdmin` to `GET /radios` and `GET /overview`, which main leaves ungated
+  deliberately so a viewer can monitor the page its own banner promises they
+  can; that regression arrived pinned by a test asserting the 403, so the test
+  went with it.
+- **Cell Broadcast** (PR #45, merged as #89). An OsmoCBC installer, multi-TAI
+  zones and a scoped API. Reviewed before merging: pinned commits with embedded
+  SHA-256s, a download cap, a private `/opt` prefix, argv-based host execution
+  with no shell. Four changes were made on top. Message IDs in the reserved
+  emergency ranges (3GPP TS 23.041: 4352-4359 ETWS, 4370-4399 CMAS) now need
+  their own `acknowledgeEmergencyAlert`, separate from the per-send `confirm`,
+  because a handset decides how to alarm from the identifier itself; they are
+  not rejected outright, since testing alert delivery on a lab PLMN is
+  legitimate. The module's own test fixture used 4380 for a "Maintenance test"
+  message and was moved to 4200. It is now opt-in via
+  `ENABLE_CELL_BROADCAST_MODULE` (defaults off), because it is inert without an
+  MME built with SBc-AP TAI routing, which upstream Open5GS does not ship. It is
+  desktop-only. Its JSON boundaries are typed. **It has no uninstall path**, and
+  its ports are not yet in the docs port table.
+
+### Changed — dependency bumps (Dependabot, partly taken)
+
+Backend: `helmet` 7 → 8.3, `express-rate-limit` 7 → 8.7 (both call sites pass
+`max`, which v8 keeps as a deprecated alias), `mongodb` 6.3 → 6.22 (still
+supports the 4.4 server), `pdfkit` 0.21, `async-mutex` 0.5, plus compression,
+fast-xml-parser, mysql2, ws, yaml, prettier, ts-jest and type packages.
+Frontend: `eslint-plugin-react-hooks` 4.6 → 7.1, axios, react-hot-toast, yaml,
+autoprefixer, postcss.
+
+`@typescript-eslint/eslint-plugin` 8 was taken, with the parser alongside it —
+the bump cannot install otherwise, since 8.74's peer is the parser on the same
+major. Both workspaces moved together so they cannot drift. The v6 deprecation
+notice implies v8 removed `recommended-requiring-type-checking`; it did not,
+verified against the real binary, so no config change was needed. That widened
+the rule set again: the backend baseline 2538 → 2645 and the frontend 505 → 526,
+attributed rule by rule in `lint-baseline.json`. `no-base-to-string` (+43) is
+the one new class with real defect potential. They sit across 14 files, the
+largest clusters being `radio-signal-controller.ts` (11) and
+`dhcp-config.ts`/`sip-trace-controller.ts` (6 each). The six in
+`dhcp-config.ts` matter most for a reason unrelated to count: that file
+round-trips the operator's `kea-dhcp4.conf`, so a value the Kea types allow to
+be a non-string is coerced and the next save persists the literal text
+`[object Object]` into their config.
+
+Three are held back, each for a checked reason: `react-dom` 19 needs `react` 19
+(a real migration, and Dependabot proposed the halves separately so the PR as
+authored could not install); `@vitejs/plugin-react` 6 needs Vite 8; and
+**`uuid` 14 would take the backend down** — it is ESM-only, the backend compiles to CommonJS, and
+`require(ESM)` is not unflagged until Node 22.12 while this runs 20.20, so it
+throws `ERR_REQUIRE_ESM` at startup. `eslint-plugin-react-refresh` 0.5 was also
+dropped (peers `eslint ^9`). The frontend lint baseline moved 379 → 510: a
+deliberately widened rule set, not new broken code. Every one of the 131
+additions is a rule react-hooks 7 introduced (101 `set-state-in-effect`).
+Three had a real defect behind them and are fixed: two render-time ref
+assignments, and a chart component rewritten to derive its layout rather than
+mutate during render (checked equivalent across 150 lane-count combinations).
+The rest are fetch-on-mount effects, which this codebase uses deliberately, and
+are left with that reason recorded. The frontend baseline settled at 505.
+
+---
+
 ## [v2.0-beta_0.82] - 2026-11-08
 
 ### Added — Auto-Configuration from `.env`: declare an address range, get a working deployment

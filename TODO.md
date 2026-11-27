@@ -10,7 +10,7 @@ file exists so that doesn't recur.)
 This is an engineering worklist, not product documentation — "we should"
 phrasing belongs here, unlike `README.md`/`docs/*.md`.
 
-**Last updated:** 2026-11-16
+**Last updated:** 2026-11-27
 
 Detail lives elsewhere, deliberately: `PROJECT_STATE.md` (Known Issues §N,
 Handoff Summary) holds the full investigation history, `CLAUDE.md` holds the
@@ -33,6 +33,13 @@ exit codes are now checked and aggregated into `success: false` naming each
 dead unit, and an unbindable bind address is refused pre-flight before
 anything is written), plus the 14 clean-host module bugs and the 5 release
 bugs shipped in v2.0-beta_0.82.
+
+**Added 2026-11-27 for v2.0-beta_0.83:** rows **28-31**. Closed the same
+release, and never listed here: the MongoDB boot race that left `udr`, `pcf`,
+`hss` and `pcrf` down after a power loss with nothing for `reset-failed` to
+reset (fixed and verified end to end on a live core — unlike row 23, which is
+the DNS gate's equivalent gap and remains open), and the three react-hooks
+findings with a real defect behind them.
 
 | # | Item | Severity | Status | Next step |
 |---|---|---|---|---|
@@ -63,6 +70,10 @@ bugs shipped in v2.0-beta_0.82.
 | 25 | **MMS SMPP registration races `osmo-msc`'s VTY** | Low | The one red step out of 20 on a fresh-host restore | — |
 | 26 | **DNS boot-race gotcha not in `CLAUDE.md`** | Low (doc) | That's the "don't reintroduce this" file and it fits; the FRR mask fix got documented there, this didn't | Add an entry |
 | 27 | **eSIM Profile Status Notification webhook** | — | **Deferred by explicit user decision**, not an oversight | None unless revisited |
+| 28 | **`no-base-to-string`: a non-string Kea value would be written back into the operator's `kea-dhcp4.conf` as `[object Object]`** | Med | NEW — surfaced by typescript-eslint 8 (43 findings across 14 files; 6 of them here, while the largest cluster is `radio-signal-controller.ts` with 11 — this one matters for its consequence, not its count). Not a cosmetic log complaint: that file **round-trips** the host config, so `String(x ?? '')` on a value the declared Kea types allow to be a non-string coerces it and the next save persists that literal text. The file is already inconsistent with itself — `iface` narrows with `typeof s?.interface === 'string'` while `subnet`, `pool` and `hw-address` coerce | Replace the `String(x ?? '')` coercions with a `typeof`-narrowing helper so a malformed value degrades to absent rather than to `[object Object]`. Contained, and the correct idiom is already in the same function |
+| 29 | **eslint 9 + flat-config migration** | Low | Blocks `eslint-plugin-react-refresh` 0.5 (peers `eslint ^9 \|\| ^10`, PR #91 closed for this). Needs `.eslintrc.cjs`/`.eslintrc.json` → `eslint.config.js` in both workspaces, and eslint 9 removed `--report-unused-disable-directives` as a CLI flag, which both lint scripts pass. Two parked config comments want `no-constant-condition`'s `checkLoops: 'allExceptWhileTrue'`, which 8.57 rejects as a schema error | Deliberately sequenced after Phase 7 in `CI-LINT-PLAN.md`; doing it mid-phase would churn both baselines while the cleanup depends on them being stable |
+| 30 | **`uuid` is a dependency this codebase does not need** | Low | `uuid` 14 is ESM-only and the backend compiles to CommonJS, so the bump is blocked (PR #59). Both call sites — `esim-generator.ts`, `file-audit-logger.ts` — only want a v4 string, and Node 20 ships `crypto.randomUUID()` | Drop the dependency rather than upgrade it. Removes the blocker instead of deferring it |
+| 31 | **React 19 and Vite 8 upgrades, each blocked on its own pair** | Low | `react-dom` 19 needs `react` 19 moved with it (PR #56 proposed only one half, so it cannot install); `@vitejs/plugin-react` 6 needs Vite 8, three majors ahead, plus three new Rolldown-era peers. Node floor also rises to `^20.19.0` | Each on its own branch with a real frontend build check. Neither is urgent; nothing is broken by staying put |
 
 ---
 
