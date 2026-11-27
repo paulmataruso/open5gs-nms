@@ -63,4 +63,10 @@ export const FEATURES = {
   // UDP/67, which a careless subnet could hand addresses out on a live segment.
   // Bigger blast radius than a display toggle, so it is never default-on.
   dhcp: import.meta.env.VITE_ENABLE_DHCP === 'true',
+
+  // Cell Broadcast drives public emergency alerting (ETWS/CMAS) once a
+  // compatible MME is in place, and it is inert without one -- showing it
+  // unconditionally would advertise a page that cannot work on a stock
+  // deployment. Opt-in, like every other optional module.
+  cellBroadcast: import.meta.env.VITE_ENABLE_CELL_BROADCAST === 'true',
 };

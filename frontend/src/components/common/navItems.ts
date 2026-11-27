@@ -36,6 +36,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: Activity, shortLabel: 'Home' },
   { id: 'topology', label: 'Topology', icon: Network },
   { id: 'ran', label: 'RAN Network', icon: Radio, shortLabel: 'RAN' },
+  ...(FEATURES.cellBroadcast ? [{ id: 'cell-broadcast', label: 'Cell Broadcast', icon: RadioTower }] : []),
   { id: 'services', label: 'Services', icon: Activity },
   { id: 'config', label: 'Configuration', icon: Settings },
   { id: 'auto-config', label: 'Auto Config', icon: Zap },

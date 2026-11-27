@@ -236,7 +236,26 @@ export function convertMapsArrayToRepeatedMapKeys(content: string): string {
     }
   }
 
-  return output.join('\n');
+  // Preserve the file's trailing newline.
+  //
+  // The inner loops above skip a blank line WITHOUT re-emitting it, and
+  // split('\n') on a newline-terminated file ends in an empty element. When the
+  // `maps:` block runs to the end of the document -- which it does in mme.yaml,
+  // whose sgsap map is the last thing in the file -- that final element is
+  // consumed as a blank line and the newline is gone.
+  //
+  // Found by a same-PLMN migration test on 2026-11-26: Phase A rewrote four NF
+  // configs and 17 of 18 came back byte-identical, with mme.yaml differing by
+  // exactly this. It is cosmetic (Open5GS parses the file either way, and MME
+  // has been running on it) but it made every mme.yaml save a non-identity
+  // round-trip, and this function is gated on `service === 'mme'`, which is why
+  // mme.yaml alone was affected.
+  //
+  // Fixed at the boundary rather than in the loops: dropping blank lines INSIDE
+  // a map sequence is what produces the clean per-item `map:` blocks Open5GS
+  // wants, so that behaviour is deliberate and left alone.
+  const result = output.join('\n');
+  return content.endsWith('\n') && !result.endsWith('\n') ? result + '\n' : result;
 }
 
 /**

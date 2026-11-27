@@ -7,6 +7,7 @@ import { TopologyUseCase } from '../../application/use-cases/topology';
 import { ServiceMonitorUseCase } from '../../application/use-cases/service-monitor';
 import { SyncSDUseCase } from '../../application/use-cases/sync-sd-usecase';
 import { requireAdmin } from './middleware/auth-middleware';
+import { MmeMobilitySupportUseCase } from '../../application/use-cases/mme-mobility-support';
 
 /**
  * An endpoint as it appears in a parsed Open5GS config document:
@@ -43,8 +44,32 @@ export function createConfigRouter(
   serviceMonitorUseCase: ServiceMonitorUseCase,
   syncSDUseCase: SyncSDUseCase,
   logger: pino.Logger,
+  mobilitySupport?: MmeMobilitySupportUseCase,
 ): Router {
   const router = Router();
+
+  // Not an `async` handler: express ignores the promise one returns
+  // (@typescript-eslint/no-misused-promises), so a rejection escaping it is an
+  // unhandled rejection and the request simply never answers. The inner task
+  // therefore owns its own try/catch and always sends exactly one response.
+  // MmeMobilitySupportUseCase.execute() already resolves to 'unknown' rather
+  // than throwing on a host failure, so this catch is the backstop, not the
+  // expected path.
+  router.get('/mme/mobility-support', (_req: Request, res: Response) => {
+    if (!mobilitySupport) {
+      res.status(503).json({ success: false, error: 'MME compatibility detection is unavailable' });
+      return;
+    }
+    void (async (): Promise<void> => {
+      try {
+        res.json({ success: true, data: await mobilitySupport.execute() });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ err: msg }, 'Failed to check inter-MME mobility support');
+        res.status(500).json({ success: false, error: msg });
+      }
+    })();
+  });
 
   router.get('/', async (_req: Request, res: Response) => {
     try {
