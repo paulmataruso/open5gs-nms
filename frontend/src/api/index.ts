@@ -48,6 +48,8 @@ api.interceptors.response.use(
 
 // ── Config ──
 export const configApi = {
+  getMmeMobilitySupport: () =>
+    api.get<{ success: boolean; data: import('../types').MmeMobilitySupport }>('/config/mme/mobility-support').then((r) => r.data.data),
   getAll: () => api.get<{ success: boolean; data: AllConfigs }>('/config').then((r) => r.data.data),
   getService: (name: string) => api.get(`/config/${name}`).then((r) => r.data.data),
   validate: (configs?: AllConfigs) =>

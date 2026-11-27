@@ -8,6 +8,8 @@ import { SERVICE_RESTART_ORDER, SERVICE_UNIT_MAP, ServiceName } from '../../doma
 import { AllConfigsDto, ApplyResultDto } from '../dto';
 import { ValidateConfigUseCase } from './validate-config';
 import { SyncPrometheusConfigUseCase } from './sync-prometheus-config';
+import { MmeMobilitySupportUseCase } from './mme-mobility-support';
+import { mergeMmeMobilityConfig, validateMmeMobility } from './mme-mobility-validation';
 
 export class ApplyConfigUseCase {
   private readonly mutex = new Mutex();
@@ -21,6 +23,7 @@ export class ApplyConfigUseCase {
     private readonly logger: pino.Logger,
     private readonly backupBasePath: string,
     private readonly syncPrometheus: SyncPrometheusConfigUseCase,
+    private readonly mobilitySupport: Pick<MmeMobilitySupportUseCase, 'execute'> = new MmeMobilitySupportUseCase(hostExecutor),
   ) {}
 
   async execute(newConfigs: AllConfigsDto): Promise<ApplyResultDto> {
@@ -61,6 +64,14 @@ export class ApplyConfigUseCase {
 
       // Step 2: Generate diff for all 16 services
       const currentConfigs = await this.configRepo.loadAll();
+      // Enforce this on the server as well as in the form: text-mode edits and
+      // direct API calls must never write mobility peers to an unsupported MME.
+      const effectiveMme = mergeMmeMobilityConfig(currentConfigs.mme?.rawYaml, newConfigs.mme);
+      const peers = validateMmeMobility(effectiveMme);
+      if (peers.length) {
+        const support = await this.mobilitySupport.execute();
+        if (support.status !== 'supported') throw new Error(support.message);
+      }
       const diffParts: string[] = [];
       const allServices = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'] as const;
       
