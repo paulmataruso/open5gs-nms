@@ -157,10 +157,16 @@ if [ \${#URI_GROUPS[@]} -eq 0 ]; then
   exit 0
 fi
 
-# A socket that accepts is a strong signal for mongod specifically: it binds
-# its port at the end of startup, once it is ready to serve. It is still only
-# a signal, so where a client is reachable we upgrade to a real ping. Returns
-# 0 ready, 1 answered but not serving yet, 2 no client available to ask with.
+# A socket that accepts is the authoritative signal that MongoDB is up: mongod
+# binds its port at the end of startup, once it is ready to serve. A real ping
+# is a stronger proof and is preferred -- but it must never be able to WITHHOLD
+# readiness indefinitely, because the two failure directions are not
+# symmetric. Declaring ready too early costs a few Restart=always retries and
+# self-heals in seconds; refusing to declare ready costs the FULL timeout on
+# every boot, silently. So a failing ping holds the gate only for PING_GRACE
+# seconds (covering the bound-but-still-starting window), after which TCP alone
+# is accepted and the weaker proof is named in the log.
+# Returns 0 ready, 1 answered but not serving yet, 2 no client to ask with.
 mongo_ping() {
   local host=$1 port=$2 out
   if command -v mongosh >/dev/null 2>&1; then
@@ -176,13 +182,26 @@ mongo_ping() {
     c=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \\
          | awk '$2 ~ /(^|\\/)mongo(:|$)/ { print $1; exit }')
     [ -n "$c" ] || return 2
+    # Must target the CONFIGURED endpoint. An earlier version ran a bare
+    # --eval, which pings whatever the container's own default is and so
+    # reported a healthy database for ANY listening port -- confirmed live
+    # against port 22. The values go in as argv ($1/$2), never interpolated
+    # into the shell string, since they come out of a config file.
     out=$(timeout 10 docker exec "$c" sh -c \\
-            'mongosh --quiet --eval "db.adminCommand({ping:1}).ok" 2>/dev/null \\
-             || mongo --quiet --eval "db.adminCommand({ping:1}).ok" 2>/dev/null' 2>/dev/null)
+            'mongosh --quiet --host "$1" --port "$2" --eval "db.adminCommand({ping:1}).ok" 2>/dev/null \\
+             || mongo --quiet --host "$1" --port "$2" --eval "db.adminCommand({ping:1}).ok" 2>/dev/null' \\
+            _ "$host" "$port" 2>/dev/null)
   else
     return 2
   fi
-  case "$out" in *1*) return 0 ;; *) return 1 ;; esac
+  # An EXACT match, not a substring. Confirmed live: the legacy mongo shell
+  # writes its connection error to STDOUT, and that text contains a 1 in
+  # several places ("...:27999", ":374:17", "exiting with code 1"), so a *1*
+  # glob reports a healthy database when nothing answered at all -- precisely
+  # the case this ping exists to catch. A successful ping is the single byte 1.
+  out=$(printf '%s' "$out" | tr -d '[:space:]')
+  [ "$out" = "1" ] && return 0
+  return 1
 }
 
 # A bare redirect can hang for the full TCP connect timeout on an unroutable
@@ -192,18 +211,19 @@ tcp_open() {
 }
 
 PROOF=""
+PING_GRACE=30
 
 group_ready() {
-  local ep host port
+  local ep host port rc
   for ep in $1; do
     host=\${ep%/*}; port=\${ep##*/}
     tcp_open "$host" "$port" || continue
-    mongo_ping "$host" "$port"
-    case $? in
-      0) PROOF="ping"; return 0 ;;
-      2) PROOF="tcp";  return 0 ;;
-      *) ;;   # listening but not serving yet -- keep waiting
-    esac
+    mongo_ping "$host" "$port"; rc=$?
+    [ $rc -eq 0 ] && { PROOF="ping"; return 0; }
+    [ $rc -eq 2 ] && { PROOF="no-client"; return 0; }
+    # rc=1: listening, but the ping did not answer. Keep waiting -- but only
+    # until the grace expires. See mongo_ping's note on the asymmetry.
+    [ $((SECONDS-start)) -ge $PING_GRACE ] && { PROOF="ping-failed"; return 0; }
   done
   return 1
 }
@@ -215,11 +235,14 @@ while :; do
     group_ready "$g" || { ready=0; break; }
   done
   if [ "$ready" -eq 1 ]; then
-    if [ "$PROOF" = "tcp" ]; then
-      logger -t "$TAG" "MongoDB reachable after $((SECONDS-start))s (TCP only -- no client available to ping with)"
-    else
-      logger -t "$TAG" "MongoDB ready after $((SECONDS-start))s (ping answered)"
-    fi
+    case "$PROOF" in
+      ping)
+        logger -t "$TAG" "MongoDB ready after $((SECONDS-start))s (ping answered)" ;;
+      no-client)
+        logger -t "$TAG" "MongoDB reachable after $((SECONDS-start))s (TCP only -- no client available to ping with)" ;;
+      ping-failed)
+        logger -t "$TAG" "WARNING: MongoDB port open but no ping answer in \${PING_GRACE}s -- releasing on TCP alone; check the db_uri actually points at MongoDB" ;;
+    esac
     exit 0
   fi
   if [ $((SECONDS-start)) -ge "$TIMEOUT" ]; then

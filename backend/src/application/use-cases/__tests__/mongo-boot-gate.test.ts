@@ -24,7 +24,9 @@ function tmpdir(): string {
 function parseEndpoints(yamlDir: string): string[] {
   const dir = tmpdir();
   const scriptPath = path.join(dir, 'wait-mongo.sh');
-  const marker = '# A socket that accepts is a strong signal';
+  // Anchored on a declaration, not prose: an earlier version spliced at a
+  // comment, and rewording that comment broke all ten parsing tests at once.
+  const marker = 'mongo_ping() {';
   const script = mongoGateScript();
   expect(script).toContain(marker);
   const patched = script
@@ -63,6 +65,42 @@ describe('mongo boot gate — generated script', () => {
     const warn = s.slice(s.indexOf('WARNING: MongoDB not reachable'));
     expect(warn).toMatch(/exit 0/);
     expect(s).not.toMatch(/exit 1/);
+  });
+
+  // The ping ran a bare --eval, which pings whatever the container's own
+  // default is rather than the endpoint the NFs are configured to use.
+  // Confirmed live: it reported a healthy database for port 22.
+  it('pings the configured endpoint, not the container default', () => {
+    const s = mongoGateScript();
+    const dockerBranch = s.slice(s.indexOf('docker exec'), s.indexOf('else\n    return 2'));
+    expect(dockerBranch).toContain('--host "$1"');
+    expect(dockerBranch).toContain('--port "$2"');
+    // argv, not string interpolation: these values come out of a config file.
+    expect(dockerBranch).toMatch(/_ "\$host" "\$port"/);
+  });
+
+  // The failure directions are not symmetric. Declaring ready too early costs
+  // a few Restart=always retries; refusing to declare ready costs the whole
+  // timeout on every boot, silently. So the ping gets a grace period, not a veto.
+  it('never lets a failing ping withhold readiness indefinitely', () => {
+    const s = mongoGateScript();
+    expect(s).toMatch(/^PING_GRACE=\d+$/m);
+    expect(s).toContain('PROOF="ping-failed"');
+    const grace = Number(/^PING_GRACE=(\d+)$/m.exec(s)?.[1]);
+    const wait = Number(/^TIMEOUT=\$\{1:-(\d+)\}$/m.exec(s)?.[1]);
+    expect(grace).toBeGreaterThan(0);
+    expect(grace).toBeLessThan(wait);
+  });
+
+  // The legacy mongo shell writes its connection error to STDOUT, and that
+  // text contains a 1 in several places ("...:27999", ":374:17", "code 1"),
+  // so a substring test reports a healthy database when nothing answered.
+  it('matches the ping result exactly rather than as a substring', () => {
+    const s = mongoGateScript();
+    // The construct, not the string: the script's own comment names *1* to
+    // explain why it is wrong, and that comment is worth keeping.
+    expect(s).not.toMatch(/in \*1\*\)/);
+    expect(s).toContain('[ "$out" = "1" ]');
   });
 
   it('re-derives endpoints at run time instead of baking them in', () => {
