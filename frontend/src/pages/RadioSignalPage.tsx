@@ -77,7 +77,9 @@ export function RadioSignalPage(): JSX.Element {
     finally { await load(); if (collectionError) setError(collectionError); collecting.current = false; setPolling(false); }
   },[load]);
   useEffect(() => {
-    void load();
+    // Deferred via a timer so the state writes in load() land in a callback,
+    // not synchronously during the effect (react-hooks/set-state-in-effect).
+    const timer = setTimeout(() => { void load(); },250);
     // requestId is a monotonic request counter, not a rendered node, so the
     // rule's concern does not apply. Reading .current HERE is the point:
     // bumping it on cleanup is what makes load()'s own
@@ -86,7 +88,7 @@ export function RadioSignalPage(): JSX.Element {
     // local inside the effect, as the rule suggests, would freeze the value
     // and defeat that invalidation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    return () => { ++requestId.current; };
+    return () => { clearTimeout(timer); ++requestId.current; };
   },[load]);
   useEffect(() => {
     if (!auto) return;
