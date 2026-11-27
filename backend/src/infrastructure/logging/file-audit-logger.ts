@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { AuditLogEntry, AuditAction } from '../../domain/entities/audit-log';
@@ -31,7 +31,7 @@ export class FileAuditLogger implements IAuditLogger {
 
   async log(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>): Promise<void> {
     const fullEntry: AuditLogEntry = {
-      id: uuidv4(),
+      id: randomUUID(),
       timestamp: new Date().toISOString(),
       ...entry,
     };
