@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { RadioTower, RefreshCw, Send, Download, MapPin, KeyRound, X } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../contexts/auth-context';
 import { cellBroadcastApi as api, type CbcState, type Tai } from '../api/cellBroadcast';
 
 const taiKey=(a:Tai)=>a.plmn+':'+a.tac;
@@ -28,7 +28,16 @@ export function CellBroadcastPage():JSX.Element {
   const refresh=useCallback(async()=>{if(loading.current||user?.role!=='admin')return;loading.current=true;
     try {setState(await api.overview());setError('');}catch(e){setError(failure(e));}finally{loading.current=false;}
   },[user?.role]);
-  useEffect(()=>{void refresh();const timer=setInterval(()=>void refresh(),10000);return()=>clearInterval(timer);},[refresh]);
+  // The first refresh goes through a timer rather than being called straight
+  // from the effect body. react-hooks/set-state-in-effect flags the direct
+  // call, and main's RadioSignalPage already uses this same `setTimeout(load,
+  // ...)` idiom for exactly this reason -- the state write lands in a task
+  // instead of synchronously during the effect.
+  useEffect(()=>{
+    const first=setTimeout(()=>void refresh(),0);
+    const timer=setInterval(()=>void refresh(),10000);
+    return()=>{clearTimeout(first);clearInterval(timer);};
+  },[refresh]);
   if(user?.role!=='admin')return <div className="p-6">Cell Broadcast requires an administrator account.</div>;
   const known=distinct(state?.radios.flatMap(r=>r.areas)||[]);
   const areas=distinct([...(state?.zones.filter(z=>zoneIds.includes(z.id)).flatMap(z=>z.areas)||[]),...direct]);

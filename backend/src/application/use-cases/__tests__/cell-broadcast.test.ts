@@ -15,20 +15,20 @@ describe('Cell Broadcast targeting and scoped API',()=>{
   const a={plmn:'00101',tac:1},b={plmn:'302190',tac:24};
   beforeEach(()=>{
     db=new Database(':memory:',{nativeBinding:process.env.HA_SQLITE_TEST_BINDING});sent=[];deliveryFails=false;
-    const host={executeCommand:jest.fn(async(command:string,args:string[])=>{
+    const host={executeCommand:jest.fn((command:string,args:string[])=>{
       if(command==='curl')return {exitCode:0,stderr:'',stdout:JSON.stringify({items:[{enb_id:2,name:'Lab radio',s1:{setup_success:true},supported_ta_list:[{plmn:'00101',tac:'0001'},{plmn:'302190',tac:'0018'}]}],pager:{page:0}})};
       if(args[1].includes('MainPID'))return {exitCode:0,stderr:'',stdout:''};
       const method=args[2],endpoint=args[3];
       if(endpoint==='nms-capabilities')return {exitCode:0,stderr:'',stdout:JSON.stringify({code:200,body:JSON.stringify({protocol:1,scope_tais:true})})};
-      sent.push({method,endpoint,body:args[4]?JSON.parse(Buffer.from(args[4],'base64').toString()):undefined});
+      sent.push({method,endpoint,body:args[4]?JSON.parse(Buffer.from(args[4],'base64').toString()) as Record<string,unknown>:undefined});
       if(deliveryFails)throw new Error('Connection lost');
       return {exitCode:0,stderr:'',stdout:JSON.stringify({code:201,body:''})};
     })} as unknown as IHostExecutor;
-    const configs={loadMme:async()=>({rawYaml:{mme:{metrics:{server:[{address:'127.0.0.2',port:9090}]},sbcap:{server:[{address:'127.0.0.2',port:29168}]}}}})} as unknown as IConfigRepository;
+    const configs={loadMme:()=>Promise.resolve({rawYaml:{mme:{metrics:{server:[{address:'127.0.0.2',port:9090}]},sbcap:{server:[{address:'127.0.0.2',port:29168}]}}}})} as unknown as IConfigRepository;
     cbc=new CellBroadcastUseCase(db,host,configs);
   });
   afterEach(()=>db.close());
-  function message(extra:Record<string,unknown>={}) {return {requestId:randomUUID(),text:'Maintenance test',areas:[a],zoneIds:[],messageId:4200,serialNumber:1,confirm:true,...extra};}
+  function message(extra:Record<string,unknown>={}): {requestId:string} & Record<string,unknown> {return {requestId:randomUUID(),text:'Maintenance test',areas:[a],zoneIds:[],messageId:4200,serialNumber:1,confirm:true,...extra};}
   it('keeps two- and three-digit MNC identities distinct',()=>{
     expect(uniqueTais([a,a,{plmn:'001001',tac:1}])).toHaveLength(2);
   });
@@ -105,14 +105,14 @@ describe('Cell Broadcast targeting and scoped API',()=>{
     }finally {server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}
   });
   it('prepares and runs the installer through host execution, not container filesystem helpers',async()=>{
-    const executeCommand=jest.fn(async()=>({exitCode:0,stdout:'CBC ready',stderr:''}));
+    const executeCommand=jest.fn(()=>Promise.resolve({exitCode:0,stdout:'CBC ready',stderr:''}));
     const installer=new CellBroadcastUseCase(db,{executeCommand} as unknown as IHostExecutor,{} as IConfigRepository);
-    const job=await installer.install();
+    const job=installer.install();
     for(let i=0;i<100&&job.status==='running';i++)await new Promise(resolve=>setTimeout(resolve,5));
     expect(job.status).toBe('complete');expect(executeCommand).toHaveBeenCalledTimes(2);
     const calls=executeCommand.mock.calls as unknown as Array<[string,string[]]>;
     expect(calls[0][0]).toBe('python3');expect(calls[0][1][0]).toBe('-c');
-    const bundle=JSON.parse(Buffer.from(calls[0][1][2],'base64').toString());
+    const bundle=JSON.parse(Buffer.from(calls[0][1][2],'base64').toString()) as Record<string,string>;
     expect(Object.keys(bundle).sort()).toEqual(['install-cbc.py','osmo-cbc-tai.patch']);
     expect(calls[1][1]).toEqual(['/var/lib/open5gs-nms/cbc-installer/install-cbc.py','--install']);
   });

@@ -3,30 +3,31 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import type { CellBroadcastUseCase, BroadcastCaller } from '../../application/use-cases/cell-broadcast';
 import type { IAuditLogger } from '../../domain/interfaces/audit-logger';
+import { asyncRoute } from './middleware/async-route';
 import { requireAdmin } from './middleware/auth-middleware';
 
 const id = z.string().uuid();
-const errorText = (e:unknown) => e instanceof Error ? e.message : String(e);
+const errorText = (e:unknown): string => e instanceof Error ? e.message : String(e);
 
-export function createCellBroadcastRouters(cbc:CellBroadcastUseCase,audit:IAuditLogger) {
+export function createCellBroadcastRouters(cbc:CellBroadcastUseCase,audit:IAuditLogger): {admin:Router; external:Router} {
   const admin=Router(), external=Router();
   admin.use(requireAdmin);
   admin.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
   const actor=(req:Request):BroadcastCaller=>({name:req.user!.username});
-  const log=async(req:Request,caller:BroadcastCaller,target:string,success:boolean,details:string)=>audit.log({action:'cbc_operation',user:caller.name,target,success,details});
-  admin.get('/overview',async(_req,res)=>{try {res.json(await cbc.status());}catch(e){res.status(503).json({error:errorText(e)});}});
-  admin.post('/zones',async(req,res)=>{try {const zone=cbc.saveZone(req.body);await log(req,actor(req),zone.id,true,'Create zone');res.json(zone);}catch(e){res.status(400).json({error:errorText(e)});}});
-  admin.put('/zones/:id',async(req,res)=>{try {const zone=cbc.saveZone(req.body,id.parse(req.params.id));await log(req,actor(req),zone.id,true,'Update zone');res.json(zone);}catch(e){res.status(400).json({error:errorText(e)});}});
-  admin.delete('/zones/:id',async(req,res)=>{try {cbc.removeZone(id.parse(req.params.id));await log(req,actor(req),req.params.id,true,'Delete zone label');res.json({success:true});}catch(e){res.status(400).json({error:errorText(e)});}});
-  admin.post('/keys',async(req,res)=>{try {const result=cbc.createToken(req.body);await log(req,actor(req),result.id,true,'Create scoped API key');res.json(result);}catch(e){res.status(400).json({error:errorText(e)});}});
-  admin.delete('/keys/:id',async(req,res)=>{try {cbc.revokeToken(id.parse(req.params.id));await log(req,actor(req),req.params.id,true,'Revoke API key');res.json({success:true});}catch(e){res.status(400).json({error:errorText(e)});}});
-  admin.post('/install',async(req,res)=>{try {z.object({confirm:z.literal(true)}).strict().parse(req.body);const job=await cbc.install();await log(req,actor(req),job.id,true,'Install CBC');res.status(202).json(job);}catch(e){res.status(400).json({error:errorText(e)});}});
-  admin.post('/service/:action',async(req,res)=>{try {res.json(await cbc.service(req.params.action));await log(req,actor(req),'cbc-service',true,req.params.action);}catch(e){res.status(400).json({error:errorText(e)});}});
-  const send=async(req:Request,res:Response,caller:BroadcastCaller)=>{
-    try {const result=await cbc.send(req.body,caller);await log(req,caller,String(req.body.requestId),true,'Submit Cell Broadcast request');res.status(202).json(result);}
+  const log=(req:Request,caller:BroadcastCaller,target:string,success:boolean,details:string):Promise<void>=>audit.log({action:'cbc_operation',user:caller.name,target,success,details});
+  admin.get('/overview',asyncRoute(async(_req,res)=>{try {res.json(await cbc.status());}catch(e){res.status(503).json({error:errorText(e)});}}));
+  admin.post('/zones',asyncRoute(async(req,res)=>{try {const zone=cbc.saveZone(req.body);await log(req,actor(req),zone.id,true,'Create zone');res.json(zone);}catch(e){res.status(400).json({error:errorText(e)});}}));
+  admin.put('/zones/:id',asyncRoute(async(req,res)=>{try {const zone=cbc.saveZone(req.body,id.parse(req.params.id));await log(req,actor(req),zone.id,true,'Update zone');res.json(zone);}catch(e){res.status(400).json({error:errorText(e)});}}));
+  admin.delete('/zones/:id',asyncRoute(async(req,res)=>{try {cbc.removeZone(id.parse(req.params.id));await log(req,actor(req),req.params.id,true,'Delete zone label');res.json({success:true});}catch(e){res.status(400).json({error:errorText(e)});}}));
+  admin.post('/keys',asyncRoute(async(req,res)=>{try {const result=cbc.createToken(req.body);await log(req,actor(req),result.id,true,'Create scoped API key');res.json(result);}catch(e){res.status(400).json({error:errorText(e)});}}));
+  admin.delete('/keys/:id',asyncRoute(async(req,res)=>{try {cbc.revokeToken(id.parse(req.params.id));await log(req,actor(req),req.params.id,true,'Revoke API key');res.json({success:true});}catch(e){res.status(400).json({error:errorText(e)});}}));
+  admin.post('/install',asyncRoute(async(req,res)=>{try {z.object({confirm:z.literal(true)}).strict().parse(req.body);const job=cbc.install();await log(req,actor(req),job.id,true,'Install CBC');res.status(202).json(job);}catch(e){res.status(400).json({error:errorText(e)});}}));
+  admin.post('/service/:action',asyncRoute(async(req,res)=>{try {res.json(await cbc.service(req.params.action));await log(req,actor(req),'cbc-service',true,req.params.action);}catch(e){res.status(400).json({error:errorText(e)});}}));
+  const send=async(req:Request,res:Response,caller:BroadcastCaller):Promise<void>=>{
+    try {const result=await cbc.send(req.body,caller);await log(req,caller,String((req.body as {requestId?:unknown})?.requestId),true,'Submit Cell Broadcast request');res.status(202).json(result);}
     catch(e){await log(req,caller,'cbc-message',false,'Submission refused or failed');res.status(409).json({error:errorText(e)});}
   };
-  const stop=async(req:Request,res:Response,caller:BroadcastCaller)=>{
+  const stop=async(req:Request,res:Response,caller:BroadcastCaller):Promise<void>=>{
     try {const result=await cbc.stop(id.parse(req.params.id),caller);await log(req,caller,req.params.id,true,'Stop Cell Broadcast');res.json(result);}
     catch(e){res.status(409).json({error:errorText(e)});}
   };

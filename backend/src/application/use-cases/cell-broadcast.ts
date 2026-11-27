@@ -55,12 +55,40 @@ export const sendSchema = z.object({
   }
 });
 export interface BroadcastZone { id: string; name: string; areas: BroadcastTai[]; }
+/** A cbc_messages row, mirroring the INSERT in send(). */
+/** One radio as the MME's own inventory reports it. */
+export interface BroadcastRadio { id:number; name:string; plmn:string; areas:BroadcastTai[]; connected:boolean }
+
+/** What resolveAreas() settles a request's zone ids and direct TAIs into. */
+export interface ResolvedAreas { areas:BroadcastTai[]; names:string[] }
+
+/** The Cell Broadcast overview the admin page renders. */
+export interface CbcStatus {
+  service: string;
+  targeting: boolean;
+  mmeSupported: boolean;
+  radios: BroadcastRadio[];
+  inventoryError: string | null;
+  installation: InstallJob | null;
+  zones: BroadcastZone[];
+  messages: CbcMessageRow[];
+  tokens: Array<{id:string; name:string; zoneIds:string[]; revoked:boolean}>;
+}
+
+/** The in-memory handle for a running installer job. */
+export interface InstallJob { id: string; status: string; detail: string }
+
+export interface CbcMessageRow {
+  id: string; actor: string; token_id: string | null; payload_hash: string;
+  message_id: number; serial: number; text: string; areas: string;
+  zone_names: string; status: string; detail: string; created_at: number;
+}
 interface TokenRow { id: string; name: string; zone_ids: string; hash: string; revoked: number; }
 export interface BroadcastCaller { name: string; tokenId?: string; allowedZones?: string[]; }
 export function uniqueTais(areas: BroadcastTai[]): BroadcastTai[] {
   return [...new Map(areas.map(a => [a.plmn + ':' + a.tac, a])).values()];
 }
-const digest = (s: string) => createHash('sha256').update(s).digest('hex');
+const digest = (s: string): string => createHash('sha256').update(s).digest('hex');
 const CLIENT = `import json,sys,urllib.request,urllib.error,base64
 method,endpoint=sys.argv[1:3]
 payload=base64.b64decode(sys.argv[3]) if len(sys.argv)>3 else None
@@ -96,7 +124,7 @@ print('Installer prepared in host filesystem')
 `;
 
 export class CellBroadcastUseCase {
-  private installation: { id: string; status: string; detail: string } | null = null;
+  private installation: InstallJob | null = null;
   constructor(private db: Database, private host: IHostExecutor, private configs: IConfigRepository) {
     db.exec(`CREATE TABLE IF NOT EXISTS cbc_zones(id TEXT PRIMARY KEY,name TEXT NOT NULL,areas TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cbc_tokens(id TEXT PRIMARY KEY,name TEXT NOT NULL,hash TEXT UNIQUE NOT NULL,zone_ids TEXT NOT NULL,revoked INTEGER NOT NULL DEFAULT 0);
@@ -105,7 +133,8 @@ export class CellBroadcastUseCase {
     db.prepare("UPDATE cbc_messages SET status='unknown',detail='NMS restarted during dispatch; do not retry without checking CBC' WHERE status IN ('submitting','stopping')").run();
   }
   zones(): BroadcastZone[] {
-    return (this.db.prepare('SELECT * FROM cbc_zones ORDER BY name').all() as Array<{id:string;name:string;areas:string}>).map(z => ({...z,areas:JSON.parse(z.areas)}));
+    return (this.db.prepare('SELECT * FROM cbc_zones ORDER BY name').all() as Array<{id:string;name:string;areas:string}>)
+      .map(z => ({...z, areas: JSON.parse(z.areas) as BroadcastTai[]}));
   }
   saveZone(raw: unknown, id: string = randomUUID()): BroadcastZone {
     const z = zoneSchema.parse(raw); const areas=uniqueTais(z.areas);
@@ -113,31 +142,39 @@ export class CellBroadcastUseCase {
     return {id,name:z.name,areas};
   }
   removeZone(id: string): void { this.db.prepare('DELETE FROM cbc_zones WHERE id=?').run(id); }
-  tokens() { return (this.db.prepare('SELECT id,name,zone_ids,revoked FROM cbc_tokens ORDER BY name').all() as Omit<TokenRow,'hash'>[]).map(t=>({id:t.id,name:t.name,zoneIds:JSON.parse(t.zone_ids),revoked:!!t.revoked})); }
-  createToken(raw: unknown) {
+  tokens(): Array<{id:string;name:string;zoneIds:string[];revoked:boolean}> {
+    return (this.db.prepare('SELECT id,name,zone_ids,revoked FROM cbc_tokens ORDER BY name').all() as Omit<TokenRow,'hash'>[])
+      .map(t=>({id:t.id,name:t.name,zoneIds:JSON.parse(t.zone_ids) as string[],revoked:!!t.revoked}));
+  }
+  createToken(raw: unknown): {id:string;secret:string} {
     const input=z.object({name:z.string().trim().min(1).max(80),zoneIds:z.array(z.string().uuid()).min(1).max(16)}).strict().parse(raw);
     if(input.zoneIds.some(id=>!this.zones().some(z=>z.id===id))) throw new Error('Unknown zone');
     const secret='cbc_'+randomBytes(32).toString('base64url'),id=randomUUID();
     this.db.prepare('INSERT INTO cbc_tokens(id,name,hash,zone_ids) VALUES(?,?,?,?)').run(id,input.name,digest(secret),JSON.stringify([...new Set(input.zoneIds)]));
     return {id,secret};
   }
-  revokeToken(id:string) { this.db.prepare('UPDATE cbc_tokens SET revoked=1 WHERE id=?').run(id); }
+  revokeToken(id:string): void { this.db.prepare('UPDATE cbc_tokens SET revoked=1 WHERE id=?').run(id); }
   authenticate(secret:string):BroadcastCaller|null {
     if(!/^cbc_[A-Za-z0-9_-]{43}$/.test(secret))return null;
     const t=this.db.prepare('SELECT * FROM cbc_tokens WHERE hash=? AND revoked=0').get(digest(secret)) as TokenRow|undefined;
-    return t?{name:'api:'+t.name,tokenId:t.id,allowedZones:JSON.parse(t.zone_ids)}:null;
+    return t?{name:'api:'+t.name,tokenId:t.id,allowedZones:JSON.parse(t.zone_ids) as string[]}:null;
   }
-  messages(caller?:BroadcastCaller) {
-    return this.db.prepare('SELECT * FROM cbc_messages '+(caller?.tokenId?'WHERE token_id=? ':'')+'ORDER BY created_at DESC LIMIT 100').all(...(caller?.tokenId?[caller.tokenId]:[]));
+  messages(caller?:BroadcastCaller): CbcMessageRow[] {
+    return this.db.prepare('SELECT * FROM cbc_messages '+(caller?.tokenId?'WHERE token_id=? ':'')+'ORDER BY created_at DESC LIMIT 100')
+      .all(...(caller?.tokenId?[caller.tokenId]:[])) as CbcMessageRow[];
   }
-  private async cbc(method:string,endpoint:string,payload?:unknown) {
+  private async cbc(method:string,endpoint:string,payload?:unknown): Promise<{code:number;body:string}> {
     const args=['-c',CLIENT,method,endpoint];if(payload!==undefined)args.push(Buffer.from(JSON.stringify(payload)).toString('base64'));
     const r=await this.host.executeCommand('python3',args,20000,{expectedFailure:true});
     if(r.exitCode || Buffer.byteLength(r.stdout)>70000)throw new Error('CBC response unavailable; delivery may be uncertain');
     return JSON.parse(r.stdout) as {code:number;body:string};
   }
-  async capabilities() {
-    try { const r=await this.cbc('GET','nms-capabilities');const c=JSON.parse(r.body);return r.code===200&&c.protocol===1&&c.scope_tais===true; } catch {return false;}
+  async capabilities(): Promise<boolean> {
+    try {
+      const r=await this.cbc('GET','nms-capabilities');
+      const c=JSON.parse(r.body) as {protocol?:unknown;scope_tais?:unknown};
+      return r.code===200&&c.protocol===1&&c.scope_tais===true;
+    } catch {return false;}
   }
   async mmeSupported():Promise<boolean> {
     const r=await this.host.executeCommand('python3',['-c',`import subprocess,sys
@@ -151,13 +188,13 @@ with open('/proc/'+p+'/exe','rb') as f:
     const mme=(config.rawYaml as {mme?:{sbcap?:{server?:Array<{address?:string;port?:number}>}}}).mme;
     return !!mme?.sbcap?.server?.some(s=>s.address==='127.0.0.2'&&(s.port||29168)===29168);
   }
-  async inventory() {
+  async inventory(): Promise<BroadcastRadio[]> {
     const config=await this.configs.loadMme();
     const mme=(config.rawYaml as {mme?:{metrics?:{server?:Array<{address?:string;port?:number}>}}}).mme;
     const listener=mme?.metrics?.server?.[0];if(!listener?.address)throw new Error('MME inventory listener not configured');
     const address=listener.address==='0.0.0.0'?'127.0.0.1':listener.address==='::'?'::1':listener.address;
     const origin=`http://${address.includes(':')?'['+address+']':address}:${listener.port||9090}`;
-    const radios:Array<{id:number;name:string;plmn:string;areas:BroadcastTai[];connected:boolean}>=[];
+    const radios:BroadcastRadio[]=[];
     const labels:Record<string,string>={};
     try { for(const r of this.db.prepare('SELECT ip,nickname FROM radio_tags').all() as Array<{ip:string;nickname:string}>)labels[r.ip]=r.nickname; }catch{/* optional radio labels */}
     for(let page=0;page<32;page++) {
@@ -175,15 +212,15 @@ with open('/proc/'+p+'/exe','rb') as f:
     }
     throw new Error('MME inventory exceeds page limit');
   }
-  async status() {
+  async status(): Promise<CbcStatus> {
     const [service,targeting,inventory,mme]=await Promise.allSettled([
       this.host.executeCommand('systemctl',['show',SERVICE,'--property=LoadState,ActiveState'],5000,{expectedFailure:true}),this.capabilities(),this.inventory(),this.mmeSupported(),
     ]);
     return {service:service.status==='fulfilled'?service.value.stdout:'Unavailable',targeting:targeting.status==='fulfilled'&&targeting.value,mmeSupported:mme.status==='fulfilled'&&mme.value,
-      radios:inventory.status==='fulfilled'?inventory.value:[],inventoryError:inventory.status==='rejected'?String(inventory.reason.message):null,
+      radios:inventory.status==='fulfilled'?inventory.value:[],inventoryError:inventory.status==='rejected'?String((inventory.reason as {message?:unknown})?.message):null,
       installation:this.installation,zones:this.zones(),messages:this.messages(),tokens:this.tokens()};
   }
-  resolveAreas(input:z.infer<typeof sendSchema>,caller:BroadcastCaller) {
+  resolveAreas(input:z.infer<typeof sendSchema>,caller:BroadcastCaller): ResolvedAreas {
     const zones=this.zones();const selected=input.zoneIds.map(id=>{const zone=zones.find(z=>z.id===id);if(!zone)throw new Error('Unknown zone');
       if(caller.allowedZones&&!caller.allowedZones.includes(id))throw new Error('Zone not authorized for this key');return zone;});
     const permitted=caller.allowedZones?uniqueTais(zones.filter(z=>caller.allowedZones!.includes(z.id)).flatMap(z=>z.areas)):null;
@@ -192,10 +229,10 @@ with open('/proc/'+p+'/exe','rb') as f:
     if(areas.length<1||areas.length>16)throw new Error('Select between 1 and 16 distinct PLMN/TAC pairs');
     return {areas,names:selected.map(z=>z.name)};
   }
-  async send(raw:unknown,caller:BroadcastCaller) {
+  async send(raw:unknown,caller:BroadcastCaller): Promise<CbcMessageRow> {
     const input=sendSchema.parse(raw),resolved=this.resolveAreas(input,caller);
     const hash=digest(JSON.stringify({...input,areas:resolved.areas}));
-    const existing=this.db.prepare('SELECT * FROM cbc_messages WHERE id=?').get(input.requestId) as {payload_hash:string;actor:string}|undefined;
+    const existing=this.db.prepare('SELECT * FROM cbc_messages WHERE id=?').get(input.requestId) as CbcMessageRow|undefined;
     if(existing) {if(existing.payload_hash!==hash||existing.actor!==caller.name)throw new Error('Request ID already used for another message');return existing;}
     if(!await this.capabilities())throw new Error('Install/start a TAI-capable CBC before sending');
     if(!await this.mmeSupported())throw new Error('Configure and run a compatible MME with explicit TAI routing before sending');
@@ -210,9 +247,9 @@ with open('/proc/'+p+'/exe','rb') as f:
       detail=status==='accepted'?'Accepted by CBC; handset reception is not confirmed':`CBC HTTP ${r.code}; ${status==='unknown'?'delivery uncertain':'request rejected'}`;
     }catch{/* Keep the operation locked if network delivery is uncertain. */}
     this.db.prepare('UPDATE cbc_messages SET status=?,detail=? WHERE id=?').run(status,detail,input.requestId);
-    return this.db.prepare('SELECT * FROM cbc_messages WHERE id=?').get(input.requestId);
+    return this.db.prepare('SELECT * FROM cbc_messages WHERE id=?').get(input.requestId) as CbcMessageRow;
   }
-  async stop(id:string,caller:BroadcastCaller) {
+  async stop(id:string,caller:BroadcastCaller): Promise<{status:string;detail:string}> {
     const m=this.db.prepare('SELECT * FROM cbc_messages WHERE id=?').get(id) as {message_id:number;token_id:string|null;status:string}|undefined;
     if(!m||caller.tokenId&&m.token_id!==caller.tokenId)throw new Error('Message not found');
     if(!['accepted','unknown'].includes(m.status))throw new Error('Message cannot be stopped in its current state');
@@ -221,12 +258,15 @@ with open('/proc/'+p+'/exe','rb') as f:
     try {const r=await this.cbc('DELETE','message/'+m.message_id);if(r.code>=200&&r.code<300){status='stopped';detail='CBC accepted stop request; handset state is not confirmed';}else detail=`CBC stop HTTP ${r.code}; check CBC before retrying`; }catch{/* no automatic retry */}
     this.db.prepare('UPDATE cbc_messages SET status=?,detail=? WHERE id=?').run(status,detail,id);return {status,detail};
   }
-  async install() {
+  // Not async: the work runs in a detached IIFE below and the caller gets the
+  // job handle immediately. Declaring it async promised an await it never makes.
+  install(): InstallJob {
     if(this.installation?.status==='running')return this.installation;
     const job=this.installation={id:randomUUID(),status:'running',detail:'Preparing OsmoCBC installer'};
-    void (async()=>{try {
+    void (async():Promise<void>=>{try {
       const dir='/var/lib/open5gs-nms/cbc-installer';
-      const files=Object.fromEntries(await Promise.all(['install-cbc.py','osmo-cbc-tai.patch'].map(async file=>[file,await readFile(path.resolve(__dirname,'../../../tools/cbc',file),'utf8')])));
+      const files: Record<string,string> = Object.fromEntries(await Promise.all(
+          ['install-cbc.py','osmo-cbc-tai.patch'].map(async file => [file, await readFile(path.resolve(__dirname,'../../../tools/cbc',file),'utf8')] as const)));
       const prepared=await this.host.executeCommand('python3',['-c',CBC_INSTALLER_PREPARE,Buffer.from(JSON.stringify(files)).toString('base64')],10000);
       if(prepared.exitCode)throw new Error('Cannot prepare installer on the host: '+prepared.stderr.slice(-1000));
       job.detail='Checking installed CBC and host dependencies';
@@ -234,7 +274,7 @@ with open('/proc/'+p+'/exe','rb') as f:
       job.status=result.exitCode?'failed':'complete';job.detail=(result.exitCode?result.stderr:result.stdout).slice(-4000);
     }catch(e){job.status='failed';job.detail=e instanceof Error?e.message:String(e);}})();return job;
   }
-  async service(action:string) {
+  async service(action:string): Promise<{success:true}> {
     if(!['start','stop','restart'].includes(action))throw new Error('Invalid service action');
     const r=await this.host.executeCommand('systemctl',[action,SERVICE],20000);if(r.exitCode)throw new Error('CBC service action failed');return {success:true};
   }
