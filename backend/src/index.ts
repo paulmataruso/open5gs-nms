@@ -85,6 +85,7 @@ import { CdrSyncMonitor } from './application/use-cases/cdr/cdr-sync-monitor';
 import {
   applyGtpuSocketBuffers, applyUeDataPlaneTuning, applyNfMemoryPolicy,
 } from './application/use-cases/host-tuning';
+import { checkMongoBootGate, installMongoBootGate } from './application/use-cases/mongo-boot-gate';
 import { OcsReservationGuard } from './application/use-cases/ocs/ocs-reservation-guard';
 import { EigrpHealthGuard } from './application/use-cases/frr/eigrp-health-guard';
 import { createOcsReservationGuardMetricsRegistry } from './application/use-cases/ocs/ocs-reservation-guard-metrics';
@@ -370,6 +371,26 @@ async function main() {
   applyNfMemoryPolicy(hostExecutor, logger)
     .then(r => { if (r.reclaimHint) logger.warn({ hint: r.reclaimHint }, 'Swap still held by NFs'); })
     .catch(err => logger.warn({ err: String(err) }, 'NF memory policy failed'));
+
+  // MongoDB boot-race gate. Twice on this deployment a power loss came back
+  // with exactly the four DB-backed NFs (udr/pcf/hss/pcrf) stopped and the
+  // other 13 healthy: they started before MongoDB was accepting connections,
+  // and Open5GS exits with status 0 on a failed DB connect — so systemd
+  // records Result=success, the stock Restart=on-failure never fires,
+  // NRestarts stays 0, and reset-failed has nothing to reset. A permanent
+  // outage from a transient condition. Installed here, on every backend
+  // start, for the same reason as the tuning above: an existing deployment
+  // picks it up from a plain `git pull && docker compose build && docker
+  // compose up -d` without having to run anything. Idempotent and rev-gated,
+  // and the check includes the per-NF drop-ins so a host whose Open5GS
+  // packages were not installed yet on the first pass self-heals on the next
+  // start. Never restarts an NF by itself.
+  (async () => {
+    if (checkMongoBootGate().installed) return;
+    const r = await installMongoBootGate();
+    logger.info({ units: r.units, skipped: r.skipped, orderAfter: r.orderAfter },
+      'Installed MongoDB boot-race gate (open5gs-mongo-ready.service)');
+  })().catch(err => logger.warn({ err: String(err) }, 'MongoDB boot-race gate install failed'));
 
   // Periodically clears stuck Gy/Ro reservations leaked by a real,
   // still-unresolved OCS rating-engine crash (ocs_rating:charge2 on session

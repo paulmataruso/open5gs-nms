@@ -27,6 +27,7 @@ import { readCdrSettings } from '../../interfaces/rest/cdr-controller';
 import { ensureCdrIndexes } from './cdr/cdr-store';
 import { parseTarget, configureSyslog } from '../../interfaces/rest/syslog-controller';
 import { checkBindHealth, fixResolver, checkDnsBootGate, installDnsBootGate } from '../../interfaces/rest/bind-controller';
+import { checkMongoBootGate, installMongoBootGate } from './mongo-boot-gate';
 import { writeUpfSessionPoolAddressFix, SessionPool } from './auto-config';
 import { SyncGenieacsProvisionsUseCase } from './sync-genieacs-provisions';
 import * as yaml from 'js-yaml';
@@ -123,6 +124,10 @@ export class BackupRestartUseCase {
     // alone needs nothing (every NF queries Mongo live, no restart needed).
     if (has('core-configs') || has('suci-keys')) {
       this.runState.currentStep = 'core-17';
+      // Before the restart, not after: the drop-ins are what let a DB-backed
+      // NF retry at all, and a restore onto a host whose MongoDB is still
+      // coming up is exactly the window they exist for.
+      push(await this.installMongoBootGateStep());
       push(await this.restartCore17());
     }
 
@@ -400,6 +405,25 @@ export class BackupRestartUseCase {
         return { step, label, success: true, skipped: true };
       }
       await installDnsBootGate();
+      return { step, label, success: true, skipped: false };
+    } catch (err) {
+      return { step, label, success: false, skipped: false, error: String(err) };
+    }
+  }
+
+  // Companion to installDnsBootGateStep() above, for the same class of
+  // failure on a different dependency. Open5GS exits 0 when it cannot reach
+  // MongoDB, so Restart=on-failure never retries and a restore onto a host
+  // whose MongoDB is still starting leaves udr/pcf/hss/pcrf permanently
+  // stopped with nothing in systemd to reset. See mongo-boot-gate.ts.
+  private async installMongoBootGateStep(): Promise<RestartStepResult> {
+    const step = 'mongo-boot-gate';
+    const label = 'MongoDB boot-race gate (systemd)';
+    try {
+      if (checkMongoBootGate().installed) {
+        return { step, label, success: true, skipped: true };
+      }
+      await installMongoBootGate();
       return { step, label, success: true, skipped: false };
     } catch (err) {
       return { step, label, success: false, skipped: false, error: String(err) };
