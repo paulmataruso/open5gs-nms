@@ -9,7 +9,8 @@
  * another address on that NIC and the upstream gateway already reaches it.
  */
 
-import { nsenter } from './dummy-interface';
+import { nsenter, nsenterFailure } from './dummy-interface';
+import { parseIpAddrShow, ipv4AssignmentsOf } from './ip-json';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { LivenessRunner } from '../../domain/services/address-liveness';
@@ -72,9 +73,9 @@ export class HostLivenessRunner implements LivenessRunner {
       // would otherwise dominate the timeout budget).
       await nsenter('ping', ['-c', '1', '-W', '1', '-n', '-I', this.iface, ip], 4000);
       return true;
-    } catch (err: any) {
+    } catch (err: unknown) {
       // A non-zero exit is the normal "no answer" case, not a failure to look.
-      if (err?.code === 'ENOENT') { this.unavailable.add('ping'); return false; }
+      if (nsenterFailure(err).code === 'ENOENT') { this.unavailable.add('ping'); return false; }
       return false;
     }
   }
@@ -86,12 +87,12 @@ export class HostLivenessRunner implements LivenessRunner {
     try {
       const { stdout } = await nsenter('arping', ['-D', '-c', '2', '-w', '2', '-I', this.iface, ip], 5000);
       return arpingSawReply(stdout);
-    } catch (err: any) {
-      if (err?.code !== 'ENOENT') {
+    } catch (err: unknown) {
+      const failure = nsenterFailure(err);
+      if (failure.code !== 'ENOENT') {
         // arping exits non-zero when the address IS a duplicate, and also on
         // some permission errors. Its stdout still carries the verdict.
-        const out = String(err?.stdout ?? '');
-        if (out) return arpingSawReply(out);
+        if (failure.stdout) return arpingSawReply(failure.stdout);
       } else {
         this.unavailable.add('arping');
       }
@@ -123,10 +124,15 @@ export class HostLivenessRunner implements LivenessRunner {
 export async function listBoundAddresses(iface: string): Promise<string[]> {
   assertIface(iface);
   const { stdout } = await nsenter('ip', ['-j', '-4', 'addr', 'show', 'dev', iface]);
-  const parsed: any[] = JSON.parse(stdout || '[]');
-  return (parsed[0]?.addr_info ?? [])
-    .filter((a: any) => a.family === 'inet')
-    .map((a: any) => a.local as string);
+  // ip-json's shared reader, not a second hand-rolled walk of the same
+  // document. The old form ended in `.map((a: any) => a.local as string)`,
+  // which asserted a missing `local` into a `string[]` — every consumer here
+  // compares these against planned addresses, so an "undefined" element can
+  // only fail to match, but a `string[]` whose elements are not strings is
+  // the kind of thing that stays harmless only until someone does arithmetic
+  // on it.
+  const entry = parseIpAddrShow(stdout)[0];
+  return entry ? ipv4AssignmentsOf(entry).map(a => a.ip) : [];
 }
 
 /**
@@ -183,8 +189,9 @@ export async function persistNetplan(
   try {
     await nsenter('netplan', ['generate'], 30000);
     return { path: target, validated: true };
-  } catch (err: any) {
-    const detail = String(err?.stderr || err?.stdout || err?.message || err).trim();
+  } catch (err: unknown) {
+    const f = nsenterFailure(err);
+    const detail = (f.stderr || f.stdout || f.message).trim();
     return {
       path: target,
       validated: false,

@@ -1,4 +1,9 @@
 import { nsenter } from './dummy-interface';
+import {
+  parseIpAddrShow, defaultRouteDevice, ipv4AssignmentsOf,
+  ifaceName, ifaceMac, ifaceState,
+} from './ip-json';
+import { cidrNetworkRange, numToIp } from '../../domain/services/ip-utils';
 
 // Extracted from frr-controller.ts's own GET /interfaces handler (the
 // working "which interface owns the default route" trick already proven
@@ -17,19 +22,17 @@ export interface HostNetworkInterface {
 
 export async function listHostInterfaces(): Promise<{ interfaces: HostNetworkInterface[]; mgmtInterface: string | null }> {
   const { stdout } = await nsenter('ip', ['-j', 'addr', 'show']);
-  const ifaces: any[] = JSON.parse(stdout);
   const { stdout: routeOut } = await nsenter('ip', ['-j', 'route', 'show', 'default']).catch(() => ({ stdout: '[]' }));
-  const defaultRoutes: any[] = JSON.parse(routeOut);
-  const mgmtIface = defaultRoutes[0]?.dev ?? null;
-  const interfaces = ifaces
-    .filter(i => !i.ifname?.startsWith('lo') && !i.ifname?.startsWith('docker') && !i.ifname?.startsWith('br-'))
-    .map(i => ({
-      name: i.ifname,
-      mac: i.address ?? null,
-      state: i.operstate ?? null,
-      addresses: (i.addr_info ?? []).filter((a: any) => a.family === 'inet').map((a: any) => `${a.local}/${a.prefixlen}`),
-      isMgmt: i.ifname === mgmtIface,
-    }));
+  const mgmtIface = defaultRouteDevice(routeOut);
+  const interfaces = parseIpAddrShow(stdout)
+    .map(entry => ({
+      name: ifaceName(entry),
+      mac: ifaceMac(entry),
+      state: ifaceState(entry),
+      addresses: ipv4AssignmentsOf(entry).map(a => `${a.ip}/${a.prefix}`),
+      isMgmt: ifaceName(entry) === mgmtIface,
+    }))
+    .filter(i => !i.name.startsWith('lo') && !i.name.startsWith('docker') && !i.name.startsWith('br-'));
   return { interfaces, mgmtInterface: mgmtIface };
 }
 
@@ -50,15 +53,24 @@ export async function detectMainInterface(): Promise<MainInterface | null> {
   if (!main || main.addresses.length === 0) return null;
   const [ip, prefixStr] = main.addresses[0].split('/');
   const prefix = Number(prefixStr);
-  const cidr = networkCidr(ip, prefix);
+  // ip-utils' validated math, NOT a private copy. This file used to carry its
+  // own `networkCidr()` — a fifth hand-rolled implementation of CIDR masking,
+  // and the only one with no validation at all: `ip.split('.').map(Number)`
+  // yields `[NaN]` for a malformed address and JS coerces NaN to 0 through
+  // ToInt32, so it returned 0.0.0.0/24 for "not-an-ip", 172.16.0.93/NaN for a
+  // missing prefixlen, and — worst of the three — a plausible-looking
+  // 10.0.2.0/24 for the truncated "10.0.2". That value is what the IP Plan
+  // page displays and pre-fills its subnet box with, so a wrong-but-credible
+  // network is the one output an operator cannot spot. ip-utils throws
+  // instead, and documents the 2026-09-30 live incident where the same
+  // silent-fallthrough wrote "not-a-cidr" straight into smf.yaml/upf.yaml.
+  //
+  // It cannot actually throw from here: ipv4AssignmentsOf() already rejected
+  // anything that is not a dotted quad with an integer prefix in 0-32, so the
+  // address is well-formed before the arithmetic sees it. Both halves are
+  // deliberate — narrow at the boundary where the kernel's output arrives,
+  // and keep the math refusing garbage so a future caller cannot reintroduce
+  // the silent form.
+  const cidr = `${numToIp(cidrNetworkRange(`${ip}/${prefix}`).first)}/${prefix}`;
   return { name: main.name, ip, prefix, cidr };
-}
-
-function networkCidr(ip: string, prefix: number): string {
-  const parts = ip.split('.').map(Number);
-  const ipNum = ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  const networkNum = (ipNum & mask) >>> 0;
-  const octets = [(networkNum >>> 24) & 0xff, (networkNum >>> 16) & 0xff, (networkNum >>> 8) & 0xff, networkNum & 0xff];
-  return `${octets.join('.')}/${prefix}`;
 }

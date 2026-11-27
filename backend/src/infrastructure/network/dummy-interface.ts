@@ -19,6 +19,52 @@ export const nsenter = async (
     env: { ...process.env, DBUS_SYSTEM_BUS_ADDRESS: 'unix:path=/var/run/dbus/system_bus_socket' },
   });
 
+/**
+ * What a failed `nsenter()` actually carries.
+ *
+ * `promisify(execFile)` rejects with an Error that has `code` (the numeric
+ * exit status, or a string like `'ENOENT'` when the binary is missing) plus
+ * the captured `stdout`/`stderr` attached to it. Callers used to read those
+ * through `catch (err: any)` and `err?.code`, which switched off type checking
+ * for the whole handler — and the distinction matters here: several call sites
+ * treat a MISSING tool completely differently from a tool that ran and exited
+ * non-zero, and `arping -D` inverts its exit code so its verdict has to be
+ * read out of the stdout attached to the rejection.
+ *
+ * Narrows rather than coerces: a field that is not there reads as absent, not
+ * as the string "undefined".
+ */
+export interface NsenterFailure {
+  /** Exit status, or `'ENOENT'`-style spawn error; undefined if neither. */
+  code: string | number | undefined;
+  stdout: string;
+  stderr: string;
+  /** The Error's own message, or `String(err)` for a non-Error throw. */
+  message: string;
+}
+
+export function nsenterFailure(err: unknown): NsenterFailure {
+  const e = (typeof err === 'object' && err !== null ? err : {}) as Record<string, unknown>;
+  const code = e.code;
+  return {
+    code: typeof code === 'string' || typeof code === 'number' ? code : undefined,
+    stdout: capturedText(e.stdout),
+    stderr: capturedText(e.stderr),
+    message: err instanceof Error ? err.message : String(err),
+  };
+}
+
+// nsenter() passes `encoding: 'utf-8'`, so a captured stream is a string. A
+// Buffer is the one other thing it can be (no encoding, or a caller that
+// changed it), and its text is the useful reading. Anything else is reported
+// as absent rather than becoming "[object Object]" in an operator-facing
+// warning.
+function capturedText(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (Buffer.isBuffer(v)) return v.toString('utf-8');
+  return '';
+}
+
 const DUMMY_NETWORKD_DIR    = '/proc/1/root/etc/systemd/network';
 const DUMMY_NETWORKD_PREFIX = '20-nms-dummy-';
 
