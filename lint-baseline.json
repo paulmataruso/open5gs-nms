@@ -49,19 +49,19 @@
     "To lower the counts after real cleanup:",
     "  cd backend && npm run -s lint:json | node ../scripts/lint-ratchet.mjs backend --update"
   ],
-  "measuredAt": "2026-11-26",
+  "measuredAt": "2026-11-27",
   "backend": {
     "errors": 2538,
-    "warnings": 377,
+    "warnings": 375,
     "files": 440,
-    "filesWithFindings": 233,
+    "filesWithFindings": 232,
     "fatals": 0
   },
   "frontend": {
-    "errors": 379,
+    "errors": 510,
     "warnings": 0,
     "files": 210,
-    "filesWithFindings": 69,
+    "filesWithFindings": 91,
     "fatals": 0
   }
 }
