@@ -183,16 +183,18 @@ export function BandOccupancy({
   }, [bLow, bHigh, gaaRanges, protections, ppas, grants]);
 
   // Vertical layout: one pass, so every row's y is decided in one place.
-  let y = AXIS_H + 4;
-  const row = () => { const v = y; y += ROW_H + ROW_GAP; return v; };
-  const gaaY = row();
-  y += SECTION_GAP - ROW_GAP;
-  const palYs = model.palLanes.length ? model.palLanes.map(() => row()) : [];
-  if (palYs.length) y += SECTION_GAP - ROW_GAP;
-  const protYs = model.prot.length ? model.prot.map(() => row()) : [];
-  if (protYs.length) y += SECTION_GAP - ROW_GAP;
-  const grantYs = (model.grantLanes.length ? model.grantLanes : [[]]).map(() => row());
-  const height = y + 4;
+  // Pure arithmetic over lane counts: each row starts where the previous ended.
+  const rowPitch = ROW_H + ROW_GAP;
+  const sectionStep = SECTION_GAP - ROW_GAP;
+  const ys = (start: number, n: number) => Array.from({ length: n }, (_, i) => start + i * rowPitch);
+  const gaaY = AXIS_H + 4;
+  const palStart = gaaY + rowPitch + sectionStep;
+  const palYs = ys(palStart, model.palLanes.length);
+  const protStart = palStart + (palYs.length ? palYs.length * rowPitch + sectionStep : 0);
+  const protYs = ys(protStart, model.prot.length);
+  const grantStart = protStart + (protYs.length ? protYs.length * rowPitch + sectionStep : 0);
+  const grantYs = ys(grantStart, Math.max(model.grantLanes.length, 1));
+  const height = grantStart + grantYs.length * rowPitch + 4;
 
   // Axis ticks: aim for ~8, snapped to a round MHz step.
   const ticks = useMemo(() => {
