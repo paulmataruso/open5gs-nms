@@ -5,12 +5,27 @@ import { ApnProfile } from '../../domain/entities/apn-profile';
 
 const IPV6_SETTINGS_ID = 'global';
 
+/**
+ * The single settings document.
+ *
+ * Declared so the collection can be typed: mongodb's default `Collection`
+ * types `_id` as an ObjectId, which is why both reads of this document
+ * carried `IPV6_SETTINGS_ID as any` -- and that assertion switched off
+ * checking for the whole filter, not just the id. A string `_id` is perfectly
+ * valid in Mongo; it just has to be declared.
+ */
+interface Ipv6SettingsDoc {
+  _id: string;
+  parentPrefix?: string;
+  updatedAt?: string;
+}
+
 export class MongoApnProfileRepository implements IApnProfileRepository {
   private collection!: Collection;
   // Single-document settings collection (`_id: 'global'`) — same lightweight
   // pattern as TWAMP's history-retention settings elsewhere in this app,
   // rather than a whole new repository class for one string field.
-  private ipv6SettingsCollection!: Collection;
+  private ipv6SettingsCollection!: Collection<Ipv6SettingsDoc>;
   private client: MongoClient;
   private db!: Db;
 
@@ -27,18 +42,18 @@ export class MongoApnProfileRepository implements IApnProfileRepository {
     this.collection = this.db.collection('apn_profiles');
     await this.collection.createIndex({ id: 1 }, { unique: true });
     await this.collection.createIndex({ dnn: 1 }, { unique: true });
-    this.ipv6SettingsCollection = this.db.collection('apn_ipv6_pool_settings');
+    this.ipv6SettingsCollection = this.db.collection<Ipv6SettingsDoc>('apn_ipv6_pool_settings');
     this.logger.info('Connected to MongoDB (APN profiles)');
   }
 
   async getIPv6ParentPrefix(): Promise<string | null> {
-    const doc = await this.ipv6SettingsCollection.findOne({ _id: IPV6_SETTINGS_ID as any });
-    return (doc?.parentPrefix as string | undefined) ?? null;
+    const doc = await this.ipv6SettingsCollection.findOne({ _id: IPV6_SETTINGS_ID });
+    return doc?.parentPrefix ?? null;
   }
 
   async setIPv6ParentPrefix(parentPrefix: string): Promise<void> {
     await this.ipv6SettingsCollection.updateOne(
-      { _id: IPV6_SETTINGS_ID as any },
+      { _id: IPV6_SETTINGS_ID },
       { $set: { parentPrefix, updatedAt: new Date().toISOString() } },
       { upsert: true },
     );
@@ -64,7 +79,7 @@ export class MongoApnProfileRepository implements IApnProfileRepository {
   }
 
   async create(profile: ApnProfile): Promise<void> {
-    await this.collection.insertOne(profile as unknown as Record<string, unknown>);
+    await this.collection.insertOne(profile);
   }
 
   async update(id: string, profile: Partial<ApnProfile>): Promise<void> {

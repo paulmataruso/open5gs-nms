@@ -16,8 +16,10 @@ export function getAppVersion(): string {
   let version: string;
   try {
     const pkgPath = path.join(__dirname, '..', '..', '..', 'package.json');
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    version = typeof pkg.version === 'string' ? pkg.version : 'unknown';
+    const pkg: unknown = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    const raw = typeof pkg === 'object' && pkg !== null
+      ? (pkg as Record<string, unknown>).version : undefined;
+    version = typeof raw === 'string' ? raw : 'unknown';
   } catch {
     version = 'unknown';
   }

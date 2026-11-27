@@ -2,6 +2,10 @@ import { generateIdFromEntropySize } from 'lucia';
 import { Bcrypt } from 'oslo/password';
 import type { Logger } from 'pino';
 import type { IAuthRepository } from '../../domain/interfaces/auth-repository';
+// Statically imported, not `require('crypto')` mid-function: that was a lone
+// CommonJS escape hatch in an ES-module file, and it typed as `any` so the
+// call below was unchecked.
+import { randomFillSync } from 'crypto';
 
 // ─────────────────────────────────────────────────────────────
 // First-run seed: creates admin user if no users exist
@@ -11,8 +15,6 @@ function generateRandomPassword(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%';
   let password = '';
   const array = new Uint8Array(16);
-  // Use Node crypto for random bytes
-  const { randomFillSync } = require('crypto');
   randomFillSync(array);
   for (const byte of array) {
     password += chars[byte % chars.length];

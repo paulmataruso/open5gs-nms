@@ -1,7 +1,10 @@
-import { Collection, Db, MongoClient } from 'mongodb';
+import { Collection, Db, Document, Filter, MongoClient } from 'mongodb';
 import pino from 'pino';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { Subscriber, SubscriberListItem, FramedRouteEntry } from '../../domain/entities/subscriber';
+import {
+  SubscriberListDoc, str, toSubscriberListItem, framedRouteEntriesOf,
+} from './subscriber-doc';
 
 export class MongoSubscriberRepository implements ISubscriberRepository {
   private collection!: Collection;
@@ -72,35 +75,17 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     return this.mapToListItems(docs);
   }
 
-  private mapToListItems(docs: any[]): SubscriberListItem[] {
-    return docs.map((doc) => {
-      const firstSlice   = Array.isArray(doc.slice)   ? doc.slice[0]            : undefined;
-      const firstSession = Array.isArray(firstSlice?.session) ? firstSlice.session[0] : undefined;
-      const sessions: { apn: string; ipv4?: string; framedRoutes?: string[] }[] = Array.isArray(doc.slice)
-        ? doc.slice.flatMap((s: { session?: { name?: string; ue?: { ipv4?: string }; ipv4_framed_routes?: string[] }[] }) =>
-            Array.isArray(s.session)
-              ? s.session.map(sess => ({ apn: sess.name ?? '', ipv4: sess.ue?.ipv4, framedRoutes: sess.ipv4_framed_routes }))
-              : [])
-        : [];
-      return {
-        imsi:          doc.imsi     as string,
-        nickname:      doc.nickname as string | undefined,
-        iccid:         doc.iccid   as string | undefined,
-        simType:       doc.simType as 'esim' | 'physical' | null | undefined,
-        msisdn:        doc.msisdn  as string[] | undefined,
-        slice_count:   Array.isArray(doc.slice) ? doc.slice.length : 0,
-        session_count: Array.isArray(doc.slice)
-          ? doc.slice.reduce(
-              (sum: number, s: { session?: unknown[] }) =>
-                sum + (Array.isArray(s.session) ? s.session.length : 0),
-              0,
-            )
-          : 0,
-        ue_ipv4:  firstSession?.ue?.ipv4 as string | undefined,
-        apn:      firstSession?.name     as string | undefined,
-        sessions,
-      };
-    });
+  private mapToListItems(docs: SubscriberListDoc[]): SubscriberListItem[] {
+    const items: SubscriberListItem[] = [];
+    for (const doc of docs) {
+      const item = toSubscriberListItem(doc);
+      if (item === null) {
+        this.logger.warn({ keys: Object.keys(doc) }, 'Skipped a subscriber document with no imsi');
+        continue;
+      }
+      items.push(item);
+    }
+    return items;
   }
 
   async findByImsi(imsi: string): Promise<Subscriber | null> {
@@ -110,13 +95,11 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
   }
 
   async create(subscriber: Subscriber): Promise<void> {
-    const { _id, ...data } = subscriber;
-    await this.collection.insertOne(data);
+    await this.collection.insertOne(withoutId(subscriber));
   }
 
   async update(imsi: string, subscriber: Partial<Subscriber>): Promise<void> {
-    const { _id, ...data } = subscriber;
-    await this.collection.updateOne({ imsi }, { $set: data });
+    await this.collection.updateOne({ imsi }, { $set: withoutId(subscriber) });
   }
 
   async delete(imsi: string): Promise<void> {
@@ -127,7 +110,7 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     return this.collection.countDocuments();
   }
 
-  private searchFilter(query: string) {
+  private searchFilter(query: string): Filter<Document> {
     return {
       $or: [
         { imsi: { $regex: query, $options: 'i' } },
@@ -165,7 +148,12 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
       .toArray();
     const result: Record<string, string> = {};
     for (const doc of docs) {
-      if (doc.nickname) result[doc.imsi as string] = doc.nickname as string;
+      const imsi = str(doc.imsi);
+      const nickname = str(doc.nickname);
+      // Both narrowed: the old form asserted `doc.imsi as string` into the KEY
+      // of a Record<string, string>, so a document missing it wrote an entry
+      // under the literal key "undefined".
+      if (imsi !== undefined && nickname) result[imsi] = nickname;
     }
     return result;
   }
@@ -207,7 +195,7 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
     await this.collection.updateOne(
       { imsi, 'slice.session.name': apn },
       { $set: { 'slice.$[sl].session.$[sess].ue.ipv4': ipv4 } },
-      { arrayFilters: [{ 'sl.session.name': apn }, { 'sess.name': apn }] } as any,
+      { arrayFilters: [{ 'sl.session.name': apn }, { 'sess.name': apn }] },
     );
     this.logger.info({ imsi, apn, ipv4 }, 'Assigned IPv4 to APN session');
   }
@@ -215,7 +203,11 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
   async removeImsSessionFromAll(): Promise<number> {
     const result = await this.collection.updateMany(
       {},
-      { $pull: { 'slice.$[].session': { name: 'ims' } } } as any,
+      // The driver's $pull type cannot express an all-positional path
+      // (`slice.$[].session`), so the update document is built as a plain
+      // Document rather than asserted to `any` -- same effect on the wire,
+      // but it keeps type checking switched on for everything around it.
+      { $pull: { 'slice.$[].session': { name: 'ims' } } } as Document,
     );
     this.logger.info({ modified: result.modifiedCount }, 'Removed IMS sessions from subscribers');
     return result.modifiedCount;
@@ -229,25 +221,22 @@ export class MongoSubscriberRepository implements ISubscriberRepository {
       .toArray();
 
     const entries: FramedRouteEntry[] = [];
-    for (const doc of docs as any[]) {
-      if (!Array.isArray(doc.slice)) continue;
-      for (const slice of doc.slice) {
-        if (!Array.isArray(slice.session)) continue;
-        for (const sess of slice.session) {
-          const ipv4 = sess.ipv4_framed_routes ?? [];
-          const ipv6 = sess.ipv6_framed_routes ?? [];
-          if (ipv4.length === 0 && ipv6.length === 0) continue;
-          entries.push({
-            imsi: doc.imsi,
-            nickname: doc.nickname,
-            apn: sess.name ?? '',
-            ipv4,
-            ipv6,
-            static: !!sess.framed_routes_static,
-          });
-        }
-      }
-    }
+    for (const doc of docs) entries.push(...framedRouteEntriesOf(doc));
     return entries;
   }
+}
+
+/**
+ * The document without its `_id`.
+ *
+ * Mongo assigns `_id` itself, and an entity loaded from one collection then
+ * written back carries the old value -- so it is stripped on both the insert
+ * and the `$set`. Written as an explicit Omit rather than
+ * `const { _id, ...data } = doc`, which reads well but leaves an unused
+ * binding the linter is right to flag.
+ */
+function withoutId<T extends { _id?: unknown }>(doc: T): Omit<T, '_id'> {
+  const copy: Record<string, unknown> = { ...doc };
+  delete copy._id;
+  return copy as Omit<T, '_id'>;
 }

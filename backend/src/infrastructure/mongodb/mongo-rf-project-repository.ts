@@ -38,7 +38,7 @@ export class MongoRfPlanningProjectRepository implements IRfPlanningProjectRepos
   }
 
   async create(project: RfPlanningProject): Promise<void> {
-    await this.collection.insertOne(project as unknown as Record<string, unknown>);
+    await this.collection.insertOne(project);
   }
 
   async update(id: string, project: Partial<RfPlanningProject>): Promise<void> {

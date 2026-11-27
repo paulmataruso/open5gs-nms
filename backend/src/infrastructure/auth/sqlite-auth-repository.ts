@@ -1,8 +1,19 @@
+/* eslint-disable @typescript-eslint/require-await */
+// The 16 `require-await` findings this disables are all the same thing, and
+// fixing them individually would make the file worse. better-sqlite3 is a
+// SYNCHRONOUS driver, while both interfaces implemented here -- lucia's
+// `Adapter` and this project's own `IAuthRepository` -- declare
+// Promise-returning methods. `async` with a synchronous body is the clearest
+// way to satisfy that; the alternative is wrapping sixteen one-line bodies in
+// `Promise.resolve()`, which says nothing a reader needs and hides the body.
+// Scoped to this file deliberately rather than switched off in .eslintrc:
+// everywhere else in the codebase, an `async` with no `await` is worth a look.
+
 import BetterSqlite3, { type Database } from 'better-sqlite3';
-import { Lucia, type Adapter, type DatabaseSession, type DatabaseUser } from 'lucia';
+import { Lucia, TimeSpan, type Adapter, type DatabaseSession, type DatabaseUser } from 'lucia';
 import type { Logger } from 'pino';
 import type { IAuthRepository } from '../../domain/interfaces/auth-repository';
-import type { User } from '../../domain/entities/user';
+import { parseUserRole, type User, type UserRole } from '../../domain/entities/user';
 
 // ─────────────────────────────────────────────────────────────
 // Row types matching our SQLite schema
@@ -23,6 +34,25 @@ interface SessionRow {
   user_id: string;
 }
 
+/**
+ * The joined session+user row, with the aliases the SELECT gives it.
+ *
+ * This was `as any`, which switched off checking for all nine reads beneath it
+ * -- including the two that build lucia's session and user objects, where a
+ * renamed alias in the SQL would have produced `undefined` fields silently
+ * rather than failing to compile.
+ */
+interface SessionAndUserRow {
+  session_id: string;
+  expires_at: number;
+  user_id: string;
+  uid: string;
+  username: string;
+  role: string;
+  created_at: number;
+  last_login_at: number | null;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Lucia Adapter — better-sqlite3 implementation
 // ─────────────────────────────────────────────────────────────
@@ -41,7 +71,7 @@ class BetterSqlite3Adapter implements Adapter {
          JOIN user u ON s.user_id = u.id
          WHERE s.id = ?`,
       )
-      .get(sessionId) as any;
+      .get(sessionId) as SessionAndUserRow | undefined;
 
     if (!row) return [null, null];
 
@@ -253,10 +283,17 @@ export class SqliteAuthRepository implements IAuthRepository {
       id: row.id,
       username: row.username,
       passwordHash: row.password_hash,
-      role: row.role as 'admin',
+      role: this.toRole(row.role, row.id),
       createdAt: new Date(row.created_at),
       lastLoginAt: row.last_login_at ? new Date(row.last_login_at) : null,
     };
+  }
+
+  private toRole(role: string, userId: string): UserRole {
+    const parsed = parseUserRole(role);
+    if (parsed !== null) return parsed;
+    this.logger.warn({ userId, role }, 'Unrecognised stored role — treating as viewer');
+    return 'viewer';
   }
 
   getLuciaAdapter(): Adapter {
@@ -273,15 +310,17 @@ export class SqliteAuthRepository implements IAuthRepository {
 // ─────────────────────────────────────────────────────────────
 
 // Augment Lucia's type registry for full typing across the app
+interface DatabaseUserAttributes {
+  username: string;
+  role: string;
+  created_at: number;
+  last_login_at: number | null;
+}
+
 declare module 'lucia' {
   interface Register {
     Lucia: ReturnType<typeof createLucia>;
-    DatabaseUserAttributes: {
-      username: string;
-      role: string;
-      created_at: number;
-      last_login_at: number | null;
-    };
+    DatabaseUserAttributes: DatabaseUserAttributes;
   }
 }
 
@@ -289,9 +328,12 @@ export function createLucia(
   adapter: Adapter,
   sessionMaxAge: number,
   cookieSecure: boolean,
-) {
+): Lucia<Record<string, never>, DatabaseUserAttributes> {
   return new Lucia(adapter, {
-    sessionExpiresIn: new (require('lucia').TimeSpan)(sessionMaxAge, 's'),
+    // Statically imported, not `new (require('lucia').TimeSpan)(...)`. The
+    // require was a lone CommonJS escape hatch in an ES-module file, and it
+    // typed as `any`, so the argument list was unchecked.
+    sessionExpiresIn: new TimeSpan(sessionMaxAge, 's'),
     sessionCookie: {
       name: 'nms_session',
       attributes: {
@@ -300,7 +342,12 @@ export function createLucia(
         path: '/',
       },
     },
-    getUserAttributes(attributes) {
+    getUserAttributes(attributes): {
+      username: string;
+      role: string;
+      createdAt: Date;
+      lastLoginAt: Date | null;
+    } {
       return {
         username: attributes.username,
         role: attributes.role,

@@ -108,15 +108,23 @@
     "tests until this slice -- a trailing-slash CIDR reading as the entire IPv4",
     "space, which turned one scan loop into 4.29 billion iterations.",
     "",
+    "src/infrastructure/** then went to ZERO, 2508 -> 2345 errors and 366 -> 360",
+    "warnings across all 12 files that had findings. Five more real defects, the",
+    "two worth remembering being a WebSocket `source` field declared as a",
+    "six-way union while carrying any string the client sent (so a typo",
+    "silently returned the wrong service's logs), and a framed-routes field",
+    "holding a bare STRING instead of an array, which passed a `.length === 0`",
+    "test and was then iterated character by character into the CIDR parser.",
+    "",
     "To lower the counts after real cleanup:",
     "  cd backend && npm run -s lint:json | node ../scripts/lint-ratchet.mjs backend --update"
   ],
   "measuredAt": "2026-11-27",
   "backend": {
-    "errors": 2508,
-    "warnings": 366,
-    "files": 469,
-    "filesWithFindings": 224,
+    "errors": 2345,
+    "warnings": 360,
+    "files": 476,
+    "filesWithFindings": 212,
     "fatals": 0
   },
   "frontend": {

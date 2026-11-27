@@ -43,16 +43,23 @@ export class FileAuditLogger implements IAuditLogger {
     this.logger.info({ action: entry.action, target: entry.target }, 'Audit log entry');
   }
 
-  async getAll(skip: number = 0, limit: number = 100): Promise<AuditLogEntry[]> {
-    return this.entries.slice(skip, skip + limit);
+  // These three read an in-memory array behind an async interface, so there is
+  // nothing to await. `Promise.resolve(...)` rather than `async`: each body is
+  // a single expression that already produces the value, so wrapping it reads
+  // no worse and leaves the linter's "async with no await" signal intact for
+  // cases where it means something. (sqlite-auth-repository.ts makes the
+  // opposite call for the same rule, and says why: its sixteen are mostly void
+  // side-effects, where `return Promise.resolve()` would be pure noise.)
+  getAll(skip: number = 0, limit: number = 100): Promise<AuditLogEntry[]> {
+    return Promise.resolve(this.entries.slice(skip, skip + limit));
   }
 
-  async getByAction(action: AuditAction, skip: number = 0, limit: number = 100): Promise<AuditLogEntry[]> {
-    return this.entries.filter((e) => e.action === action).slice(skip, skip + limit);
+  getByAction(action: AuditAction, skip: number = 0, limit: number = 100): Promise<AuditLogEntry[]> {
+    return Promise.resolve(this.entries.filter((e) => e.action === action).slice(skip, skip + limit));
   }
 
-  async count(): Promise<number> {
-    return this.entries.length;
+  count(): Promise<number> {
+    return Promise.resolve(this.entries.length);
   }
 
   private async persist(): Promise<void> {

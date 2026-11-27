@@ -4,9 +4,14 @@ import { spawn, ChildProcess } from 'child_process';
 import { LogStreamingUseCase, LogEntry } from '../../application/use-cases/log-streaming';
 import { DockerLogStreamingUseCase } from '../../application/use-cases/docker-log-streaming';
 import { classifyMajorEvent, MajorEvent, MajorEventType, MAJOR_EVENT_GREP_PATTERNS, EVENT_TYPE_SERVICES } from '../../application/use-cases/major-event-classifier';
+import {
+  LogSource, LogStreamClientMessage,
+  asLogSource, asStringArray, asEventTypes, asOptionalString, asBoolean, asLimit,
+} from './log-stream-message';
+import { genieacsLineTimestamp } from './genieacs-log-line';
 
 interface LogStreamSubscription {
-  source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm';
+  source: LogSource;
   services: Set<string>;
   processes: Map<string, ChildProcess>;
   filter?: string; // optional line-content filter
@@ -47,7 +52,15 @@ export class LogStreamHandler {
 
     ws.on('message', (data: string) => {
       try {
-        const message = JSON.parse(data.toString());
+        const message: unknown = JSON.parse(data.toString());
+        if (typeof message !== 'object' || message === null) {
+          this.logger.warn('WebSocket message was not a JSON object');
+          return;
+        }
+        // No assertion needed: every field of LogStreamClientMessage is an
+        // optional `unknown`, so a narrowed non-null object already satisfies
+        // it. That is the point of the shape -- it describes a parsed JSON
+        // object, not a contract the client has honoured.
         this.handleMessage(ws, message);
       } catch (err) {
         this.logger.error({ err: String(err) }, 'Failed to parse WebSocket message');
@@ -65,38 +78,49 @@ export class LogStreamHandler {
     });
   }
 
-  private handleMessage(ws: WebSocket, message: any): void {
+  private handleMessage(ws: WebSocket, message: LogStreamClientMessage): void {
     switch (message.type) {
       case 'subscribe_logs':
         this.subscribe(
-          ws, message.source || 'open5gs', message.services || [], message.filter,
-          message.majorEventsOnly, message.imsis, message.radioIps, message.eventTypes,
+          ws, asLogSource(message.source), asStringArray(message.services),
+          asOptionalString(message.filter), asBoolean(message.majorEventsOnly),
+          asStringArray(message.imsis), asStringArray(message.radioIps),
+          asEventTypes(message.eventTypes),
         );
         break;
       case 'unsubscribe_logs':
         this.unsubscribe(ws);
         break;
       case 'get_recent_logs':
-        this.sendRecentLogs(
-          ws, message.source || 'open5gs', message.services || [], message.limit || 100, message.filter,
-          message.majorEventsOnly, message.imsis, message.radioIps, message.eventTypes,
+        // Deliberately not awaited, and safe: sendRecentLogs wraps its whole
+        // body in a try/catch whose handler only logs, so the promise cannot
+        // reject. This project has no unhandledRejection handler anywhere, so
+        // Node's default would take the process down -- a `void` here is a
+        // claim about that, not a shrug, and it is why the catch must stay
+        // around everything including the ws.send().
+        void this.sendRecentLogs(
+          ws, asLogSource(message.source), asStringArray(message.services),
+          asLimit(message.limit, 100), asOptionalString(message.filter),
+          asBoolean(message.majorEventsOnly), asStringArray(message.imsis),
+          asStringArray(message.radioIps), asEventTypes(message.eventTypes),
         );
         break;
       default:
-        this.logger.warn({ type: message.type }, 'Unknown message type');
+        this.logger.warn({ type: typeof message.type === 'string' ? message.type : null },
+          'Unknown message type');
     }
   }
 
   private async sendRecentLogs(
-    ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm', services: string[], limit: number, filter?: string,
-    majorEventsOnly?: boolean, imsisArr?: string[], radioIpsArr?: string[], eventTypesArr?: string[],
+    ws: WebSocket, source: LogSource, services: string[], limit: number, filter?: string,
+    majorEventsOnly?: boolean, imsisArr?: string[], radioIpsArr?: string[], eventTypesArr?: MajorEventType[],
   ): Promise<void> {
     try {
-      let logs: any[];
+      let logs: LogEntry[];
 
       if (source === 'open5gs' && majorEventsOnly) {
         const eventTypes = eventTypesArr && eventTypesArr.length > 0
-          ? new Set(eventTypesArr as MajorEventType[]) : undefined;
+          ? new Set(eventTypesArr) : undefined;
         // If the event-type filter can't possibly match a given service (e.g. filtering to
         // just PDU session up/down never needs mme.log/amf.log), skip grepping it entirely.
         const relevantServices = eventTypes
@@ -153,7 +177,7 @@ export class LogStreamHandler {
         // sorting — otherwise every line from one service ends up with
         // nearly the same "now" timestamp and a multi-service selection
         // still comes back as one service's block followed by the next's.
-        logs = logs.map(l => ({ ...l, timestamp: this.parseGenieacsTimestamp(l.message) }));
+        logs = logs.map(l => ({ ...l, timestamp: genieacsLineTimestamp(l.message) }));
         logs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
         logs = logs.slice(-limit);
       } else if (source === 'frr') {
@@ -192,14 +216,14 @@ export class LogStreamHandler {
   }
 
   private subscribe(
-    ws: WebSocket, source: 'open5gs' | 'docker' | 'genieacs' | 'frr' | 'ims' | 'gsm', services: string[], filter?: string,
-    majorEventsOnly?: boolean, imsisArr?: string[], radioIpsArr?: string[], eventTypesArr?: string[],
+    ws: WebSocket, source: LogSource, services: string[], filter?: string,
+    majorEventsOnly?: boolean, imsisArr?: string[], radioIpsArr?: string[], eventTypesArr?: MajorEventType[],
   ): void {
     // Unsubscribe existing streams
     this.unsubscribe(ws);
 
     const eventTypes = eventTypesArr && eventTypesArr.length > 0
-      ? new Set(eventTypesArr as MajorEventType[]) : undefined;
+      ? new Set(eventTypesArr) : undefined;
     // If the event-type filter can't possibly match a given service, no need to even tail it.
     const relevantServices = eventTypes
       ? new Set([...eventTypes].flatMap(t => EVENT_TYPE_SERVICES[t] ?? []))
@@ -331,7 +355,7 @@ export class LogStreamHandler {
         service,
         message,
       };
-    } catch (err) {
+    } catch {
       return {
         timestamp: new Date().toISOString(),
         service,
@@ -358,7 +382,7 @@ export class LogStreamHandler {
             type:   'log_entry',
             source: 'genieacs',
             log: {
-              timestamp: this.parseGenieacsTimestamp(line),
+              timestamp: genieacsLineTimestamp(line),
               service,
               message: line,
             },
@@ -396,15 +420,6 @@ export class LogStreamHandler {
     // Also try the raw encoded form
     if (lineLower.includes(filter.toLowerCase())) return true;
     return false;
-  }
-
-  private parseGenieacsTimestamp(line: string): string {
-    // GenieACS log lines are JSON: {"level":30,"time":1234567890,...}
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed.time) return new Date(parsed.time).toISOString();
-    } catch { /* not JSON */ }
-    return new Date().toISOString();
   }
 
   // FRR writes ONE combined file (all daemons — eigrpd, zebra, mgmtd, staticd — share the
@@ -504,7 +519,7 @@ export class LogStreamHandler {
     subscription.processes.set(container, process);
 
     // Handle both stdout and stderr
-    const handleData = (stream: 'stdout' | 'stderr') => (data: Buffer) => {
+    const handleData = (stream: 'stdout' | 'stderr') => (data: Buffer): void => {
       const lines = data.toString().split('\n').filter(line => line.trim());
 
       for (const line of lines) {
