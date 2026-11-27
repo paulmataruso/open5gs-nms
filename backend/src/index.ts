@@ -385,7 +385,7 @@ async function main() {
   // and the check includes the per-NF drop-ins so a host whose Open5GS
   // packages were not installed yet on the first pass self-heals on the next
   // start. Never restarts an NF by itself.
-  (async () => {
+  (async (): Promise<void> => {
     if (checkMongoBootGate().installed) return;
     const r = await installMongoBootGate();
     logger.info({ units: r.units, skipped: r.skipped, orderAfter: r.orderAfter },
