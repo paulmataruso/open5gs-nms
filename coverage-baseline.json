@@ -16,19 +16,21 @@
   ],
   "measuredAt": "2026-11-27",
   "total": {
-    "files": 7,
-    "statements": 229,
+    "files": 9,
+    "statements": 442,
     "statementsTotal": 51699,
     "pct": {
-      "statements": 0.44,
-      "lines": 0.44
+      "statements": 0.85,
+      "lines": 0.85
     }
   },
   "perFile": {
     "frontend/src/api/modules.ts": 7,
     "frontend/src/api/suci.ts": 8,
+    "frontend/src/components/rfplanning/heatmapRaster.ts": 143,
     "frontend/src/config/features.ts": 23,
     "frontend/src/hooks/useKeyboardA11y.ts": 22,
+    "frontend/src/hooks/useTabHistory.ts": 70,
     "frontend/src/stores/index.ts": 89,
     "frontend/src/stores/staleModules.ts": 14,
     "frontend/src/stores/suci.ts": 66
