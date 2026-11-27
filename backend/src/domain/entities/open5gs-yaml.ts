@@ -220,6 +220,12 @@ export interface YamlSgsapClient {
  * a real form -- the neighbour is then reachable by GUMMEI for idle mobility
  * but is not a handover target.
  *
+ * The LIST is declared as an array, matching its `sgwc`/`smf` siblings and what
+ * the editor writes, even though mme-mobility-validation.ts also tolerates a
+ * single bare peer object there. Readers go through address-field.ts's asList(),
+ * which handles both, so a hand-written scalar is read correctly either way --
+ * but do not add a consumer that assumes `.map()` without it.
+ *
  * This is an UNMERGED upstream feature (open5gs/open5gs#5019), so no file on
  * this deployment carries the key and MmeMobilitySupportUseCase greps the
  * installed binary before the editor will write one.
