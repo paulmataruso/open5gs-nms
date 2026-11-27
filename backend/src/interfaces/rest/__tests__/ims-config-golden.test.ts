@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
   scscfIncludeCfg, icscfIncludeCfg, smscIncludeCfg, pcscfIncludeCfg,
   scscfDiameterXml, pcscfDiameterXml, icscfDiameterXml,
+  type ScscfIncludeParams,
 } from '../ims-controller';
 
 /**
@@ -47,7 +48,7 @@ const EPC_DOMAIN = 'epc.mnc001.mcc001.3gppnetwork.org';
 // copy. Adding a generator here is the cheapest way to extend this coverage.
 const CASES: ReadonlyArray<readonly [string, () => string]> = [
   ['scscf.cfg', (): string => scscfIncludeCfg({
-    scscfIp: '127.0.1.2', scscfPort: 6060, imsDomain: IMS_DOMAIN, additionalDomains: [],
+    scscfIp: '127.0.1.2', scscfPort: 6060, mcc: '001', mnc: '01', imsDomain: IMS_DOMAIN, additionalDomains: [],
     routeSmsToVectorcore: { ip: '127.0.1.5', port: 5060 },
     voiceCharging: { ocsOriginHost: `ocs.${EPC_DOMAIN}` },
     cdrAccounting: true, sipTracing: true,
@@ -105,7 +106,7 @@ describe('generated IMS config files match the known-good host output', () => {
  * same time. These do.
  */
 describe('scscf.cfg flag coupling: one feature must not disable another', () => {
-  const base = { scscfIp: '127.0.1.2', scscfPort: 6060, imsDomain: IMS_DOMAIN };
+  const base = { scscfIp: '127.0.1.2', scscfPort: 6060, imsDomain: IMS_DOMAIN, mcc: '001', mnc: '01' };
   const VECTORCORE = { ip: '127.0.1.5', port: 5060 };
   const RO = { ocsOriginHost: `ocs.${EPC_DOMAIN}` };
 
@@ -166,12 +167,12 @@ describe('scscf.cfg flag coupling: one feature must not disable another', () => 
       [{ voiceCharging: RO }, 'voiceCharging'],
       [{ routeSmsToVectorcore: VECTORCORE }, 'routeSmsToVectorcore'],
     ];
-    let params: Record<string, unknown> = { ...base };
+    let params: ScscfIncludeParams = { ...base };
     const expected: string[] = [];
     for (const [add, key] of steps) {
       params = { ...params, ...add };
       expected.push(MARKERS[key]);
-      const cfg = scscfIncludeCfg(params as Parameters<typeof scscfIncludeCfg>[0]);
+      const cfg = scscfIncludeCfg(params);
       for (const marker of expected) expect(cfg).toContain(marker);
     }
   });
