@@ -1195,6 +1195,24 @@ export function ValidationPage() {
     setTimeout(() => { clearInterval(timer); delete pollRefs.current[sessionId]; }, 2_700_000);
   }, []);
 
+  // On mount: load inferred config + rehydrate any in-progress sessions from the backend
+  useEffect(() => {
+    handleInfer();
+    getSessions().then(existing => {
+      if (existing.length > 0) {
+        setSessions(existing);
+        existing
+          .filter(s => s.status !== 'stopped' && s.status !== 'failed')
+          .forEach(s => startPolling(s.id));
+      }
+    }).catch(() => {});
+    return () => { Object.values(pollRefs.current).forEach(clearInterval); };
+  // Mount-only on purpose: infer config once and rehydrate in-progress sessions.
+  // handleInfer and startPolling are redefined every render, so depending on
+  // them would re-infer and re-subscribe pollers on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleInfer = useCallback(async () => {
     setInferring(true);
     try {
@@ -1214,25 +1232,6 @@ export function ValidationPage() {
       setInferring(false);
     }
   }, []);
-
-  // On mount: load inferred config + rehydrate any in-progress sessions from the backend
-  useEffect(() => {
-    handleInfer();
-    getSessions().then(existing => {
-      if (existing.length > 0) {
-        setSessions(existing);
-        existing
-          .filter(s => s.status !== 'stopped' && s.status !== 'failed')
-          .forEach(s => startPolling(s.id));
-      }
-    }).catch(() => {});
-    return () => { Object.values(pollRefs.current).forEach(clearInterval); };
-  // Mount-only on purpose: infer config once and rehydrate in-progress sessions.
-  // handleInfer and startPolling are redefined every render, so depending on
-  // them would re-infer and re-subscribe pollers on every render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
 
   const handleStart = useCallback(async () => {
     if (!enable5G && !enable4G) {

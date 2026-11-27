@@ -55,6 +55,13 @@ export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupNa
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
   const [restoring, setRestoring] = useState(false);
 
+  useEffect(() => {
+    loadDiff();
+  // loadDiff is redefined every render; its only input is `backupName`, which
+  // IS the dependency. Depending on the function would re-diff on every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [backupName]);
+
   const loadDiff = async () => {
     setLoading(true);
     try {
@@ -75,14 +82,6 @@ export const ConfigRestoreModal: React.FC<ConfigRestoreModalProps> = ({ backupNa
       setLoading(false);
     }
   };
-
-  useEffect(() => {
-    loadDiff();
-  // loadDiff is redefined every render; its only input is `backupName`, which
-  // IS the dependency. Depending on the function would re-diff on every render.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backupName]);
-
 
   const handleRestore = async () => {
     if (selectedServices.size === 0) {
