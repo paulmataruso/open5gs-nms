@@ -73,6 +73,9 @@
     "               dhcp-config.ts matter most for their consequence rather",
     "               than their count -- that file round-trips the operator's",
     "               kea-dhcp4.conf, so a coerced value is PERSISTED.)",
+    "  The six in dhcp-config.ts are FIXED (2645 -> 2639): keaStr() narrows",
+    "  instead of coercing. 37 remain, radio-signal-controller.ts (11) and",
+    "  sip-trace-controller.ts (6) being the next clusters.",
     "           +45 no-unnecessary-type-assertion (v8 detects more cases)",
     "           +14 no-require-imports / -5 no-var-requires (rule renamed, so",
     "               net +9 for the same findings)",
@@ -99,9 +102,9 @@
   ],
   "measuredAt": "2026-11-27",
   "backend": {
-    "errors": 2645,
+    "errors": 2639,
     "warnings": 384,
-    "files": 455,
+    "files": 457,
     "filesWithFindings": 243,
     "fatals": 0
   },
