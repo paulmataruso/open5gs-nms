@@ -58,10 +58,10 @@
     "fatals": 0
   },
   "frontend": {
-    "errors": 510,
+    "errors": 504,
     "warnings": 0,
-    "files": 210,
-    "filesWithFindings": 91,
+    "files": 211,
+    "filesWithFindings": 88,
     "fatals": 0
   }
 }

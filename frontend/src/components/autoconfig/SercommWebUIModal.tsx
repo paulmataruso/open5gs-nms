@@ -61,13 +61,6 @@ export const SercommWebUIModal: React.FC<Props> = ({ ip, mac: initialMac = '', r
   const [webuiPass,  setWebuiPass]  = useState(initialWebui);
   const [deriving,   setDeriving]   = useState(false);
 
-  // If parent already derived credentials, use them; otherwise derive from initialMac
-  useEffect(() => {
-    if (initialRoot) { setRootPass(initialRoot); setWebuiPass(initialWebui); return; }
-    if (initialMac) handleMacChange(initialMac);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const handleMacChange = async (value: string) => {
     setLocalMac(value);
     setRootPass('');
@@ -79,6 +72,14 @@ export const SercommWebUIModal: React.FC<Props> = ({ ip, mac: initialMac = '', r
     setDeriving(false);
     if (creds) { setRootPass(creds.rootPass); setWebuiPass(creds.webuiPass); }
   };
+
+  // If parent already derived credentials, use them; otherwise derive from initialMac
+  useEffect(() => {
+    if (initialRoot) { setRootPass(initialRoot); setWebuiPass(initialWebui); return; }
+    if (initialMac) handleMacChange(initialMac);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
 
   const displayIp   = ip       || '11.11.11.188';
   const displayRoot = rootPass || (deriving ? 'Deriving…' : '(enter MAC address above to derive)');

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import * as L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
@@ -153,7 +153,12 @@ export function PlanningMap(props: PlanningMapProps) {
   // Handlers change every render; keep them in refs so the map's own listeners
   // can be attached once instead of being torn down and rebuilt constantly.
   const handlers = useRef({ onPlace, onSelect, onMoveSite, onCancelMode, onViewportChange, mode });
-  handlers.current = { onPlace, onSelect, onMoveSite, onCancelMode, onViewportChange, mode };
+  // Written after commit, not during render: a render React discards must not
+  // leave its handlers installed. Layout effect so they are current before any
+  // map event can fire.
+  useLayoutEffect(() => {
+    handlers.current = { onPlace, onSelect, onMoveSite, onCancelMode, onViewportChange, mode };
+  });
 
   // ── map construction, once ────────────────────────────────────────────────
   useEffect(() => {

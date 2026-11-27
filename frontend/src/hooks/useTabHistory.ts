@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 /**
  * A tab id is reflected into the URL hash, so it has to be something safe to
@@ -125,7 +125,9 @@ export function useTabHistory(
   // taking it as a dependency (which would give every consumer a new callback
   // identity on each navigation).
   const activeTabRef = useRef(activeTab);
-  activeTabRef.current = activeTab;
+  // Synced after commit rather than during render, so a discarded render cannot
+  // leave a tab that was never shown in the ref.
+  useLayoutEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
 
   const navigate = useCallback((tab: string) => {
     // pushState is deliberately OUTSIDE the setState updater.

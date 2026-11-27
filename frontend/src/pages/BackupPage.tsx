@@ -88,20 +88,6 @@ export const BackupPage: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    loadBackups();
-    loadSettings();
-    // Load radio devices from every vendor for the backup section
-    Promise.allSettled([
-      genieacsApi.getDevices().then(devices => devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Baicells' }))),
-      genieacsApi.getSercommDevices().then(devices => devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Sercomm 4G' }))),
-      sercommNRApi.listDevices().then(r => r.devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Sercomm 5G' }))),
-    ]).then(results => {
-      const merged = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
-      setRadioDevices(merged);
-    });
-  }, []);
-
   const loadBackups = async () => {
     try {
       const data = await legacyBackupApi.listBackups();
@@ -120,6 +106,21 @@ export const BackupPage: React.FC = () => {
       toast.error('Failed to load settings');
     }
   };
+
+  useEffect(() => {
+    loadBackups();
+    loadSettings();
+    // Load radio devices from every vendor for the backup section
+    Promise.allSettled([
+      genieacsApi.getDevices().then(devices => devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Baicells' }))),
+      genieacsApi.getSercommDevices().then(devices => devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Sercomm 4G' }))),
+      sercommNRApi.listDevices().then(r => r.devices.map(d => ({ id: d.id, serial: d.serial, vendor: 'Sercomm 5G' }))),
+    ]).then(results => {
+      const merged = results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+      setRadioDevices(merged);
+    });
+  }, []);
+
 
   const handleCreateMongoBackup = async () => {
     setLoading(true);
