@@ -58,9 +58,9 @@
     "fatals": 0
   },
   "frontend": {
-    "errors": 510,
+    "errors": 509,
     "warnings": 0,
-    "files": 210,
+    "files": 212,
     "filesWithFindings": 91,
     "fatals": 0
   }
