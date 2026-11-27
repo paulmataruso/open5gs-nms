@@ -56,8 +56,19 @@ describe('SIP tracing config wiring', () => {
   it.each(['pcscfIncludeCfg', 'icscfIncludeCfg', 'scscfIncludeCfg'])(
     '%s accepts a sipTracing parameter',
     fn => {
-      const sig = new RegExp(`function ${fn}\\(p: \\{[^)]*sipTracing\\?: boolean`);
-      expect(IMS_CODE).toMatch(sig);
+      // The flag may be declared inline or in a named parameter interface --
+      // scscfIncludeCfg uses ScscfIncludeParams so five call sites cannot each
+      // repeat (and quietly diverge from) the same shape. Either satisfies the
+      // real requirement, which is that the generator takes the flag at all.
+      const inline = new RegExp(`function ${fn}\\(p: \\{[^)]*sipTracing\\?: boolean`);
+      const named = new RegExp(`function ${fn}\\(p: (\\w+)\\)`);
+      const namedMatch = named.exec(IMS_CODE);
+      if (namedMatch) {
+        const iface = IMS_CODE.slice(IMS_CODE.indexOf(`interface ${namedMatch[1]} {`));
+        expect(iface.slice(0, iface.indexOf('\n}'))).toMatch(/sipTracing\?: boolean/);
+      } else {
+        expect(IMS_CODE).toMatch(inline);
+      }
     },
   );
 
@@ -76,12 +87,37 @@ describe('SIP tracing config wiring', () => {
     );
   });
 
-  it('every scscfIncludeCfg call site passes sipTracing', () => {
-    // The whole point of this suite: four setters regenerate this one file.
+  /**
+   * The flags are now supplied centrally.
+   *
+   * This suite originally required every scscfIncludeCfg call site to pass
+   * sipTracing by hand, because four setters regenerate this one file and one
+   * that forgot a flag would silently turn that feature off. The flags now
+   * come from scscfParamsFromState(), so the guarantee is structural rather
+   * than repeated five times -- which is strictly stronger, since a NEW flag
+   * is added in one place instead of needing five edits and a test to catch
+   * the one that was missed.
+   *
+   * So the requirement is restated: the builder must set every flag, and a
+   * call site must either use the builder or pass the flags itself.
+   */
+  const SCSCF_FLAGS = ['sipTracing', 'cdrAccounting', 'voiceCharging'] as const;
+
+  it('the shared builder sets every scscf.cfg feature flag', () => {
+    const start = IMS_CODE.indexOf('function scscfParamsFromState(');
+    expect(start).toBeGreaterThan(-1);
+    const body = IMS_CODE.slice(start, IMS_CODE.indexOf('\n}', start));
+    for (const flag of SCSCF_FLAGS) expect(body).toMatch(new RegExp(`${flag}:`));
+    // The SMS mode drives two mutually exclusive fields; either proves it.
+    expect(body).toMatch(/blockImsSms:|routeSmsToVectorcore:/);
+  });
+
+  it('every scscfIncludeCfg call site supplies the flags, directly or via the builder', () => {
     const calls = callArgs(IMS_CODE, 'scscfIncludeCfg');
     expect(calls.length).toBeGreaterThanOrEqual(4);
-    const missing = calls.filter(c => !c.includes('sipTracing'));
-    expect(missing).toEqual([]);
+    const unsafe = calls.filter(c =>
+      !c.includes('scscfParamsFromState') && !c.includes('sipTracing'));
+    expect(unsafe).toEqual([]);
   });
 
   it.each(['pcscfIncludeCfg', 'icscfIncludeCfg'])('every %s call site passes sipTracing', fn => {
@@ -172,6 +208,9 @@ describe('SIP tracing config wiring', () => {
     // Guards the reverse mistake too: adding tracing must not have dropped
     // what the existing setters were careful to preserve.
     for (const c of callArgs(IMS_CODE, 'scscfIncludeCfg')) {
+      // A call through the shared builder inherits all three; the test above
+      // asserts the builder really sets them.
+      if (c.includes('scscfParamsFromState')) continue;
       expect(c).toMatch(/cdrAccounting:/);
       expect(c).toMatch(/voiceCharging:/);
       expect(c).toMatch(/blockImsSms:|routeSmsToVectorcore:/);

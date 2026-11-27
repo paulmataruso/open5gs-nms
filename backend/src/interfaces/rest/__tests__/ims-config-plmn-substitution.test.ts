@@ -49,7 +49,7 @@ function renderAll(p: Plmn): Record<string, string> {
   const epc = epcDomainOf(p);
   return {
     'scscf.cfg': scscfIncludeCfg({
-      scscfIp: '127.0.1.2', scscfPort: 6060, imsDomain: ims, additionalDomains: [],
+      scscfIp: '127.0.1.2', scscfPort: 6060, mcc: '001', mnc: '01', imsDomain: ims, additionalDomains: [],
       routeSmsToVectorcore: { ip: '127.0.1.5', port: 5060 },
       voiceCharging: { ocsOriginHost: `ocs.${epc}` },
       cdrAccounting: true, sipTracing: true,
@@ -129,48 +129,41 @@ describe('changing the PLMN changes every place that depends on it', () => {
   });
 
   /**
-   * KNOWN DEFECT, pinned deliberately rather than hidden.
+   * This was a real defect, found by the leak property above and fixed in the
+   * same series of changes.
    *
-   * `scscfIncludeCfg()` is NOT a pure function of its parameters. It takes
-   * `imsDomain` from the caller -- which the UI derives from the PLMN the
-   * operator set -- but derives `RO_MNC`/`RO_MCC` from `readMccMnc()`, which
-   * reads the PLMN out of the HOST's `mme.yaml` and silently falls back to a
-   * hardcoded 001/01 if that file cannot be read.
+   * `scscfIncludeCfg()` used to derive `RO_MNC`/`RO_MCC` from `readMccMnc()`,
+   * which read the PLMN out of the HOST's `mme.yaml` and fell back to a
+   * hardcoded 001/01 when that file could not be read. So changing the PLMN in
+   * the UI left the Ro charging fields on the old one -- ONE FILE NAMING TWO
+   * DIFFERENT PLMNs -- and on any deployment that was not 001-01, an
+   * unreadable `mme.yaml` produced the wrong charging PLMN with no error.
    *
-   * Two consequences, both matching the symptom this suite exists for:
-   *
-   *  1. Change the PLMN in the UI and the Ro charging fields keep the old one,
-   *     producing ONE FILE CONTAINING TWO DIFFERENT PLMNs. It is syntactically
-   *     valid and points partly at a network that does not exist.
-   *  2. On a deployment whose PLMN is not 001-01, an unreadable `mme.yaml`
-   *     yields `RO_MNC "01"`/`RO_MCC "001"` with no error at all.
-   *
-   * This test asserts the CURRENT behaviour so the defect is recorded and so
-   * the fix -- passing mcc/mnc in as parameters, making the generator pure --
-   * shows up here as a deliberate change rather than a surprise. When that
-   * lands, this test should assert the parameter is honoured.
-   *
-   * It also explains why the golden master passes in CI, where `mme.yaml` does
-   * not exist: the fallback happens to equal this deployment's real PLMN. That
-   * is a coincidence, not a design.
+   * mcc/mnc are now required parameters and the generator reads nothing from
+   * disk, so the output is a function of its inputs alone. These assertions
+   * are what the old pinned test said should become true.
    */
-  test('DEFECT: the Ro MNC/MCC ignore the caller and read the host mme.yaml', () => {
-    const cfg = scscfIncludeCfg({
-      scscfIp: '127.0.1.2', scscfPort: 6060,
-      imsDomain: imsDomainOf({ label: '', mcc: '310', mnc: '410' }),
-      voiceCharging: { ocsOriginHost: `ocs.${epcDomainOf({ label: '', mcc: '310', mnc: '410' })}` },
-    });
-    // The domain follows the caller's PLMN...
-    expect(cfg).toContain('mnc410.mcc310');
-    // ...while the Ro fields do not, which is the defect. They carry whatever
-    // the host mme.yaml says, or the 001/01 fallback when it is absent.
-    const roMnc = /#!define RO_MNC "(\d+)"/.exec(cfg)?.[1];
-    const roMcc = /#!define RO_MCC "(\d+)"/.exec(cfg)?.[1];
-    expect(roMnc).toBeDefined();
-    expect(roMcc).toBeDefined();
-    // Not the caller's values -- that is the whole point.
-    expect(roMnc).not.toBe('410');
-    expect(roMcc).not.toBe('310');
+  test('the Ro MCC/MNC follow the caller, not the host mme.yaml', () => {
+    const roOf = (mcc: string, mnc: string): { mnc?: string; mcc?: string } => {
+      const cfg = scscfIncludeCfg({
+        scscfIp: '127.0.1.2', scscfPort: 6060, mcc, mnc,
+        imsDomain: imsDomainOf({ label: '', mcc, mnc }),
+        voiceCharging: { ocsOriginHost: `ocs.${epcDomainOf({ label: '', mcc, mnc })}` },
+      });
+      return {
+        mnc: /#!define RO_MNC "(\d+)"/.exec(cfg)?.[1],
+        mcc: /#!define RO_MCC "(\d+)"/.exec(cfg)?.[1],
+      };
+    };
+    // A PLMN that is NOT this host's: previously these came back 01/001.
+    expect(roOf('310', '410')).toEqual({ mnc: '410', mcc: '310' });
+    // This deployment's own, which is also the old hardcoded fallback -- so it
+    // is the one case that cannot distinguish fixed from broken. Kept because
+    // it is the value the golden master pins.
+    expect(roOf('001', '01')).toEqual({ mnc: '01', mcc: '001' });
+    // Width rules are independent: the FQDN pads the MNC to three, the Ro
+    // field to two, and a 3-digit MNC is untouched by either.
+    expect(roOf('001', '1')).toEqual({ mnc: '01', mcc: '001' });
   });
 
 });
@@ -182,7 +175,7 @@ describe('changing an address changes every place that depends on it', () => {
     const ims = imsDomainOf(SCENARIOS[0]);
     const epc = epcDomainOf(SCENARIOS[0]);
     return {
-      'scscf.cfg': scscfIncludeCfg({ scscfIp: ip, scscfPort: 6060, imsDomain: ims }),
+      'scscf.cfg': scscfIncludeCfg({ scscfIp: ip, scscfPort: 6060, imsDomain: ims, mcc: '001', mnc: '01' }),
       'icscf.cfg': icscfIncludeCfg({ icscfIp: ip, icscfPort: 4060, imsDomain: ims }),
       'smsc.cfg': smscIncludeCfg({ smscIp: ip, imsDomain: ims }),
       'pcscf.cfg': pcscfIncludeCfg({

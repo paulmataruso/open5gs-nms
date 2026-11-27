@@ -701,7 +701,36 @@ function pcscfDispatcherList(icscfIp: string, icscfPort: number): string {
   return `1 sip:${icscfIp}:${icscfPort}\n`;
 }
 
-export function scscfIncludeCfg(p: { scscfIp: string; scscfPort: number; imsDomain: string; additionalDomains?: string[]; blockImsSms?: boolean; routeSmsToVectorcore?: { ip: string; port: number }; voiceCharging?: { ocsOriginHost: string }; cdrAccounting?: boolean ; sipTracing?: boolean }): string {
+/**
+ * Everything scscf.cfg is generated from.
+ *
+ * Named rather than inline because FIVE call sites build one of these, and an
+ * inline shape repeated five times is what let a setter quietly omit a flag --
+ * regenerating the file with that feature OFF, which is the "I changed one
+ * thing in IMS and another broke" symptom. Build these with
+ * scscfParamsFromState() instead of by hand wherever a state file is in reach.
+ *
+ * mcc/mnc are REQUIRED. They used to be read from the host's mme.yaml inside
+ * the generator, which meant changing the PLMN in the UI left the Ro charging
+ * fields on the old one -- one file naming two different PLMNs -- and an
+ * unreadable mme.yaml silently produced 001/01 regardless of the real network.
+ */
+export interface ScscfIncludeParams {
+  scscfIp: string;
+  scscfPort: number;
+  imsDomain: string;
+  /** The PLMN the operator set. The ONLY source for the Ro MCC/MNC. */
+  mcc: string;
+  mnc: string;
+  additionalDomains?: string[];
+  blockImsSms?: boolean;
+  routeSmsToVectorcore?: { ip: string; port: number };
+  voiceCharging?: { ocsOriginHost: string };
+  cdrAccounting?: boolean;
+  sipTracing?: boolean;
+}
+
+export function scscfIncludeCfg(p: ScscfIncludeParams): string {
   const extraAliases = (p.additionalDomains ?? []).map(d => `alias=scscf.${d}`).join('\n');
   // BLOCK_IMS_SMS gates the hard-reject rule in the static kamailio_scscf.cfg
   // template (search for BLOCK_IMS_SMS there) — the "SMS delivery mode"
@@ -746,7 +775,7 @@ export function scscfIncludeCfg(p: { scscfIp: string; scscfPort: number; imsDoma
   // version of this simple.
   const voiceCharging = (() => {
     if (!p.voiceCharging) return '';
-    const { mcc, mnc } = readMccMnc();
+    const { mcc, mnc } = p;
     return [
       `#!define WITH_RO`,
       `#!define RO_FORCED_PEER "${p.voiceCharging.ocsOriginHost}"`,
@@ -3295,7 +3324,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
   fs.mkdirSync(HOST_KAMAILIO_SCSCF_DIR, { recursive: true });
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
     scscfIncludeCfg({
-      scscfIp, scscfPort, imsDomain, additionalDomains,
+      scscfIp, scscfPort, imsDomain, additionalDomains, mcc, mnc,
       blockImsSms: smsDeliveryMode === 'sgs',
       routeSmsToVectorcore: smsDeliveryMode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
@@ -3588,27 +3617,13 @@ export async function setSmsDeliveryMode(mode: 'sgs' | 'ims' | 'vectorcore'): Pr
     throw new Error('IMS is not configured yet — configure IMS first');
   }
   const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
-  const { scscfIp, scscfPort } = state.config;
   const imsDomain: string = state.imsDomain;
-  const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
-  // voiceChargingEnabled (see setVoiceChargingEnabled() below) and
-  // cdrAccountingEnabled (see setCdrAccountingEnabled() below) are two more
-  // independent toggles that regenerate this SAME scscf.cfg — both must be
-  // preserved here, or switching SMS delivery mode would silently regenerate
-  // the file with WITH_RO/WITH_CDR dropped even though state still claims
-  // they're on.
-  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
-  const cdrAccountingEnabled = state.cdrAccountingEnabled === true;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
-    scscfIncludeCfg({
-      scscfIp, scscfPort, imsDomain, additionalDomains,
+    scscfIncludeCfg(scscfParamsFromState(state, {
       blockImsSms: mode === 'sgs',
       routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
-      cdrAccounting: cdrAccountingEnabled,
-      sipTracing: state.sipTracingEnabled === true,
-      voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
-    }), 'utf-8');
+    })), 'utf-8');
   await nsenter('systemctl', ['restart', 'kamailio-scscf']);
 
   // Also regenerate default_ifc.xml — this is what actually makes VectorCore
@@ -3642,11 +3657,8 @@ export async function setVoiceChargingEnabled(enabled: boolean): Promise<void> {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
   const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
-  const { scscfIp, scscfPort } = state.config;
+  const { scscfIp } = state.config;
   const imsDomain: string = state.imsDomain;
-  const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
-  const mode: 'sgs' | 'ims' | 'vectorcore' =
-    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
 
   let ocsPeerInfo: { originHost: string; bindIp: string; port: number } | null = null;
   if (enabled) {
@@ -3660,20 +3672,11 @@ export async function setVoiceChargingEnabled(enabled: boolean): Promise<void> {
     }
   }
 
-  // cdrAccountingEnabled (see setCdrAccountingEnabled() below) is a second,
-  // independent toggle that regenerates this SAME scscf.cfg — must be
-  // preserved here, same reason setSmsDeliveryMode() preserves it above.
-  const cdrAccountingEnabled = state.cdrAccountingEnabled === true;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
-    scscfIncludeCfg({
-      scscfIp, scscfPort, imsDomain, additionalDomains,
-      blockImsSms: mode === 'sgs',
-      routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
+    scscfIncludeCfg(scscfParamsFromState(state, {
       voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
-      cdrAccounting: cdrAccountingEnabled,
-      sipTracing: state.sipTracingEnabled === true,
-    }), 'utf-8');
+    })), 'utf-8');
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.xml`,
     scscfDiameterXml({
       scscfIp, imsDomain,
@@ -3703,25 +3706,12 @@ export async function setCdrAccountingEnabled(enabled: boolean): Promise<void> {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
   const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
-  const { scscfIp, scscfPort } = state.config;
-  const imsDomain: string = state.imsDomain;
-  const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
-  const mode: 'sgs' | 'ims' | 'vectorcore' =
-    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
   // voiceChargingEnabled (see setVoiceChargingEnabled() above) is a second,
   // independent toggle that regenerates this SAME scscf.cfg — must be
   // preserved here, same reason setSmsDeliveryMode() preserves it.
-  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
-    scscfIncludeCfg({
-      scscfIp, scscfPort, imsDomain, additionalDomains,
-      blockImsSms: mode === 'sgs',
-      routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
-      voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
-      cdrAccounting: enabled,
-      sipTracing: state.sipTracingEnabled === true,
-    }), 'utf-8');
+    scscfIncludeCfg(scscfParamsFromState(state, { cdrAccounting: enabled })), 'utf-8');
   await nsenter('systemctl', ['restart', 'kamailio-scscf']);
 
   state.cdrAccountingEnabled = enabled;
@@ -3805,17 +3795,57 @@ async function siptraceRpc(ctl: string, arg: 'on' | 'off' | 'check'): Promise<{ 
   }
 }
 
+/**
+ * The single source of truth for scscf.cfg's parameters.
+ *
+ * WHY THIS EXISTS. Four call sites regenerate scscf.cfg when a feature is
+ * toggled, and each used to build the parameter object by hand -- five
+ * near-identical copies differing only in which local variable supplied the
+ * one flag being changed. Every flag in ScscfIncludeParams is optional, so a
+ * copy that omitted one did not fail to compile: it regenerated the file with
+ * that feature OFF. That is not hypothetical, it has happened here
+ * (sipTracingEnabled reached the generated config but was dropped from the
+ * persisted state, so the next setter to run read it back as absent).
+ *
+ * With one builder, a NEW flag is added in exactly one place and every caller
+ * picks it up. `override` carries only the thing the caller is actually
+ * changing, because its own new value is not in the state file yet -- the
+ * setters deliberately persist state AFTER the service restart succeeds, so
+ * reading it here would regenerate the file with the OLD value.
+ */
+function scscfParamsFromState(
+  state: ConfiguredImsState,
+  override: Partial<ScscfIncludeParams> = {},
+): ScscfIncludeParams {
+  const c = state.config;
+  const mode: 'sgs' | 'ims' | 'vectorcore' =
+    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
+  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
+  return {
+    scscfIp: c.scscfIp,
+    scscfPort: c.scscfPort,
+    imsDomain: state.imsDomain,
+    mcc: c.mcc,
+    mnc: c.mnc,
+    additionalDomains: (c.additionalPlmns ?? []).map(
+      (pl: { mcc: string; mnc: string }) => deriveImsDomain(pl.mcc, pl.mnc)),
+    blockImsSms: mode === 'sgs',
+    routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
+    voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
+    cdrAccounting: state.cdrAccountingEnabled === true,
+    sipTracing: state.sipTracingEnabled === true,
+    ...override,
+  };
+}
+
 function writeCscfIncludes(state: ConfiguredImsState, enabled: boolean, http2N5Available: boolean): void {
   const c = state.config;
   const imsDomain: string = state.imsDomain;
   const additionalDomains = (c.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
   const epcDomain = deriveEpcDomain(c.mcc, c.mnc);
-  const mode: 'sgs' | 'ims' | 'vectorcore' =
-    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
   // Every other toggle that regenerates these same files must be preserved,
   // exactly as setSmsDeliveryMode()/setVoiceChargingEnabled() preserve each
   // other -- otherwise flipping tracing would silently drop WITH_RO/WITH_CDR.
-  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
 
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.cfg`,
     pcscfIncludeCfg({
@@ -3831,14 +3861,7 @@ function writeCscfIncludes(state: ConfiguredImsState, enabled: boolean, http2N5A
     }), 'utf-8');
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
-    scscfIncludeCfg({
-      scscfIp: c.scscfIp, scscfPort: c.scscfPort, imsDomain, additionalDomains,
-      blockImsSms: mode === 'sgs',
-      routeSmsToVectorcore: mode === 'vectorcore' ? VECTORCORE_SMSC_SIP_ADDRESS : undefined,
-      voiceCharging: ocsPeerInfo ? { ocsOriginHost: ocsPeerInfo.originHost } : undefined,
-      cdrAccounting: state.cdrAccountingEnabled === true,
-      sipTracing: enabled,
-    }), 'utf-8');
+    scscfIncludeCfg(scscfParamsFromState(state, { sipTracing: enabled })), 'utf-8');
 }
 
 export async function setSipTracingEnabled(enabled: boolean): Promise<SipTracingApplyReport> {
