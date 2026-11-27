@@ -6,6 +6,7 @@ import { RestoreDefaultsUseCase } from '../../application/use-cases/restore-defa
 import { FullRestoreOrchestratorUseCase } from '../../application/use-cases/full-restore-orchestrator-usecase';
 import { BackupRestartUseCase } from '../../application/use-cases/backup-restart-usecase';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncHandler } from './middleware/async-handler';
 import type {
   BackupListResponseDto,
   BackupSettingsDto,
@@ -357,7 +358,7 @@ export function createBackupRouter(
   const UPLOADS_DIR = '/tmp/open5gs-backup-uploads';
   const isValidUploadId = (id: unknown): id is string => typeof id === 'string' && /^[a-zA-Z0-9._-]+\.tar\.gz$/.test(id);
 
-  router.post('/full/upload', requireAdmin, async (req, res) => {
+  router.post('/full/upload', requireAdmin, asyncHandler(async (req, res) => {
     fs.mkdirSync(UPLOADS_DIR, { recursive: true });
     const uploadId = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tar.gz`;
     const tmpPath = `${UPLOADS_DIR}/${uploadId}`;
@@ -389,7 +390,7 @@ export function createBackupRouter(
         error: err instanceof Error ? err.message : 'Unknown error',
       });
     }
-  });
+  }));
 
   // POST /api/backup/full/restore - Restore selected categories from a
   // previously uploaded archive (see /full/upload above). Body:

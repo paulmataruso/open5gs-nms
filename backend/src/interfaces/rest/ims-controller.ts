@@ -10,6 +10,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncHandler } from './middleware/async-handler';
 import { readListenOn, writeListenOn } from './bind-controller';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import { parseKamcmdOutput } from '../../infrastructure/system/kamcmd-parser';
@@ -5637,7 +5638,7 @@ export function createImsRouter(
   // snapshot for up to ~6s to confirm each one actually disappeared, and reports
   // exactly which ones did/didn't — so the UI never claims success when nothing
   // observably happened.
-  router.post('/live/deregister', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/live/deregister', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const impus = asRecord(req.body).publicIdentities;
     if (!Array.isArray(impus) || impus.length === 0 || !impus.every((i: unknown) => typeof i === 'string' && i)) {
@@ -5700,7 +5701,7 @@ export function createImsRouter(
         ? 'Deregistered — confirmed removed from the live registrar.'
         : 'Kamailio sent the deregister notify, but the device hasn\'t dropped from the live registrar yet — it may not have an active subscription to react to it, or hasn\'t processed it. Try again in a few seconds, or wait for a natural REGISTER refresh.',
     });
-  });
+  }));
 
   // POST /api/ims/install — streaming: packages + PyHSS install
   router.post('/install', requireAdmin, asyncRoute(async (req: Request, res: Response) => {
