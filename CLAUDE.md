@@ -1552,6 +1552,63 @@ Full detail on any of these: `docs/features.md`.
   harmless" assumption written before it becomes a route to somewhere real —
   re-read the comments that justified leaving a gap.**
 
+- **Open5GS exits with status 0 when it cannot reach MongoDB, so
+  `Restart=on-failure` never retries and a transient boot race becomes a
+  permanent outage that `reset-failed` cannot clear.** Hit twice on this
+  deployment (2026-11-25 and 2026-11-27, both after a power loss): the host
+  came back with 13 of 17 NFs healthy and exactly the four DB-backed ones —
+  `udr`, `pcf`, `hss`, `pcrf` — stopped. Reproduced deliberately and confirmed
+  live 2026-11-27: with MongoDB down, `systemctl restart open5gs-udrd` logs
+  `[dbi] WARNING: Failed to connect to server` and `[app] WARNING: Failed to
+  initialize UDR`, then `systemd[1]: Deactivated successfully` — and
+  `systemctl show` reads `Result=success`, `ExecMainStatus=0`,
+  `NRestarts=0`. Nothing is ever in `failed` state, which is why the
+  `reset-failed` recipe from the DNS boot race (gotcha #6 /
+  `installDnsBootGate`) finds nothing to reset. **13/17 "active" reads almost
+  healthy while 4G S6a/Gx and 5G subscriber data are both down**, so count the
+  NFs by NAME after any unplanned restart, never by total.
+  Fixed by `mongo-boot-gate.ts`, built as the same two layers as the DNS gate
+  because the real liability is the amplifier, not any one cause:
+  `open5gs-mongo-ready.service` blocks until MongoDB actually answers, and a
+  `10-mongo-boot-race.conf` drop-in puts the four DB-backed NFs on
+  **`Restart=always`**. The second half is the one that fixes the bug — with
+  `on-failure`, an exit-0 failure can never be retried however patient the
+  budget is, so the `StartLimitBurst=60/600s` those units already carried was
+  dead code for this failure mode. Verified live end to end: with MongoDB down
+  `NRestarts` climbed 1→2→4 while `Result` stayed `success`, and when MongoDB
+  returned the NF came back **by itself within 6s** with no human action.
+  **Three things in here are load-bearing.** (1) **The readiness check must not
+  ask how MongoDB is deployed.** This project supports host `mongod` (the AVX
+  path), a `mongo:4.4` container (the no-AVX path, where there is no
+  `mongod.service` for systemd to order against at all — which is exactly why
+  the race is unrecoverable there), and a remote or replica-set MongoDB. So the
+  gate reads the endpoints out of the NFs' own `db_uri` values and waits for one
+  to answer, which is the same correct question in all three, and it re-derives
+  them at every boot so a `db_uri` change needs no reinstall. Only the systemd
+  `After=`/`Wants=` lines are mode-specific, and those are generated per host
+  from the units that actually exist; `docker.service` gets ordering alone and
+  never a `Wants=`, so a host-mode deployment is never made to depend on
+  Docker. (2) **The gate exits 0 on timeout, never 1** — releasing hands the
+  problem to layer 2, where a wedged gate would be a worse outage than the one
+  it prevents. (3) **`checkMongoBootGate()` verifies the per-NF drop-ins, not
+  just its own two files**, because on a fresh host the backend can start
+  before the Open5GS packages land; stamping the rev with zero drop-ins written
+  would mean the half that fixes the bug was never installed and never
+  retried. Installed from `index.ts` on every backend start (idempotent and
+  rev-gated) so an existing deployment picks it up from a plain `git pull &&
+  docker compose build && docker compose up -d`, and from
+  `backup-restart-usecase.ts` BEFORE its core-17 restart.
+  One bug worth not rediscovering: the script's array was first called
+  `GROUPS`, which is a **bash special variable** holding the current user's
+  group membership — assignments to it are silently ignored, so it read back as
+  the uid's group list, no endpoint ever matched, and the gate would have waited
+  out its full 300s timeout on every boot while looking like it worked. Caught
+  by a test that runs the generated script against a fake `/etc/open5gs`; a
+  full rename back to `GROUPS` fails 9 of its tests. **General rule: when a
+  generated shell script is the deliverable, test it by RUNNING it, not by
+  grepping it — and check any all-caps array name against bash's own
+  special variables.**
+
 ## User / workflow conventions
 
 - **Never include `Co-Authored-By: Claude` (or any AI attribution) in git commits.**
