@@ -1195,6 +1195,80 @@ to justify the automation.
 
 ## Database Issues
 
+### Exactly udr, pcf, hss and pcrf Are Stopped After a Reboot or Power Loss
+
+**Symptom:**
+
+After an unplanned restart, 13 of the 17 network functions are active and four
+are not: `open5gs-udrd`, `open5gs-pcfd`, `open5gs-hssd`, `open5gs-pcrfd`. 4G
+attach and bearer policy fail (hss/pcrf are the S6a/Gx path) and 5G subscriber
+lookups fail (udr/pcf), while the dashboard's NF count still reads mostly
+healthy.
+
+**Diagnosis:**
+
+Those four are the only NFs that open a MongoDB connection. They started before
+MongoDB was accepting connections. Open5GS treats a failed database connect as
+a clean exit, so the units are `inactive`, not `failed`:
+
+```bash
+systemctl show open5gs-udrd -p ActiveState -p Result -p ExecMainStatus -p NRestarts
+# ActiveState=inactive
+# Result=success        <- a clean exit, so Restart=on-failure never fired
+# ExecMainStatus=0
+# NRestarts=0           <- never retried even once
+```
+
+```bash
+journalctl -u open5gs-udrd -b | tail -5
+# [dbi] WARNING: Failed to connect to server [mongodb://127.0.0.1/open5gs]
+# [app] WARNING: Failed to initialize UDR
+# systemd[1]: open5gs-udrd.service: Deactivated successfully.
+```
+
+`Result=success` with `NRestarts=0` is what distinguishes this from the DNS
+boot race, which leaves units `failed` with an exhausted restart budget.
+`systemctl reset-failed` does nothing here, because nothing ever failed in
+systemd's view.
+
+**Solution:**
+
+Confirm MongoDB is up, then start the four:
+
+```bash
+# host mode
+systemctl is-active mongod
+# container mode (no-AVX deployments)
+docker inspect -f '{{.State.Status}}' mongodb
+
+systemctl start open5gs-udrd open5gs-pcfd open5gs-hssd open5gs-pcrfd
+```
+
+No data is lost and no configuration is at fault — do not go looking for one.
+
+**Prevention:**
+
+The NMS installs a readiness gate that removes the need to do this by hand. It
+is applied automatically on every backend start, so a deployment picks it up
+from a plain `git pull && docker compose build && docker compose up -d`:
+
+```bash
+systemctl status open5gs-mongo-ready.service      # the readiness barrier
+systemctl show open5gs-udrd -p Restart --value    # expect: always
+journalctl -t open5gs-wait-mongo -b               # what it waited for, and for how long
+```
+
+`open5gs-mongo-ready.service` blocks until MongoDB actually answers at the
+endpoint the NF configs name, which works the same whether MongoDB is a host
+`mongod`, a container, or remote. The drop-in it installs puts the four
+DB-backed NFs on `Restart=always`, so even if MongoDB arrives after the gate
+releases, each NF starts by itself within seconds instead of staying down.
+
+If the four are still stopped on a host where the gate is installed, read
+`journalctl -t open5gs-wait-mongo -b`: a `WARNING: MongoDB not reachable after
+300s` line means MongoDB genuinely never came up, which is a MongoDB problem,
+not an Open5GS one.
+
 ### MongoDB Connection Errors
 
 **Symptom:**

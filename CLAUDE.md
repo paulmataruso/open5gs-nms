@@ -1552,6 +1552,63 @@ Full detail on any of these: `docs/features.md`.
   harmless" assumption written before it becomes a route to somewhere real —
   re-read the comments that justified leaving a gap.**
 
+- **Open5GS exits with status 0 when it cannot reach MongoDB, so
+  `Restart=on-failure` never retries and a transient boot race becomes a
+  permanent outage that `reset-failed` cannot clear.** Hit twice on this
+  deployment (2026-11-25 and 2026-11-27, both after a power loss): the host
+  came back with 13 of 17 NFs healthy and exactly the four DB-backed ones —
+  `udr`, `pcf`, `hss`, `pcrf` — stopped. Reproduced deliberately and confirmed
+  live 2026-11-27: with MongoDB down, `systemctl restart open5gs-udrd` logs
+  `[dbi] WARNING: Failed to connect to server` and `[app] WARNING: Failed to
+  initialize UDR`, then `systemd[1]: Deactivated successfully` — and
+  `systemctl show` reads `Result=success`, `ExecMainStatus=0`,
+  `NRestarts=0`. Nothing is ever in `failed` state, which is why the
+  `reset-failed` recipe from the DNS boot race (gotcha #6 /
+  `installDnsBootGate`) finds nothing to reset. **13/17 "active" reads almost
+  healthy while 4G S6a/Gx and 5G subscriber data are both down**, so count the
+  NFs by NAME after any unplanned restart, never by total.
+  Fixed by `mongo-boot-gate.ts`, built as the same two layers as the DNS gate
+  because the real liability is the amplifier, not any one cause:
+  `open5gs-mongo-ready.service` blocks until MongoDB actually answers, and a
+  `10-mongo-boot-race.conf` drop-in puts the four DB-backed NFs on
+  **`Restart=always`**. The second half is the one that fixes the bug — with
+  `on-failure`, an exit-0 failure can never be retried however patient the
+  budget is, so the `StartLimitBurst=60/600s` those units already carried was
+  dead code for this failure mode. Verified live end to end: with MongoDB down
+  `NRestarts` climbed 1→2→4 while `Result` stayed `success`, and when MongoDB
+  returned the NF came back **by itself within 6s** with no human action.
+  **Three things in here are load-bearing.** (1) **The readiness check must not
+  ask how MongoDB is deployed.** This project supports host `mongod` (the AVX
+  path), a `mongo:4.4` container (the no-AVX path, where there is no
+  `mongod.service` for systemd to order against at all — which is exactly why
+  the race is unrecoverable there), and a remote or replica-set MongoDB. So the
+  gate reads the endpoints out of the NFs' own `db_uri` values and waits for one
+  to answer, which is the same correct question in all three, and it re-derives
+  them at every boot so a `db_uri` change needs no reinstall. Only the systemd
+  `After=`/`Wants=` lines are mode-specific, and those are generated per host
+  from the units that actually exist; `docker.service` gets ordering alone and
+  never a `Wants=`, so a host-mode deployment is never made to depend on
+  Docker. (2) **The gate exits 0 on timeout, never 1** — releasing hands the
+  problem to layer 2, where a wedged gate would be a worse outage than the one
+  it prevents. (3) **`checkMongoBootGate()` verifies the per-NF drop-ins, not
+  just its own two files**, because on a fresh host the backend can start
+  before the Open5GS packages land; stamping the rev with zero drop-ins written
+  would mean the half that fixes the bug was never installed and never
+  retried. Installed from `index.ts` on every backend start (idempotent and
+  rev-gated) so an existing deployment picks it up from a plain `git pull &&
+  docker compose build && docker compose up -d`, and from
+  `backup-restart-usecase.ts` BEFORE its core-17 restart.
+  One bug worth not rediscovering: the script's array was first called
+  `GROUPS`, which is a **bash special variable** holding the current user's
+  group membership — assignments to it are silently ignored, so it read back as
+  the uid's group list, no endpoint ever matched, and the gate would have waited
+  out its full 300s timeout on every boot while looking like it worked. Caught
+  by a test that runs the generated script against a fake `/etc/open5gs`; a
+  full rename back to `GROUPS` fails 9 of its tests. **General rule: when a
+  generated shell script is the deliverable, test it by RUNNING it, not by
+  grepping it — and check any all-caps array name against bash's own
+  special variables.**
+
 ## User / workflow conventions
 
 - **Never include `Co-Authored-By: Claude` (or any AI attribution) in git commits.**
@@ -1661,6 +1718,39 @@ Full detail on any of these: `docs/features.md`.
     produced a single 2.9 MB initial bundle; route splitting cut first load from
     ~821 kB to ~111 kB gzip, and one new static page import silently gives a
     chunk of that back.
+- **Integrating a community PR: `git merge` it, never a plain `git rebase`.**
+  A plain rebase FLATTENS the branch and silently DISCARDS its merge commits,
+  so any change that exists only inside one is lost with no conflict and no
+  warning. Confirmed the hard way on 2026-11-27 with community PR #45: the
+  contributor's final commit was a merge titled "Merge main, and repoint
+  useAuth at the module main moved it to" — i.e. they had already noticed main
+  moved `useAuth` from `contexts/AuthContext` to `contexts/auth-context` and
+  fixed their import. Rebasing their branch onto main dropped that commit,
+  reverted the import to the broken path carried by their three earlier
+  commits, and left `useAuth` resolving to `undefined` — the page would throw
+  "useAuth is not a function" on first render. It then looked exactly like a
+  defect in their contribution, and was reported as one before the branch
+  history was checked. Use `git merge --no-edit <pr-branch>`, or
+  `git rebase --rebase-merges` if a rebase is genuinely wanted. **If a
+  community PR's last commit is a merge, assume it carries something and
+  diff it before discarding it** (`git diff <its-first-parent> <the-merge>`).
+- **Run `scripts/verify.sh` before pushing, not a subset of the gates.** It
+  runs exactly what CI runs, in CI's order, and like CI it runs every check
+  before reporting a verdict rather than stopping at the first failure. Three
+  traps it exists to close, all hit repeatedly in one session: `npx tsc
+  --noEmit -p backend/tsconfig.json` reports clean no matter what state a test
+  file is in, because that config EXCLUDES `src/**/__tests__/**` and only
+  ts-jest typechecks tests; `node_modules` silently keeps another branch's
+  resolutions after an `npm install`, which produced a frontend lint reading of
+  510-vs-379 that looked like 131 new findings and was entirely the toolchain
+  (`scripts/check-deps-fresh.mjs` is step 0 for this reason); and a gate run
+  while anything else mutates the git tree — a background build, a checkout, a
+  rebase — measures a tree that no longer exists. Never `git checkout` or
+  rebase while a verification is running against the working copy.
+- **`npm test` in backend is `jest --runInBand`, and that matters here.** A
+  bare `npx jest` defaults to one worker per core; on this 4-core host, which
+  is also running the live 5G core, that was measured at a load average of 18.
+  Pass `--maxWorkers=2` if you must invoke jest directly.
 - **Only commit when explicitly asked.** This project has gone through periods of
   large uncommitted work by design (user wanted a clean-host test before committing) —
   don't assume "the fix works" means "commit it."
