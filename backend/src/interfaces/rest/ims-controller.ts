@@ -3617,17 +3617,7 @@ export async function setSmsDeliveryMode(mode: 'sgs' | 'ims' | 'vectorcore'): Pr
     throw new Error('IMS is not configured yet — configure IMS first');
   }
   const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
-  const { scscfIp, scscfPort } = state.config;
   const imsDomain: string = state.imsDomain;
-  const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
-  // voiceChargingEnabled (see setVoiceChargingEnabled() below) and
-  // cdrAccountingEnabled (see setCdrAccountingEnabled() below) are two more
-  // independent toggles that regenerate this SAME scscf.cfg — both must be
-  // preserved here, or switching SMS delivery mode would silently regenerate
-  // the file with WITH_RO/WITH_CDR dropped even though state still claims
-  // they're on.
-  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
-  const cdrAccountingEnabled = state.cdrAccountingEnabled === true;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
     scscfIncludeCfg(scscfParamsFromState(state, {
@@ -3667,11 +3657,8 @@ export async function setVoiceChargingEnabled(enabled: boolean): Promise<void> {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
   const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
-  const { scscfIp, scscfPort } = state.config;
+  const { scscfIp } = state.config;
   const imsDomain: string = state.imsDomain;
-  const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
-  const mode: 'sgs' | 'ims' | 'vectorcore' =
-    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
 
   let ocsPeerInfo: { originHost: string; bindIp: string; port: number } | null = null;
   if (enabled) {
@@ -3685,10 +3672,6 @@ export async function setVoiceChargingEnabled(enabled: boolean): Promise<void> {
     }
   }
 
-  // cdrAccountingEnabled (see setCdrAccountingEnabled() below) is a second,
-  // independent toggle that regenerates this SAME scscf.cfg — must be
-  // preserved here, same reason setSmsDeliveryMode() preserves it above.
-  const cdrAccountingEnabled = state.cdrAccountingEnabled === true;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
     scscfIncludeCfg(scscfParamsFromState(state, {
@@ -3723,15 +3706,9 @@ export async function setCdrAccountingEnabled(enabled: boolean): Promise<void> {
     throw new Error('IMS is not configured yet — configure IMS first');
   }
   const state = requireConfiguredState(JSON.parse(fs.readFileSync(HOST_IMS_STATE, 'utf-8')) as ImsState);
-  const { scscfIp, scscfPort } = state.config;
-  const imsDomain: string = state.imsDomain;
-  const additionalDomains = (state.config.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
-  const mode: 'sgs' | 'ims' | 'vectorcore' =
-    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
   // voiceChargingEnabled (see setVoiceChargingEnabled() above) is a second,
   // independent toggle that regenerates this SAME scscf.cfg — must be
   // preserved here, same reason setSmsDeliveryMode() preserves it.
-  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
 
   fs.writeFileSync(`${HOST_KAMAILIO_SCSCF_DIR}/scscf.cfg`,
     scscfIncludeCfg(scscfParamsFromState(state, { cdrAccounting: enabled })), 'utf-8');
@@ -3866,12 +3843,9 @@ function writeCscfIncludes(state: ConfiguredImsState, enabled: boolean, http2N5A
   const imsDomain: string = state.imsDomain;
   const additionalDomains = (c.additionalPlmns ?? []).map((p: { mcc: string; mnc: string }) => deriveImsDomain(p.mcc, p.mnc));
   const epcDomain = deriveEpcDomain(c.mcc, c.mnc);
-  const mode: 'sgs' | 'ims' | 'vectorcore' =
-    state.smsDeliveryMode === 'sgs' || state.smsDeliveryMode === 'vectorcore' ? state.smsDeliveryMode : 'ims';
   // Every other toggle that regenerates these same files must be preserved,
   // exactly as setSmsDeliveryMode()/setVoiceChargingEnabled() preserve each
   // other -- otherwise flipping tracing would silently drop WITH_RO/WITH_CDR.
-  const ocsPeerInfo = state.voiceChargingEnabled === true ? getOcsPeerInfo() : null;
 
   fs.writeFileSync(`${HOST_KAMAILIO_PCSCF_DIR}/pcscf.cfg`,
     pcscfIncludeCfg({
