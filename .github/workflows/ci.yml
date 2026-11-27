@@ -138,8 +138,15 @@ jobs:
       # In the same job as the build on purpose: a separate job would mean a
       # second checkout, a second `npm ci` and a second cache warm for a suite
       # that runs in seconds.
+      #
+      # `test:coverage` is this same suite with v8 instrumentation. The floor
+      # it feeds is PER FILE, so a new untested page never fails this job —
+      # only a file that had coverage and lost it does.
       - name: Tests
-        run: npm test
+        run: npm run test:coverage
+
+      - name: Coverage floor
+        run: node ../scripts/coverage-ratchet.mjs
 
   # Lint is NOT a pass/fail gate yet — the backend carries thousands of
   # pre-existing findings, and a permanently red check is a check everyone

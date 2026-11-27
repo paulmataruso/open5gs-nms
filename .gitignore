@@ -88,3 +88,7 @@ VECTORCORE_UPSTREAM_PATCHES.md
 
 # Local archive folder
 docs/archive/
+
+# Coverage reports (build output; the FLOOR lives in coverage-baseline.json)
+frontend/coverage/
+backend/coverage/

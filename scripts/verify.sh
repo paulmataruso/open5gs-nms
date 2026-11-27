@@ -57,15 +57,23 @@ step 'frontend build'     bash -c 'cd frontend && npm run -s build'
 # Vitest + jsdom, matching CI's frontend job, which runs build then tests
 # in that order. maxWorkers is pinned to 2 in vitest.config.ts for the same
 # reason `--runInBand` is used above.
-step 'frontend tests'     bash -c 'cd frontend && npm test --silent'
+# `test:coverage` is the same vitest run with v8 instrumentation, so this is
+# the frontend test gate AND the input to the coverage floor below. Running
+# `npm test` here and the coverage suite again for the ratchet would pay for
+# the suite twice to learn nothing new.
+step 'frontend tests'     bash -c 'cd frontend && npm run -s test:coverage'
 step 'ratchet backend'    be_lint
 step 'ratchet frontend'   fe_lint
+# Per-file, not a global percentage: see the script's own header for why a
+# percentage floor cannot survive the climb from 0.08% to 100%.
+step 'coverage floor'     node scripts/coverage-ratchet.mjs
 step 'changed lines'      node scripts/lint-changed-lines.mjs "$BASE"
 
 printf '\n\033[1m── verdict ──\033[0m\n'
 failed=0
 for k in 'deps match lockfile' 'backend typecheck' 'backend tests' 'frontend build' \
-         'frontend tests' 'ratchet backend' 'ratchet frontend' 'changed lines'; do
+         'frontend tests' 'ratchet backend' 'ratchet frontend' 'coverage floor' \
+         'changed lines'; do
   printf '  %-22s %s\n' "$k" "${OUTCOME[$k]:-skipped}"
   [ "${OUTCOME[$k]:-}" = pass ] || failed=1
 done
