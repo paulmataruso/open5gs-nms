@@ -246,7 +246,7 @@ export function traceBeam(options: RayTraceOptions): RayTraceResult {
   let declinedSamples = 0;
   let declinedRays = 0;
 
-  const recordBuilding = (building: BuildingFootprint, rxDbm: number) => {
+  const recordBuilding = (building: BuildingFootprint, rxDbm: number): void => {
     const best = buildingCoverage.get(building.id);
     if (best === undefined || rxDbm > best) buildingCoverage.set(building.id, rxDbm);
   };

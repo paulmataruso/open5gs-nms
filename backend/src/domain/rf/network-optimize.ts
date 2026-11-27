@@ -225,7 +225,7 @@ export function optimizeNetwork(options: OptimizationOptions): OptimizationResul
   }
 
   const frontier: NetworkEvaluation[] = [];
-  const consider = (evaluation: NetworkEvaluation) => frontier.push(evaluation);
+  const consider = (evaluation: NetworkEvaluation): number => frontier.push(evaluation);
   consider(evaluateNetwork([...current.values()], demand, overlapWeight));
 
   // Coordinate descent, bounded so a pathological case cannot spin.

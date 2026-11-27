@@ -731,7 +731,7 @@ export function parseKeaLeases(
     cols = lines[0].split(',').map(c => c.trim());
     start = 1;
   }
-  const idx = (name: string) => cols.indexOf(name);
+  const idx = (name: string): number => cols.indexOf(name);
   const iAddr = idx('address'), iMac = idx('hwaddr'), iLife = idx('valid_lifetime');
   const iExp = idx('expire'), iSub = idx('subnet_id'), iHost = idx('hostname'), iState = idx('state');
   const iCid = idx('client_id'), iFwd = idx('fqdn_fwd'), iRev = idx('fqdn_rev');
@@ -763,9 +763,9 @@ export function parseKeaLeases(
     // cannot contain a comma), so the lease stays usable — only the detail
     // fields beyond it are withheld.
     const complete = f.length === cols.length;
-    const field = (i: number) => (complete && i !== -1 ? (f[i] ?? '').trim() : '');
-    const flag = (i: number) => field(i) === '1';
-    const num = (i: number) => {
+    const field = (i: number): string => (complete && i !== -1 ? (f[i] ?? '').trim() : '');
+    const flag = (i: number): boolean => field(i) === '1';
+    const num = (i: number): number | null => {
       const raw = field(i);
       return raw === '' || Number.isNaN(Number(raw)) ? null : Number(raw);
     };
@@ -797,7 +797,7 @@ export function parseKeaLeases(
 
   // Active first, then by address — an operator opening this page wants the
   // live clients, not whatever Kea wrote most recently.
-  const rank = (s: DhcpLease['state']) => (s === 'active' ? 0 : s === 'declined' ? 1 : s === 'expired' ? 2 : 3);
+  const rank = (s: DhcpLease['state']): number => (s === 'active' ? 0 : s === 'declined' ? 1 : s === 'expired' ? 2 : 3);
   return out.sort((a, b) => rank(a.state) - rank(b.state) || ipToNum(a.ip) - ipToNum(b.ip));
 }
 

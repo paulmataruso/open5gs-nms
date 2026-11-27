@@ -25,6 +25,8 @@
 // dropped, because "the page disagrees with GenieACS" is otherwise impossible
 // to explain from the UI.
 
+import { AcsDevice, acsValueWithTimeAt } from './genieacs-device';
+
 export type AcsIpSource = 'connection-request' | 'device-ip' | 'none';
 
 export interface AcsIpResolution {
@@ -48,22 +50,6 @@ function isIpv4(s: string): boolean {
   return !!m && m.slice(1).every(o => Number(o) <= 255 && !(o.length > 1 && o[0] === '0'));
 }
 
-/** The `{_value, _timestamp}` node at a dotted path, if there is one. */
-function nodeAt(device: Record<string, any>, dotPath: string): any {
-  let node: any = device;
-  for (const part of dotPath.split('.')) {
-    if (node == null) return undefined;
-    node = node[part];
-  }
-  return node;
-}
-
-function valueAt(device: Record<string, any>, dotPath: string): { value: string; at: number } | null {
-  const n = nodeAt(device, dotPath);
-  if (n?._value == null) return null;
-  const ts = Date.parse(String(n._timestamp ?? ''));
-  return { value: String(n._value).trim(), at: Number.isFinite(ts) ? ts : 0 };
-}
 
 /**
  * The host part of a ConnectionRequestURL, when it is a literal IPv4 address.
@@ -76,9 +62,9 @@ export function connectionRequestHost(url: string): string {
   return isIpv4(host) ? host : '';
 }
 
-export function resolveAcsDeviceIp(device: Record<string, any>): AcsIpResolution {
-  const direct = valueAt(device, ACS_DEVICE_IP_PARAM);
-  const cru = valueAt(device, ACS_CONNECTION_REQUEST_PARAM);
+export function resolveAcsDeviceIp(device: AcsDevice): AcsIpResolution {
+  const direct = acsValueWithTimeAt(device, ACS_DEVICE_IP_PARAM);
+  const cru = acsValueWithTimeAt(device, ACS_CONNECTION_REQUEST_PARAM);
 
   const fromDirect = direct && isIpv4(direct.value) ? { ip: direct.value, at: direct.at } : null;
   const host = cru ? connectionRequestHost(cru.value) : '';

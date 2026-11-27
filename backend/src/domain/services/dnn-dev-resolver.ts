@@ -114,9 +114,20 @@ export interface SmfPoolNotRoutable {
   unroutableAddresses: number;
 }
 
+// Typed as YamlSession[] to match resolveDnnDevPairs above, which this function
+// is the sibling of and is always called with the same two arrays. It was `any[]`
+// purely because it was added later; nothing about it wanted the looseness, and
+// `any[]` accounted for 23 of this file's lint findings on its own.
+//
+// The String() wrappers below are KEPT despite `subnet` now being declared
+// `string | undefined`. These arrays come straight out of a YAML file an
+// operator may have hand-edited, so a non-string really can arrive at runtime
+// (`subnet: 10` parses as a number); the declared type is what the NMS writes,
+// not a guarantee about what it reads. Removing them would turn a tolerated
+// odd value into a crash in `.includes`.
 export function findSmfPoolsWiderThanUpf(
-  smfSessions: any[],
-  upfSessions: any[],
+  smfSessions: YamlSession[],
+  upfSessions: YamlSession[],
 ): SmfPoolNotRoutable[] {
   const found: SmfPoolNotRoutable[] = [];
 

@@ -4,7 +4,7 @@
     "`lint` job: the count may fall, never rise. See CI-LINT-PLAN.md.",
     "",
     "`fatals` is tracked separately, and ratcheted separately, because a fatal",
-    "is a PARSE failure rather than a rule finding \u2014 the file was not linted at",
+    "is a PARSE failure rather than a rule finding — the file was not linted at",
     "all, so it contributes zero errors and looks clean by the only number the",
     "ratchet would otherwise read. Both workspaces are at 0 and must stay there.",
     "",
@@ -15,7 +15,7 @@
     "extends the production config and drops only those two excludes. The",
     "production tsconfig.json is untouched, so nothing changed about what is",
     "emitted to dist/. Admitting 120 files is what took backend errors/warnings",
-    "from 5658/277 to 6293/408 \u2014 a deliberate re-baseline, not a regression.",
+    "from 5658/277 to 6293/408 — a deliberate re-baseline, not a regression.",
     "",
     "Phase 5 then began bringing it down for real: the first pass typed three",
     "DB/Mongo boundary files and took errors 6293 -> 6062; the second removed",
@@ -102,10 +102,10 @@
   ],
   "measuredAt": "2026-11-27",
   "backend": {
-    "errors": 2639,
-    "warnings": 384,
-    "files": 457,
-    "filesWithFindings": 243,
+    "errors": 2560,
+    "warnings": 366,
+    "files": 464,
+    "filesWithFindings": 226,
     "fatals": 0
   },
   "frontend": {

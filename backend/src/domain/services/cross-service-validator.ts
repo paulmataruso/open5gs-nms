@@ -11,6 +11,49 @@ function plmnKey(mcc: string, mnc: string): string {
   return `${mcc}-${mnc}`;
 }
 
+/**
+ * Walks a property chain on a parsed-YAML document whose shape is not known.
+ *
+ * `rawYaml` is `Record<string, unknown>` (see domain/entities/generic-config.ts)
+ * because it is whatever the operator's file actually contains, including keys
+ * the NMS does not model. This descends it without asserting any of that away:
+ * a missing key, a null, or a scalar where an object was expected all yield
+ * `undefined` instead of throwing. Replaces the `raw: any` parameters this file
+ * used to carry, which disabled type checking for every read beneath them.
+ */
+function dig(root: unknown, ...path: string[]): unknown {
+  let cur: unknown = root;
+  for (const key of path) {
+    if (typeof cur !== 'object' || cur === null) return undefined;
+    cur = (cur as Record<string, unknown>)[key];
+  }
+  return cur;
+}
+
+/** `dig`, then keep the value only if it really is a non-empty array. */
+function digArray(root: unknown, ...path: string[]): unknown[] {
+  const v = dig(root, ...path);
+  return Array.isArray(v) ? v : [];
+}
+
+/**
+ * One half of a PLMN id, as text, or null when the file holds something that
+ * cannot sensibly be one.
+ *
+ * A number is accepted because js-yaml reads an unquoted `mnc: 070` as the
+ * number 70, so that is a NORMAL reading of a valid file, not a malformed one.
+ * Anything else — an object, an array, a boolean — is treated as absent rather
+ * than coerced, which is the same narrow-don't-coerce rule the Kea config
+ * round-trip fix established: `String({})` is `"[object Object]"`, and a
+ * garbage key here cannot do anything except make the 4G/5G PLMN-mismatch
+ * warning below fire when there is no mismatch.
+ */
+function plmnPart(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  return null;
+}
+
 export class CrossServiceValidator {
   validate(configs: AllConfigs): ValidationResult {
     const errors: ValidationError[] = [];
@@ -34,12 +77,9 @@ export class CrossServiceValidator {
     // rawYaml is the full top-level YAML document, keyed by NF name.
     // e.g. { amf: { sbi: { client: { scp: [{ uri: '...' }] } } } }
     // So we must descend into raw[service] first, not raw directly.
-    const getClient = (raw: any, service: string): any => raw?.[service]?.sbi?.client;
-
-    const checkConnectivity = (service: string, raw: any): void => {
-      const client = getClient(raw, service);
-      const hasNrf = Array.isArray(client?.nrf) && client.nrf.length > 0;
-      const hasScp = Array.isArray(client?.scp) && client.scp.length > 0;
+    const checkConnectivity = (service: string, raw: unknown): void => {
+      const hasNrf = digArray(raw, service, 'sbi', 'client', 'nrf').length > 0;
+      const hasScp = digArray(raw, service, 'sbi', 'client', 'scp').length > 0;
 
       if (!hasNrf && !hasScp) {
         errors.push({
@@ -57,9 +97,13 @@ export class CrossServiceValidator {
 
     // Check SCP URI consistency — all services pointing to SCP should use the same URI
     const scpUris = new Map<string, string>(); // service -> uri
-    const collectScp = (service: string, raw: any): void => {
-      const uri = getClient(raw, service)?.scp?.[0]?.uri;
-      if (uri) scpUris.set(service, uri);
+    const collectScp = (service: string, raw: unknown): void => {
+      const uri = dig(digArray(raw, service, 'sbi', 'client', 'scp')[0], 'uri');
+      // `typeof uri === 'string'` rather than the previous bare truthiness
+      // check: scpUris is a Map<string, string>, and a hand-edited `uri: 8080`
+      // used to be stored as a number, then joined into the "different SCP
+      // URIs" message. Same narrow-don't-coerce rule as the Kea config fix.
+      if (typeof uri === 'string' && uri) scpUris.set(service, uri);
     };
 
     collectScp('amf', configs.amf?.rawYaml);
@@ -154,10 +198,28 @@ export class CrossServiceValidator {
     // useful for the general "Validate Config" page: a partial/out-of-order
     // PLMN change (e.g. Phase A/C ran but Phase B didn't, or vice versa) shows
     // up here as a real, actionable warning instead of silently drifting.
-    const mmeRaw = (configs.mme as any)?.rawYaml?.mme;
     const mmePlmns = new Set<string>();
-    for (const entry of mmeRaw?.gummei || []) {
-      if (entry?.plmn_id) mmePlmns.add(plmnKey(entry.plmn_id.mcc, entry.plmn_id.mnc));
+    for (const entry of digArray(configs.mme?.rawYaml, 'mme', 'gummei')) {
+      const mcc = plmnPart(dig(entry, 'plmn_id', 'mcc'));
+      const mnc = plmnPart(dig(entry, 'plmn_id', 'mnc'));
+      // Incomplete entries are SKIPPED, matching collectPlmns() twenty lines
+      // above, which already skips an entry with no complete plmn_id. The old
+      // test here was `if (entry?.plmn_id)`, so a gummei entry carrying a
+      // plmn_id with a missing mcc or mnc added the literal key
+      // "undefined-undefined" to this set — and since the check below is
+      // `every(pk => !amfPlmns.has(pk))`, a garbage key can only ever push the
+      // result TOWARDS reporting a 4G/5G PLMN mismatch that does not exist.
+      // Deliberately silent rather than also pushing an error like the AMF
+      // path does: that would be new operator-visible output, which is a
+      // separate decision from removing the bad key.
+      if (mcc === null || mnc === null) continue;
+      // plmnPart stringifies a numeric mcc/mnc exactly as plmnKey's template
+      // literal used to, so the key TEXT is unchanged for every well-formed
+      // file. Do NOT "fix" this by zero-padding: MNC width is load-bearing in
+      // this project, but these keys are only ever compared against AMF keys
+      // built the same way, so padding one side would break the comparison it
+      // looks like it is improving.
+      mmePlmns.add(plmnKey(mcc, mnc));
     }
     if (mmePlmns.size > 0 && [...mmePlmns].every(pk => !amfPlmns.has(pk))) {
       errors.push({
@@ -211,9 +273,9 @@ export class CrossServiceValidator {
       });
     }
 
-    const amfNgapAddr = resolveAddr(
-      configs.amf.ngap?.addr as string | string[] | undefined,
-    );
+    // No cast: `ngap.addr` is already `string | string[] | undefined`, which is
+    // exactly resolveAddr's parameter type.
+    const amfNgapAddr = resolveAddr(configs.amf.ngap?.addr);
     if (!amfNgapAddr) {
       errors.push({
         field: 'amf.ngap.addr',

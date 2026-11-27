@@ -115,9 +115,12 @@ interface ItmWasmModule {
 let modulePromise: Promise<ItmWasmModule> | null = null;
 function loadModule(): Promise<ItmWasmModule> {
   if (modulePromise == null) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const createItmModule = require('./wasm/itm/itm.js');
-    modulePromise = createItmModule() as Promise<ItmWasmModule>;
+    // The ITM wasm glue is a CommonJS artifact emitted by emscripten; there is
+    // no ESM build of it to import, so require() is the only way in. Rule name
+    // corrected from no-var-requires, which typescript-eslint 8 renamed.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const createItmModule = require('./wasm/itm/itm.js') as () => Promise<ItmWasmModule>;
+    modulePromise = createItmModule();
   }
   const promise: Promise<ItmWasmModule> = modulePromise;
   return promise;

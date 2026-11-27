@@ -1,5 +1,5 @@
 import { SmfYamlDocument } from './open5gs-yaml';
-import { BaseNfConfig, PfcpConfig, PlmnId, SbiConfig, Snssai, GtpuConfig } from './base-config';
+import { BaseNfConfig, PfcpConfig, SbiConfig, Snssai, GtpuConfig } from './base-config';
 import { YamlSession } from './open5gs-yaml';
 
 
