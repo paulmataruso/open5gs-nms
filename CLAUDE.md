@@ -1661,6 +1661,39 @@ Full detail on any of these: `docs/features.md`.
     produced a single 2.9 MB initial bundle; route splitting cut first load from
     ~821 kB to ~111 kB gzip, and one new static page import silently gives a
     chunk of that back.
+- **Integrating a community PR: `git merge` it, never a plain `git rebase`.**
+  A plain rebase FLATTENS the branch and silently DISCARDS its merge commits,
+  so any change that exists only inside one is lost with no conflict and no
+  warning. Confirmed the hard way on 2026-11-27 with community PR #45: the
+  contributor's final commit was a merge titled "Merge main, and repoint
+  useAuth at the module main moved it to" — i.e. they had already noticed main
+  moved `useAuth` from `contexts/AuthContext` to `contexts/auth-context` and
+  fixed their import. Rebasing their branch onto main dropped that commit,
+  reverted the import to the broken path carried by their three earlier
+  commits, and left `useAuth` resolving to `undefined` — the page would throw
+  "useAuth is not a function" on first render. It then looked exactly like a
+  defect in their contribution, and was reported as one before the branch
+  history was checked. Use `git merge --no-edit <pr-branch>`, or
+  `git rebase --rebase-merges` if a rebase is genuinely wanted. **If a
+  community PR's last commit is a merge, assume it carries something and
+  diff it before discarding it** (`git diff <its-first-parent> <the-merge>`).
+- **Run `scripts/verify.sh` before pushing, not a subset of the gates.** It
+  runs exactly what CI runs, in CI's order, and like CI it runs every check
+  before reporting a verdict rather than stopping at the first failure. Three
+  traps it exists to close, all hit repeatedly in one session: `npx tsc
+  --noEmit -p backend/tsconfig.json` reports clean no matter what state a test
+  file is in, because that config EXCLUDES `src/**/__tests__/**` and only
+  ts-jest typechecks tests; `node_modules` silently keeps another branch's
+  resolutions after an `npm install`, which produced a frontend lint reading of
+  510-vs-379 that looked like 131 new findings and was entirely the toolchain
+  (`scripts/check-deps-fresh.mjs` is step 0 for this reason); and a gate run
+  while anything else mutates the git tree — a background build, a checkout, a
+  rebase — measures a tree that no longer exists. Never `git checkout` or
+  rebase while a verification is running against the working copy.
+- **`npm test` in backend is `jest --runInBand`, and that matters here.** A
+  bare `npx jest` defaults to one worker per core; on this 4-core host, which
+  is also running the live 5G core, that was measured at a load average of 18.
+  Pass `--maxWorkers=2` if you must invoke jest directly.
 - **Only commit when explicitly asked.** This project has gone through periods of
   large uncommitted work by design (user wanted a clean-host test before committing) —
   don't assume "the fix works" means "commit it."
