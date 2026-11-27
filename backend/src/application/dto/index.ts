@@ -22,12 +22,18 @@ import { ServiceName } from '../../domain/entities/service-status';
 // They are therefore ALIASES now, not copies. The documents are defined and
 // verified in domain/entities/open5gs-yaml.ts; a second hand-written copy
 // drifting from the first is what produced the original bug.
+//
+// MmeMobilityPeer is the one entry here that is not a whole document. It is
+// aliased alongside them because it is a shape INSIDE one (mme.gtpc.client.mme)
+// and belongs to the same single source of truth -- declaring it separately for
+// the use case that validates it is exactly the drift this block exists to stop.
 export type {
   AmfYamlDocument as AmfConfigDto,
   AusfYamlDocument as AusfConfigDto,
   BsfYamlDocument as BsfConfigDto,
   HssYamlDocument as HssConfigDto,
   MmeYamlDocument as MmeConfigDto,
+  YamlMmeMobilityPeer as MmeMobilityPeer,
   NrfYamlDocument as NrfConfigDto,
   NssfYamlDocument as NssfConfigDto,
   PcfYamlDocument as PcfConfigDto,

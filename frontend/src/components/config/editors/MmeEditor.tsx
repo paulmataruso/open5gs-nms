@@ -2,24 +2,15 @@ import type { AllConfigs, YamlSgsapClient } from '../../../types';
 import { LoggerSection, FunctionInfoBox } from './SharedComponents';
 import { Plus, X, Shield } from 'lucide-react';
 import { FieldWithTooltip } from '../FieldsWithTooltips';
-import { addressToText, textToAddress, isAddressList, firstOf } from './address-field';
+import { addressToText, textToAddress, isAddressList, firstOf, firstAddress, asList } from './address-field';
+import { HostnameWarning } from './hostname-warning';
 import { MME_TOOLTIPS, COMMON_TOOLTIPS } from '../../../data/tooltips';
+import { MmeMobilitySection } from './MmeMobilitySection';
 
 interface Props {
   configs: AllConfigs;
   onChange: (c: AllConfigs) => void;
 }
-
-// Returns true if value looks like an IPv4, IPv6, or has no dots/colons (pure hostname)
-const isHostname = (val: string): boolean => {
-  if (!val) return false;
-  // IPv4
-  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(val)) return false;
-  // IPv6
-  if (val.includes(':')) return false;
-  // Has a dot — likely a hostname/FQDN
-  return val.includes('.');
-};
 
 // Default empty map object (Open5GS expects map as an object, NOT an array)
 const defaultMap = () => ({
@@ -172,6 +163,11 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
         />
       </div>
 
+      <MmeMobilitySection
+        peers={asList(mme.gtpc?.client?.mme)}
+        onChange={(peers) => updateMme({ gtpc: { ...mme.gtpc, client: { ...mme.gtpc?.client, mme: peers } } })}
+      />
+
       <div>
         <h3 className="text-sm font-semibold font-display text-nms-accent mb-3">GTP-C Clients</h3>
         <div className="grid grid-cols-2 gap-4">
@@ -256,17 +252,7 @@ export function MmeEditor({ configs, onChange }: Props): JSX.Element {
                   tooltip={MME_TOOLTIPS.sgsap_server_address}
                 />
                 {/* Warn if hostname — Open5GS resolves at startup, unresolvable = fatal crash */}
-                {isHostname(isFirstAndEmpty ? '' : (Array.isArray(actualClient.address) ? actualClient.address[0] : actualClient.address || '')) && (
-                  <div className="col-span-2 flex items-start gap-2 mt-1 px-3 py-2 rounded bg-yellow-500/10 border border-yellow-500/30 text-yellow-300 text-xs">
-                    <span className="mt-0.5">⚠</span>
-                    <span>
-                      <strong>Hostname detected.</strong> Open5GS MME resolves this address via DNS at startup.
-                      If <code className="font-mono bg-black/20 px-1 rounded">{Array.isArray(actualClient.address) ? actualClient.address[0] : actualClient.address}</code> is
-                      not resolvable from the MME host at boot time, the MME will abort with a fatal error.
-                      Use an IP address if DNS is not guaranteed.
-                    </span>
-                  </div>
-                )}
+                <HostnameWarning address={isFirstAndEmpty ? '' : firstAddress(actualClient.address)} />
                 <FieldWithTooltip
                   label="MME Local Address"
                   value={isFirstAndEmpty ? '' : (Array.isArray(actualClient.local_address) ? actualClient.local_address.join(', ') : actualClient.local_address || '')}
