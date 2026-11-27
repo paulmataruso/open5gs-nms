@@ -1,5 +1,4 @@
-import { createHmac } from 'crypto';
-import { v4 as uuidv4 } from 'uuid';
+import { createHmac, randomUUID } from 'crypto';
 import pino from 'pino';
 
 const SIMLESSLY_GENERATE_AC_URL = 'https://rsp.simlessly.com/api/v2/ac/generate';
@@ -33,7 +32,7 @@ export class EsimGeneratorUseCase {
 
     const bodyString = JSON.stringify(requestBody);
     const timestamp = Date.now().toString();
-    const requestId = uuidv4().replace(/-/g, '');
+    const requestId = randomUUID().replace(/-/g, '');
 
     const signData = timestamp + requestId + this.accessKey + bodyString;
     const signature = createHmac('sha256', this.secretKey)
