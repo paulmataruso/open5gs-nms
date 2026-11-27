@@ -537,3 +537,89 @@ describe('parseKeaLeases', () => {
   });
 
 });
+
+describe('parseKeaConfig: a non-string value must not become "[object Object]"', () => {
+  // This file ROUND-TRIPS the operator's own kea-dhcp4.conf -- parse feeds the
+  // UI, and the UI's next save is written straight back to disk. So a value
+  // String()'d into the literal text [object Object] is not a cosmetic log
+  // problem: for `domain-name` and a reservation's `hostname`, which nothing
+  // validates, that text is PERSISTED into their config; for `subnet`, a pool
+  // or a `hw-address`, validation rejects it and blocks the whole save with an
+  // error naming a field the operator never touched.
+  const doc = (subnet4: unknown): string => JSON.stringify({ Dhcp4: { subnet4 } });
+
+  test('object-valued fields are dropped rather than stringified', () => {
+    const cfg = parseKeaConfig(doc([{
+      id: 1,
+      subnet: { oops: true },
+      pools: [{ pool: { from: 'a', to: 'b' } }],
+      'option-data': [{ name: 'domain-name', data: { nested: 1 } }],
+      reservations: [{ 'hw-address': 'aa:bb:cc:dd:ee:ff', 'ip-address': '10.0.0.9', hostname: { h: 1 } }],
+    }]));
+    const s = cfg.subnets[0];
+    expect(s.subnet).toBe('');
+    expect(s.domainName).toBeUndefined();
+    expect(s.reservations[0].hostname).toBeUndefined();
+    expect(s.pools).toEqual([]);
+  });
+
+  test('and never reach the document that gets written to disk', () => {
+    const cfg = parseKeaConfig(doc([{
+      id: 1,
+      subnet: { oops: true },
+      'option-data': [{ name: 'domain-name', data: { nested: 1 } }],
+      reservations: [{ 'hw-address': 'aa:bb:cc:dd:ee:ff', 'ip-address': '10.0.0.9', hostname: { h: 1 } }],
+    }]));
+    expect(JSON.stringify(buildKeaConfig(cfg))).not.toContain('[object Object]');
+  });
+
+  // The narrowing must not take away the coercions that are USEFUL. A number
+  // stringifies as it always did, and an array joins with commas -- which is
+  // what listOf relies on for routers and domain-name-servers.
+  test('numbers and arrays still produce the string they always did', () => {
+    const num = parseKeaConfig(doc([{
+      id: 1, subnet: '10.0.0.0/24',
+      'option-data': [{ name: 'domain-name', data: 1234 }],
+    }]));
+    expect(num.subnets[0].domainName).toBe('1234');
+
+    const arr = parseKeaConfig(doc([{
+      id: 1, subnet: '10.0.0.0/24',
+      'option-data': [{ name: 'domain-name-servers', data: ['8.8.8.8', '1.1.1.1'] }],
+    }]));
+    expect(arr.subnets[0].dnsServers).toEqual(['8.8.8.8', '1.1.1.1']);
+  });
+
+  // The real file from this deployment, verbatim, so the fix is pinned against
+  // a config that actually exists rather than only against malformed input.
+  test('the real deployment config round-trips unchanged', () => {
+    const real = JSON.stringify({
+      Dhcp4: {
+        'interfaces-config': { interfaces: ['ens20'] },
+        'valid-lifetime': 3600,
+        'reservation-mode': 'all',
+        subnet4: [{
+          id: 1,
+          subnet: '10.0.2.0/24',
+          pools: [{ pool: '10.0.2.10 - 10.0.2.200' }],
+          'valid-lifetime': 3600,
+          'option-data': [
+            { name: 'routers', data: '10.0.2.1' },
+            { name: 'domain-name-servers', data: '8.8.8.8' },
+            { name: 'domain-name', data: 'ran.dhitechnical.com' },
+          ],
+        }],
+      },
+    });
+    const once = parseKeaConfig(real);
+    expect(once.subnets[0]).toMatchObject({
+      subnet: '10.0.2.0/24',
+      pools: [{ start: '10.0.2.10', end: '10.0.2.200' }],
+      routers: ['10.0.2.1'],
+      dnsServers: ['8.8.8.8'],
+      domainName: 'ran.dhitechnical.com',
+    });
+    // parse -> build -> parse must be a fixed point.
+    expect(parseKeaConfig(JSON.stringify(buildKeaConfig(once)))).toEqual(once);
+  });
+});

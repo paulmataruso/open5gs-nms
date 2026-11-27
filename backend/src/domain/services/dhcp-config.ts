@@ -494,6 +494,34 @@ interface KeaDocument {
   Dhcp4?: KeaDhcp4;
 }
 
+/**
+ * Reads a Kea value we expect to be a string.
+ *
+ * Every field in this file's Kea interfaces is `unknown` on purpose, because
+ * `kea-dhcp4.conf` is hand-editable and is the single source of truth -- there
+ * is no Mongo mirror to fall back on. The hazard is that this file does not
+ * only READ that config, it round-trips it: whatever comes out of here goes
+ * back to the UI and returns on the next save. `String(someObject)` yields the
+ * literal text `[object Object]`, and that text then either gets written into
+ * the operator's own config (`domain-name` and a reservation's `hostname` are
+ * not validated) or fails validation and blocks the whole save with an error
+ * naming a field they never touched (`subnet`, a pool, a `hw-address`).
+ *
+ * So narrow rather than coerce, which is what `relayIpsOf` and the `iface`
+ * field in this same function already do. Every input that currently produces
+ * a useful string still produces exactly the same string: a number or boolean
+ * stringifies as before, and an array is joined with commas, which is what
+ * `listOf` below already relies on for `routers` and `domain-name-servers`.
+ * Only values that would have produced `[object Object]` change, and they
+ * become absent instead.
+ */
+function keaStr(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) return v.map(keaStr).filter(Boolean).join(',');
+  return '';
+}
+
 /** Reads a Kea config document back into our shape, tolerating hand edits. */
 export function parseKeaConfig(raw: string): DhcpConfig {
   let doc: KeaDocument | undefined;
@@ -504,7 +532,7 @@ export function parseKeaConfig(raw: string): DhcpConfig {
   const optOf = (arr: unknown, name: string): string => {
     if (!Array.isArray(arr)) return '';
     const hit = (arr as KeaOptionData[]).find((o) => o?.name === name);
-    return hit?.data === undefined || hit.data === null ? '' : String(hit.data);
+    return keaStr(hit?.data);
   };
   const listOf = (arr: unknown, name: string): string[] =>
     optOf(arr, name).split(',').map((v) => v.trim()).filter(Boolean);
@@ -517,9 +545,9 @@ export function parseKeaConfig(raw: string): DhcpConfig {
     reservationsOnly: d['reservation-mode'] === 'global',
     subnets: (Array.isArray(d.subnet4) ? (d.subnet4 as KeaSubnet4[]) : []).map((s, idx): DhcpSubnet => ({
       id: Number(s?.id) || idx + 1,
-      subnet: String(s?.subnet ?? ''),
+      subnet: keaStr(s?.subnet),
       pools: (Array.isArray(s?.pools) ? (s.pools as KeaPool[]) : []).flatMap((p) => {
-        const m = String(p?.pool ?? '').split('-').map((x) => x.trim());
+        const m = keaStr(p?.pool).split('-').map((x) => x.trim());
         return m.length === 2 && m[0] && m[1] ? [{ start: m[0], end: m[1] }] : [];
       }),
       routers: listOf(s?.['option-data'], 'routers'),
@@ -531,9 +559,9 @@ export function parseKeaConfig(raw: string): DhcpConfig {
       // round-trips byte-for-byte through parse -> build -> parse.
       relayIps: relayIpsOf(s),
       reservations: (Array.isArray(s?.reservations) ? (s.reservations as KeaReservation[]) : []).flatMap((r) => {
-        const mac = normalizeMac(String(r?.['hw-address'] ?? ''));
-        const ip = String(r?.['ip-address'] ?? '');
-        return mac && ip ? [{ mac, ip, hostname: r?.hostname ? String(r.hostname) : undefined }] : [];
+        const mac = normalizeMac(keaStr(r?.['hw-address']));
+        const ip = keaStr(r?.['ip-address']);
+        return mac && ip ? [{ mac, ip, hostname: keaStr(r?.hostname) || undefined }] : [];
       }),
     })),
   };
