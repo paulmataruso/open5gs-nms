@@ -17,7 +17,7 @@ export class YamlUpdater {
    * @param filePath Path to YAML file
    * @param updates Object with paths to update (e.g., { 'nrf.sbi.server.0.address': '127.0.0.11' })
    */
-  async updateYamlFile(filePath: string, updates: Record<string, any>): Promise<void> {
+  async updateYamlFile(filePath: string, updates: Record<string, unknown>): Promise<void> {
     try {
       // Read current file
       const content = await this.hostExecutor.readFile(filePath);
@@ -57,7 +57,7 @@ export class YamlUpdater {
   /**
    * Get value at path
    */
-  async getYamlValue(filePath: string, path: string): Promise<any> {
+  async getYamlValue(filePath: string, path: string): Promise<unknown> {
     const content = await this.hostExecutor.readFile(filePath);
     const doc = YAML.parseDocument(content);
     const pathArray = this.parsePath(path);

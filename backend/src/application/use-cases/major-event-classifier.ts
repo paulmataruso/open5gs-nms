@@ -7,13 +7,28 @@
 // unstructured free text and the exact conventions vary per NF. See the plan doc for the
 // original examples this was built against.
 
-export type MajorEventType =
-  | 'radio_connect' | 'radio_disconnect'
-  | 'ue_attach' | 'ue_detach'
-  | 'ue_register' | 'ue_deregister'
-  | 'pdu_session_up' | 'pdu_session_down'
-  | 'bearer_setup_failure'
-  | 'subscriber_auth_rejected';
+/**
+ * Every major event type, as a runtime value.
+ *
+ * MajorEventType derives FROM this rather than the other way round, so the
+ * list and the type cannot drift. The list is needed at runtime because the
+ * log-stream WebSocket accepts an event-type filter from the client, and
+ * `JSON.parse` gives `any` -- the old code asserted that straight through as
+ * `eventTypesArr as MajorEventType[]`, so an arbitrary string reached a Set
+ * declared to hold this union. Note that EVENT_TYPE_SERVICES below cannot
+ * serve as the list: it is built from RULES, so a type with no rule yet has no
+ * key there (which is what its callers' `?? []` is for).
+ */
+export const MAJOR_EVENT_TYPES = [
+  'radio_connect', 'radio_disconnect',
+  'ue_attach', 'ue_detach',
+  'ue_register', 'ue_deregister',
+  'pdu_session_up', 'pdu_session_down',
+  'bearer_setup_failure',
+  'subscriber_auth_rejected',
+] as const;
+
+export type MajorEventType = typeof MAJOR_EVENT_TYPES[number];
 
 export interface MajorEvent {
   type: MajorEventType;

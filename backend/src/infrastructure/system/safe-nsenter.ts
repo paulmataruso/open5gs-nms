@@ -61,10 +61,10 @@ export function safeNsenter(cmd: string, args: string[] = [], timeoutMs = 20000)
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const killGroup = () => {
+    const killGroup = (): void => {
       if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } }
     };
-    const finish = (err: Error | null) => {
+    const finish = (err: Error | null): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);

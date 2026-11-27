@@ -346,8 +346,8 @@ export class YamlConfigRepository implements IConfigRepository {
       guami: amf.guami ?? [],
       tai: amf.tai ?? [],
       plmn_support: amf.plmn_support ?? [],
-      security: amf.security as AmfConfig['security'],
-      network_name: amf.network_name as AmfConfig['network_name'],
+      security: amf.security,
+      network_name: amf.network_name,
       amf_name: amf.amf_name,
       nrf: this.parseNrfRef(raw.nrf),
       logger: this.parseLogger(raw.logger),
@@ -631,7 +631,7 @@ export class YamlConfigRepository implements IConfigRepository {
       const fixedDoc = this.fixMccMncSdFromRawYaml(normalized, loaded);
       const cleanedDoc = this.preserveEmptyClient(fixedDoc);
       return {
-        doc: (isYamlMap(cleanedDoc) ? cleanedDoc : {}) as Open5gsConfigDocuments[K],
+        doc: isYamlMap(cleanedDoc) ? cleanedDoc : {},
         parsed: true,
         existed: true,
       };
@@ -708,7 +708,7 @@ export class YamlConfigRepository implements IConfigRepository {
     let mergedDoc: Open5gsConfigDocuments[K] = doc;
     if (Object.keys(current.doc).length > 0) {
       const merged = this.deepMerge(current.doc, doc);
-      if (isYamlMap(merged)) mergedDoc = merged as Open5gsConfigDocuments[K];
+      if (isYamlMap(merged)) mergedDoc = merged;
       this.logger.debug({ service }, 'Deep-merged incoming config over on-disk file');
     } else {
       this.logger.debug({ service }, 'No existing file to merge; writing fresh');

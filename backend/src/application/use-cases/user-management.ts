@@ -3,7 +3,7 @@ import { Bcrypt } from 'oslo/password';
 import type { Logger } from 'pino';
 import type { IAuthRepository } from '../../domain/interfaces/auth-repository';
 import type { AppLucia } from '../../infrastructure/auth/sqlite-auth-repository';
-import { toSafeUser, type SafeUser } from '../../domain/entities/user';
+import { toSafeUser, parseUserRole, type SafeUser } from '../../domain/entities/user';
 
 // ─────────────────────────────────────────────────────────────
 // Custom errors
@@ -63,7 +63,7 @@ export class UserManagementUseCase {
     if (password.length < 8) {
       throw new WeakPasswordError();
     }
-    if (role !== 'admin' && role !== 'viewer') {
+    if (parseUserRole(role) === null) {
       throw new InvalidRoleError();
     }
 
@@ -79,7 +79,7 @@ export class UserManagementUseCase {
   }
 
   async updateRole(targetUserId: string, requestingUserId: string, role: 'admin' | 'viewer'): Promise<void> {
-    if (role !== 'admin' && role !== 'viewer') throw new InvalidRoleError();
+    if (parseUserRole(role) === null) throw new InvalidRoleError();
 
     const user = await this.authRepo.findUserById(targetUserId);
     if (!user) throw new UserNotFoundError();
