@@ -41,7 +41,7 @@ import { seedAdminUser } from './infrastructure/auth/seed-admin';
 import { AuthLoginUseCase } from './application/use-cases/auth-login';
 import { AuthLogoutUseCase } from './application/use-cases/auth-logout';
 import { createAuthRouter } from './interfaces/rest/auth-controller';
-import { createAuthMiddleware, requireAdmin } from './interfaces/rest/middleware/auth-middleware';
+import { createAuthMiddleware } from './interfaces/rest/middleware/auth-middleware';
 import { UserManagementUseCase } from './application/use-cases/user-management';
 import { createUsersRouter } from './interfaces/rest/users-controller';
 import { createConfigRouter } from './interfaces/rest/config-controller';
@@ -159,7 +159,6 @@ import { createVolteValidationRouter } from './interfaces/rest/volte-validation-
 import { ImsTestNumberManager, createImsTestNumberRouter } from './interfaces/rest/ims-test-number-controller';
 import { createVowifiValidationRouter } from './interfaces/rest/vowifi-validation-controller';
 import { createQciValidationRouter } from './interfaces/rest/qci-validation-controller';
-import * as http from 'http';
 import { spawn } from 'child_process';
 import { createSasRouter } from './interfaces/rest/sas-controller';
 import { createSercommNRRouter } from './interfaces/rest/sercomm-nr-controller';
@@ -462,7 +461,7 @@ async function main() {
   const authLoginUseCase = new AuthLoginUseCase(authRepo, lucia, logger);
   const authLogoutUseCase = new AuthLogoutUseCase(lucia, logger);
   const userManagementUseCase = new UserManagementUseCase(authRepo, lucia, logger);
-  const authMiddleware = createAuthMiddleware(lucia);
+  const authMiddleware = createAuthMiddleware(lucia, logger);
   logger.info({ dbPath: config.authDbPath }, 'Auth initialised');
 
   const radioTagRepo = new SqliteRadioTagRepository(authRepo.getDb());
@@ -805,8 +804,15 @@ async function main() {
   app.use('/api', authMiddleware);
   app.use('/api/cell-broadcast', cellBroadcastRouters.admin);
 
-  // API Routes — GET routes open to all authenticated users
-  // requireAdmin middleware applied before routers that have write operations
+  // API Routes — GET routes open to all authenticated users.
+  //
+  // requireAdmin is applied PER ROUTE inside each controller, not here: a
+  // router-level guard would also block the GETs that authenticated viewers
+  // are meant to reach. This comment used to say the opposite, describing a
+  // design that was replaced -- and index.ts still imported requireAdmin
+  // without using it. Because the guard is per route across sixty-odd files
+  // it holds only if whoever adds a route remembers, so
+  // write-route-admin-guard.test.ts holds the whole set and its exemptions.
   app.use('/api/users', createUsersRouter(userManagementUseCase, logger));
   app.use('/api/config', createConfigRouter(loadConfigUseCase, validateConfigUseCase, applyConfigUseCase, topologyUseCase, serviceMonitorUseCase, syncSDUseCase, logger, mmeMobilitySupport));
   app.use('/api/sepp', createSeppRouter(hostExecutor, auditLogger, logger));
@@ -1042,33 +1048,45 @@ async function main() {
   logger.info({ port: config.port }, 'Authenticated WebSocket upgrade handler registered');
 
   // Graceful shutdown
-  const shutdown = async () => {
+  const shutdown = async (): Promise<void> => {
     logger.info('Shutting down gracefully...');
-    serviceMonitorUseCase.stopPolling();
-    logStreamHandler.cleanup();
-    subscriberIpAccounting.stop();
-    radioBlockService.stop();
-    gnbBlockService.stop();
-    hnbBlockService.stop();
-    ueBlockService.stop();
-    framedRoutingReconcileService.stop();
-    mmsMsisdnMapRefresher.stop();
-    cdrSyncMonitor.stop();
-    ocsReservationGuard.stop();
-    ocsStatsMonitor.stop();
-    asteriskStatsMonitor.stop();
-    cdrMetricsMonitor.stop();
-    await imsTestNumberManager.stopAll();
-    await subscriberRepo.disconnect();
-    await rfPlanningProjectRepo.disconnect();
-    await apnProfileRepo.disconnect();
-    httpServer.close();
-    wss.close();
-    process.exit(0);
+    // try/finally so process.exit(0) runs even if one of the disconnects
+    // below rejects. Without it a rejected await skipped the exit entirely,
+    // the handler's rejection went unhandled, and the container sat until
+    // Docker's stop timeout escalated to SIGKILL -- a slow restart rather
+    // than a crash, but on every `docker compose up -d` of a running stack.
+    try {
+      serviceMonitorUseCase.stopPolling();
+      logStreamHandler.cleanup();
+      subscriberIpAccounting.stop();
+      radioBlockService.stop();
+      gnbBlockService.stop();
+      hnbBlockService.stop();
+      ueBlockService.stop();
+      framedRoutingReconcileService.stop();
+      mmsMsisdnMapRefresher.stop();
+      cdrSyncMonitor.stop();
+      ocsReservationGuard.stop();
+      ocsStatsMonitor.stop();
+      asteriskStatsMonitor.stop();
+      cdrMetricsMonitor.stop();
+      await imsTestNumberManager.stopAll();
+      await subscriberRepo.disconnect();
+      await rfPlanningProjectRepo.disconnect();
+      await apnProfileRepo.disconnect();
+      httpServer.close();
+      wss.close();
+    } catch (err) {
+      logger.error({ err: String(err) }, 'Error during shutdown; exiting anyway');
+    } finally {
+      process.exit(0);
+    }
   };
 
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  // `void`: process.on wants a void-returning listener, and shutdown cannot
+  // reject now that its body is wrapped above.
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
 }
 
 main().catch((err) => {

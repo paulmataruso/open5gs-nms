@@ -324,11 +324,28 @@ declare module 'lucia' {
   }
 }
 
+/**
+ * What a caller actually gets on `user`, as opposed to what the row holds.
+ *
+ * Lucia's second class generic is the OUTPUT of getUserAttributes, not its
+ * input, so naming DatabaseUserAttributes there described the snake_case row
+ * (`created_at: number`) while callers were really handed this. That is why
+ * auth-middleware.ts had to reach for `(user as any).createdAt` to read a
+ * field that genuinely exists at runtime -- the value was right and the type
+ * was wrong, which is the same shape of problem as the role assertion above.
+ */
+export interface SessionUserAttributes {
+  username: string;
+  role: string;
+  createdAt: Date;
+  lastLoginAt: Date | null;
+}
+
 export function createLucia(
   adapter: Adapter,
   sessionMaxAge: number,
   cookieSecure: boolean,
-): Lucia<Record<string, never>, DatabaseUserAttributes> {
+): Lucia<Record<string, never>, SessionUserAttributes> {
   return new Lucia(adapter, {
     // Statically imported, not `new (require('lucia').TimeSpan)(...)`. The
     // require was a lone CommonJS escape hatch in an ES-module file, and it
@@ -342,12 +359,7 @@ export function createLucia(
         path: '/',
       },
     },
-    getUserAttributes(attributes): {
-      username: string;
-      role: string;
-      createdAt: Date;
-      lastLoginAt: Date | null;
-    } {
+    getUserAttributes(attributes): SessionUserAttributes {
       return {
         username: attributes.username,
         role: attributes.role,
