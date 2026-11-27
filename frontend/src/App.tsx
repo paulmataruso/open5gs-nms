@@ -100,7 +100,7 @@ function App(): JSX.Element {
       case 'ran':
         return <RANPage onNavigateToSubscriber={handleNavigateToSubscriber} />;
       case 'cell-broadcast':
-        return <CellBroadcastPage />;
+        return FEATURES.cellBroadcast ? <CellBroadcastPage /> : <DashboardPage />;
       case 'services':
         return <ServicesPage onNavigate={navigate} />;
       case 'config':

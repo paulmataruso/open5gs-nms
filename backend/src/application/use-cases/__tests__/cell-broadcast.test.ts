@@ -28,7 +28,7 @@ describe('Cell Broadcast targeting and scoped API',()=>{
     cbc=new CellBroadcastUseCase(db,host,configs);
   });
   afterEach(()=>db.close());
-  function message(extra:Record<string,unknown>={}) {return {requestId:randomUUID(),text:'Maintenance test',areas:[a],zoneIds:[],messageId:4380,serialNumber:1,confirm:true,...extra};}
+  function message(extra:Record<string,unknown>={}) {return {requestId:randomUUID(),text:'Maintenance test',areas:[a],zoneIds:[],messageId:4200,serialNumber:1,confirm:true,...extra};}
   it('keeps two- and three-digit MNC identities distinct',()=>{
     expect(uniqueTais([a,a,{plmn:'001001',tac:1}])).toHaveLength(2);
   });
@@ -74,7 +74,7 @@ describe('Cell Broadcast targeting and scoped API',()=>{
   });
   it('stops by the original CBC message identity without re-resolving edited zones',async()=>{
     const input=message();await cbc.send(input,{name:'admin'});await cbc.stop(input.requestId,{name:'admin'});
-    expect(sent[1]).toMatchObject({method:'DELETE',endpoint:'message/4380'});
+    expect(sent[1]).toMatchObject({method:'DELETE',endpoint:'message/4200'});
   });
   it('does not allow a different integration to stop another key’s message',async()=>{
     const input=message();await cbc.send(input,{name:'admin'});

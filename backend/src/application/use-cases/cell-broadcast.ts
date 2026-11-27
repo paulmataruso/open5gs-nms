@@ -9,13 +9,51 @@ import type { IConfigRepository } from '../../domain/interfaces/config-repositor
 export const taiSchema = z.object({ plmn: z.string().regex(/^\d{5,6}$/), tac: z.number().int().min(0).max(65535) }).strict();
 export type BroadcastTai = z.infer<typeof taiSchema>;
 export const zoneSchema = z.object({ name: z.string().trim().min(1).max(80), areas: z.array(taiSchema).min(1).max(16) }).strict();
+/**
+ * Message-ID ranges 3GPP TS 23.041 reserves for public emergency alerting.
+ *
+ * A handset decides how to alarm from the message identifier, NOT from any
+ * category field we send -- so 4370 is a Presidential Alert that most
+ * handsets will not let the user silence, and 4352-4359 are ETWS
+ * earthquake/tsunami warnings. On a network with real attached subscribers,
+ * a single mistyped digit in a numeric field would otherwise be
+ * indistinguishable from an ordinary broadcast.
+ *
+ * These are deliberately NOT rejected outright: deliberately testing alert
+ * delivery is a legitimate thing to do on a lab PLMN. They require their own
+ * acknowledgement, separate from the `confirm` that covers every send, so
+ * reaching one takes a distinct action rather than the same keystrokes.
+ */
+export const EMERGENCY_MESSAGE_ID_RANGES: ReadonlyArray<{ from: number; to: number; label: string }> = [
+  { from: 4352, to: 4359, label: 'ETWS (earthquake/tsunami warning)' },
+  { from: 4370, to: 4370, label: 'CMAS Presidential Alert (cannot be disabled on most handsets)' },
+  { from: 4371, to: 4399, label: 'CMAS (extreme/severe/AMBER alerting)' },
+];
+
+export function emergencyMessageIdRange(messageId: number): { from: number; to: number; label: string } | undefined {
+  return EMERGENCY_MESSAGE_ID_RANGES.find(r => messageId >= r.from && messageId <= r.to);
+}
+
 export const sendSchema = z.object({
   requestId: z.string().uuid(), text: z.string().trim().min(1).max(615).refine(v => !/[\uD800-\uDFFF]/.test(v), 'Use UCS-2 characters'),
   zoneIds: z.array(z.string().uuid()).max(16).default([]), areas: z.array(taiSchema).max(16).default([]),
   messageId: z.number().int().min(0).max(65535), serialNumber: z.number().int().min(0).max(65535),
   repetitionPeriod: z.number().int().min(1).max(4095).default(30), broadcasts: z.number().int().min(1).max(100).default(3),
   confirm: z.literal(true),
-}).strict();
+  // Required ONLY for a reserved emergency range; refused below when absent.
+  acknowledgeEmergencyAlert: z.literal(true).optional(),
+}).strict().superRefine((v, ctx) => {
+  const range = emergencyMessageIdRange(v.messageId);
+  if (range && v.acknowledgeEmergencyAlert !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['messageId'],
+      message: `Message ID ${v.messageId} is reserved by 3GPP TS 23.041 for ${range.label}. `
+        + `Handsets alarm on the message identifier itself, so this reaches every attached subscriber as a real `
+        + `emergency alert. Set acknowledgeEmergencyAlert if that is genuinely intended.`,
+    });
+  }
+});
 export interface BroadcastZone { id: string; name: string; areas: BroadcastTai[]; }
 interface TokenRow { id: string; name: string; zone_ids: string; hash: string; revoked: number; }
 export interface BroadcastCaller { name: string; tokenId?: string; allowedZones?: string[]; }
