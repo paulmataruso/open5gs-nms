@@ -10,6 +10,7 @@
 
 import { Router, Request, Response } from 'express';
 import type pino from 'pino';
+import { requireAdmin } from './middleware/auth-middleware';
 import type { AutoconfigOrchestrator } from '../../application/use-cases/autoconfig/autoconfig-orchestrator';
 import { readManifest } from '../../application/use-cases/autoconfig/autoconfig-orchestrator';
 import {
@@ -154,7 +155,14 @@ export function createAutoconfigRouter(
    * .env and restarting the backend, and without arming it for every future
    * boot. The addressing settings are still required.
    */
-  router.post('/start', (req: Request, res: Response) => {
+  // requireAdmin: the highest-blast-radius route in the application. It
+  // forces past AUTOCONFIG_ENABLED and runs the whole orchestrator -- probing
+  // addresses, binding secondary addresses on the real NIC, writing a netplan
+  // drop-in, installing thirteen modules over roughly an hour, configuring
+  // them and restarting the core. It was the only destructive
+  // module-lifecycle route in the codebase with no admin guard, against 340
+  // write routes that had one.
+  router.post('/start', requireAdmin, (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const started = orchestrator.start(user, { force: true });
     if (!started.started) return res.status(409).json({ error: started.reason });

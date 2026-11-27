@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { requireAdmin } from './middleware/auth-middleware';
+import { asyncHandler } from './middleware/async-handler';
 import pino from 'pino';
 import { randomUUID } from 'crypto';
 import { IRfPlanningProjectRepository } from '../../domain/interfaces/rf-planning-project-repository';
@@ -15,7 +17,7 @@ import {
 export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepository, logger: pino.Logger): Router {
   const router = Router();
 
-  router.get('/', async (_req: Request, res: Response) => {
+  router.get('/', asyncHandler(async (_req: Request, res: Response) => {
     try {
       const projects = await repo.findAll();
       res.json({ success: true, projects });
@@ -23,9 +25,9 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: list failed');
       res.status(500).json({ success: false, error: 'Failed to list projects' });
     }
-  });
+  }));
 
-  router.get('/:id', async (req: Request, res: Response) => {
+  router.get('/:id', asyncHandler(async (req: Request, res: Response) => {
     try {
       const project = await repo.findById(req.params.id);
       if (!project) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -34,9 +36,9 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: get failed');
       res.status(500).json({ success: false, error: 'Failed to load project' });
     }
-  });
+  }));
 
-  router.post('/', async (req: Request, res: Response) => {
+  router.post('/', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     try {
       const body = req.body as { name?: string; description?: string };
       if (!body.name) { res.status(400).json({ success: false, error: 'name is required' }); return; }
@@ -51,9 +53,9 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: create failed');
       res.status(500).json({ success: false, error: 'Failed to create project' });
     }
-  });
+  }));
 
-  router.put('/:id', async (req: Request, res: Response) => {
+  router.put('/:id', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     try {
       const existing = await repo.findById(req.params.id);
       if (!existing) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -73,9 +75,9 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: update failed');
       res.status(500).json({ success: false, error: 'Failed to update project' });
     }
-  });
+  }));
 
-  router.delete('/:id', async (req: Request, res: Response) => {
+  router.delete('/:id', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     try {
       await repo.delete(req.params.id);
       res.json({ success: true });
@@ -83,7 +85,7 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: delete failed');
       res.status(500).json({ success: false, error: 'Failed to delete project' });
     }
-  });
+  }));
 
   // "Reverse planning," scoped honestly: not an automatic solver — for
   // every site already saved in this project, reuses the coverage-grid
@@ -91,7 +93,7 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
   // polygon, so an operator gets a side-by-side "here's the TX power each
   // candidate site would need" comparison built entirely from already-
   // verified math, not a new optimizer.
-  router.post('/:id/compare-sites', async (req: Request, res: Response) => {
+  router.post('/:id/compare-sites', asyncHandler(async (req: Request, res: Response) => {
     try {
       const project = await repo.findById(req.params.id);
       if (!project) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -132,12 +134,12 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: compare-sites failed');
       res.status(500).json({ success: false, error: 'Failed to compare sites' });
     }
-  });
+  }));
 
   // Multi-sector interference/SINR over every site saved in this project —
   // deliberately works over saved sites, not a live pull from registered
   // radios (see interference.ts's own header comment for why).
-  router.post('/:id/interference', async (req: Request, res: Response) => {
+  router.post('/:id/interference', asyncHandler(async (req: Request, res: Response) => {
     try {
       const project = await repo.findById(req.params.id);
       if (!project) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -162,10 +164,10 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: interference failed');
       res.status(500).json({ success: false, error: 'Failed to compute interference grid' });
     }
-  });
+  }));
 
   // Field-survey calibration — add a real measured reading to a site.
-  router.post('/:id/sites/:siteId/survey-points', async (req: Request, res: Response) => {
+  router.post('/:id/sites/:siteId/survey-points', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     try {
       const project = await repo.findById(req.params.id);
       if (!project) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -186,9 +188,9 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: add survey point failed');
       res.status(500).json({ success: false, error: 'Failed to add survey point' });
     }
-  });
+  }));
 
-  router.delete('/:id/sites/:siteId/survey-points/:index', async (req: Request, res: Response) => {
+  router.delete('/:id/sites/:siteId/survey-points/:index', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     try {
       const project = await repo.findById(req.params.id);
       if (!project) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -204,12 +206,12 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: remove survey point failed');
       res.status(500).json({ success: false, error: 'Failed to remove survey point' });
     }
-  });
+  }));
 
   // Computed fresh every time from the site's current config + its
   // persisted survey points — never cached, so it can't go stale if the
   // site's config changes after survey points were recorded.
-  router.get('/:id/sites/:siteId/calibration', async (req: Request, res: Response) => {
+  router.get('/:id/sites/:siteId/calibration', asyncHandler(async (req: Request, res: Response) => {
     try {
       const project = await repo.findById(req.params.id);
       if (!project) { res.status(404).json({ success: false, error: 'Project not found' }); return; }
@@ -226,7 +228,7 @@ export function createRfPlanningProjectsRouter(repo: IRfPlanningProjectRepositor
       logger.error({ err: String(err) }, 'rf-planning-projects: calibration failed');
       res.status(500).json({ success: false, error: 'Failed to compute calibration' });
     }
-  });
+  }));
 
   return router;
 }
