@@ -14,6 +14,10 @@ pnpm-debug.log*
 dist/
 build/
 *.tgz
+# tsc's incremental cache. Produced by any `tsc -b` or by typechecking a
+# composite project (frontend/tsconfig.node.json is one), so it appears
+# without anyone asking for it and would be swept in by `git add -A`.
+*.tsbuildinfo
 
 # Environment variables
 .env

@@ -75,6 +75,21 @@ jobs:
         run: npm test
 
   frontend:
+    # This job NAME is load-bearing and must not be changed casually, despite
+    # now understating what the job does (it runs the Vitest suite too). It is
+    # pinned by branch protection on `main`, which requires each check by its
+    # exact context string -- currently "backend (typecheck + tests)",
+    # "frontend (build)" and "lint (ratchet + changed lines)". Renaming a job
+    # on its own leaves a required check that can never report again, so every
+    # pull request blocks forever on a check that does not exist, including the
+    # one doing the rename. CI-LINT-PLAN.md Phase 7 records the protection
+    # settings but not this coupling, which is easy to walk into.
+    #
+    # To rename it, change BOTH in the same move and verify afterwards:
+    #   gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_checks \
+    #     -f 'checks[][context]=backend (typecheck + tests)' \
+    #     -f 'checks[][context]=frontend (build + tests)' \
+    #     -f 'checks[][context]=lint (ratchet + changed lines)'
     name: frontend (build)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -106,8 +121,25 @@ jobs:
 
       # `npm run build` is check-breakpoints -> tsc -> vite build, so this is
       # the typecheck and the real production bundle in one step.
+      #
+      # It also typechecks the TESTS, because frontend/tsconfig.json includes
+      # all of `src` and the test files live in `src/**/__tests__/`. That is
+      # deliberately unlike the backend, whose tsconfig EXCLUDES its tests —
+      # which is the trap CLAUDE.md records under scripts/verify.sh, where
+      # `tsc --noEmit` reported clean no matter what state a test file was in.
       - name: Build
         run: npm run build
+
+      # Vitest + jsdom, covering what the backend's jest run cannot reach: the
+      # components, hooks and stores that need a DOM. (The three pure frontend
+      # modules — subnet-reach, radio-grouping, address-field — are imported
+      # and executed by the backend job instead, and are not duplicated here.)
+      #
+      # In the same job as the build on purpose: a separate job would mean a
+      # second checkout, a second `npm ci` and a second cache warm for a suite
+      # that runs in seconds.
+      - name: Tests
+        run: npm test
 
   # Lint is NOT a pass/fail gate yet — the backend carries thousands of
   # pre-existing findings, and a permanently red check is a check everyone

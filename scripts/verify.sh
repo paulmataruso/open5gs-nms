@@ -54,6 +54,10 @@ step 'backend tests'      bash -c 'cd backend && npm test --silent'
 # `npm run build` is check-breakpoints && tsc && vite build, so this IS the
 # frontend typecheck. vite/esbuild alone would transpile without checking.
 step 'frontend build'     bash -c 'cd frontend && npm run -s build'
+# Vitest + jsdom, matching CI's frontend job, which runs build then tests
+# in that order. maxWorkers is pinned to 2 in vitest.config.ts for the same
+# reason `--runInBand` is used above.
+step 'frontend tests'     bash -c 'cd frontend && npm test --silent'
 step 'ratchet backend'    be_lint
 step 'ratchet frontend'   fe_lint
 step 'changed lines'      node scripts/lint-changed-lines.mjs "$BASE"
@@ -61,7 +65,7 @@ step 'changed lines'      node scripts/lint-changed-lines.mjs "$BASE"
 printf '\n\033[1m── verdict ──\033[0m\n'
 failed=0
 for k in 'deps match lockfile' 'backend typecheck' 'backend tests' 'frontend build' \
-         'ratchet backend' 'ratchet frontend' 'changed lines'; do
+         'frontend tests' 'ratchet backend' 'ratchet frontend' 'changed lines'; do
   printf '  %-22s %s\n' "$k" "${OUTCOME[$k]:-skipped}"
   [ "${OUTCOME[$k]:-}" = pass ] || failed=1
 done
