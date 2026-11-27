@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE DiameterPeer SYSTEM "DiameterPeer.dtd">
+<DiameterPeer
+    FQDN="pcscf.ims.mnc001.mcc001.3gppnetwork.org"
+    Realm="ims.mnc001.mcc001.3gppnetwork.org"
+    Vendor_Id="10415"
+    Product_Name="Kamailio P-CSCF"
+    AcceptUnknownPeers="1"
+    DropUnknownOnDisconnect="1"
+    DefaultAuthSessionTimeout="3600"
+    MaxAuthSessionTimeout="3600"
+    Tc="30"
+    Workers="4"
+    QueueLength="32">
+  <Acceptor port="3871" bind="10.0.1.178"/>
+  <Auth id="16777236" vendor="10415"/>
+  <Auth id="16777236" vendor="0"/>
+  <SupportedVendor vendor="10415"/>
+  <Peer FQDN="pcrf.epc.mnc001.mcc001.3gppnetwork.org" port="3868"/>
+  <DefaultRoute FQDN="pcrf.epc.mnc001.mcc001.3gppnetwork.org" metric="10"/>
+</DiameterPeer>
