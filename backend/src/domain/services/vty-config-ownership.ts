@@ -214,7 +214,7 @@ function mergeOncePathDirectives(
     if (header) stack.push({ header: lines[i].trim(), indent: ind });
   }
 
-  const samePath = (a: string[], b: string[]) =>
+  const samePath = (a: string[], b: string[]): boolean =>
     a.length === b.length && a.every((v, i) => v === b[i]);
 
   // Self-healing: a file written by the buggy append (see outIdxOf's comment)
@@ -364,11 +364,11 @@ function createMissingSubtree(text: string, path: string[], owned: PathDirective
     if (header) stack.push({ header: lines[i].trim(), indent: ind });
   }
 
-  const same = (a: string[], b: string[]) =>
+  const same = (a: string[], b: string[]): boolean =>
     a.length === b.length && a.every((v, i) => v === b[i]);
-  const isPrefix = (pre: string[], full: string[]) =>
+  const isPrefix = (pre: string[], full: string[]): boolean =>
     full.length >= pre.length && pre.every((v, i) => v === full[i]);
-  const nodeExists = (p: string[]) => {
+  const nodeExists = (p: string[]): boolean => {
     if (p.length === 0) return true;
     const parent = p.slice(0, -1);
     const own = p[p.length - 1];

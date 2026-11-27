@@ -35,6 +35,8 @@ export const SERCOMM_RF_PRECONDITION_PARAMS = [
   'Device.FAP.GPS.LockedLongitude',
 ];
 
+import { AcsDevice, acsValueAt } from './genieacs-device';
+
 export interface SercommRfPrecondition {
   /** True when the cell cannot come up however many times RF On is sent. */
   blocked: boolean;
@@ -48,14 +50,6 @@ export interface SercommRfPrecondition {
   gpsLocked: boolean;
 }
 
-function raw(device: Record<string, any>, dotPath: string): string | null {
-  let node: any = device;
-  for (const part of dotPath.split('.')) {
-    if (node == null) return null;
-    node = node[part];
-  }
-  return node?._value != null ? String(node._value).trim() : null;
-}
 
 function asBool(v: string | null): boolean | null {
   if (v == null || v === '') return null;
@@ -76,13 +70,13 @@ function gpsIsLocked(lat: string | null, lon: string | null): boolean {
   return a !== 0 && b !== 0;
 }
 
-export function assessSercommRfPrecondition(device: Record<string, any>): SercommRfPrecondition {
-  const adminState = asBool(raw(device, `${SERCOMM_FAP_PREFIX}FAPControl.LTE.AdminState`));
-  const sasEnabled = asBool(raw(device, `${SERCOMM_FAP_PREFIX}FAPControl.LTE.X_000E8F_SAS.Enable`)) === true;
-  const sasStatus = raw(device, `${SERCOMM_NE_STATUS_PREFIX}X_000E8F_SAS_Status`) ?? '';
-  const enbStatus = raw(device, `${SERCOMM_NE_STATUS_PREFIX}X_000E8F_eNB_Status`) ?? '';
-  const lat = raw(device, 'Device.FAP.GPS.LockedLatitude');
-  const lon = raw(device, 'Device.FAP.GPS.LockedLongitude');
+export function assessSercommRfPrecondition(device: AcsDevice): SercommRfPrecondition {
+  const adminState = asBool(acsValueAt(device, `${SERCOMM_FAP_PREFIX}FAPControl.LTE.AdminState`));
+  const sasEnabled = asBool(acsValueAt(device, `${SERCOMM_FAP_PREFIX}FAPControl.LTE.X_000E8F_SAS.Enable`)) === true;
+  const sasStatus = acsValueAt(device, `${SERCOMM_NE_STATUS_PREFIX}X_000E8F_SAS_Status`) ?? '';
+  const enbStatus = acsValueAt(device, `${SERCOMM_NE_STATUS_PREFIX}X_000E8F_eNB_Status`) ?? '';
+  const lat = acsValueAt(device, 'Device.FAP.GPS.LockedLatitude');
+  const lon = acsValueAt(device, 'Device.FAP.GPS.LockedLongitude');
   const gpsLocked = gpsIsLocked(lat, lon);
 
   const reasons: string[] = [];

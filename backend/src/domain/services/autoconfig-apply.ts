@@ -282,8 +282,8 @@ export async function awaitRunStatus<T extends RunStatusLike>(
   summarise: (state: T) => string,
   opts: { timeoutMs: number; pollMs: number; now?: () => number; sleep?: (ms: number) => Promise<void> },
 ): Promise<AwaitOutcome> {
-  const now = opts.now ?? (() => Date.now());
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const now = opts.now ?? ((): number => Date.now());
+  const sleep = opts.sleep ?? ((ms: number): Promise<void> => new Promise<void>(r => setTimeout(r, ms)));
   const deadline = now() + opts.timeoutMs;
   for (;;) {
     const st = get();

@@ -286,7 +286,7 @@ export function allocateAddresses(
   isTaken: TakenPredicate,
 ): { ok: true; plan: AutoconfigPlan } | { ok: false; errors: PlanError[] } {
   const skipped: string[] = [];
-  const free = (ip: string) => {
+  const free = (ip: string): boolean => {
     if (!isTaken(ip)) return true;
     if (!skipped.includes(ip)) skipped.push(ip);
     return false;

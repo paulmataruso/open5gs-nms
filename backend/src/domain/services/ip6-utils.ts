@@ -24,7 +24,7 @@ function expandGroups(addr: string): string[] {
     const tail = parts[1] ? parts[1].split(':') : [];
     const missing = 8 - head.length - tail.length;
     if (missing < 1) throw new Error(`Invalid IPv6 address: ${addr}`);
-    return [...head, ...Array(missing).fill('0'), ...tail];
+    return [...head, ...new Array<string>(missing).fill('0'), ...tail];
   }
 
   const groups = trimmed.split(':');

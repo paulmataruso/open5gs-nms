@@ -1,4 +1,4 @@
-import type { User, SafeUser } from '../entities/user';
+import type { User } from '../entities/user';
 
 // ─────────────────────────────────────────────────────────────
 // Domain Interface: IAuthRepository

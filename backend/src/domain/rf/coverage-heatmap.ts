@@ -134,10 +134,13 @@ export function computeCoverageHeatmap(options: CoverageHeatmapOptions): Coverag
   }
 
   const samples = cols * rows;
-  const rsrpDbm: (number | null)[] = new Array(samples).fill(null);
-  const sinrDb: (number | null)[] = new Array(samples).fill(null);
-  const servingCell: (number | null)[] = new Array(samples).fill(null);
-  const qualityClass: (QualityClass | null)[] = new Array(samples).fill(null);
+  // `new Array<T>(n)`, not `new Array(n)`: the untyped form infers any[], so the
+  // declared element type on the left was being satisfied by an unchecked value
+  // and every later write into these rasters went unverified.
+  const rsrpDbm = new Array<number | null>(samples).fill(null);
+  const sinrDb = new Array<number | null>(samples).fill(null);
+  const servingCell = new Array<number | null>(samples).fill(null);
+  const qualityClass = new Array<QualityClass | null>(samples).fill(null);
 
   const wallLossPerCrossing = cells.map(c => penetrationLossDb(c.profile.frequencyGhz));
   let covered = 0;

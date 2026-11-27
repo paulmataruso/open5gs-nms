@@ -190,7 +190,6 @@ function post(
   return new Promise((resolve, reject) => {
     const url = new URL(endpoint);
     const payload = `data=${encodeURIComponent(body)}`;
-    let deadline: NodeJS.Timeout;
     const req = https.request(
       {
         hostname: url.hostname,
@@ -215,7 +214,7 @@ function post(
     // `timeout` above is an INACTIVITY timeout: a mirror that trickles bytes
     // back slowly resets it on every chunk and can outlive the budget entirely.
     // This hard deadline is what actually bounds the attempt.
-    deadline = setTimeout(() => req.destroy(new Error(`no response within ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+    const deadline = setTimeout(() => req.destroy(new Error(`no response within ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
     req.on('timeout', () => req.destroy(new Error(`stalled after ${Math.round(timeoutMs / 1000)}s of inactivity`)));
     req.on('error', err => { clearTimeout(deadline); reject(err); });
     // Let the caller drop this attempt once another mirror has already won,
@@ -285,7 +284,7 @@ export async function fetchOsmBuildings(bounds: [number, number, number, number]
   if (cached) return { ...cached, cached: true };
   const query = overpassQuery(bounds);
   const startedAt = Date.now();
-  const elapsed = () => Date.now() - startedAt;
+  const elapsed = (): number => Date.now() - startedAt;
   const failures: string[] = [];
   const inFlight = new Map<Promise<AttemptOutcome>, { endpoint: string; abort: () => void }>();
   let nextEndpoint = 0;
@@ -293,10 +292,9 @@ export async function fetchOsmBuildings(bounds: [number, number, number, number]
   const launch = (): void => {
     const endpoint = OVERPASS_ENDPOINTS[nextEndpoint++];
     if (!endpoint) return;
-    const remaining = OVERPASS_TOTAL_BUDGET_MS - elapsed();
     const holder: { abort: () => void } = { abort: () => {} };
     let lastDetail: string | undefined;
-    const attempt: Promise<AttemptOutcome> = (async () => {
+    const attempt: Promise<AttemptOutcome> = (async (): Promise<AttemptOutcome> => {
       for (let attempt = 0; attempt < 2; attempt++) {
         const left = OVERPASS_TOTAL_BUDGET_MS - elapsed();
         if (left < 8_000) break;
@@ -333,7 +331,7 @@ export async function fetchOsmBuildings(bounds: [number, number, number, number]
           }
           return {
             ok: true, endpoint,
-            ways: parsed.elements.filter(e => e.type === 'way' && Array.isArray(e.geometry) && e.geometry!.length >= 4),
+            ways: parsed.elements.filter(e => e.type === 'way' && Array.isArray(e.geometry) && e.geometry.length >= 4),
           };
         } catch (err) {
           lastDetail = `${hostOf(endpoint)}: ${err instanceof Error ? err.message : String(err)}`;
@@ -349,7 +347,7 @@ export async function fetchOsmBuildings(bounds: [number, number, number, number]
     inFlight.set(attempt, { endpoint, abort: () => holder.abort() });
   };
 
-  const dropOthers = () => { for (const { abort } of inFlight.values()) abort(); inFlight.clear(); };
+  const dropOthers = (): void => { for (const { abort } of inFlight.values()) abort(); inFlight.clear(); };
 
   while (true) {
     if (inFlight.size === 0) {
@@ -424,7 +422,7 @@ function toFeatures(ways: OverpassWay[]): Record<string, unknown>[] {
     const densityScore = Math.round(Math.min(100, nearby * 1.4 + nearbyResidential * 3.0) * 100) / 100;
 
     const t = b.tags;
-    const clean = (v?: string) => (v ?? '').trim().toLowerCase();
+    const clean = (v?: string): string => (v ?? '').trim().toLowerCase();
     const building = clean(t.building);
     const amenity = clean(t.amenity);
     const shop = clean(t.shop);

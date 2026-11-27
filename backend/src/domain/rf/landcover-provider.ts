@@ -296,7 +296,11 @@ export async function getLandCoverClass(lat: number, lon: number, logger?: pino.
   try {
     const raster = await image.readRasters({ window: [col, row, col + 1, row + 1] });
     const value = raster[0][0];
-    return value in WorldCoverClass ? (value as WorldCoverClass) : null;
+    // No cast: `value` is already a number out of the raster, and a numeric
+    // enum accepts one. The `in` check is the real guard -- WorldCoverClass is
+    // a numeric enum, so TypeScript emits its reverse mapping and `10 in
+    // WorldCoverClass` is true for a valid class code.
+    return value in WorldCoverClass ? value : null;
   } catch (err) {
     logger?.warn({ tileKey, lat, lon, err: String(err) }, 'landcover-provider: windowed pixel read failed');
     return null;
