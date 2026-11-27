@@ -50,7 +50,7 @@ export interface ServiceStatus {
 export type {
   YamlPlmnId, YamlSnssai, YamlServerEntry, YamlEndpoint, YamlSession,
   YamlUriEntry, YamlSbiClient, YamlSbiEndpoint, YamlPeerEntry,
-  YamlSgsapMap, YamlSgsapClient,
+  YamlSgsapMap, YamlSgsapClient, YamlMmeMobilityPeer,
   YamlAmf, YamlMme, YamlSmf, YamlUpf, YamlSgwc, YamlSgwu, YamlNrf,
   YamlScp, YamlAusf, YamlUdm, YamlUdr, YamlPcf, YamlNssf, YamlBsf,
   YamlSepp, YamlHss, YamlPcrf,
@@ -63,7 +63,7 @@ export type {
 } from './open5gs-yaml';
 
 import type {
-  YamlSbiClient, YamlSbiEndpoint, YamlEndpoint,
+  YamlSbiClient, YamlSbiEndpoint, YamlEndpoint, YamlMmeMobilityPeer,
   AmfYamlDocument, MmeYamlDocument, SmfYamlDocument, UpfYamlDocument,
   SgwcYamlDocument, SgwuYamlDocument, NrfYamlDocument, ScpYamlDocument,
   AusfYamlDocument, UdmYamlDocument, UdrYamlDocument, PcfYamlDocument,
@@ -78,6 +78,22 @@ export type SbiClient = YamlSbiClient;
 export type Logger = NonNullable<YamlDocumentCommon['logger']>;
 export type Global = NonNullable<YamlDocumentCommon['global']>;
 export type Metrics = YamlEndpoint;
+export type MmeMobilityPeer = YamlMmeMobilityPeer;
+
+// ── MME inter-MME mobility compatibility ──
+//
+// GET /api/config/mme/mobility-support. Not a YAML shape and deliberately not
+// in ./open5gs-yaml: this describes the MME BINARY installed on the host, which
+// MmeMobilitySupportUseCase determines by grepping it for the markers of the
+// still-unmerged open5gs/open5gs#5019, not anything a config file carries.
+// Mirrors the backend's own declaration in
+// application/use-cases/mme-mobility-support.ts.
+export interface MmeMobilitySupport {
+  status: 'supported' | 'unsupported' | 'unknown' | 'not_installed';
+  message: string;
+  executable?: string;
+  runningExecutable?: string;
+}
 
 // ── All Configs ──
 //

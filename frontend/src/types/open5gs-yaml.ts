@@ -197,15 +197,58 @@ export interface YamlSgsapClient {
   maps?: YamlSgsapMap[];
 }
 
+/**
+ * One `gtpc.client.mme` entry: a NEIGHBOURING MME reachable over S10, for
+ * context transfer, tracking-area update and S1 handover.
+ *
+ * Deliberately NOT a YamlPeerEntry, even though it sits in the same `client:`
+ * block as `sgwc` and `smf`. A peer entry's keys select which of several
+ * equivalent peers serves a cell or an APN; these keys IDENTIFY one remote
+ * MME, so the shapes only look alike:
+ *
+ *   - `address` is one address, not the scalar-or-list every other address
+ *     here is. A peer is a single remote MME and the validator
+ *     (mme-mobility-validation.ts) accepts exactly one;
+ *   - `gummei` is a single object, not the list `YamlMme.gummei` is -- that
+ *     one is every GUMMEI THIS MME serves, this one is the neighbour's;
+ *   - `tai`'s `tac` is a single number, where `YamlMme.tai[].tac` is
+ *     scalar-or-list. Each entry is one handover ROUTE to this neighbour.
+ *
+ * `tai` itself is scalar-or-list for the same reason YamlSgsapClient carries
+ * both `map` and `maps`: a file declaring one tracking area parses as a plain
+ * object, and only several of them parse as an array. Absent entirely is also
+ * a real form -- the neighbour is then reachable by GUMMEI for idle mobility
+ * but is not a handover target.
+ *
+ * The LIST is declared as an array, matching its `sgwc`/`smf` siblings and what
+ * the editor writes, even though mme-mobility-validation.ts also tolerates a
+ * single bare peer object there. Readers go through address-field.ts's asList(),
+ * which handles both, so a hand-written scalar is read correctly either way --
+ * but do not add a consumer that assumes `.map()` without it.
+ *
+ * This is an UNMERGED upstream feature (open5gs/open5gs#5019), so no file on
+ * this deployment carries the key and MmeMobilitySupportUseCase greps the
+ * installed binary before the editor will write one.
+ */
+export interface YamlMmeMobilityPeer {
+  address?: string;
+  port?: number;
+  gummei?: { plmn_id?: YamlPlmnId; mme_gid?: number; mme_code?: number };
+  tai?: { plmn_id?: YamlPlmnId; tac?: number } | Array<{ plmn_id?: YamlPlmnId; tac?: number }>;
+}
+
 export interface YamlMme {
   s1ap?: YamlEndpoint;
   /**
-   * `gtpc.client` carries the SGW-C and SMF peer lists. An SGW-C entry's `tac`
-   * and `e_cell_id` select which cells that SGW-C serves, and an SMF entry's
-   * `apn` which APNs it handles; all three are scalar-or-list like every other
-   * repeatable value here.
+   * `gtpc.client` carries the SGW-C, SMF and neighbouring-MME peer lists. An
+   * SGW-C entry's `tac` and `e_cell_id` select which cells that SGW-C serves,
+   * and an SMF entry's `apn` which APNs it handles; all three are
+   * scalar-or-list like every other repeatable value here. See
+   * YamlMmeMobilityPeer for why `mme` is not one of these peer entries.
    */
-  gtpc?: YamlEndpoint & { client?: { sgwc?: YamlPeerEntry[]; smf?: YamlPeerEntry[] } };
+  gtpc?: YamlEndpoint & {
+    client?: { sgwc?: YamlPeerEntry[]; smf?: YamlPeerEntry[]; mme?: YamlMmeMobilityPeer[] };
+  };
   metrics?: YamlEndpoint;
   gummei?: Array<{ plmn_id?: YamlPlmnId; mme_gid?: number; mme_code?: number }>;
   tai?: Array<{ plmn_id?: YamlPlmnId; tac?: number | number[] }>;

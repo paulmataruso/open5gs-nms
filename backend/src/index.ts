@@ -14,6 +14,7 @@ import { LoadConfigUseCase } from './application/use-cases/load-config';
 import { ConfigMapper } from './application/use-cases/config-mapper';
 import { ValidateConfigUseCase } from './application/use-cases/validate-config';
 import { ApplyConfigUseCase } from './application/use-cases/apply-config';
+import { MmeMobilitySupportUseCase } from './application/use-cases/mme-mobility-support';
 import { buildMmeDupReleaseAccessBearersPatchScript } from './application/use-cases/mme-dup-release-access-bearers-patch';
 import { ServiceMonitorUseCase } from './application/use-cases/service-monitor';
 import { SubscriberManagementUseCase } from './application/use-cases/subscriber-management';
@@ -513,6 +514,7 @@ async function main() {
     logger.warn({ err: String(err) }, 'Land-cover tile freshness check on startup failed (non-fatal)');
   }
 
+  const mmeMobilitySupport = new MmeMobilitySupportUseCase(hostExecutor);
   const applyConfigUseCase = new ApplyConfigUseCase(
     configRepo,
     hostExecutor,
@@ -522,6 +524,7 @@ async function main() {
     logger,
     config.backupPath,
     syncPrometheusUseCase,
+    mmeMobilitySupport,
   );
   // FIXED: Correct parameter order for ServiceMonitorUseCase
   // constructor(hostExecutor, wsBroadcaster, auditLogger, logger)
@@ -779,7 +782,7 @@ async function main() {
   // API Routes — GET routes open to all authenticated users
   // requireAdmin middleware applied before routers that have write operations
   app.use('/api/users', createUsersRouter(userManagementUseCase, logger));
-  app.use('/api/config', createConfigRouter(loadConfigUseCase, validateConfigUseCase, applyConfigUseCase, topologyUseCase, serviceMonitorUseCase, syncSDUseCase, logger));
+  app.use('/api/config', createConfigRouter(loadConfigUseCase, validateConfigUseCase, applyConfigUseCase, topologyUseCase, serviceMonitorUseCase, syncSDUseCase, logger, mmeMobilitySupport));
   app.use('/api/sepp', createSeppRouter(hostExecutor, auditLogger, logger));
   app.use('/api/services', createServiceRouter(serviceMonitorUseCase, logger));
   app.use('/api/subscribers', createSubscriberRouter(subscriberManagementUseCase, autoAssignIPsUseCase, logger));
