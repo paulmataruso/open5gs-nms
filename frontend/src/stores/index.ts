@@ -170,6 +170,24 @@ interface SubscriberState {
   setSort: (by: 'imsi' | 'ue_ipv4' | 'apn', order: 'asc' | 'desc') => void;
 }
 
+/**
+ * Which `fetchSubscribers` call is the current one.
+ *
+ * The search box calls `setSearch` per keystroke and each one fires its own
+ * request, so replies can land out of order. Without this, a slow earlier
+ * request arriving after a fast later one overwrote the correct results with
+ * stale ones, and the table then disagreed with the box above it until the
+ * next keystroke — most visible exactly when it matters, on a slow link
+ * against a large subscriber list. A superseded reply is now dropped,
+ * INCLUDING its `loading: false`, so the spinner tracks the newest request
+ * rather than the first one to answer.
+ *
+ * Module-local rather than part of the store's state: it is bookkeeping for
+ * one action, and putting it in state would make it something components can
+ * read and depend on.
+ */
+let subscriberFetchSeq = 0;
+
 export const useSubscriberStore = create<SubscriberState>((set, get) => ({
   subscribers: [],
   total: 0,
@@ -179,13 +197,16 @@ export const useSubscriberStore = create<SubscriberState>((set, get) => ({
   sortOrder: 'asc',
   sortBy: 'imsi',
   fetchSubscribers: async () => {
+    const seq = ++subscriberFetchSeq;
     set({ loading: true });
     try {
       const { page, search } = get();
       // Always fetch in default IMSI order — sorting is done client-side
       const result = await subscriberApi.list(page * 50, 50, search || undefined);
+      if (seq !== subscriberFetchSeq) return;
       set({ subscribers: result.subscribers, total: result.total, loading: false });
     } catch {
+      if (seq !== subscriberFetchSeq) return;
       set({ loading: false });
     }
   },

@@ -68,11 +68,18 @@ export default mergeConfig(
           // the production build, not by unit tests.
           'src/main.tsx',
         ],
-        // Deliberately NO thresholds here. The honest starting number is low,
-        // and a threshold set to whatever today happens to be is a number that
-        // only ever blocks; the ratchet (a one-way floor, like lint-baseline
-        // .json) is the mechanism that actually moves it, and it is not built
-        // yet. An unset threshold reports the truth without failing the build.
+        // Deliberately NO thresholds here, and that stays true now that the
+        // ratchet exists. A global threshold set to whatever today happens to
+        // be is a number that only ever blocks: adding one untested page drops
+        // the percentage, so a commit that touches no tested code goes red and
+        // the only way out is to lower the threshold — which trains everyone
+        // to lower it. scripts/coverage-ratchet.mjs is the mechanism instead,
+        // and it is PER FILE: a new file starts at zero and blocks nothing,
+        // while a file that has been covered can never quietly lose it.
+        //
+        // Reporters matter to that: `json-summary` is what the ratchet reads,
+        // so removing it turns the gate into a hard error rather than a silent
+        // pass (the script refuses to report a pass with no report).
       },
     },
   }),

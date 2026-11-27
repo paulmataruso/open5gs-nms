@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "Per-file covered-STATEMENT counts for the frontend. A one-way floor: a",
+    "file listed here may not come back with fewer covered statements than it",
+    "has now. A file absent from `perFile` has no coverage to protect and is",
+    "free to stay that way, so adding an untested page never fails this gate.",
+    "",
+    "Written by scripts/coverage-ratchet.mjs --update. The `total` block is",
+    "reporting only — the gate is `perFile`.",
+    "",
+    "Only statements and lines are reported. v8 synthesises those totals for a",
+    "file it never loaded, but not branch or function totals, so a branches or",
+    "functions percentage here would describe only the files the suite happens",
+    "to load. On the first run that read 17.62% branches against 0.08%",
+    "statements, which is a number that can only mislead."
+  ],
+  "measuredAt": "2026-11-27",
+  "total": {
+    "files": 7,
+    "statements": 229,
+    "statementsTotal": 51699,
+    "pct": {
+      "statements": 0.44,
+      "lines": 0.44
+    }
+  },
+  "perFile": {
+    "frontend/src/api/modules.ts": 7,
+    "frontend/src/api/suci.ts": 8,
+    "frontend/src/config/features.ts": 23,
+    "frontend/src/hooks/useKeyboardA11y.ts": 22,
+    "frontend/src/stores/index.ts": 89,
+    "frontend/src/stores/staleModules.ts": 14,
+    "frontend/src/stores/suci.ts": 66
+  }
+}
