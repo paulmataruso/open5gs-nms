@@ -6,6 +6,59 @@ All notable changes to open5gs-nms are documented here.
 
 ## [v2.0-beta_0.83] - 2026-11-27
 
+### Fixed — a MongoDB boot race left four NFs down with nothing to reset
+
+Twice after a power loss, a host came back with 13 of 17 network functions
+healthy and exactly four stopped: `udr`, `pcf`, `hss`, `pcrf` — the only four
+that open a MongoDB connection. They had started before MongoDB was accepting
+connections.
+
+Open5GS exits with status 0 when it cannot reach the database, so systemd
+records `Result=success`, `NRestarts=0`, "Deactivated successfully". The stock
+`Restart=on-failure` never fires, nothing is ever in `failed` state, and
+`systemctl reset-failed` finds nothing to reset. A transient condition became a
+permanent outage — and 13/17 "active" reads almost healthy while 4G S6a/Gx and
+5G subscriber data are both down.
+
+Two layers now, the same shape as the DNS boot gate, because the liability is
+the amplifier rather than any one cause. `open5gs-mongo-ready.service` blocks
+until MongoDB actually answers, and a drop-in puts the four DB-backed NFs on
+`Restart=always` — the half that fixes the bug, since `on-failure` cannot retry
+an exit-0 failure however patient the budget is.
+
+The readiness check never asks how MongoDB is deployed. It reads the endpoints
+out of the NFs' own `db_uri` values and waits for one to answer, which is the
+same correct question for a host `mongod`, the `mongo:4.4` container used on
+hosts without AVX, and a remote or replica-set MongoDB — and it re-derives them
+on every boot, so changing `db_uri` needs no reinstall. Only the systemd
+ordering is per-host, generated from the units a given host actually has.
+
+A real query is preferred over an open port, but cannot veto readiness: the
+two failure directions are not symmetric. Declaring ready early costs a few
+retries and self-heals in seconds, while refusing to declare ready costs the
+whole timeout on every boot, silently — so a ping that fails for an unrelated
+reason holds the gate for 30 seconds and then releases on TCP alone, naming
+the weaker proof in the log.
+
+Applied on every backend start, idempotent and rev-gated, so a deployment picks
+it up from a plain `git pull && docker compose build && docker compose up -d`.
+Verified on a live core: with MongoDB stopped the NF retried instead of staying
+down, and when MongoDB returned it came back by itself within six seconds.
+
+### Added — one local entry point that runs exactly what CI runs
+
+`scripts/verify.sh` runs CI's checks in CI's order and, like CI, runs all of
+them before reporting a verdict rather than stopping at the first failure.
+
+It exists to close three traps. `tsc --noEmit -p backend/tsconfig.json` reports
+clean no matter what state a test file is in, because that config excludes the
+test directories and only ts-jest typechecks them. An `npm install` on one
+branch leaves its resolutions behind in `node_modules`, which once produced a
+frontend lint reading that looked like 131 new findings and was entirely the
+toolchain — so `scripts/check-deps-fresh.mjs` is step 0, comparing what is on
+disk against the lockfile. And a gate run while anything else mutates the git
+tree measures a tree that no longer exists.
+
 ### Fixed — 58 async routes could leave an HTTP request with no reply at all
 
 Express types a route handler as returning `void`, so an `async` handler hands
@@ -283,6 +336,20 @@ Merged through resolution branches, with the contributor credited as co-author.
   stays blocked on any build it cannot confirm. Invalid ports, identity ranges,
   duplicate GUMMEIs and ambiguous TAI routes are rejected before any backup,
   write or restart.
+- **Baicells UE signal monitoring** (PR #40, merged as #92). An online-only UE
+  list, per-radio poll status, an extracted Baicells parser and an SVG signal
+  gauge. The parser work is kept whole: UE ids are cell-prefixed, because the
+  radio's ids are cell-local and two cells genuinely collided; a login or error
+  page throws instead of returning an empty list; and a missing SINR no longer
+  reads as a real 0 dB. Six changes on top, two of them live bugs. `POST
+  /discover` and `POST /wake` were bare `async` handlers with no `try`/`catch`
+  around real network I/O, so a rejection left the request with no reply —
+  the same defect class as the 58 above, and `no-misused-promises` was pointing
+  at live paths rather than style. Both are wrapped. The PR also added
+  `requireAdmin` to `GET /radios` and `GET /overview`, which main leaves ungated
+  deliberately so a viewer can monitor the page its own banner promises they
+  can; that regression arrived pinned by a test asserting the 403, so the test
+  went with it.
 - **Cell Broadcast** (PR #45, merged as #89). An OsmoCBC installer, multi-TAI
   zones and a scoped API. Reviewed before merging: pinned commits with embedded
   SHA-256s, a download cap, a private `/opt` prefix, argv-based host execution
@@ -307,17 +374,32 @@ fast-xml-parser, mysql2, ws, yaml, prettier, ts-jest and type packages.
 Frontend: `eslint-plugin-react-hooks` 4.6 → 7.1, axios, react-hot-toast, yaml,
 autoprefixer, postcss.
 
-Four are held back, each for a checked reason: `@typescript-eslint/eslint-plugin`
-8 needs the parser on the same major; `react-dom` 19 needs `react` 19 (a real
-migration); `@vitejs/plugin-react` 6 needs Vite 8; and **`uuid` 14 would take the
-backend down** — it is ESM-only, the backend compiles to CommonJS, and
+`@typescript-eslint/eslint-plugin` 8 was taken, with the parser alongside it —
+the bump cannot install otherwise, since 8.74's peer is the parser on the same
+major. Both workspaces moved together so they cannot drift. The v6 deprecation
+notice implies v8 removed `recommended-requiring-type-checking`; it did not,
+verified against the real binary, so no config change was needed. That widened
+the rule set again: the backend baseline 2538 → 2645 and the frontend 505 → 526,
+attributed rule by rule in `lint-baseline.json`. `no-base-to-string` (+43) is
+the one new class with real defect potential — 30 of them are in `dhcp-config.ts`, which
+round-trips the operator's `kea-dhcp4.conf`, so a value the Kea types allow to
+be a non-string would be written back into their config as the literal text
+`[object Object]`.
+
+Three are held back, each for a checked reason: `react-dom` 19 needs `react` 19
+(a real migration, and Dependabot proposed the halves separately so the PR as
+authored could not install); `@vitejs/plugin-react` 6 needs Vite 8; and
+**`uuid` 14 would take the backend down** — it is ESM-only, the backend compiles to CommonJS, and
 `require(ESM)` is not unflagged until Node 22.12 while this runs 20.20, so it
 throws `ERR_REQUIRE_ESM` at startup. `eslint-plugin-react-refresh` 0.5 was also
 dropped (peers `eslint ^9`). The frontend lint baseline moved 379 → 510: a
 deliberately widened rule set, not new broken code. Every one of the 131
 additions is a rule react-hooks 7 introduced (101 `set-state-in-effect`).
-Several are real and queued, including `Date.now()` during render in
-`TwampPage`.
+Three had a real defect behind them and are fixed: two render-time ref
+assignments, and a chart component rewritten to derive its layout rather than
+mutate during render (checked equivalent across 150 lane-count combinations).
+The rest are fetch-on-mount effects, which this codebase uses deliberately, and
+are left with that reason recorded. The frontend baseline settled at 505.
 
 ---
 
