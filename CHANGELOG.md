@@ -381,10 +381,13 @@ notice implies v8 removed `recommended-requiring-type-checking`; it did not,
 verified against the real binary, so no config change was needed. That widened
 the rule set again: the backend baseline 2538 → 2645 and the frontend 505 → 526,
 attributed rule by rule in `lint-baseline.json`. `no-base-to-string` (+43) is
-the one new class with real defect potential — 30 of them are in `dhcp-config.ts`, which
+the one new class with real defect potential. They sit across 14 files, the
+largest clusters being `radio-signal-controller.ts` (11) and
+`dhcp-config.ts`/`sip-trace-controller.ts` (6 each). The six in
+`dhcp-config.ts` matter most for a reason unrelated to count: that file
 round-trips the operator's `kea-dhcp4.conf`, so a value the Kea types allow to
-be a non-string would be written back into their config as the literal text
-`[object Object]`.
+be a non-string is coerced and the next save persists the literal text
+`[object Object]` into their config.
 
 Three are held back, each for a checked reason: `react-dom` 19 needs `react` 19
 (a real migration, and Dependabot proposed the halves separately so the PR as
