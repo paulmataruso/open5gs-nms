@@ -29,6 +29,7 @@ export const MOBILE_PAGE_IDS = [
   'subscribers',
   'logs',
   'radio-signal',
+  'ue-diagnostics',
   'traffic-history',
   'sas',
   'cdr',

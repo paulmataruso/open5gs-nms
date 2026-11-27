@@ -44,6 +44,7 @@ export const NAV_ITEMS: NavItem[] = [
   ...(FEATURES.rfPlanning ? [{ id: 'rf-planning', label: 'RF Planning', icon: Calculator }] : []),
   { id: 'apn-profiles', label: 'APN Profiles', icon: Layers },
   { id: 'subscribers', label: 'Subscribers', icon: Users, shortLabel: 'Subs' },
+  ...(FEATURES.pcap ? [{ id: 'ue-diagnostics', label: 'UE Diagnostics', icon: Radar }] : []),
   { id: 'suci', label: 'SUCI Keys', icon: Key },
   { id: 'backup', label: 'Backup & Restore', icon: Database },
   { id: 'logs', label: 'Unified Logs', icon: ScrollText, shortLabel: 'Logs' },

@@ -21,6 +21,7 @@ const MobileRanPage = lazy(() => import('./MobileRanPage').then(m => ({ default:
 const MobileServicesPage = lazy(() => import('./MobileServicesPage').then(m => ({ default: m.MobileServicesPage })));
 const MobileSubscribersPage = lazy(() => import('./MobileSubscribersPage').then(m => ({ default: m.MobileSubscribersPage })));
 const MobileLogsPage = lazy(() => import('./MobileLogsPage').then(m => ({ default: m.MobileLogsPage })));
+const UeDiagnosticsPage = lazy(() => import('../pages/UeDiagnosticsPage').then(m => ({ default: m.UeDiagnosticsPage })));
 const MobileUeSignalPage = lazy(() => import('./MobileUeSignalPage').then(m => ({ default: m.MobileUeSignalPage })));
 const MobileTrafficHistoryPage = lazy(() => import('./MobileTrafficHistoryPage').then(m => ({ default: m.MobileTrafficHistoryPage })));
 const MobileSasPage = lazy(() => import('./MobileSasPage').then(m => ({ default: m.MobileSasPage })));
@@ -36,6 +37,7 @@ const MOBILE_PAGES: Record<MobilePageId, (p: MobilePageProps) => JSX.Element> = 
   'subscribers': () => <MobileSubscribersPage />,
   'logs': () => <MobileLogsPage />,
   'radio-signal': () => <MobileUeSignalPage />,
+  'ue-diagnostics': () => <UeDiagnosticsPage />,
   'traffic-history': () => <MobileTrafficHistoryPage />,
   'sas': () => <MobileSasPage />,
   'cdr': () => <MobileCallHistoryPage />,

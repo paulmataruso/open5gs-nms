@@ -202,6 +202,7 @@ export type AuditAction =
   | 'pcap_stop'
   | 'pcap_download'
   | 'pcap_delete'
+  | 'pcap_tools_install'
   // SIP tracing (HEP). Enabling restarts the CSCFs and drops every registered
   // UE's IPsec SA, so it is an auditable action, not a view preference.
   | 'sip_trace_enable'
