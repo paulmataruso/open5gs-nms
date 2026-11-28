@@ -149,15 +149,22 @@
     "this rule remain, and measurement says they are lint-only (all 434 async",
     "handlers carry their own try/catch), so the wrapper is a net under the",
     "floor, not a substitute for one.",
+    "2026-11-27 (rest-unguarded-sync): 2322 -> 2302. Not a lint pass: 15 async",
+    "  route handlers that do throwing sync work outside their own try were",
+    "  wrapped in asyncHandler, which happens to clear 19 no-misused-promises",
+    "  findings as a side effect. express 4 does not forward a rejected handler",
+    "  promise to its error handler and this process installs no",
+    "  unhandledRejection listener, so each was a path where one disk error",
+    "  exits the backend. Pinned by unguarded-sync-work.test.ts.",
     "To lower the counts after real cleanup:",
     "  cd backend && npm run -s lint:json | node ../scripts/lint-ratchet.mjs backend --update"
   ],
   "measuredAt": "2026-11-27",
   "backend": {
-    "errors": 2322,
+    "errors": 2302,
     "warnings": 359,
-    "files": 481,
-    "filesWithFindings": 211,
+    "files": 483,
+    "filesWithFindings": 210,
     "fatals": 0
   },
   "frontend": {

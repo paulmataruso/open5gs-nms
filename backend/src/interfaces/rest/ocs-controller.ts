@@ -6,6 +6,7 @@ import { Db } from 'mongodb';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { ISubscriberRepository } from '../../domain/interfaces/subscriber-repository';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncHandler } from './middleware/async-handler';
 import { getAppVersion } from '../../infrastructure/system/app-version';
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 import { asyncRoute } from './middleware/async-route';
@@ -1308,7 +1309,12 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     res.json({ success: true, files });
   });
 
-  router.get('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+  // Not async, and deliberately not wrapped in asyncHandler: there is nothing
+  // to await here, and express 4 DOES catch a synchronous throw from a
+  // synchronous handler — it is only a REJECTED PROMISE it fails to forward.
+  // So dropping `async` is a better fix than wrapping, and the PUT below
+  // genuinely needs both because it awaits nsenter.
+  router.get('/configs/content', requireAdmin, (req: Request, res: Response) => {
     const release = resolveActiveRelease();
     const allowed = new Set([release ? sysConfigPath(release) : '', HOST_SMF_CONF]);
     const queryPath = req.query.path as string;
@@ -1321,7 +1327,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     }
   });
 
-  router.put('/configs/content', requireAdmin, async (req: Request, res: Response) => {
+  router.put('/configs/content', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     const release = resolveActiveRelease();
     const allowed = new Set([release ? sysConfigPath(release) : '', HOST_SMF_CONF]);
@@ -1335,7 +1341,7 @@ export function createOcsRouter(subscriberRepo: ISubscriberRepository, db: Db, l
     } catch (err) {
       res.status(500).json({ success: false, error: String(err) });
     }
-  });
+  }));
 
   router.post('/configs/restart', requireAdmin, async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';

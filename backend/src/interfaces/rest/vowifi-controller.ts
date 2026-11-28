@@ -5,6 +5,7 @@ import * as path from 'path';
 import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
+import { asyncHandler } from './middleware/async-handler';
 import { createDummyInterface, deleteDummyInterface } from '../../infrastructure/network/dummy-interface';
 import { asyncRoute } from './middleware/async-route';
 import {
@@ -1167,7 +1168,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
     }
   });
 
-  router.post('/uninstall', requireAdmin, async (req: Request, res: Response) => {
+  router.post('/uninstall', requireAdmin, asyncHandler(async (req: Request, res: Response) => {
     const user = req.user?.username ?? 'unknown';
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -1323,7 +1324,7 @@ export function createVowifiRouter(logger: pino.Logger, auditLogger: IAuditLogge
       await auditLogger.log({ action: 'vowifi_uninstall', user, details: String(err), success: false });
     }
     res.end();
-  });
+  }));
 
   return router;
 }
