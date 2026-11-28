@@ -8,6 +8,7 @@ import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { createDummyInterface, deleteDummyInterface, nsenter } from '../../infrastructure/network/dummy-interface';
 import { asRecord } from '../../domain/services/json-shape';
+import { isIpv4 } from '../../domain/services/ip-utils';
 import { asyncRoute } from './middleware/async-route';
 import {
   buildSecgwScript, SECGW_PATCH_REV, SECGW_BUILD_WORKDIR, SECGW_INSTALL_PREFIX,
@@ -451,10 +452,17 @@ function deriveLocalTs(radioType: SecGwRadioType): string {
 
 // Normalizes one operator-entered destination into an IPv4 CIDR — a bare IP gets /32
 // appended (the common case: "just let this radio also reach the BIND server").
-function normalizeCidr(input: string): string | null {
+export function normalizeCidr(input: string): string | null {
   const trimmed = input.trim();
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) return `${trimmed}/32`;
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(trimmed)) return trimmed;
+  // `\d{1,3}` per octet and `\d{1,2}` for the prefix accepted 999.1.1.1 and
+  // /99, which were then written straight into swanctl.conf as a traffic
+  // selector -- the CHILD_SA failed to negotiate for a reason the operator
+  // could not see from the page. isIpv4() is the strict check this codebase
+  // already has (domain/services/ip-utils.ts), used here rather than a fourth
+  // hand-rolled octet pattern.
+  if (isIpv4(trimmed)) return `${trimmed}/32`;
+  const withPrefix = /^(\S+)\/(\d{1,2})$/.exec(trimmed);
+  if (withPrefix && isIpv4(withPrefix[1]) && Number(withPrefix[2]) <= 32) return trimmed;
   return null;
 }
 
@@ -464,7 +472,7 @@ function normalizeCidr(input: string): string | null {
 // selector instead, which means OUR gateway's local_ts must also include that
 // destination or the CHILD_SA negotiation fails with TS_UNACCEPTABLE. Returns null
 // (not an empty array) to signal a validation failure vs. legitimately-empty input.
-function parseExtraLocalCidrs(raw: unknown): string[] | null {
+export function parseExtraLocalCidrs(raw: unknown): string[] | null {
   if (raw === undefined || raw === null) return [];
   if (typeof raw !== 'string') return null;
   if (!raw.trim()) return [];
@@ -704,7 +712,7 @@ function intToIp(n: number): string {
   return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
 }
 
-function poolCidrHostRange(poolCidr: string): { network: number; hostCount: number } | null {
+export function poolCidrHostRange(poolCidr: string): { network: number; hostCount: number } | null {
   const m = poolCidr.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/(\d{1,2})$/);
   if (!m) return null;
   const prefix = Number(m[2]);
@@ -726,7 +734,7 @@ function poolCidrHostRange(poolCidr: string): { network: number; hostCount: numb
 // per-radio dedicated single-address pool + matching remote_ts makes every radio's
 // selector unique by construction, so this collision can't happen regardless of
 // strongSwan's own (apparently non-deterministic) CP-narrowing behavior.
-function allocatePoolAddress(poolCidr: string, usedAddresses: Set<string>): string | null {
+export function allocatePoolAddress(poolCidr: string, usedAddresses: Set<string>): string | null {
   const range = poolCidrHostRange(poolCidr);
   if (!range) return null;
   // Usable host range excludes the network and broadcast addresses.
@@ -748,7 +756,7 @@ function allocatePoolAddress(poolCidr: string, usedAddresses: Set<string>): stri
 // offering one and using it as remote_ts meant the CHILD_SA could never actually
 // negotiate — Nokia's own static remote_ts is its own real IP (localIpAddress), which
 // the operator already provides and which is locked read-only on the radio's own page.
-function resolveRemoteTs(
+export function resolveRemoteTs(
   vendor: SecGwRadioVendor, localIpAddress: string | null, poolCidr: string, usedAddresses: Set<string>,
 ): { poolAddress: string | null; remoteTsAddress: string; error?: undefined } | { error: string; status: number } {
   if (vendor === 'nokia') {
