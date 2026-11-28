@@ -5,6 +5,7 @@ import { IConfigRepository } from '../../domain/interfaces/config-repository';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { checkDnsBootGate, installDnsBootGate } from '../../interfaces/rest/bind-controller';
 import { SERVICE_RESTART_ORDER, SERVICE_UNIT_MAP, ServiceName } from '../../domain/entities/service-status';
+import { upsertNamedZone, removeNamedZone } from '../../domain/services/named-conf-zones';
 
 const OPEN5GS_DIR        = '/etc/open5gs';
 const FREEDIAMETER_DIR   = '/proc/1/root/etc/freeDiameter';
@@ -125,20 +126,6 @@ export class DnsMigrationUseCase {
 
   private deriveEpcDomain(mcc: string, mnc: string): string {
     return `epc.mnc${mnc.padStart(3, '0')}.mcc${mcc}.3gppnetwork.org`;
-  }
-
-  private upsertNamedZone(raw: string, zoneName: string, zoneFilePath: string): string {
-    const zoneBlock = `zone "${zoneName}" {\n    type master;\n    file "${zoneFilePath}";\n};\n`;
-    if (raw.includes(`zone "${zoneName}"`)) {
-      const zoneRe = new RegExp(`zone\\s+"${zoneName.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
-      return raw.replace(zoneRe, zoneBlock);
-    }
-    return raw.trimEnd() + '\n\n' + zoneBlock;
-  }
-
-  private removeNamedZone(raw: string, zoneName: string): string {
-    const zoneRe = new RegExp(`zone\\s+"${zoneName.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
-    return raw.replace(zoneRe, '');
   }
 
   private async readMigrationState(): Promise<MigrationState | null> {
@@ -421,12 +408,12 @@ export class DnsMigrationUseCase {
         try { namedLocalForCleanup = await this.hostExecutor.readFile(`${BIND_DIR}/named.conf.local`); } catch { /* nothing to clean */ }
         if (namedLocalForCleanup) {
           if (priorState.sgcDomain !== plan.sgcDomain) {
-            namedLocalForCleanup = this.removeNamedZone(namedLocalForCleanup, priorState.sgcDomain);
+            namedLocalForCleanup = removeNamedZone(namedLocalForCleanup, priorState.sgcDomain);
             await this.hostExecutor.executeLocalCommand('rm', ['-f', `${BIND_ZONES_DIR}/${priorState.sgcDomain}.zone`]).catch(() => {});
             details.push(`Removed stale zone ${priorState.sgcDomain} (superseded by ${plan.sgcDomain})`);
           }
           if (priorState.epcDomain !== plan.epcDomain) {
-            namedLocalForCleanup = this.removeNamedZone(namedLocalForCleanup, priorState.epcDomain);
+            namedLocalForCleanup = removeNamedZone(namedLocalForCleanup, priorState.epcDomain);
             await this.hostExecutor.executeLocalCommand('rm', ['-f', `${BIND_ZONES_DIR}/${priorState.epcDomain}.zone`]).catch(() => {});
             details.push(`Removed stale zone ${priorState.epcDomain} (superseded by ${plan.epcDomain})`);
           }
@@ -482,8 +469,8 @@ export class DnsMigrationUseCase {
 
       let namedLocal = '';
       try { namedLocal = await this.hostExecutor.readFile(`${BIND_DIR}/named.conf.local`); } catch { /* fresh file */ }
-      namedLocal = this.upsertNamedZone(namedLocal, plan.sgcDomain, `${BIND_ZONES_DIR_HOST}/${plan.sgcDomain}.zone`);
-      namedLocal = this.upsertNamedZone(namedLocal, plan.epcDomain, `${BIND_ZONES_DIR_HOST}/${plan.epcDomain}.zone`);
+      namedLocal = upsertNamedZone(namedLocal, plan.sgcDomain, `${BIND_ZONES_DIR_HOST}/${plan.sgcDomain}.zone`);
+      namedLocal = upsertNamedZone(namedLocal, plan.epcDomain, `${BIND_ZONES_DIR_HOST}/${plan.epcDomain}.zone`);
       await this.hostExecutor.writeFile(`${BIND_DIR}/named.conf.local`, namedLocal);
       details.push('Updated named.conf.local');
 

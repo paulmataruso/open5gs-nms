@@ -27,6 +27,7 @@ import { formatPstnDispatcherEntry } from './pstn-controller';
 import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 import { asyncRoute } from './middleware/async-route';
 import { asRecord } from '../../domain/services/json-shape';
+import { upsertNamedZone, removeNamedZone, removeNamedZonesByPrefix } from '../../domain/services/named-conf-zones';
 
 const execFileAsync = promisify(execFile);
 
@@ -1761,20 +1762,6 @@ _sip._tcp.scscf  IN SRV 0 0 ${p.scscfPort} scscf
 pcscf IN NAPTR 10 0 "s" "SIP+D2T" "" _sip._tcp.pcscf
 pcscf IN NAPTR 20 0 "s" "SIP+D2U" "" _sip._udp.pcscf
 `;
-}
-
-function upsertNamedZone(raw: string, zoneName: string, zoneFilePath: string): string {
-  const zoneBlock = `zone "${zoneName}" {\n    type master;\n    file "${zoneFilePath}";\n};\n`;
-  if (raw.includes(`zone "${zoneName}"`)) {
-    const zoneRe = new RegExp(`zone\\s+"${zoneName.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
-    return raw.replace(zoneRe, zoneBlock);
-  }
-  return raw.trimEnd() + '\n\n' + zoneBlock;
-}
-
-function removeNamedZone(raw: string, zoneName: string): string {
-  const zoneRe = new RegExp(`zone\\s+"${zoneName.replace(/\./g, '\\.')}"\\s*\\{[^}]*\\};?\\s*`, 'g');
-  return raw.replace(zoneRe, '');
 }
 
 // ── SMF YAML helpers ──────────────────────────────────────────────────────────
@@ -6077,7 +6064,7 @@ export function createImsRouter(
       const namedLocal = path.join(HOST_BIND_DIR, 'named.conf.local');
       if (fs.existsSync(namedLocal)) {
         const raw = fs.readFileSync(namedLocal, 'utf-8');
-        const cleaned = raw.replace(/\nzone\s+"ims\.[^"]+"\s*\{[\s\S]*?\};\n?/g, '\n').trimEnd() + '\n';
+        const cleaned = removeNamedZonesByPrefix(raw, 'ims.');
         fs.writeFileSync(namedLocal, cleaned, 'utf-8');
         write('  Removed IMS zone block from named.conf.local.\n');
       }
