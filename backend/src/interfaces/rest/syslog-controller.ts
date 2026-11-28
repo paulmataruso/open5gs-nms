@@ -25,10 +25,6 @@ const HOST_RSYSLOG_CONF     = '/proc/1/root/etc/rsyslog.conf';
 const HOST_RSYSLOG_D        = '/proc/1/root/etc/rsyslog.d';
 const OUR_CONF_NAME         = '71-open5gs-nms-forward.conf';
 const OUR_CONF_HOST_PATH    = `${HOST_RSYSLOG_D}/${OUR_CONF_NAME}`;
-// The path rsyslog itself (running in the host mount namespace) sees — used in the
-// validate/restart commands that run via nsenter, as opposed to the /proc/1/root
-// view this container uses to read/write the file.
-const OUR_CONF_REAL_PATH    = `/etc/rsyslog.d/${OUR_CONF_NAME}`;
 
 // Ubuntu confines rsyslogd with AppArmor, which only allows reading /var/log/** by
 // default — genieacs logs live outside that (see GENIEACS_LOG_HOST_DIR below), so imfile
@@ -66,6 +62,44 @@ export interface SyslogTarget {
   protocol: 'udp' | 'tcp';
 }
 
+/** One DNS label: letters, digits and interior hyphens, 1-63 characters. */
+const HOSTNAME_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+/**
+ * An IPv6 literal, loosely: hex groups separated by colons, optionally with a
+ * dotted IPv4 tail. Deliberately not the full RFC 4291 grammar -- rsyslog
+ * resolves the string itself, so the only job here is to admit every real
+ * address shape while excluding the characters that could escape the
+ * attribute it is written into.
+ */
+const IPV6_SHAPE = /^[0-9A-Fa-f:]+(?:\.\d{1,3}){0,3}$/;
+
+/**
+ * Whether a string is safe and sensible as the collector address.
+ *
+ * generateRsyslogConf() interpolates the host into `Target="..."` in a file
+ * rsyslog parses AS ROOT, with no escaping anywhere, so a quote closes the
+ * attribute early and a newline introduces further statements. Whether
+ * rsyslog's own parser would then accept the result or reject it is not
+ * established here -- it is not installed on the host this was written on --
+ * and it does not need to be: either outcome is wrong. A rejection surfaces
+ * as a parse error from `rsyslogd -N1` naming a line the operator never
+ * typed; anything it accepts is not the configuration they asked for.
+ *
+ * An allow-list rather than escaping, for two reasons. A hostname, an IPv4
+ * literal or an IPv6 literal is everything a collector address can
+ * legitimately be, so refusing the rest costs nothing. And escaping would
+ * break parseTarget(), which recovers this module's ENTIRE persisted state by
+ * regex out of that same `Target="..."` attribute -- there is no JSON
+ * side-file -- so an escaped quote would leave /status reporting nothing
+ * configured and a restore unable to re-apply the AppArmor override.
+ */
+export function isValidSyslogHost(host: string): boolean {
+  if (!host || host.length > 253) return false;
+  if (host.includes(':')) return IPV6_SHAPE.test(host);
+  const labels = host.replace(/\.$/, '').split('.');
+  return labels.every(l => HOSTNAME_LABEL.test(l));
+}
+
 function tagFor(filePath: string): string {
   // e.g. /var/log/open5gs/mme.log -> open5gs-mme; genieacs/frr filenames are already
   // distinctive enough (genieacs-cwmp-access, frr) to use as-is.
@@ -73,7 +107,7 @@ function tagFor(filePath: string): string {
   return filePath.includes('/open5gs/') ? `open5gs-${base}` : base;
 }
 
-function generateRsyslogConf(target: SyslogTarget): string {
+export function generateRsyslogConf(target: SyslogTarget): string {
   const allFiles = [...OPEN5GS_LOG_FILES, ...GENIEACS_LOG_FILES, ...FRR_LOG_FILES];
   const lines: string[] = [
     '# Managed by Open5GS NMS — Unified Logs > Syslog Forwarding.',
@@ -164,6 +198,19 @@ export async function installSyslog(write: (s: string) => void): Promise<{ succe
 // `systemctl restart rsyslog`, since a fresh host wouldn't have the
 // AppArmor/frr-group side effects applied yet even with the file in place.
 export async function configureSyslog(target: SyslogTarget): Promise<{ success: boolean; error?: string; target?: SyslogTarget }> {
+  // Checked HERE rather than only in the route, because the restore path
+  // (backup-restart-usecase.ts) calls this with a target parseTarget()
+  // recovered from the drop-in on disk, which a hand edit can have put
+  // anything into. Same shape as the install check below it: a refusal the
+  // route turns into a 400, not a throw.
+  if (!isValidSyslogHost(target.host)) {
+    return {
+      success: false,
+      error: 'host must be a hostname or an IP address — it is written into a '
+        + 'root-parsed rsyslog config, so other characters are refused rather than escaped',
+    };
+  }
+
   const { stdout: whichOut } = await nsenter('which', ['rsyslogd']).catch(() => ({ stdout: '' }));
   if (!whichOut.trim()) {
     return { success: false, error: 'rsyslog is not installed — install it first' };
