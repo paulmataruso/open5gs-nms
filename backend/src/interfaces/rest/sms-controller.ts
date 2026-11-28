@@ -326,7 +326,7 @@ line vty
 `;
 }
 
-interface SgsMapEntry { mcc: string; mnc: string; tac: number; }
+export interface SgsMapEntry { mcc: string; mnc: string; tac: number; }
 
 // Build the sgsap YAML block indented under mme: (2-space indent). Open5GS
 // expresses multiple TAI→LAI mappings (one per PLMN) as *repeated* `map:`
@@ -335,7 +335,7 @@ interface SgsMapEntry { mcc: string; mnc: string; tac: number; }
 // map_num on every `map:` key it encounters, building an array from
 // duplicates rather than reading a `maps:` list). One block per entry here,
 // matching that convention exactly.
-function sgsapYamlBlock(mscBindIp: string, mmeLocalIp: string, entries: SgsMapEntry[]): string {
+export function sgsapYamlBlock(mscBindIp: string, mmeLocalIp: string, entries: SgsMapEntry[]): string {
   const localLine = mmeLocalIp ? `        local_address: ${mmeLocalIp}\n` : '';
   const mapBlocks = entries.map(({ mcc, mnc, tac }) => `        map:
           tai:
@@ -360,7 +360,7 @@ ${mapBlocks}`;
 // /configure call for one PLMN doesn't silently delete another PLMN's SGs
 // mapping — replaceSgsapSection() below does a full-section replace, so
 // whatever we pass it here has to already include everything we want kept.
-function extractExistingMapEntries(raw: string): SgsMapEntry[] {
+export function extractExistingMapEntries(raw: string): SgsMapEntry[] {
   const block = extractSgsapBlock(raw);
   if (!block) return [];
   // extractSgsapBlock() keeps the original 2-space indent (nested under
@@ -397,7 +397,7 @@ function extractExistingMapEntries(raw: string): SgsMapEntry[] {
 // Merge one PLMN's map entry into the existing set: update in place if that
 // PLMN is already mapped, otherwise append — every other PLMN's entry passes
 // through untouched.
-function mergeMapEntry(existing: SgsMapEntry[], next: SgsMapEntry): SgsMapEntry[] {
+export function mergeMapEntry(existing: SgsMapEntry[], next: SgsMapEntry): SgsMapEntry[] {
   const idx = existing.findIndex(e => e.mcc === next.mcc && e.mnc === next.mnc);
   if (idx === -1) return [...existing, next];
   const merged = [...existing];
