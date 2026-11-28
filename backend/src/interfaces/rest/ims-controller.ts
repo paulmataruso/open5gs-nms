@@ -2239,7 +2239,7 @@ export function removeUpfImsSession(raw: string): string {
 
 // ── PCRF freeDiameter helper ──────────────────────────────────────────────────
 
-function upsertPcrfPcscfPeer(raw: string, pcscfFqdn: string, pcscfIp: string, pcscfPort: number): string {
+export function upsertPcrfPcscfPeer(raw: string, pcscfFqdn: string, pcscfIp: string, pcscfPort: number): string {
   const peerLine = `ConnectPeer = "${pcscfFqdn}" { ConnectTo = "${pcscfIp}"; Port = ${pcscfPort}; No_TLS; };`;
   // Strip every existing "pcscf.ims.*" ConnectPeer line first, regardless of
   // MCC/MNC, then add back only the current one. Previously this only ever
@@ -2251,7 +2251,12 @@ function upsertPcrfPcscfPeer(raw: string, pcscfFqdn: string, pcscfIp: string, pc
   // genuine connect/disconnect flap that starved real call/INVITE processing
   // entirely). Same underlying class of bug as the known stale-neighbor-list
   // issue the PLMN Migration Wizard leaves in FRR config — see task #186.
-  const cleaned = raw.replace(/^ConnectPeer\s*=\s*"pcscf\.ims\.[^\n]*\n?/gm, '');
+  // `^[ \t]*` rather than a bare `^`, matching the identical slot-strip in
+  // vowifi-controller.ts and ocs-controller.ts. pcrf.conf is an editable file
+  // in this module's own config manifest below, so a hand edit can indent this
+  // line -- and a bare `^` then leaves the stale line in place AND appends a
+  // replacement, which is exactly the duplicate-peer state described above.
+  const cleaned = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"pcscf\.ims\.[^\n]*\n?/gm, '');
   return cleaned.trimEnd() + '\n' + peerLine + '\n';
 }
 

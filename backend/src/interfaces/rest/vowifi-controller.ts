@@ -539,7 +539,7 @@ export function removeSmfAaaPeer(raw: string, aaaFqdn: string): string {
 // connecting peer whose identity has no matching ConnectPeer entry ("no_connection"
 // on the AAA side, confirmed live), so this upsert is required for real Swx auth to
 // ever succeed, exactly like upsertSmfAaaPeer() above for S6b.
-function upsertHssAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): string {
+export function upsertHssAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): string {
   const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${aaaListenIp}"; No_TLS; };`;
   const withoutAnyAaaPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"aaa\.[^"]*"[^\n]*\n?/gm, '');
   // Also drop a stale, wrong "epdg.localdomain" ConnectPeer entry found live in
@@ -550,7 +550,7 @@ function upsertHssAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): st
   return withoutStaleEpdgLocaldomain.trimEnd() + '\n' + peerLine + '\n';
 }
 
-function removeHssAaaPeer(raw: string, aaaFqdn: string): string {
+export function removeHssAaaPeer(raw: string, aaaFqdn: string): string {
   const escaped = aaaFqdn.replace(/\./g, '\\.');
   const re = new RegExp(`^[ \\t]*ConnectPeer\\s*=\\s*"${escaped}"[^\n]*\n?`, 'm');
   return raw.replace(re, '');
