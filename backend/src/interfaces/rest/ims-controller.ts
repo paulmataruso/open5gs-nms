@@ -1081,7 +1081,7 @@ api:
 `;
 }
 
-function defaultIfcXml(imsDomain: string, routeSmsToVectorcore?: { ip: string; port: number }): string {
+export function defaultIfcXml(imsDomain: string, routeSmsToVectorcore?: { ip: string; port: number }): string {
   // Jinja2 variables must be prefixed with `iFC_vars.` — PyHSS's Answer_16777216_301
   // renders with `template.render(iFC_vars=ims_subscriber_details)`, nesting every
   // field (imsi, msisdn, scscf_realm, ...) under a single top-level `iFC_vars` dict,
