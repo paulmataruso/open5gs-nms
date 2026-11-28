@@ -65,7 +65,7 @@ const TWAMP_CLIENT_GO_TEMPLATE = `${__dirname}/../../config/twamp-templates/twam
 const TWAMP_SERVER_GO_TEMPLATE = `${__dirname}/../../config/twamp-templates/twamp-server.go`;
 const TWAMP_PATCH_SCRIPT_TEMPLATE = `${__dirname}/../../config/twamp-templates/patch-bind-ip.py`;
 
-function serverSystemdUnit(execArgs: string): string {
+export function serverSystemdUnit(execArgs: string): string {
   return `[Unit]
 Description=TWAMP Server (Reflector)
 After=network.target
@@ -82,7 +82,7 @@ WantedBy=multi-user.target
 `;
 }
 
-function shellQuote(s: string): string {
+export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
