@@ -1919,6 +1919,53 @@ function findSmfSessionRange(lines: string[]): { start: number; end: number; ind
   return { start: sessionIdx + 1, end, indent };
 }
 
+/**
+ * Sets `hss.sms_over_ims` in hss.yaml, which is what tells Open5GS HSS to
+ * advertise SMS-over-IMS capability to a 4G subscriber.
+ *
+ * Unlike smf.yaml/upf.yaml this file is not edited through the YAML
+ * repository, so this is a text edit on an operator-editable file. It returns
+ * `changed` rather than silently handing back the input, because the two ways
+ * the previous inline version could do nothing were both invisible:
+ *
+ *  - It guarded on `raw.includes('sms_over_ims')`, a whole-file substring
+ *    test, and then replaced the FIRST occurrence. A commented-out
+ *    `# sms_over_ims:` line above the real key -- an ordinary hand edit --
+ *    therefore captured the edit: the COMMENT was rewritten to the new URI
+ *    (staying inert) while the real key kept its old value, and Configure
+ *    reported success. Reproduced before fixing.
+ *  - With no `hss:` block at all, neither branch matched, and the file was
+ *    written back unchanged with no error, so the capability was never
+ *    configured. Also reproduced.
+ *
+ * Both are fixed by only ever matching a real, uncommented key, and by
+ * reporting when there was nowhere to put it.
+ */
+export function upsertHssSmsOverIms(
+  raw: string,
+  smscUri: string,
+): { yaml: string; changed: boolean; reason?: string } {
+  // A real key: start of line, optional indent, not preceded by '#'.
+  const liveKey = /^([ \t]*)sms_over_ims:[^\n]*$/m;
+  const m = liveKey.exec(raw);
+  if (m) {
+    const line = `${m[1]}sms_over_ims: "${smscUri}"`;
+    if (m[0] === line) return { yaml: raw, changed: false, reason: 'already-current' };
+    return { yaml: raw.replace(liveKey, line), changed: true };
+  }
+  // Insert under the hss: block, matching its existing child indentation.
+  const block = /^hss:[ \t]*$/m.exec(raw);
+  if (!block) {
+    return { yaml: raw, changed: false, reason: 'no-hss-block' };
+  }
+  const after = raw.slice(block.index + block[0].length);
+  const childIndent = /^\n([ \t]+)\S/.exec(after)?.[1] ?? '  ';
+  return {
+    yaml: raw.replace(/^hss:[ \t]*$/m, `hss:\n${childIndent}sms_over_ims: "${smscUri}"`),
+    changed: true,
+  };
+}
+
 export function updateSmfImsSession(raw: string, pcscfIp: string, _dnsIp?: string): string {
   let lines = raw.split('\n');
 
@@ -3154,7 +3201,14 @@ export async function syncImsSubscribers(
   return { synced, failed, removed, total: toSync.length };
 }
 
-export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsDomain: string }> {
+export async function configureIms(
+  input: ImsConfigureFullInput,
+): Promise<{ imsDomain: string; warnings: string[] }> {
+  // Conditions worth telling the operator about that are not failures.
+  // Returned rather than logged because configureIms() has no logger in scope
+  // (index.ts injects one; this module never receives it), and a warning that
+  // reaches the response can reach the UI, where it is actually read.
+  const warnings: string[] = [];
   const {
     pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
     rtpEngineIp, rtpPortMin, rtpPortMax, dnsIp, mcc, mnc,
@@ -3452,14 +3506,27 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
 
   // 11b. HSS yaml — sms_over_ims capability for 4G subscribers
   if (fs.existsSync(HOST_HSS_YAML)) {
-    let hssRaw = fs.readFileSync(HOST_HSS_YAML, 'utf-8');
     const smscUri = `sip:smsc.${imsDomain}:7090;transport=tcp`;
-    if (!hssRaw.includes('sms_over_ims')) {
-      hssRaw = hssRaw.replace(/^(hss:\s*)$/m, `$1\n  sms_over_ims: "${smscUri}"`);
-    } else {
-      hssRaw = hssRaw.replace(/sms_over_ims:.*/, `sms_over_ims: "${smscUri}"`);
+    const probe = upsertHssSmsOverIms(fs.readFileSync(HOST_HSS_YAML, 'utf-8'), smscUri);
+    if (probe.changed) {
+      // Through writeYamlGuarded, like smf.yaml/upf.yaml, so this text edit on
+      // an operator-editable file gets the same re-parse and
+      // dropped-top-level-key checks. HSS is one of the four DB-backed NFs, so
+      // a malformed hss.yaml takes 4G S6a down with it.
+      writeYamlGuarded(
+        HOST_HSS_YAML,
+        raw => upsertHssSmsOverIms(raw, smscUri).yaml,
+        'set sms_over_ims in hss.yaml',
+      );
+    } else if (probe.reason === 'no-hss-block') {
+      // Say so rather than writing the file back untouched: HSS would come up
+      // without SMS-over-IMS and nothing would indicate why.
+      // Reported, not thrown: escalating this to a failure would change
+      // control flow on a live, working Configure for an edge case nobody has
+      // hit. Surfaced beats silent; whether it should abort is an operator
+      // decision, not a side effect of adding a test.
+      warnings.push('hss.yaml has no "hss:" block — sms_over_ims was not set.');
     }
-    fs.writeFileSync(HOST_HSS_YAML, hssRaw, 'utf-8');
   }
 
   // 12. PCRF — add P-CSCF as Diameter peer for Rx interface
@@ -3591,7 +3658,7 @@ export async function configureIms(input: ImsConfigureFullInput): Promise<{ imsD
     fs.writeFileSync(HOST_IMS_STATE, JSON.stringify(state, null, 2), 'utf-8');
   } catch { /* see comment above */ }
 
-  return { imsDomain };
+  return { imsDomain, warnings };
 }
 
 // Toggles the "SMS delivery mode" selector on the SMS/MMS page — a
@@ -5750,7 +5817,7 @@ export function createImsRouter(
       const mcc = bodyMcc || autoMcc;
       const mnc = bodyMnc || autoMnc;
 
-      const { imsDomain } = await configureIms({
+      const { imsDomain, warnings } = await configureIms({
         pcscfIp, pcscfPort, icscfIp, icscfPort, scscfIp, scscfPort,
         rtpEngineIp, rtpPortMin, rtpPortMax, dnsIp, mcc, mnc, additionalPlmns,
       });
@@ -5760,7 +5827,11 @@ export function createImsRouter(
         details: `domain=${imsDomain} pcscf=${pcscfIp}:${pcscfPort} icscf=${icscfIp}:${icscfPort} scscf=${scscfIp}:${scscfPort}`,
         success: true,
       });
-      res.json({ success: true, message: 'IMS configured and services started.', imsDomain });
+      if (warnings.length) logger.warn({ warnings }, 'ims configure completed with warnings');
+      res.json({
+        success: true, message: 'IMS configured and services started.', imsDomain,
+        ...(warnings.length ? { warnings } : {}),
+      });
     } catch (err) {
       await auditLogger.log({ action: 'ims_configure', user, details: String(err), success: false });
       logger.error({ err: String(err) }, 'ims configure error');
