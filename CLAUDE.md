@@ -92,7 +92,12 @@ services**, not containers. This is not a toy/demo app: it manages real CBRS rad
    VoWiFi, and the DNS/FQDN Migration Wizard all use the same single BIND9 instance for
    different zones. As of 2026-07-17: `bind-controller.ts` (the DNS/BIND9 page) is the
    sole owner of `named.conf.options` (forwarders, listen-on) — it exposes safe,
-   targeted-upsert functions (`readListenOn`/`writeListenOn` are exported; **correction 2026-10-10**: `readForwarders`/`writeForwarders` are module-PRIVATE, not exported as an earlier version of this entry claimed) that other modules import and merge
+   targeted-upsert functions (`readListenOn`/`writeListenOn` **and** `readForwarders`/`writeForwarders` are all
+  exported. **Correction 2026-11-28, superseding a "correction 2026-10-10" that
+  called the forwarders pair module-PRIVATE**: they carry `export` at
+  `bind-controller.ts:120` and `:128`, under a doc comment stating they are
+  exported so Auto-Configuration can ensure forwarders exist without writing
+  `named.conf.options` itself. Verified directly, not inferred) that other modules import and merge
    into, rather than writing their own copy of the whole file. **If you're adding a new
    module that needs BIND to listen on a specific IP, import `writeListenOn` from
    `bind-controller.ts` and merge your IP in — do not write `named.conf.options`
@@ -1736,7 +1741,13 @@ Full detail on any of these: `docs/features.md`.
   diff it before discarding it** (`git diff <its-first-parent> <the-merge>`).
 - **Run `scripts/verify.sh` before pushing, not a subset of the gates.** It
   runs exactly what CI runs, in CI's order, and like CI it runs every check
-  before reporting a verdict rather than stopping at the first failure. Three
+  before reporting a verdict rather than stopping at the first failure. There
+  are **nine** of them as of 2026-11-28: deps match lockfile, backend
+  typecheck, backend tests, frontend build, frontend tests, ratchet backend,
+  ratchet frontend, coverage floor, changed lines. A full run takes roughly
+  12-15 minutes on this host, so start it in the background and wait on
+  `pgrep -f '^bash scripts/verify.sh'` — anchor that pattern, or the waiter
+  matches itself and returns immediately. Three
   traps it exists to close, all hit repeatedly in one session: `npx tsc
   --noEmit -p backend/tsconfig.json` reports clean no matter what state a test
   file is in, because that config EXCLUDES `src/**/__tests__/**` and only
