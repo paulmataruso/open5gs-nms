@@ -166,11 +166,43 @@ export async function deprovisionPyhssTestSubscriber(imsi: string): Promise<void
 
 // ── S-CSCF test auth mode (Digest-MD5) — always reverted ───────────────────
 
+/**
+ * The algorithm ims-controller.ts's scscfIncludeCfg() emits by default. The
+ * revert below must write exactly this, or "always reverted" leaves S-CSCF
+ * holding a value IMS never produces until the next full Configure.
+ */
+export const SCSCF_DEFAULT_AUTH_ALG = 'HSS-Selected';
+export const SCSCF_TEST_AUTH_ALG = 'MD5';
+
+const REG_AUTH_ALG_RE = /#!define REG_AUTH_DEFAULT_ALG "[^"]*"/;
+
+/**
+ * Rewrites the auth algorithm in a scscf.cfg we do NOT own -- IMS generates
+ * that file, and this is a regex against its output.
+ *
+ * `changed` exists because String.replace is silent on a miss: it returns the
+ * input untouched, so the old code wrote the file back identical and restarted
+ * S-CSCF anyway. The test would then run against whatever mode was already
+ * live while reporting success, and every registered UE would have been
+ * dropped for nothing. If IMS ever changes how it emits this define, that is
+ * the failure -- so the caller raises it instead of proceeding.
+ */
+export function withScscfAuthAlg(raw: string, enabled: boolean): { cfg: string; changed: boolean } {
+  const target = enabled ? SCSCF_TEST_AUTH_ALG : SCSCF_DEFAULT_AUTH_ALG;
+  const cfg = raw.replace(REG_AUTH_ALG_RE, `#!define REG_AUTH_DEFAULT_ALG "${target}"`);
+  return { cfg, changed: REG_AUTH_ALG_RE.test(raw) };
+}
+
 export async function setScscfTestAuthMode(enabled: boolean): Promise<void> {
-  let raw = fs.readFileSync(HOST_SCSCF_CFG, 'utf-8');
-  const target = enabled ? 'MD5' : 'HSS-Selected';
-  raw = raw.replace(/#!define REG_AUTH_DEFAULT_ALG "[^"]*"/, `#!define REG_AUTH_DEFAULT_ALG "${target}"`);
-  fs.writeFileSync(HOST_SCSCF_CFG, raw, 'utf-8');
+  const { cfg, changed } = withScscfAuthAlg(fs.readFileSync(HOST_SCSCF_CFG, 'utf-8'), enabled);
+  if (!changed) {
+    throw new Error(
+      'scscf.cfg has no REG_AUTH_DEFAULT_ALG define to rewrite — refusing to restart S-CSCF, '
+      + 'which would drop every registered UE and leave the test running in the wrong auth mode. '
+      + 'Re-run IMS Configure to regenerate scscf.cfg.',
+    );
+  }
+  fs.writeFileSync(HOST_SCSCF_CFG, cfg, 'utf-8');
   await nsenter('systemctl', ['restart', 'kamailio-scscf']);
   // Give S-CSCF a moment to reconnect to HSS before the test starts hammering it.
   await new Promise(resolve => setTimeout(resolve, 3000));
