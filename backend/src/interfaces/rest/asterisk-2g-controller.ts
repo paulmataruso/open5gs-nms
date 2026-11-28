@@ -327,7 +327,13 @@ astsbindir => /usr/sbin
 `;
 }
 
-function pjsip2gConf(bindIp: string, bindPort: number, sipConnIp: string, sipConnPort: number, crossRanPeer: { ip: string; port: number } | null): string {
+// The config generators below are exported only so
+// `__tests__/voice-config-golden.test.ts` can render them and diff the result
+// against a committed golden master, the same arrangement the IMS and 2G
+// generators have. They are not part of this module's API and nothing else
+// imports them; removing an export breaks that test's compile, which is the
+// intended signal rather than an inconvenience.
+export function pjsip2gConf(bindIp: string, bindPort: number, sipConnIp: string, sipConnPort: number, crossRanPeer: { ip: string; port: number } | null): string {
   // Cross-RAN Calling: peers with the PSTN Gateway's own Asterisk instance
   // so a call to a 4G/5G short code can be dialed from this side and vice
   // versa. Written/removed only by setCrossRanPeer() below, orchestrated
@@ -500,7 +506,7 @@ async function withGsm2gExtensions<T>(mongoUri: string, fn: (col: Collection<Gsm
   }
 }
 
-function extensions2gConf(msisdnMatchPattern: string, echoTestNumber: string, shortCodes: { extension: string; subscriberMsisdn: string }[], crossRanPeerCodes: { extension: string; label?: string }[], subscriberMsisdns: string[]): string {
+export function extensions2gConf(msisdnMatchPattern: string, echoTestNumber: string, shortCodes: { extension: string; subscriberMsisdn: string }[], crossRanPeerCodes: { extension: string; label?: string }[], subscriberMsisdns: string[]): string {
   const shortCodeBlocks = shortCodes.map(e => `exten => ${e.extension},1,NoOp(2G Short Code -> ${e.subscriberMsisdn})
  same => n,Dial(PJSIP/${e.subscriberMsisdn}@sipconn,60)
  same => n,Hangup()
@@ -653,7 +659,7 @@ async function regenerateExtensions2g(mongoUri: string, subscriberRepo: ISubscri
   await nsenter('asterisk', ['-C', A2G_CONF, '-rx', 'dialplan reload']).catch(() => {});
 }
 
-function rtp2gConf(): string {
+export function rtp2gConf(): string {
   return `[general]
 rtpstart=${RTP_PORT_MIN}
 rtpend=${RTP_PORT_MAX}
