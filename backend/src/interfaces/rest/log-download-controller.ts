@@ -11,13 +11,11 @@ import * as path from 'path';
 import { classifyMajorEvent, MAJOR_EVENT_GREP_PATTERNS, parseOpen5gsTimestamp, formatOpen5gsTimestamp } from '../../application/use-cases/major-event-classifier';
 import { extractEventDetails } from '../../application/use-cases/log-event-details';
 import { asyncRoute } from './middleware/async-route';
+import { OPEN5GS_DAEMON_SERVICES } from '../../domain/interfaces/config-repository';
 
 const execFileAsync = promisify(execFile);
 
-const ALL_OPEN5GS_SERVICES = [
-  'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-  'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
-];
+const ALL_OPEN5GS_SERVICES: readonly string[] = OPEN5GS_DAEMON_SERVICES;
 
 const GENIEACS_SERVICES = ['genieacs-cwmp-access', 'genieacs-nbi-access'];
 const GENIEACS_LOG_BASE = '/var/log/genieacs';

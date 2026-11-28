@@ -6,6 +6,7 @@ import pino from 'pino';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { requireAdmin } from './middleware/auth-middleware';
 import { asyncRoute } from './middleware/async-route';
+import { OPEN5GS_DAEMON_SERVICES } from '../../domain/interfaces/config-repository';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,11 +48,7 @@ const APPARMOR_MARKER_END   = '# --- end Open5GS NMS ---';
 // (incl. the SAS logs embedded in the backend container's own output) isn't included:
 // it isn't a plain-text file on the host, so forwarding it would need either a Docker
 // logging-driver change or JSON log parsing — a separate, larger change.
-const OPEN5GS_SERVICES = [
-  'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-  'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
-];
-const OPEN5GS_LOG_FILES = OPEN5GS_SERVICES.map(svc => `/var/log/open5gs/${svc}.log`);
+const OPEN5GS_LOG_FILES = OPEN5GS_DAEMON_SERVICES.map(svc => `/var/log/open5gs/${svc}.log`);
 // GenieACS logs are NOT bind-mounted at /var/log/genieacs on the host — that path only
 // exists inside containers (see docker-compose.yml's "./genieacs/logs:/var/log/genieacs"
 // mounts). rsyslog runs on the host, so it needs the real host-side path, which is the
