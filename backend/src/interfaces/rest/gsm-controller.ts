@@ -591,7 +591,14 @@ function nextUnitId(existing: BtsEntry[]): number {
 // for a parse error) is expected to surface at least one syntax quirk here,
 // the same way the SMS module's own history did.
 
-function osmomgwCfg(bindIp: string, rtpBindIp: string): string {
+// The config generators below (osmomgwCfg, btsBlock, osmobscCfg,
+// osmobtsVirtualCfg, osmopcuCfg, osmosgsnCfg, osmoggsnCfg) are exported only
+// so `__tests__/gsm-config-golden.test.ts` can render them and diff the
+// result against a committed golden master — the same arrangement the IMS
+// generators have. They are not part of this module's API and nothing else
+// imports them; removing an export breaks that test's compile, which is the
+// intended signal rather than an inconvenience.
+export function osmomgwCfg(bindIp: string, rtpBindIp: string): string {
   return `mgcp
   bind ip ${bindIp}
   rtp port-range 4002 16000
@@ -631,7 +638,7 @@ function parseEarfcns(v: unknown): number[] | undefined {
   return nums.length ? [...new Set(nums)] : [];
 }
 
-function btsBlock(e: BtsEntry, index: number, sgsnGbRemoteIp = ''): string {
+export function btsBlock(e: BtsEntry, index: number, sgsnGbRemoteIp = ''): string {
   const gprsMode = e.gprsMode ?? 'none';
   // Gb/NS target for this BTS's PCU. An explicit module-level SGSN Gb IP
   // wins; Configure auto-derives one from a remote radio's own subnet, so
@@ -861,7 +868,7 @@ bsc
 // than trimmed — every line in it is proven to parse against this exact
 // osmo-bts version; guessing which lines are safe to drop isn't worth the
 // risk of a startup parse error over a handful of log-verbosity settings.
-function osmobtsVirtualCfg(unitId: number, band: string, bscOmlIp: string): string {
+export function osmobtsVirtualCfg(unitId: number, band: string, bscOmlIp: string): string {
   return `log stderr
  logging filter all 1
  logging color 0
@@ -924,7 +931,7 @@ bts 0
 // example (the user supplied an .mhtml capture of it since the live wiki
 // page is behind anti-bot protection this session couldn't get past).
 
-function osmopcuCfg(): string {
+export function osmopcuCfg(): string {
   return `log stderr
  logging filter all 1
  logging print category 1
@@ -949,7 +956,7 @@ pcu
 // still shows — confirmed against this host's real osmo-sgsn 1.x via
 // `osmo-sgsn --vty-ref-xml`. `accept-ipaccess` on the bind is what lets a
 // nanoBTS's IPA-multiplexed Gb link attach dynamically (no static nsvc).
-function osmosgsnCfg(gtpLocalIp: string, ggsnGtpIp: string, hlrBindIp: string, apn: string): string {
+export function osmosgsnCfg(gtpLocalIp: string, ggsnGtpIp: string, hlrBindIp: string, apn: string): string {
   return `log stderr
  logging filter all 1
  logging print category 1
@@ -1018,7 +1025,7 @@ function writeSgsnCfg(gtpLocalIp: string, ggsnGtpIp: string, hlrBindIp: string, 
 // `osmo-ggsn --vty-ref-xml`) — tun-device / type-support / ip prefix /
 // ip dns / the APN's own `no shutdown` all live one level deeper, under
 // it. The wiki's flat example is stale.
-function osmoggsnCfg(gtpBindIp: string, apn: string, tunDevice: string, poolCidr: string, dns1: string, dns2: string): string {
+export function osmoggsnCfg(gtpBindIp: string, apn: string, tunDevice: string, poolCidr: string, dns1: string, dns2: string): string {
   return `log stderr
  logging filter all 1
  logging print category 1
