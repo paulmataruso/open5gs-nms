@@ -769,13 +769,13 @@ export async function syncOcsSubscribers(
 // matching outbound peer entry for SMF, matching the proven "exactly one
 // side actively connects" rule from this codebase's own production
 // incident history (CLAUDE.md pattern #13).
-function upsertSmfGyPeer(raw: string, ocsIdentity: string, ocsIp: string, ocsPort: number): string {
+export function upsertSmfGyPeer(raw: string, ocsIdentity: string, ocsIp: string, ocsPort: number): string {
   const peerLine = `ConnectPeer = "${ocsIdentity}" { ConnectTo = "${ocsIp}"; Port = ${ocsPort}; No_TLS; };`;
   const withoutAnyOcsPeer = raw.replace(/^[ \t]*ConnectPeer\s*=\s*"ocs\.[^"]*"[^\n]*\n?/gm, '');
   return withoutAnyOcsPeer.trimEnd() + '\n' + peerLine + '\n';
 }
 
-function removeSmfGyPeer(raw: string, ocsIdentity: string): string {
+export function removeSmfGyPeer(raw: string, ocsIdentity: string): string {
   const escaped = ocsIdentity.replace(/\./g, '\\.');
   const re = new RegExp(`^[ \\t]*ConnectPeer\\s*=\\s*"${escaped}"[^\n]*\n?`, 'm');
   return raw.replace(re, '');

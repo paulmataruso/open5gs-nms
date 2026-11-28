@@ -512,7 +512,7 @@ WantedBy=multi-user.target
 `;
 }
 
-function upsertSmfAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): string {
+export function upsertSmfAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): string {
   const peerLine = `ConnectPeer = "${aaaFqdn}" { ConnectTo = "${aaaListenIp}"; No_TLS; };`;
   // Unconditionally strip EVERY "aaa.*" ConnectPeer entry first — this slot is
   // exclusively owned by this function — then add exactly one clean line back.
@@ -526,7 +526,7 @@ function upsertSmfAaaPeer(raw: string, aaaFqdn: string, aaaListenIp: string): st
   return withoutAnyAaaPeer.trimEnd() + '\n' + peerLine + '\n';
 }
 
-function removeSmfAaaPeer(raw: string, aaaFqdn: string): string {
+export function removeSmfAaaPeer(raw: string, aaaFqdn: string): string {
   const escaped = aaaFqdn.replace(/\./g, '\\.');
   const re = new RegExp(`^[ \\t]*ConnectPeer\\s*=\\s*"${escaped}"[^\n]*\n?`, 'm');
   return raw.replace(re, '');
