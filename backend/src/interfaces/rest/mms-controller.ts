@@ -379,7 +379,7 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
-function mmsMobileConfigPlist(apn: string, mmscUrl: string): string {
+export function mmsMobileConfigPlist(apn: string, mmscUrl: string): string {
   const apnX = escapeXml(apn);
   const mmscUrlX = escapeXml(mmscUrl);
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -453,7 +453,7 @@ function mmsMobileConfigPlist(apn: string, mmscUrl: string): string {
 // the upstream example config.yaml would resolve against systemd's default
 // cwd ("/") and scatter files across the filesystem. Absolute paths sidestep
 // that entirely regardless of cwd.
-function mmscYamlCfg(mm1PublicIp: string, mm4Hostname: string): string {
+export function mmscYamlCfg(mm1PublicIp: string, mm4Hostname: string): string {
   return `database:
   driver: sqlite
   dsn: "${VC_DATA}/vectorcore-mmsc.db"
