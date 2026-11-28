@@ -1002,9 +1002,18 @@ export function getPstnBindAddress(): { ip: string; port: number } | null {
 // the placeholder on a fresh install where PSTN was never set up). Mirrors
 // writeDispatcherEntry()'s own exact format — kept as a single source of
 // truth so the two writers can never silently drift apart on syntax.
+/**
+ * The one place the entry's syntax lives. Both writers go through it, so the
+ * "single source of truth" the comment above claims is now actually true --
+ * it used to be two separate template literals that merely happened to agree.
+ */
+export function dispatcherEntryLine(ip: string, port: number): string {
+  return `1 sip:${ip}:${port}\n`;
+}
+
 export function formatPstnDispatcherEntry(): string | null {
   const bind = getPstnBindAddress();
-  return bind ? `1 sip:${bind.ip}:${bind.port}\n` : null;
+  return bind ? dispatcherEntryLine(bind.ip, bind.port) : null;
 }
 
 // Static import (the pre-existing safe direction) — no lazy import needed on
@@ -1226,7 +1235,10 @@ async function reloadDispatcher(): Promise<void> {
 }
 
 async function writeDispatcherEntry(asteriskIp: string): Promise<void> {
-  fs.writeFileSync(HOST_DISPATCHER_LIST, `1 sip:${asteriskIp}:${ASTERISK_PORT}\n`, 'utf-8');
+  // Takes the ip as a parameter rather than reading state, because one caller
+  // runs before the new state is persisted -- so this cannot simply call
+  // formatPstnDispatcherEntry(), which reads it.
+  fs.writeFileSync(HOST_DISPATCHER_LIST, dispatcherEntryLine(asteriskIp, ASTERISK_PORT), 'utf-8');
   await reloadDispatcher();
 }
 
