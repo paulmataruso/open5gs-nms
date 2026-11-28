@@ -312,7 +312,7 @@ function writeState(state: VectorcoreSmscState): void {
 // mmscYamlCfg() in mms-controller.ts: the shipped unit has no
 // WorkingDirectory= set, so relative paths would resolve against systemd's
 // default cwd ("/") and scatter files across the filesystem.
-function smscYamlCfg(imsDomain: string): string {
+export function smscYamlCfg(imsDomain: string): string {
   const fqdn = `smsc.${imsDomain}`;
   return `smpp:
   server:
