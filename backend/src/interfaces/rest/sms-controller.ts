@@ -116,7 +116,7 @@ s.close()
 
 // ─── Config templates ──────────────────────────────────────────────────────────
 
-function osmostpCfg(): string {
+export function osmostpCfg(): string {
   // `xua rkm routing-key-allocation dynamic-permitted` — found live (2G GSM
   // module bring-up): `accept-asp-connections dynamic-permitted` above only
   // lets a NEW ASP connect at all; it does NOT let that ASP dynamically
@@ -183,7 +183,7 @@ line vty
 // lines are both present in the real stock file this deployment runs and were
 // both missing here.
 // Note: osmo-hlr v1.5.0 only supports 'bind ip' under gsup — port is fixed at 4222
-function osmohlrCfg(hlrBindIp: string): string {
+export function osmohlrCfg(hlrBindIp: string): string {
   return `log stderr
  logging filter all 1
  logging print extended-timestamp 1
@@ -269,7 +269,7 @@ export async function listHlrSubscriberStatus(): Promise<HlrSubscriberStatus[]> 
   }
 }
 
-function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: string, mgwBindIp?: string | null): string {
+export function osmomscCfg(mcc: string, mnc: string, mscBindIp: string, hlrBindIp: string, mgwBindIp?: string | null): string {
   // Note: osmo-msc v1.9.0 does not accept 'mncc-internal' under 'msc' — omit that line,
   // but 'assign-tmsi' alone under 'msc' is accepted fine (TMSI allocation for identity
   // privacy on the SGs link — was dropped along with the rejected mncc-internal line).
