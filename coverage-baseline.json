@@ -16,19 +16,23 @@
   ],
   "measuredAt": "2026-11-28",
   "total": {
-    "files": 12,
-    "statements": 466,
-    "statementsTotal": 51456,
+    "files": 16,
+    "statements": 737,
+    "statementsTotal": 51462,
     "pct": {
-      "statements": 0.9,
-      "lines": 0.9
+      "statements": 1.43,
+      "lines": 1.43
     }
   },
   "perFile": {
     "frontend/src/api/modules.ts": 7,
+    "frontend/src/api/rfSimulation.ts": 150,
     "frontend/src/api/suci.ts": 8,
     "frontend/src/App.tsx": 1,
     "frontend/src/components/common/navItems.ts": 1,
+    "frontend/src/components/config/editors/address-field.ts": 22,
+    "frontend/src/components/dhcp/subnet-reach.ts": 50,
+    "frontend/src/components/ran/radio-grouping.ts": 49,
     "frontend/src/components/rfplanning/heatmapRaster.ts": 143,
     "frontend/src/config/features.ts": 23,
     "frontend/src/hooks/useKeyboardA11y.ts": 22,
