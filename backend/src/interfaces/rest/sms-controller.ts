@@ -501,23 +501,6 @@ export function readCurrentSmsConfig(): SmsConfigureInput | null {
   }
 }
 
-// ⚠️ REAL RISK, found live (2G GSM module bring-up, 2026-09-09) reading the
-// actual production osmo-msc.cfg on this host: it is a *hand/VTY-maintained*
-// file carrying real config this function's own osmomscCfg() template does
-// not model at all — SMPP/esme (VectorCore MMSC), mncc-int codec defaults,
-// full encryption/authentication settings, smsc retention policy, extended
-// per-category logging levels. This function *fully regenerates the file
-// from scratch* on every call — if it is ever actually invoked against a
-// deployment whose osmo-msc.cfg has accumulated any such extra config (this
-// one has), it silently destroys all of it. This was never actually
-// triggered this session (every verification here was done via direct file
-// inspection/targeted edits specifically to avoid calling this), but it is
-// a latent landmine in the existing SMS module, not something introduced by
-// the GSM module — anyone calling the SMS page's own "Configure" button
-// carries the same risk today. Fixing it properly (teaching osmomscCfg() to
-// preserve unknown directives, i.e. a real merge instead of blind
-// regeneration) is real, separate work — flagging clearly rather than
-// papering over it, and specifically *not* attempting that merge here.
 // Real, 2026-09-24 finding: like IMS's own sync-subscribers, this was only
 // ever reachable via the manual button — backup-restart-usecase.ts's SMS
 // reapply calls configureSms() alone, which never touches OsmoHLR's own
