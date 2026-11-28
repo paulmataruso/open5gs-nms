@@ -170,7 +170,7 @@ function readFreeDiameterListenOn(confPath: string, fallback: string): string {
   }
 }
 
-function realmFromIdentity(identity: string): string {
+export function realmFromIdentity(identity: string): string {
   const idx = identity.indexOf('.');
   return idx >= 0 ? identity.slice(idx + 1) : 'localdomain';
 }
@@ -301,7 +301,7 @@ function removeZoneRecordLine(raw: string, name: string): string {
 // read directly, not guessed), mapped onto this project's PLMN/HSS/SMF constants the
 // same way ims-controller.ts's template functions map PLMN constants into Kamailio
 // config. Only the load-bearing decisions are called out inline below.
-function epdgYamlConf(opts: {
+export function epdgYamlConf(opts: {
   epdgIp: string; mcc: string; mnc: string; realm: string;
   aaaListenIp: string; smfGtpcIp: string; swmLocalIp: string;
 }): string {
@@ -400,7 +400,7 @@ shutdown:
 // actively connect out only where we must" pattern already used throughout this
 // project (P-CSCF/PCRF, I-CSCF/S-CSCF/HSS) — SWm (from the ePDG) and S6b (from SMF)
 // are both accept-only here; only SWx (to the real HSS) is an active outbound peer.
-function aaaConfigFile(opts: {
+export function aaaConfigFile(opts: {
   aaaListenIp: string; realm: string; epdgFqdn: string; smfIdentity: string; hssSwxIp: string;
 }): string {
   return `[%% ===========================================
