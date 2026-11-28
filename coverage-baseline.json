@@ -14,23 +14,26 @@
     "to load. On the first run that read 17.62% branches against 0.08%",
     "statements, which is a number that can only mislead."
   ],
-  "measuredAt": "2026-11-27",
+  "measuredAt": "2026-11-28",
   "total": {
-    "files": 9,
-    "statements": 442,
-    "statementsTotal": 51699,
+    "files": 12,
+    "statements": 466,
+    "statementsTotal": 51456,
     "pct": {
-      "statements": 0.85,
-      "lines": 0.85
+      "statements": 0.9,
+      "lines": 0.9
     }
   },
   "perFile": {
     "frontend/src/api/modules.ts": 7,
     "frontend/src/api/suci.ts": 8,
+    "frontend/src/App.tsx": 1,
+    "frontend/src/components/common/navItems.ts": 1,
     "frontend/src/components/rfplanning/heatmapRaster.ts": 143,
     "frontend/src/config/features.ts": 23,
     "frontend/src/hooks/useKeyboardA11y.ts": 22,
     "frontend/src/hooks/useTabHistory.ts": 70,
+    "frontend/src/mobile/mobileNav.ts": 22,
     "frontend/src/stores/index.ts": 89,
     "frontend/src/stores/staleModules.ts": 14,
     "frontend/src/stores/suci.ts": 66
