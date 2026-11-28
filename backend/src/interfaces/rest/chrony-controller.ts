@@ -37,6 +37,22 @@ export interface ChronyConfig {
   rtcsync:      boolean;
   driftfile:    string;
   logdir:       string;
+  /**
+   * Directive lines this module does not model, carried through verbatim.
+   *
+   * serializeConfig() rebuilds chrony.conf from scratch, so anything absent
+   * from the fields above used to be deleted by the next save -- measured at
+   * 15 real directives, `refclock` among them. On a deployment where chrony
+   * serves time to the RAN, silently dropping an operator's GPS/PPS reference
+   * clock during an unrelated edit on the Time Server page is not a cosmetic
+   * loss. Same reasoning as rawYaml for the core NFs and `relayIps` for Kea:
+   * preserve what we do not model rather than rebuild over it.
+   *
+   * Optional so no client has to know about it -- and the save route reads it
+   * from DISK rather than from the request body, because a UI that never
+   * displayed these lines cannot be relied on to echo them back.
+   */
+  preserved?:   string[];
 }
 
 export interface ChronyClient {
@@ -76,19 +92,40 @@ export interface ChronyTracking {
 }
 
 // ─── Config parser ────────────────────────────────────────────────────────────
-function parseConfig(raw: string): ChronyConfig {
+
+/**
+ * Every directive parseConfig() below understands.
+ *
+ * It is the complement of `preserved`: a keyword here is represented by a
+ * typed field and rewritten from it, and anything else is carried through
+ * verbatim. Adding a branch to the parser means adding its keyword here too,
+ * or the line is both parsed AND preserved and the save emits it twice.
+ */
+const MODELLED_DIRECTIVES = new Set([
+  'server', 'pool', 'allow', 'local', 'makestep', 'rtcsync', 'driftfile', 'logdir',
+]);
+
+export function parseConfig(raw: string): ChronyConfig {
   const cfg: ChronyConfig = {
     servers: [], allowNets: [], localStratum: 10,
     makestep: '1.0 3', rtcsync: false,
     driftfile: '/var/lib/chrony/chrony.drift',
     logdir: '/var/log/chrony',
   };
+  const preserved: string[] = [];
   for (const line of raw.split('\n')) {
     const t = line.trim();
     if (!t || t.startsWith('#')) continue;
     const parts = t.split(/\s+/);
     const kw = parts[0];
     const rest = parts.slice(1);
+    if (!MODELLED_DIRECTIVES.has(kw)) {
+      // Not understood here, so kept as written. Comments are still dropped:
+      // a directive is the functional half, and mapping a comment back to the
+      // line it describes is guesswork.
+      preserved.push(t);
+      continue;
+    }
     if (kw === 'server') {
       cfg.servers.push({ type: 'server', address: rest[0], options: rest.slice(1).join(' ') });
     } else if (kw === 'pool') {
@@ -96,8 +133,21 @@ function parseConfig(raw: string): ChronyConfig {
     } else if (kw === 'allow') {
       if (rest[0]) cfg.allowNets.push(rest[0]);
     } else if (kw === 'local') {
-      const stratumPart = rest.find(r => r.startsWith('stratum'));
-      cfg.localStratum = stratumPart ? parseInt(stratumPart.replace('stratum', '')) || 10 : 10;
+      // `local stratum 5` splits to ['local','stratum','5'], so the stratum
+      // VALUE is the token after the keyword -- not a prefix of it. Matching
+      // on startsWith('stratum') found the keyword itself, stripped it to '',
+      // and fell through parseInt('') -> NaN -> `|| 10`: every standard
+      // `local stratum N` line parsed back as 10 whatever N was. Since 10 is
+      // also the default nobody noticed, but the Time Server page has a
+      // stratum field, so saving 5 wrote `local stratum 5` correctly and the
+      // next read showed 10 again -- the setting silently reverted on the
+      // following save. The attached spelling is still accepted as a
+      // fallback, because it is what the old code actually handled.
+      const at = rest.indexOf('stratum');
+      const value = at !== -1
+        ? (rest[at + 1] ?? '')
+        : (rest.find(r => r.startsWith('stratum'))?.replace('stratum', '') ?? '');
+      cfg.localStratum = parseInt(value, 10) || 10;
     } else if (kw === 'makestep') {
       cfg.makestep = rest.join(' ');
     } else if (kw === 'rtcsync') {
@@ -108,10 +158,11 @@ function parseConfig(raw: string): ChronyConfig {
       cfg.logdir = rest.join(' ');
     }
   }
+  if (preserved.length > 0) cfg.preserved = preserved;
   return cfg;
 }
 
-function serializeConfig(cfg: ChronyConfig): string {
+export function serializeConfig(cfg: ChronyConfig): string {
   const lines: string[] = [
     '# /etc/chrony/chrony.conf',
     '# Managed by Open5GS NMS — manual edits will be overwritten on next save',
@@ -144,6 +195,12 @@ function serializeConfig(cfg: ChronyConfig): string {
   lines.push('# Log directory');
   lines.push(`logdir ${cfg.logdir}`);
   lines.push('');
+  if (cfg.preserved && cfg.preserved.length > 0) {
+    lines.push('# Directives this NMS does not manage, preserved from the');
+    lines.push('# previous file. Edit them here; they are kept as written.');
+    for (const line of cfg.preserved) lines.push(line);
+    lines.push('');
+  }
   return lines.join('\n');
 }
 
@@ -280,7 +337,13 @@ export function createChronyRouter(logger: pino.Logger, auditLogger: IAuditLogge
     const user = req.user?.username ?? 'unknown';
     const cfg  = req.body as ChronyConfig;
     try {
-      const content = serializeConfig(cfg);
+      // Unmodelled directives come from the file on disk, never from the
+      // request. The Time Server page has no field for them, so a client
+      // round-tripping its own view of the config would drop every one.
+      const onDisk = fs.existsSync(HOST_CHRONY_CONF)
+        ? parseConfig(fs.readFileSync(HOST_CHRONY_CONF, 'utf-8')).preserved
+        : undefined;
+      const content = serializeConfig({ ...cfg, preserved: onDisk });
       fs.writeFileSync(HOST_CHRONY_CONF, content, 'utf-8');
       await nsenter('systemctl', ['restart', 'chrony']);
       await auditLogger.log({
