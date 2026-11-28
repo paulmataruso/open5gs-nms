@@ -26,18 +26,43 @@ import toast from 'react-hot-toast';
 // sized to avoid.
 const NTP_CLIENT_ROWS = 4;
 
+/**
+ * The icon tints a stat card can carry, as WHOLE class names.
+ *
+ * This used to be one `color` prop holding a token fragment ("nms-green"),
+ * composed below into `bg-${color}/10` and `text-${color}`. Two problems, one
+ * of them invisible. Tailwind builds its CSS by scanning source text for
+ * complete class names, so neither composed class was ever seen here and
+ * neither was guaranteed to exist in the output -- the cards rendered only
+ * because every one of those eight classes happens to be written literally
+ * somewhere else in the app, which made an unrelated edit in an unrelated
+ * file able to flatten a dashboard card. And `color: string` meant a typo
+ * ("nms-greeen") compiled, rendered unstyled, and looked like a plain design.
+ *
+ * Whole names in a literal map fix both: Tailwind sees them, and the union
+ * makes an unknown tint a compile error.
+ */
+const STAT_TINTS = {
+  accent: { bg: 'bg-nms-accent/10', fg: 'text-nms-accent' },
+  green:  { bg: 'bg-nms-green/10',  fg: 'text-nms-green' },
+  amber:  { bg: 'bg-nms-amber/10',  fg: 'text-nms-amber' },
+  red:    { bg: 'bg-nms-red/10',    fg: 'text-nms-red' },
+} as const;
+
+type StatTint = keyof typeof STAT_TINTS;
+
 function StatCard({
   icon: Icon,
   label,
   value,
   subValue,
-  color,
+  tint,
 }: {
   icon: React.ElementType;
   label: string;
   value: string | number;
   subValue?: string;
-  color: string;
+  tint: StatTint;
 }): JSX.Element {
   return (
     <div className="nms-card animate-fade-in">
@@ -47,8 +72,8 @@ function StatCard({
           <p className="text-2xl font-semibold font-display mt-1">{value}</p>
           {subValue && <p className="text-xs text-nms-text-dim mt-1">{subValue}</p>}
         </div>
-        <div className={`p-2.5 rounded-lg bg-${color}/10`}>
-          <Icon className={`w-5 h-5 text-${color}`} />
+        <div className={`p-2.5 rounded-lg ${STAT_TINTS[tint].bg}`}>
+          <Icon className={`w-5 h-5 ${STAT_TINTS[tint].fg}`} />
         </div>
       </div>
     </div>
@@ -554,21 +579,21 @@ export function DashboardPage(): JSX.Element {
           label="Active Services"
           value={`${activeCount}/${totalCount}`}
           subValue={activeCount === totalCount ? 'All services operational' : 'Some services down'}
-          color={activeCount === totalCount ? 'nms-green' : 'nms-amber'}
+          tint={activeCount === totalCount ? 'green' : 'amber'}
         />
         <StatCard
           icon={Users}
           label="Subscribers"
           value={subscriberTotal}
           subValue="Total provisioned"
-          color="nms-accent"
+          tint="accent"
         />
         <StatCard
           icon={AlertTriangle}
           label="Config Issues"
           value={errorCount}
           subValue={errorCount === 0 ? 'No issues found' : 'Review required'}
-          color={errorCount === 0 ? 'nms-green' : 'nms-red'}
+          tint={errorCount === 0 ? 'green' : 'red'}
         />
         <div className="nms-card animate-fade-in">
           <div className="flex items-start justify-between">
