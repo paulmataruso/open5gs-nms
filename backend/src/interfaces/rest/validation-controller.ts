@@ -539,7 +539,7 @@ interface GeneratorParams {
   amfIp?: string;
 }
 
-function buildGnbYaml(idx: number, cfg: InferredConfig, params: GeneratorParams, ngapBindIp: string): string {
+export function buildGnbYaml(idx: number, cfg: InferredConfig, params: GeneratorParams, ngapBindIp: string): string {
   const { mcc, mnc } = cfg.plmn;
   // linkIp = gtpIp: loopback alias (127.0.3.x).
   //   All of 127.0.0.0/8 routes to lo on Linux — bindable without aliases.
@@ -572,7 +572,7 @@ function buildGnbYaml(idx: number, cfg: InferredConfig, params: GeneratorParams,
   });
 }
 
-function buildUeYaml(
+export function buildUeYaml(
   imsi: string, k: string, opc: string,
   gnbIp: string, cfg: InferredConfig, params: GeneratorParams,
 ): string {
@@ -613,8 +613,12 @@ function buildUeYaml(
 // srsRAN ZMQ uses point-to-point I/Q streams; nof_ports=1 (TM1) is the only
 // valid antenna config when serving a single UE per eNB via ZMQ loopback.
 // Port allocation: eNB N uses tcp ports (2000+N*2) tx and (2001+N*2) rx.
-// s1c_bind_addr=0.0.0.0: 127.0.4.x can't make SCTP connections to the MME's
-// dummy-interface IP (loopback→non-loopback routing is blocked by the kernel).
+// s1c_bind_addr is this eNB's own dummy /32 (s1cBindIp), for two independent
+// reasons: 127.0.4.x can't make SCTP connections to the MME's non-loopback
+// address (loopback→non-loopback routing is blocked by the kernel), and
+// 0.0.0.0 resolves to the host's one real IP — the MME's own — which Open5GS
+// rejects as a duplicate peer. This comment used to state 0.0.0.0 as the
+// design; that was the bug, and the body below records the fix.
 export function buildEnbConf(ueRelIdx: number, cfg: InferredConfig, params: GeneratorParams, s1cBindIp: string): string {
   const gtpIp  = `${ENB_BASE}.${ueRelIdx + 1}`;
   const enbId = (ueRelIdx + 1).toString(16).padStart(3, '0').toUpperCase();
