@@ -9,6 +9,7 @@ import { asyncHandler } from './middleware/async-handler';
 import { createDummyInterface, deleteDummyInterface } from '../../infrastructure/network/dummy-interface';
 import { asyncRoute } from './middleware/async-route';
 import { upsertNamedZone, removeNamedZone } from '../../domain/services/named-conf-zones';
+import { upsertZoneRecordLine } from '../../domain/services/bind-zone-records';
 import {
   nsenter, BUILD_WORKDIR, RUNTIME_BIN_DIR, VECTORCORE_EPDG_CONFIG_DIR, VECTORCORE_AAA_CONFIG_DIR,
   VOWIFI_BUILD_STEPS, VowifiBuildStep, buildVowifiScript,
@@ -271,11 +272,6 @@ function bindNamedOptionsDefault(): string {
 // doesn't know AAA exists) — Configure must be re-run afterward to restore it, the same
 // re-apply requirement plmn-migration-usecase.ts already imposes on VoWiFi's SMF/HSS
 // ConnectPeer entries.
-function upsertZoneRecordLine(raw: string, name: string, ip: string): string {
-  const lineRe = new RegExp(`^${name}\\s+IN\\s+A\\s+\\S+\\s*$`, 'm');
-  const line = `${name} IN A ${ip}`;
-  return lineRe.test(raw) ? raw.replace(lineRe, line) : raw.trimEnd() + '\n' + line + '\n';
-}
 
 function removeZoneRecordLine(raw: string, name: string): string {
   const lineRe = new RegExp(`^${name}\\s+IN\\s+A\\s+\\S+\\s*\\n?`, 'm');

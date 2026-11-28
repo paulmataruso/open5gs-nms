@@ -28,6 +28,7 @@ import { safeNsenter } from '../../infrastructure/system/safe-nsenter';
 import { asyncRoute } from './middleware/async-route';
 import { asRecord } from '../../domain/services/json-shape';
 import { upsertNamedZone, removeNamedZone, removeNamedZonesByPrefix } from '../../domain/services/named-conf-zones';
+import { upsertZoneRecordLine } from '../../domain/services/bind-zone-records';
 
 const execFileAsync = promisify(execFile);
 
@@ -466,9 +467,7 @@ async function upsertOcsDnsRecord(mcc: string, mnc: string, ocsIp: string): Prom
   const zonePath = `${HOST_BIND_ZONES_DIR}/${deriveEpcDomain(mcc, mnc)}.zone`;
   if (!fs.existsSync(zonePath)) return;
   const raw = fs.readFileSync(zonePath, 'utf-8');
-  const lineRe = /^ocs\s+IN\s+A\s+\S+\s*$/m;
-  const line = `ocs IN A ${ocsIp}`;
-  const updated = lineRe.test(raw) ? raw.replace(lineRe, line) : raw.trimEnd() + '\n' + line + '\n';
+  const updated = upsertZoneRecordLine(raw, 'ocs', ocsIp);
   if (updated === raw) return;
   fs.writeFileSync(zonePath, updated, 'utf-8');
   await nsenter('rndc', ['reload']).catch(() => {});
