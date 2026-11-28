@@ -39,6 +39,37 @@ export const ALL_CONFIG_SERVICES = [
 export type Open5gsServiceName = (typeof ALL_CONFIG_SERVICES)[number];
 
 /**
+ * Every Open5GS NF that runs as its own systemd daemon on the host -- so
+ * every NF with a unit to restart, a log file under /var/log/open5gs, and a
+ * place in any "all the NFs" enumeration.
+ *
+ * This is NOT the same set as ALL_CONFIG_SERVICES above, which is one entry
+ * longer: `sepp2.yaml` is a second N32 peering's config file, with no
+ * open5gs-sepp2d unit and no sepp2.log, so it belongs in the config-file list
+ * and not in this one.
+ *
+ * It exists because this list was written out seven times across six files
+ * -- service-controller.ts held two identical copies of its own -- and two of
+ * them had drifted to sixteen by omitting sepp1, which is the stale core-NF
+ * list CLAUDE.md calls out by name. backup-restore.ts had already been bitten
+ * by exactly that and fixed its own copy, with a comment naming the bug
+ * class, which did nothing for the two that were still wrong. The failure is
+ * always the same shape: the feature works, reports success, and silently
+ * leaves one NF out. Import this rather than writing the names again.
+ *
+ * Order is the NF registration/dependency order used elsewhere and is not
+ * significant to any current consumer -- restart SEQUENCING is a different
+ * concern and lives in service-status.ts's own ordered list.
+ */
+export const OPEN5GS_DAEMON_SERVICES = [
+  'nrf', 'amf', 'smf', 'upf', 'ausf', 'scp', 'udm', 'udr', 'pcf',
+  'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1',
+] as const;
+
+/** Any Open5GS NF that runs as a host daemon. */
+export type Open5gsDaemonName = (typeof OPEN5GS_DAEMON_SERVICES)[number];
+
+/**
  * Config-file basename -> parsed document shape, for every file the NMS reads
  * or writes under /etc/open5gs.
  *

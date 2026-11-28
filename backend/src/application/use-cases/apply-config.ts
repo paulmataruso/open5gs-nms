@@ -1,6 +1,6 @@
 import { Mutex } from 'async-mutex';
 import pino from 'pino';
-import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import { IConfigRepository, OPEN5GS_DAEMON_SERVICES } from '../../domain/interfaces/config-repository';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
 import { IAuditLogger } from '../../domain/interfaces/audit-logger';
 import { IWebSocketBroadcaster } from '../../domain/interfaces/websocket-broadcaster';
@@ -73,7 +73,7 @@ export class ApplyConfigUseCase {
         if (support.status !== 'supported') throw new Error(support.message);
       }
       const diffParts: string[] = [];
-      const allServices = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'] as const;
+      const allServices = OPEN5GS_DAEMON_SERVICES;
       
       for (const service of allServices) {
         try {
@@ -106,8 +106,14 @@ export class ApplyConfigUseCase {
       try {
         const existingConfigs = await this.configRepo.loadAll();
         
-        // Save all 16 services using raw YAML passthrough (consistent approach)
-        // This preserves YAML structure, comments, and formatting
+        // One row per core NF, each carrying that NF's own typed save method.
+        // This said "all 16 services" while listing seventeen -- the stale
+        // core-NF count CLAUDE.md calls out by name. It is a dispatch table
+        // rather than a duplicate of OPEN5GS_DAEMON_SERVICES and cannot be
+        // derived from it while IConfigRepository exposes one saveX per NF
+        // and no generic save.
+        // Raw YAML passthrough throughout, so unknown keys in the real file
+        // survive a save (CLAUDE.md pattern #2).
         const services = [
           { name: 'nrf', new: newConfigs.nrf, existing: existingConfigs.nrf, save: this.configRepo.saveNrf.bind(this.configRepo) },
           { name: 'scp', new: newConfigs.scp, existing: existingConfigs.scp, save: this.configRepo.saveScp.bind(this.configRepo) },

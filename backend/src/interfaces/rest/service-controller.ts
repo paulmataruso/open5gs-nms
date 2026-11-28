@@ -2,7 +2,19 @@ import { Router, Request, Response } from 'express';
 import pino from 'pino';
 import { ServiceMonitorUseCase } from '../../application/use-cases/service-monitor';
 import { ServiceName } from '../../domain/entities/service-status';
+import { OPEN5GS_DAEMON_SERVICES } from '../../domain/interfaces/config-repository';
 import { requireAdmin } from './middleware/auth-middleware';
+
+/**
+ * Every service name the per-service routes below accept. Both routes carried
+ * an identical literal copy of this, so a name added to one and not the other
+ * was accepted for status and refused for start/stop.
+ */
+const VALID_SERVICE_NAMES: ServiceName[] = [
+  'mongodb',
+  ...OPEN5GS_DAEMON_SERVICES,
+  'osmo-stp', 'osmo-hlr', 'osmo-msc',
+];
 
 export function createServiceRouter(
   serviceMonitorUseCase: ServiceMonitorUseCase,
@@ -25,12 +37,7 @@ export function createServiceRouter(
 
   router.get('/:name', async (req: Request, res: Response) => {
     const name = req.params.name as ServiceName;
-    const validServices: ServiceName[] = [
-      'mongodb',
-      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-      'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
-      'osmo-stp', 'osmo-hlr', 'osmo-msc',
-    ];
+    const validServices = VALID_SERVICE_NAMES;
 
     if (!validServices.includes(name)) {
       logger.warn({ name, validServices }, 'Invalid service name requested');
@@ -75,12 +82,7 @@ export function createServiceRouter(
   router.post('/:name/:action', requireAdmin, async (req: Request, res: Response) => {
     const name = req.params.name as ServiceName;
     const action = req.params.action as 'start' | 'stop' | 'restart' | 'enable' | 'disable';
-    const validServices: ServiceName[] = [
-      'mongodb',
-      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-      'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu',
-      'osmo-stp', 'osmo-hlr', 'osmo-msc',
-    ];
+    const validServices = VALID_SERVICE_NAMES;
     const validActions = ['start', 'stop', 'restart', 'enable', 'disable'];
 
     if (!validServices.includes(name)) {

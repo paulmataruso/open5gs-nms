@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { IHostExecutor } from '../../domain/interfaces/host-executor';
-import { IConfigRepository } from '../../domain/interfaces/config-repository';
+import { IConfigRepository, OPEN5GS_DAEMON_SERVICES } from '../../domain/interfaces/config-repository';
 import { EXTRA_BACKUP_FILES } from '../../infrastructure/yaml/yaml-config-repository';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -116,12 +116,13 @@ function derivePresentModules(tmpDir: string): string[] {
   return [...present].sort();
 }
 
-// All 17 core NFs (matches yaml-config-repository.ts's own authoritative
-// list) — this used to say 16 and silently drop sepp1.yaml, the exact
-// "stale core-NF list" class of bug CLAUDE.md calls out by name. A restore
-// onto a new host with SEPP/N32 roaming configured would have come back up
-// with no sepp1.yaml at all.
-const CORE_SERVICES = ['nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr', 'pcf', 'nssf', 'bsf', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu', 'sepp1'];
+// All 17 core NFs. This used to be a literal here and said 16, silently
+// dropping sepp1.yaml — the exact "stale core-NF list" class of bug
+// CLAUDE.md calls out by name. A restore onto a new host with SEPP/N32
+// roaming configured would have come back up with no sepp1.yaml at all.
+// Fixing the literal did not stop two OTHER copies of the same list from
+// still being wrong, so the list now has exactly one definition.
+const CORE_SERVICES: readonly string[] = OPEN5GS_DAEMON_SERVICES;
 
 // Real, 2026-09-24 finding: independently rediscovered by 5 separate module
 // audits this session (Core-17 itself, SEPP/TLS, the DNS Migration Wizard,

@@ -8,6 +8,7 @@ import { ServiceMonitorUseCase } from '../../application/use-cases/service-monit
 import { SyncSDUseCase } from '../../application/use-cases/sync-sd-usecase';
 import { requireAdmin } from './middleware/auth-middleware';
 import { MmeMobilitySupportUseCase } from '../../application/use-cases/mme-mobility-support';
+import { OPEN5GS_DAEMON_SERVICES } from '../../domain/interfaces/config-repository';
 
 /**
  * An endpoint as it appears in a parsed Open5GS config document:
@@ -180,10 +181,7 @@ export function createConfigRouter(
 
   router.get('/:service', async (req: Request, res: Response) => {
     const service = req.params.service;
-    const validServices = [
-      'nrf', 'scp', 'amf', 'smf', 'upf', 'ausf', 'udm', 'udr',
-      'pcf', 'nssf', 'bsf', 'sepp1', 'mme', 'hss', 'pcrf', 'sgwc', 'sgwu'
-    ];
+    const validServices: readonly string[] = OPEN5GS_DAEMON_SERVICES;
     if (!validServices.includes(service)) {
       logger.warn({ service, validServices }, 'Invalid service requested');
       res.status(400).json({ success: false, error: `Invalid service: ${service}` });
